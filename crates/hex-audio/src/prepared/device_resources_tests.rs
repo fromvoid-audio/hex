@@ -92,6 +92,179 @@ fn block(callback: &mut Callback) -> [Frame; 32] {
 }
 
 #[test]
+fn shared_sampler_scalar_retarget_keeps_live_and_authored_history_without_callback_allocation() {
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let asset = source(&mut editor, &mut sources, 0.25);
+    let Created::Track(receiver) = editor
+        .execute(Command::AddMidiTrack {
+            name: "receiver".into(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track: receiver,
+            state:
+                hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+                    1024, asset, 0.05,
+                )
+                .unwrap(),
+        })
+        .unwrap();
+    let device = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let source_id = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source_id),
+        })
+        .unwrap();
+    for track in [receiver, contributor] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+    input.set_key(0, Some((60, 127, 1))).unwrap();
+    let prepare = |editor: &Editor, live: bool| {
+        let mut playback = compile(editor, &sources);
+        if live {
+            playback
+                .prepare_computer_keyboard(editor.project(), contributor, Arc::clone(&input))
+                .unwrap();
+        }
+        playback
+    };
+    let (mut control, mut callback) = channel(8000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control
+        .publish_with_policy_and_context_generation(
+            prepare(&editor, true),
+            PublicationPolicy::InheritRuntime,
+            7,
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    assert_eq!(block(&mut callback), [[0.75; 2]; 32]);
+    control.reclaim();
+    for attack in [false, true] {
+        let original = editor.project().device(device).unwrap().state();
+        let mut state = hex_devices::sampler::state::SamplerState::from_native(original).unwrap();
+        state.gain = 0.5;
+        if attack {
+            state.envelope.attack_seconds = 0.05;
+        }
+        let state = state.replace_in(original).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        control
+            .publish_with_policy_and_context_generation(
+                prepare(&editor, true),
+                PublicationPolicy::InheritRuntime,
+                7,
+            )
+            .unwrap();
+        let output = block(&mut callback);
+        for (i, frame) in output.iter().enumerate() {
+            let expected = if attack {
+                0.375 * (64 + i) as f32 / 400.0
+            } else {
+                0.375
+            };
+            for sample in frame {
+                assert!(
+                    (sample - expected).abs() < 1e-6,
+                    "attack={attack} i={i}: {frame:?}"
+                );
+            }
+        }
+        control.reclaim();
+    }
+    input.set_key(0, None).unwrap();
+    let released = block(&mut callback);
+    for (i, frame) in released.iter().enumerate() {
+        let expected = 0.125 * (2.0 * (96 + i) as f32 / 400.0 + 0.24 * (1.0 - i as f32 / 400.0));
+        for sample in frame {
+            assert!((sample - expected).abs() < 1e-6, "key off {i}: {frame:?}");
+        }
+    }
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: None,
+        })
+        .unwrap();
+    control
+        .publish_with_policy_and_context_generation(
+            prepare(&editor, false),
+            PublicationPolicy::InheritRuntime,
+            7,
+        )
+        .unwrap();
+    let detached = block(&mut callback);
+    for (i, frame) in detached.iter().enumerate() {
+        let expected = 0.125
+            * ((128 + i) as f32 / 400.0
+                + 0.32 * (1.0 - i as f32 / 400.0)
+                + 0.24 * (1.0 - (32 + i) as f32 / 400.0));
+        for sample in frame {
+            assert!((sample - expected).abs() < 1e-6, "detach {i}: {frame:?}");
+        }
+    }
+    control.reclaim();
+    for _ in 0..16 {
+        block(&mut callback);
+        control.reclaim();
+    }
+    assert_eq!(block(&mut callback), [[0.125; 2]; 32]);
+    control.request_shutdown();
+    assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+    control.reclaim();
+}
+
+#[test]
 fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resource_free_c() {
     let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
     let mut sources = ResidentDeviceAssets::default();

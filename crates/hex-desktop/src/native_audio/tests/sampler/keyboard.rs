@@ -136,11 +136,27 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
     visual.run_until_parked();
-    assert!(
-        render(h, true).iter().all(|f| *f == [0.0; 2]),
-        "focus cancellation must bypass the blocked worker: {:?}",
-        cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
-    );
+    // Cancellation releases this input's gates through the existing source.
+    // Resetting that shared kernel would also erase other contributors/history.
+    // The fixture's two-frame release must start in this first callback even
+    // while Service is blocked, then become exactly silent.
+    let cancelled = render(h, true);
+    for i in 0..64 {
+        for c in 0..2 {
+            let expected = match i {
+                0 => root[0][c] + octave[0][c],
+                1 => (root[1][c] + octave[1][c]) * 0.5,
+                _ => 0.0,
+            };
+            assert!(
+                (cancelled[i][c] - expected).abs() < 1e-6,
+                "focus cancellation {i}: {:?}; {:?}",
+                cancelled[i],
+                cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
+            );
+        }
+    }
+    assert!(render(h, true).iter().all(|f| *f == [0.0; 2]));
     release.send(()).unwrap();
     // Force the more precise race: worker passed UI cancellation checks but has
     // not yet published activation. The UI already knows this reserved epoch.
@@ -316,7 +332,8 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     let capacity_started = Instant::now();
     let end = capacity_started + h.wait;
     // Seventeen simultaneously held keys exceed the authored16-voice pool.
-    // Refusal is visible without disturbing the CURRENT source or allocating.
+    // Refusal is visible without resetting the sixteen accepted source voices
+    // or allocating. The rejected physical press must not start later.
     for name in [
         "a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j", "k", "o", "l", "p", ";",
     ] {
@@ -339,7 +356,7 @@ pub(super) fn exercise_blocked_sampler_keyboard(
             .unwrap();
         let rejected = state.contains("computer keyboard note refused");
         if rejected {
-            assert!(output.iter().all(|f| *f == [0.0; 2]));
+            assert!(output.iter().any(|f| *f != [0.0; 2]));
             break;
         }
         assert!(
@@ -364,4 +381,15 @@ pub(super) fn exercise_blocked_sampler_keyboard(
             .unwrap()
             .contains("computer keyboard note refused")
     );
+    for name in [
+        "a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j", "k", "o", "l", "p",
+    ] {
+        key(visual, name, false);
+    }
+    // All accepted gates release in this callback. The fixture's two-frame
+    // tails may finish, but the still-held rejected semicolon cannot appear.
+    assert!(render(h, true)[2..].iter().all(|f| *f == [0.0; 2]));
+    for _ in 0..3 {
+        assert!(render(h, true).iter().all(|f| *f == [0.0; 2]));
+    }
 }

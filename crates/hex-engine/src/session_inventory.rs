@@ -43,6 +43,29 @@ struct PreparedMutableTrackInstrument {
     history_retarget_requires_quiescence: bool,
 }
 
+/// Resource proofs need an audited actual ownership shape, rather than trusting
+/// the provider's byte declaration. CURRENT's exact-target scalar proof owns no
+/// PCM, source lease or child allocation; arbitrary resource proofs still refuse.
+fn resource_retarget_inline_bytes(
+    entry: &PreparedMutableTrackInstrument,
+) -> Result<usize, crate::AudioStorageError> {
+    let Some(proof) = entry.history_retarget_target.as_deref() else {
+        return Ok(0);
+    };
+    if !entry
+        .factory
+        .as_any()
+        .is::<hex_devices::sampler::PreparedSamplerRuntime>()
+    {
+        return Err(crate::AudioStorageError::UnknownStorage);
+    }
+    hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bytes(proof)
+        .filter(|bytes| {
+            *bytes > 0 && *bytes <= crate::mutable_instrument::MAX_INSTRUMENT_RETARGET_PROOF_BYTES
+        })
+        .ok_or(crate::AudioStorageError::UnknownStorage)
+}
+
 /// Structural work envelope. Guard ceilings are not physical CPU budgets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionWorkEnvelope {
@@ -1268,18 +1291,18 @@ impl PreparedSessionInventory {
                     entry.factory.as_ref(),
                     bound,
                 )?;
-                if entry.history_retarget_target.is_some() {
-                    return Err(crate::AudioStorageError::UnknownStorage);
-                }
+                let proof = resource_retarget_inline_bytes(entry)?;
                 bytes
                     .checked_add(actual)
+                    .and_then(|bytes| bytes.checked_add(proof))
                     .ok_or(crate::AudioStorageError::Overflow)
             })
     }
 
     /// Actual inline-only resource factory backing. The module declares heap absence and the
     /// host validates the dynamic payload size against its pre-allocation definition bound.
-    /// Resource factory heap/proof owners remain unsupported without an actual ownership visitor.
+    /// Only the audited scalar sampler retarget proof is admitted alongside its
+    /// factory. Other resource-factory proof/heap owners still refuse.
     pub(crate) fn visit_device_resource_factories<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
@@ -1297,14 +1320,19 @@ impl PreparedSessionInventory {
                 factory.factory.as_ref(),
                 bound,
             )?;
-            if factory.history_retarget_target.is_some() {
-                return Err(crate::AudioStorageError::UnknownStorage);
-            }
+            let proof_bytes = resource_retarget_inline_bytes(factory)?;
             ledger.bytes(
                 crate::audio_storage::Owner::exclusive(&factory.factory),
                 crate::audio_storage::Location("registered-resource-factory-inline", 0),
                 bytes,
             )?;
+            if let Some(proof) = &factory.history_retarget_target {
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(proof),
+                    crate::audio_storage::Location("registered-resource-retarget-inline", 0),
+                    proof_bytes,
+                )?;
+            }
         }
         Ok(())
     }
@@ -1336,6 +1364,14 @@ impl PreparedSessionInventory {
                 crate::audio_storage::Location("control-sampler-factory", 0),
                 std::mem::size_of_val(factory.factory.as_ref()),
             )?;
+            let proof_bytes = resource_retarget_inline_bytes(factory)?;
+            if let Some(proof) = &factory.history_retarget_target {
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(proof),
+                    crate::audio_storage::Location("control-sampler-retarget-inline", 0),
+                    proof_bytes,
+                )?;
+            }
         }
         Ok(())
     }

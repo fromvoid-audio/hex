@@ -1782,6 +1782,100 @@ mod tests {
             check_pcm(&mut candidate, 7, 19, 1.5);
         });
     }
+
+    #[test]
+    fn shared_sampler_scalar_retarget_preserves_ages_and_owns_no_outgoing_kernel() {
+        on_control(|| {
+            let mut f = fixture();
+            let mut old = started(&f);
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            let original = f.editor.project().device(device).unwrap().state().clone();
+            let mut settings =
+                hex_devices::sampler::state::SamplerState::from_native(&original).unwrap();
+            settings.gain = 0.5;
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: settings.replace_in(&original).unwrap(),
+                })
+                .unwrap();
+            let before = old.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .occurrence_proofs()
+                .to_vec();
+            let mut next = playback(&f);
+            let inventory = next.revision.session();
+            let factory = inventory.mutable_instrument_factory(f.receiver).unwrap();
+            let proof = inventory.mutable_history_retarget(f.receiver).unwrap();
+            assert_eq!(
+                inventory.resource_factory_inline_bytes().unwrap(),
+                std::mem::size_of_val(factory) + std::mem::size_of_val(proof)
+            );
+            next.preview_stream_handoff(&mut old, 32, None, &mut |_| Ok(()))
+                .unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            assert_eq!(
+                next.mutable_instruments[0]
+                    .as_ref()
+                    .unwrap()
+                    .occurrence_proofs(),
+                before
+            );
+            assert!(next.tail_mutable_instruments.iter().all(Option::is_none));
+            check_pcm(&mut next, 7, 5, 0.25);
+
+            // The new envelope is evaluated at each actual voice's existing
+            // age; recreating an onset would incorrectly restart at zero.
+            let current = f.editor.project().device(device).unwrap().state().clone();
+            settings.envelope.attack_seconds = 0.002; // sixteen frames at 8 kHz
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: settings.replace_in(&current).unwrap(),
+                })
+                .unwrap();
+            let mut attacked = playback(&f);
+            attacked.try_inherit_state_from(&mut next).unwrap();
+            assert_eq!(attacked.mutable_instruments.iter().flatten().count(), 1);
+            assert!(
+                attacked
+                    .tail_mutable_instruments
+                    .iter()
+                    .all(Option::is_none)
+            );
+            let mut output = [[0.0; 2]; 8];
+            attacked.render(&mut output).unwrap();
+            for (i, frame) in output.iter().enumerate() {
+                let gain = 0.25 * ((12 + i) as f32 / 16.0).min(1.0);
+                for c in 0..2 {
+                    assert!((frame[c] - PCM[(12 + i) % 4][c] * gain).abs() < 2e-6);
+                }
+            }
+            f.editor
+                .execute(Command::BindTrackSource {
+                    track: f.contributor,
+                    source: None,
+                })
+                .unwrap();
+            let mut detached = playback(&f);
+            detached.try_inherit_state_from(&mut attacked).unwrap();
+            assert!(
+                detached
+                    .tail_mutable_instruments
+                    .iter()
+                    .all(Option::is_none)
+            );
+            check_pcm(&mut detached, 20, 8, 0.125);
+        });
+    }
     #[test]
     fn shared_analytic_receiver_change_preserves_every_held_phase() {
         on_control(|| {

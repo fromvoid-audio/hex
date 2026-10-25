@@ -1,25 +1,151 @@
 //! Fixed-capacity mutable sampler host; PCM stays in the borrowed host scope.
 use super::*;
 use hex_lattice::{
-    DeviceResources, MutableInstrumentRuntime, NativeInstrumentEvent,
-    NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError as Error,
-    PreparedMutableInstrumentRuntime,
+    DeviceResources, InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime,
+    NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError as Error,
+    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
-use std::any::Any;
+use hex_lattice_contract::DeviceContractError;
+use std::{
+    any::{Any, TypeId},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 pub const MAX_SAMPLER_RUNTIME_VOICES: usize = 32;
 pub(super) const MAX_EVENTS: usize = 1024;
 
+static NEXT_CONFIGURATION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SamplerConfigurationId(u64);
+
+impl SamplerConfigurationId {
+    fn prepare_on_control() -> Result<Self, Invalid> {
+        NEXT_CONFIGURATION_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map(Self)
+            .map_err(|_| Invalid("sampler configuration identity exhausted"))
+    }
+}
+
 /// Control-prepared key table and original source binding, without PCM/markers.
 /// Not registry admission: the actual owner graph must still qualify separately.
-#[derive(Clone, PartialEq)]
+/// Exact-copy equality covers the complete effective law, independently of
+/// preparation identity. A retarget proof instead binds one exact prepared
+/// candidate (and its clones) while permitting gain/pan and ADS changes only.
+#[derive(Clone)]
 pub struct PreparedSamplerRuntime {
+    configuration: SamplerConfigurationId,
     notes: [Option<VoiceCoefficients>; 128],
     source: binding::SourceKey,
     voices: usize,
     tail: u64,
     velocity_amount: f64,
     max_events: usize,
+}
+
+impl PartialEq for PreparedSamplerRuntime {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            configuration: _,
+            notes,
+            source,
+            voices,
+            tail,
+            velocity_amount,
+            max_events,
+        } = self;
+        *notes == other.notes
+            && *source == other.source
+            && *voices == other.voices
+            && *tail == other.tail
+            && *velocity_amount == other.velocity_amount
+            && *max_events == other.max_events
+    }
+}
+
+/// An exact candidate authorization, with no PCM, configuration owner or heap child.
+#[repr(transparent)]
+struct SamplerHistoryRetarget(SamplerConfigurationId);
+
+impl PreparedInstrumentHistoryRetarget for SamplerHistoryRetarget {
+    fn declared_fixed_storage_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl PreparedSamplerRuntime {
+    /// Control preparation's exact scalar proof payload allowance. The proof
+    /// has no child allocation or source owner; its Box is owned by the graph.
+    pub const fn history_retarget_inline_bound() -> usize {
+        std::mem::size_of::<SamplerHistoryRetarget>()
+    }
+
+    /// Recognize only this provider's actual scalar proof for host storage accounting.
+    /// An `as_any` projection or a declared byte count alone grants no authority.
+    pub fn history_retarget_inline_bytes(
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> Option<usize> {
+        let bytes = Self::history_retarget_inline_bound();
+        (proof.type_id() == TypeId::of::<SamplerHistoryRetarget>()
+            && proof.as_any().is::<SamplerHistoryRetarget>()
+            && std::mem::size_of_val(proof) == bytes
+            && proof.declared_fixed_storage_bytes() == bytes
+            && bytes == 8)
+            .then_some(bytes)
+    }
+
+    fn can_retarget_from(&self, previous: &Self) -> bool {
+        let Self {
+            configuration: _,
+            notes,
+            source,
+            voices,
+            tail,
+            velocity_amount,
+            max_events,
+        } = self;
+        *source == previous.source
+            && *voices == previous.voices
+            && *tail == previous.tail
+            && *velocity_amount == previous.velocity_amount
+            && *max_events == previous.max_events
+            && notes
+                .iter()
+                .zip(&previous.notes)
+                .all(|(target, source)| match (target, source) {
+                    (None, None) => true,
+                    (Some(target), Some(source)) => retarget_coordinates_match(target, source),
+                    _ => false,
+                })
+    }
+}
+
+fn retarget_coordinates_match(target: &VoiceCoefficients, source: &VoiceCoefficients) -> bool {
+    let VoiceCoefficients {
+        expected_frames,
+        channels,
+        region,
+        loop_offsets,
+        reverse,
+        step,
+        channel_gain: _,
+        gate,
+        envelope,
+    } = target;
+    *expected_frames == source.expected_frames
+        && *channels == source.channels
+        && *region == source.region
+        && *loop_offsets == source.loop_offsets
+        && *reverse == source.reverse
+        && *step == source.step
+        && *gate == source.gate
+        && envelope.release_frames() == source.envelope.release_frames()
 }
 impl BoundSamplerPlan<'_> {
     /// Prepare all note coefficients and fixed runtime declarations on control.
@@ -54,6 +180,7 @@ impl BoundSamplerPlan<'_> {
             }
         }
         Ok(PreparedSamplerRuntime {
+            configuration: SamplerConfigurationId::prepare_on_control()?,
             notes,
             source: self.source,
             voices,
@@ -115,6 +242,13 @@ impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+    fn prepare_history_retarget_target(
+        &self,
+    ) -> Result<InstrumentHistoryRetargetPreparation, DeviceContractError> {
+        Ok(InstrumentHistoryRetargetPreparation::Prepared(Box::new(
+            SamplerHistoryRetarget(self.configuration),
+        )))
     }
 }
 impl SamplerRuntime {
@@ -316,6 +450,39 @@ impl MutableInstrumentRuntime for SamplerRuntime {
             .as_any()
             .downcast_ref::<Self>()
             .filter(|previous| self.prepared == previous.prepared)
+        {
+            self.active = previous.active;
+        }
+    }
+    fn can_retarget_history_from(
+        &self,
+        previous: &dyn MutableInstrumentRuntime,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> bool {
+        if previous.type_id() != TypeId::of::<Self>()
+            || PreparedSamplerRuntime::history_retarget_inline_bytes(proof).is_none()
+        {
+            return false;
+        }
+        let (Some(previous), Some(proof)) = (
+            previous.as_any().downcast_ref::<Self>(),
+            proof.as_any().downcast_ref::<SamplerHistoryRetarget>(),
+        ) else {
+            return false;
+        };
+        self.prepared.configuration == proof.0
+            && self.prepared.can_retarget_from(&previous.prepared)
+    }
+    fn retarget_history_from(
+        &mut self,
+        previous: &dyn MutableInstrumentRuntime,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) {
+        // Gain/pan and ADS apply at each carried voice's actual age and gate.
+        // Effective source coordinates, velocity and release must stay exact;
+        // law-identical authoring metadata needs no separate mode/tuning tag.
+        if self.can_retarget_history_from(previous, proof)
+            && let Some(previous) = previous.as_any().downcast_ref::<Self>()
         {
             self.active = previous.active;
         }

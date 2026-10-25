@@ -588,6 +588,8 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
         )
         .unwrap();
         let allowance = sources.compiler_factory_allowance().unwrap();
+        // This precompiler allowance includes future factory/proof owners;
+        // both the one-under refusal and exact-budget admission happen below.
         let admission = Admission {
             current: Some(old_snapshot.selection()),
             ..Admission::default()

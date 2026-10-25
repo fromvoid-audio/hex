@@ -105,6 +105,21 @@ fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() 
         )
         .unwrap(),
     );
+    let factory = revision
+        .session()
+        .mutable_instrument_factory(track)
+        .unwrap();
+    let hex_lattice::InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        factory.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("sampler scalar retarget proof")
+    };
+    assert_eq!(
+        scope.compiler_factory_allowance().unwrap(),
+        std::mem::size_of_val(factory) + std::mem::size_of_val(proof.as_ref()),
+        "the future generic factory quote covers its actual scalar proof owner"
+    );
+    drop(proof);
     assert!(SessionPlayback::new(Arc::clone(&revision)).is_err());
     assert!(SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).is_err());
     dispatched_owner_accounting(&store, &scope, &revision, limits);

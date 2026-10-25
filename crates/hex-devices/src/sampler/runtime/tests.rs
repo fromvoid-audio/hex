@@ -777,3 +777,283 @@ fn exact_active_occurrences_drop_one_short_voice_while_another_survives_conserva
     runtime.reset();
     assert_eq!(runtime.active_occurrence_ids(&mut []), Ok(0));
 }
+
+fn prepare_retarget_settings(
+    source: DeviceResourceView<'_>,
+    settings: Settings<'_>,
+    voices: usize,
+    events: usize,
+    tuning: &hex_lattice::TuningTable,
+) -> PreparedSamplerRuntime {
+    let channels = match source.pcm {
+        DeviceResourcePcm::Mono(_) => SampleChannels::Mono,
+        DeviceResourcePcm::Stereo(_) => SampleChannels::Stereo,
+    };
+    PreparedSamplerPlan::new(
+        SampleShape::new(source.pcm.frames(), source.sample_rate, channels).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(source)
+    .unwrap()
+    .prepare_runtime_on_control(voices, events, tuning)
+    .unwrap()
+}
+
+fn target_proof(prepared: &PreparedSamplerRuntime) -> Box<dyn PreparedInstrumentHistoryRetarget> {
+    let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        prepared.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("sampler target proof")
+    };
+    proof
+}
+
+#[test]
+fn gain_and_ads_retarget_preserves_occurrence_velocity_source_age_and_gate() {
+    let pcm = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region { start: 0, end: 8 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(settings.region),
+    };
+    settings.envelope.release_seconds = 4.0 / 8_000.0;
+    let tuning = hex_lattice::TuningTable::default();
+    let original = prepare_retarget_settings(views[0], settings, 4, 259, &tuning);
+    let mut source = pair(&original);
+    process(
+        &mut source,
+        &[NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 7,
+            pitch: 60,
+            velocity: 64,
+        }],
+        &mut [[0.0; 2]; 4],
+        &resources,
+    );
+    settings.gain = 2.0;
+    settings.pan = 0.5;
+    settings.envelope.attack_seconds = 2.0 / 8_000.0;
+    settings.envelope.decay_seconds = 4.0 / 8_000.0;
+    settings.envelope.sustain = 0.25;
+    let target = prepare_retarget_settings(views[0], settings, 4, 259, &tuning);
+    let proof = target_proof(&target);
+    // Both actual twins come from a clone of this exact prepared target.
+    let mut candidate = pair(&target.clone());
+    assert!(!candidate.can_inherit_from(&source));
+    assert!(candidate.can_retarget_from(&source, proof.as_ref()));
+    candidate.retarget_from(&source, proof.as_ref()).unwrap();
+    let mut ids = [0; MAX_SAMPLER_RUNTIME_VOICES];
+    assert_eq!(candidate.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], 7);
+    let mut held = [[0.0; 2]; 2];
+    process(&mut candidate, &[], &mut held, &resources);
+    let velocity = |value: f64| (value * (64.0 / 127.0)) as f32;
+    assert_eq!(
+        held,
+        [
+            [velocity(3.125), velocity(6.25)],
+            [velocity(2.625), velocity(5.25)],
+        ],
+        "new ADS/gain law starts at carried age4, not a fresh attack or source cursor"
+    );
+    let mut released = [[0.0; 2]; 2];
+    process(&mut candidate, &[off(0, 7)], &mut released, &resources);
+    assert_eq!(
+        released,
+        [
+            [velocity(1.75), velocity(3.5)],
+            [velocity(1.5), velocity(3.0)]
+        ]
+    );
+    // Carry a releasing voice again: its original gate age6 remains fixed.
+    let mut carried_release = pair(&target);
+    carried_release
+        .retarget_from(&candidate, proof.as_ref())
+        .unwrap();
+    let mut tail = [[0.0; 2]; 4];
+    process(&mut carried_release, &[], &mut tail, &resources);
+    assert_eq!(
+        tail,
+        [
+            [velocity(0.125), velocity(0.25)],
+            [velocity(0.125), velocity(0.25)],
+            [0.0; 2],
+            [0.0; 2],
+        ]
+    );
+    assert!(carried_release.committed_is_quiescent());
+    let mut untouched = [[0.0; 2]; 2];
+    process(&mut source, &[], &mut untouched, &resources);
+    assert_eq!(untouched, [[velocity(5.0); 2], [velocity(6.0); 2]]);
+}
+
+#[test]
+fn exact_copy_ignores_preparation_nonce_but_retarget_proof_is_exact_and_unforgeable() {
+    let pcm = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let source_view = view(&pcm);
+    let original = prepare(source_view, Mode::Classic { loop_region: None }, 4);
+    let independent = prepare(source_view, Mode::Classic { loop_region: None }, 4);
+    assert!(original == independent);
+    assert!(original.configuration != independent.configuration);
+    let source = original.create_runtime();
+    let candidate = independent.create_runtime();
+    assert!(candidate.can_copy_history_from(source.as_ref()));
+    let wrong = target_proof(&original);
+    assert!(!candidate.can_retarget_history_from(source.as_ref(), wrong.as_ref()));
+    let own = target_proof(&independent);
+    assert_eq!(
+        PreparedSamplerRuntime::history_retarget_inline_bytes(own.as_ref()),
+        Some(8)
+    );
+    assert!(candidate.can_retarget_history_from(source.as_ref(), own.as_ref()));
+    let clone = independent.clone().create_runtime();
+    assert!(clone.can_retarget_history_from(source.as_ref(), own.as_ref()));
+
+    // An equally small outer type cannot borrow the genuine proof's as_any
+    // projection to masquerade as the provider's audited scalar allocation.
+    struct Projection(SamplerHistoryRetarget);
+    impl PreparedInstrumentHistoryRetarget for Projection {
+        fn declared_fixed_storage_bytes(&self) -> usize {
+            8
+        }
+        fn as_any(&self) -> &dyn Any {
+            &self.0
+        }
+    }
+    let target = own
+        .as_any()
+        .downcast_ref::<SamplerHistoryRetarget>()
+        .unwrap();
+    let projected = Projection(SamplerHistoryRetarget(target.0));
+    assert_eq!(std::mem::size_of_val(&projected), 8);
+    assert_eq!(
+        PreparedSamplerRuntime::history_retarget_inline_bytes(&projected),
+        None
+    );
+    assert!(!candidate.can_retarget_history_from(source.as_ref(), &projected));
+}
+
+#[test]
+fn retarget_refuses_effective_coordinate_source_velocity_release_and_budget_changes_atomically() {
+    let pcm = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let source_view = view(&pcm);
+    let views = [source_view];
+    let resources = BorrowedDeviceResources(&views);
+    let tuning = hex_lattice::TuningTable::default();
+    let mut settings = Settings::new(Region { start: 0, end: 8 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(settings.region),
+    };
+    settings.envelope.release_seconds = 4.0 / 8_000.0;
+    let original = prepare_retarget_settings(source_view, settings, 4, 259, &tuning);
+    let mut source = pair(&original);
+    process(&mut source, &[on(0, 7, 60)], &mut [[0.0; 2]; 4], &resources);
+    let mut cases = Vec::new();
+    let mut push =
+        |name, changed, source_view, voices, events, tuning: &hex_lattice::TuningTable| {
+            cases.push((
+                name,
+                prepare_retarget_settings(source_view, changed, voices, events, tuning),
+                source_view,
+            ));
+        };
+    let mut changed_source = source_view;
+    changed_source.identity.content[0] ^= 1;
+    push("source identity", settings, changed_source, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.region = Region { start: 1, end: 8 };
+    changed.mode = Mode::Classic {
+        loop_region: Some(changed.region),
+    };
+    push("region", changed, source_view, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.reverse = true;
+    push("reverse", changed, source_view, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.mode = Mode::Classic {
+        loop_region: Some(Region { start: 1, end: 7 }),
+    };
+    push("loop", changed, source_view, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.mode = Mode::OneShot {
+        gate: GateMode::Trigger,
+    };
+    push("gate", changed, source_view, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.mode = Mode::Slice {
+        starts: &[0, 4],
+        base_note: 60,
+        gate: GateMode::Gate,
+    };
+    push("note mask", changed, source_view, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.envelope.release_seconds = 8.0 / 8_000.0;
+    push("release", changed, source_view, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.velocity_amount = 0.5;
+    push("velocity", changed, source_view, 4, 259, &tuning);
+    let mut frequencies = *tuning.frequencies();
+    frequencies[60] *= 1.5;
+    let altered_tuning = hex_lattice::TuningTable::new(frequencies).unwrap();
+    push("pitch step", settings, source_view, 4, 259, &altered_tuning);
+    push("voice capacity", settings, source_view, 3, 259, &tuning);
+    push("event capacity", settings, source_view, 4, 258, &tuning);
+    for (name, target, target_view) in cases {
+        let proof = target_proof(&target);
+        let mut candidate = pair(&target);
+        assert!(
+            !candidate.can_retarget_from(&source, proof.as_ref()),
+            "{name}"
+        );
+        assert_eq!(
+            candidate.retarget_from(&source, proof.as_ref()),
+            Err(Error::IncompatibleHistory),
+            "{name}"
+        );
+        assert_eq!(candidate.active_occurrence_ids(&mut []), Ok(0), "{name}");
+        let target_views = [target_view];
+        let mut quiet = [[0.0; 2]; 4];
+        process(
+            &mut candidate,
+            &[],
+            &mut quiet,
+            &BorrowedDeviceResources(&target_views),
+        );
+        assert_eq!(quiet, [[0.0; 2]; 4], "{name}");
+    }
+    let mut unchanged = [[0.0; 2]; 4];
+    process(&mut source, &[], &mut unchanged, &resources);
+    assert_eq!(unchanged, [[5.0; 2], [6.0; 2], [7.0; 2], [8.0; 2]]);
+}
+
+#[test]
+fn retarget_finished_one_shot_never_retriggers_without_a_new_note_on() {
+    let pcm = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region { start: 0, end: 8 });
+    settings.mode = Mode::OneShot {
+        gate: GateMode::Trigger,
+    };
+    let tuning = hex_lattice::TuningTable::default();
+    let original = prepare_retarget_settings(views[0], settings, 4, 259, &tuning);
+    let mut old = pair(&original);
+    process(&mut old, &[on(0, 1, 60)], &mut [[0.0; 2]; 12], &resources);
+    assert!(old.committed_is_quiescent());
+    settings.gain = 2.0;
+    let target = prepare_retarget_settings(views[0], settings, 4, 259, &tuning);
+    let mut next = pair(&target);
+    next.retarget_from(&old, target_proof(&target).as_ref())
+        .unwrap();
+    let mut quiet = [[0.0; 2]; 8];
+    process(&mut next, &[], &mut quiet, &resources);
+    assert_eq!(quiet, [[0.0; 2]; 8]);
+    assert!(next.committed_is_quiescent());
+    let mut audible = [[0.0; 2]; 4];
+    process(&mut next, &[on(0, 2, 60)], &mut audible, &resources);
+    assert_eq!(audible, [[2.0; 2], [4.0; 2], [6.0; 2], [8.0; 2]]);
+}

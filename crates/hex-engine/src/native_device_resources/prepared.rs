@@ -381,8 +381,9 @@ impl PreparedDeviceResources {
             .map(|configuration| configuration.factory_inline_bound)
     }
     /// Finite compiler scratch overlap from each resource definition's inline-only factory bound.
-    /// Registry preparation and its mutable-factory copy may coexist; retained factories are
-    /// separately selected from the actual compiled revision in the same control union.
+    /// Registry preparation, its mutable-factory copy and the audited sampler
+    /// proof may coexist. Retained owners are selected separately from the
+    /// actual compiled revision in the same control union.
     pub fn compiler_construction_allowance_bytes(&self) -> Result<usize, ResourcePreparationError> {
         self.configurations
             .iter()
@@ -392,6 +393,11 @@ impl PreparedDeviceResources {
                         configuration
                             .factory_inline_bound
                             .checked_mul(2)
+                            .and_then(|bytes| bytes.checked_add(
+                                if configuration.type_id == hex_devices::sampler::state::TYPE_ID {
+                                    hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bound()
+                                } else { 0 }
+                            ))
                             .ok_or(AudioStorageError::Overflow)?,
                     )
                     .ok_or(AudioStorageError::Overflow.into())

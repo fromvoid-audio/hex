@@ -551,6 +551,17 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
             inline_resource_factory_bytes(factory, bound).unwrap(),
             std::mem::size_of_val(factory)
         );
+        let proof = revision.session().mutable_history_retarget(track).unwrap();
+        let proof_bytes = std::mem::size_of_val(proof);
+        assert_eq!(
+            resources.compiler_construction_allowance_bytes().unwrap(),
+            std::mem::size_of_val(factory) * 2 + proof_bytes,
+            "both factory copies and the actual proof overlap before compilation finishes"
+        );
+        assert_eq!(
+            revision.session().resource_factory_inline_bytes().unwrap(),
+            std::mem::size_of_val(factory) + proof_bytes
+        );
         for declared in [
             None,
             Some(std::mem::size_of::<FactoryDeclaration<'_>>() + 1),

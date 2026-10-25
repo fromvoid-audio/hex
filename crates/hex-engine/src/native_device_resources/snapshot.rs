@@ -348,12 +348,17 @@ impl ControlSamplerSources {
         Ok(frames)
     }
     pub fn compiler_factory_allowance(&self) -> Result<usize, ResourcePreparationError> {
+        // A future generic factory also owns its exact-target scalar proof;
+        // the closed constructor may conservatively omit that capability.
+        let per_factory = std::mem::size_of::<hex_devices::sampler::PreparedSamplerRuntime>()
+            .checked_add(
+                hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bound(),
+            )
+            .ok_or(AudioStorageError::Overflow)?;
         self.data
             .configurations
             .len()
-            .checked_mul(std::mem::size_of::<
-                hex_devices::sampler::PreparedSamplerRuntime,
-            >())
+            .checked_mul(per_factory)
             .ok_or(AudioStorageError::Overflow.into())
     }
     /// A sealed outer handle, not a source owner projection. The complete union
