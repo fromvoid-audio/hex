@@ -319,6 +319,12 @@ pub(super) fn waveform_canvas(
     waveform_plot(
         move |paint| {
             #[cfg(all(test, feature = "ui-test-support"))]
+            if grid.is_some() && super::navigation_metrics::waveforms_suppressed() {
+                // Keep the actual canvas/layout/clip controls in the diagnostic
+                // profile while excluding waveform preparation and submission.
+                return None;
+            }
+            #[cfg(all(test, feature = "ui-test-support"))]
             let _navigation_timer = super::navigation_metrics::Timer::start(
                 super::navigation_metrics::Stage::WaveformProvider,
             );
