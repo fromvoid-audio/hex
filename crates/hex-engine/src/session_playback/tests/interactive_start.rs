@@ -1,4 +1,33 @@
 use super::*;
+use hex_lattice_contract::NativeDeviceMetadata;
+
+fn start_fixture(start: u64, duration: u64, limiter: Option<bool>) -> Arc<PreparedRevision> {
+    let Some(main) = limiter else {
+        return mutable_checkpoint_fixture_at(start, duration, 8).0;
+    };
+    let definition = super::source_loop_tests::mutable_definition();
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let project = with_test_instrument(&project(1.0, start, duration), definition.metadata.id, 0);
+    let mut snapshot = project.snapshot();
+    let device = DeviceSnapshot {
+        comparison: None,
+        id: snapshot.next_id,
+        bypassed: false,
+        state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+    };
+    snapshot.next_id += 1;
+    if main {
+        snapshot.main_devices.push(device);
+    } else {
+        snapshot.tracks[0].devices.push(device);
+    }
+    revision_with_instrument_registry(
+        &Project::from_snapshot(snapshot).unwrap(),
+        Arc::new(SineTable::new()),
+        &registry,
+    )
+}
 
 #[test]
 #[ignore = "optimized timing evidence; run with --release and --ignored"]
@@ -8,7 +37,7 @@ fn profile_interactive_start_against_song_prefix_preparation() {
         let prepared = mutable_hundred_track_preroll_revision();
         let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
         let mut output = [[0.0; 2]; 256];
-        for destination in [0, 24_000, 192_000] {
+        for destination in [0, 24_000, 144_000] {
             let mut old = Vec::new();
             let mut new = Vec::new();
             for iteration in 0..4 {
@@ -74,31 +103,41 @@ fn play_from_mutable_cursor_before_inside_and_after_loop_keeps_absolute_transpor
 
 #[test]
 fn play_from_chases_a_held_mutable_note_without_replaying_the_prefix() {
-    let (prepared, _) = mutable_checkpoint_fixture(1 << 32);
-    let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
-    // Compare against independently authored music whose note starts at the
-    // cursor and ends at the original gate. Prefix replay would leave a
-    // different feedback state; lost or extended note-offs also change PCM.
-    let (oracle, _) = mutable_checkpoint_fixture_at(1 << 31, 1 << 31, 8);
-    let mut oracle = SessionPlayback::new(oracle).unwrap();
-    oracle.apply(SessionPlaybackCommand::Play).unwrap();
-    let prefix = render_checkpoint_prefix(&mut oracle, 12_000);
-    assert!(prefix.iter().flatten().all(|value| *value == 0.0));
-    let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064);
-    playback
-        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(12_000)))
-        .unwrap();
-    assert_eq!(playback.position(), 12_000);
-    assert!(playback.playing());
-    let mut actual = Vec::new();
-    for count in [0, 1, 7, 256, 193, 11_607] {
-        let mut block = vec![[0.0; 2]; count];
-        playback.render(&mut block).unwrap();
-        actual.extend(block);
+    // Exercise ordinary chunks, upstream per-frame compensation, and the
+    // Main-only batching path. Each must retain the same fresh onset law.
+    for limiter in [None, Some(false), Some(true)] {
+        let prepared = start_fixture(0, 1 << 32, limiter);
+        let latency = prepared.arrangement().main_latency_frames() as usize;
+        let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+        // Compare against independently authored music whose note starts at the
+        // cursor and ends at the original gate. Prefix replay would leave a
+        // different feedback state; lost or extended note-offs also change PCM.
+        let oracle = start_fixture(1 << 31, 1 << 31, limiter);
+        let mut oracle = SessionPlayback::new(oracle).unwrap();
+        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+        let prefix = render_checkpoint_prefix(&mut oracle, 12_000);
+        assert!(prefix.iter().flatten().all(|value| *value == 0.0));
+        let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064 + latency);
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(12_000)))
+            .unwrap();
+        assert_eq!(playback.position(), 12_000);
+        assert!(playback.playing());
+        let mut actual = Vec::new();
+        for count in [0, 1, 7, 256, 193, 11_607 + latency] {
+            let mut block = vec![[0.0; 2]; count];
+            playback.render(&mut block).unwrap();
+            actual.extend(block);
+        }
+        assert_eq!(actual, expected, "limiter location={limiter:?}");
+        assert!(actual[..12_000].iter().flatten().any(|value| *value != 0.0));
+        assert!(
+            actual[12_040 + latency..]
+                .iter()
+                .flatten()
+                .all(|value| *value == 0.0)
+        );
     }
-    assert_eq!(actual, expected);
-    assert!(actual[..12_000].iter().flatten().any(|value| *value != 0.0));
-    assert!(actual[12_040..].iter().flatten().all(|value| *value == 0.0));
 }
 
 #[test]
