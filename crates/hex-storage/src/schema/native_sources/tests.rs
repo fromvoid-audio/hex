@@ -111,6 +111,9 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut schema46: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     schema46["version"] = 46.into();
+    for source in schema46["native_sources"].as_array_mut().unwrap() {
+        source.as_object_mut().unwrap().remove("receiver");
+    }
     assert_eq!(
         decode(&serde_json::to_vec(&schema46).unwrap()).unwrap(),
         project,
