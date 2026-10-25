@@ -69,6 +69,12 @@ impl WorkerAudioSink for FenceSink {
 }
 #[test]
 fn arrangement_bounce_admits_native_candidate_once_and_refusals_preserve_history() {
+    for whole_track in [false, true] {
+        arrangement_bounce_publication_case(whole_track);
+    }
+}
+
+fn arrangement_bounce_publication_case(whole_track: bool) {
     let files = sampler_export::tests::Files::new(true);
     let root = files.source().parent().unwrap();
     let observed = Arc::new(Observed::default());
@@ -129,7 +135,11 @@ fn arrangement_bounce_admits_native_candidate_once_and_refusals_preserve_history
             .submit(Request::BounceArrangement {
                 project_generation: 0,
                 revision: revision + u64::from(stale),
-                target: hex_project::BounceTarget::Clips(vec![clip]),
+                target: if whole_track {
+                    hex_project::BounceTarget::Track(original.state.project.tracks()[0].id())
+                } else {
+                    hex_project::BounceTarget::Clips(vec![clip])
+                },
                 in_place: true,
                 control: control.clone(),
             })

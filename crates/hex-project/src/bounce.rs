@@ -3,7 +3,10 @@
 //! track spans selected clips (including gaps and release tails). Explicit ranges
 //! have priority in the UI and adopt exactly their half-open frame interval.
 //! In-place baking removes the baked device chain only when no unselected
-//! Arrangement or Console material can be affected. Unsupported routing refuses.
+//! Arrangement or Console material can be affected. Whole-track intent covers all
+//! active Arrangement clips on one ordinary root track, independent of selection;
+//! Console material, inactive clips, hierarchy and external routing refuse.
+//! Clip and whole-track bakes retain the bounded release-tail policy.
 use crate::{ClipId, Command, Created, Invalid, Project, SessionCellContent, TimeRange, TrackId};
 use std::{collections::BTreeSet, path::PathBuf};
 
@@ -11,6 +14,9 @@ pub const MAX_ARRANGEMENT_BOUNCE_FRAMES: u64 = 8_000_000;
 #[derive(Clone, Debug)]
 pub enum BounceTarget {
     Clips(Vec<ClipId>),
+    /// Complete Arrangement track bake. Requires in-place adoption; never
+    /// derives its extent from a current clip or time selection.
+    Track(TrackId),
     Range(TimeRange),
     /// Finite pre-device audio grouping, not a track/device bake. The range
     /// variant retains exterior fragments; the clip variant requires two clips.
@@ -22,6 +28,10 @@ pub enum BounceTarget {
 impl BounceTarget {
     pub fn is_audio_group(&self) -> bool {
         matches!(self, Self::AudioGroup { .. })
+    }
+    /// Clip and whole-track bakes include releases; ranges and grouping do not.
+    pub fn includes_tails(&self) -> bool {
+        matches!(self, Self::Clips(_) | Self::Track(_))
     }
     /// Only a device bake replaces live voices and needs the stopped fence.
     pub fn bakes_devices(&self, in_place: bool) -> bool {
@@ -65,6 +75,33 @@ impl Project {
                 "bounce does not support external audio or midi routing",
             ));
         }
+        if let BounceTarget::Track(id) = target {
+            if !in_place {
+                return Err(Invalid("whole-track bounce requires in-place adoption"));
+            }
+            let track = self
+                .track(*id)
+                .ok_or(Invalid("bounce track no longer exists"))?;
+            if track.kind() != crate::TrackKind::Ordinary || track.parent_group().is_some() {
+                return Err(Invalid(
+                    "whole-track bounce requires an ordinary ungrouped track",
+                ));
+            }
+            if self
+                .session_cells()
+                .iter()
+                .any(|c| c.track() == *id && !matches!(c.content(), SessionCellContent::Stop))
+            {
+                return Err(Invalid("whole-track bounce does not support console clips"));
+            }
+            if track.clips().iter().any(|c| !c.active())
+                || track.midi_clips().iter().any(|c| !c.active())
+            {
+                return Err(Invalid(
+                    "activate all arrangement clips before whole-track bounce",
+                ));
+            }
+        }
         let selected = match target {
             BounceTarget::Clips(ids) => {
                 if ids.is_empty() || ids.len() > crate::MAX_CLIPS {
@@ -75,6 +112,17 @@ impl Project {
                     return Err(Invalid("bounce contains duplicate clips"));
                 }
                 set
+            }
+            BounceTarget::Track(id) => {
+                let track = self
+                    .track(*id)
+                    .ok_or(Invalid("bounce track no longer exists"))?;
+                track
+                    .clips()
+                    .iter()
+                    .map(|c| c.id())
+                    .chain(track.midi_clips().iter().map(|c| c.id()))
+                    .collect()
             }
             BounceTarget::Range(range) => {
                 range.validate(self)?;
@@ -128,7 +176,7 @@ impl Project {
             }
             if in_place && (track.instrument().is_some() || !track.devices().is_empty()) {
                 let unrelated = match target {
-                    BounceTarget::Clips(_) => {
+                    BounceTarget::Clips(_) | BounceTarget::Track(_) => {
                         clips.len() != track.clips().len() + track.midi_clips().len()
                     }
                     BounceTarget::Range(_) => {
@@ -210,7 +258,9 @@ pub(crate) fn commit(
             || file.start.checked_add(file.frames).is_none()
             || match target {
                 BounceTarget::Range(_) => file.frames != item.end - item.start,
-                BounceTarget::Clips(_) => file.frames < item.end - item.start,
+                BounceTarget::Clips(_) | BounceTarget::Track(_) => {
+                    file.frames < item.end - item.start
+                }
                 BounceTarget::AudioGroup { .. } => true,
             }
         {
@@ -220,7 +270,7 @@ pub(crate) fn commit(
             .track(item.track)
             .ok_or(Invalid("bounce track changed"))?
             .clone();
-        if in_place && matches!(target, BounceTarget::Clips(_)) {
+        if in_place && target.includes_tails() {
             let output_end = file
                 .start
                 .checked_add(file.frames)
@@ -244,7 +294,7 @@ pub(crate) fn commit(
         }
         let destination = if in_place {
             match &target {
-                BounceTarget::Clips(_) => {
+                BounceTarget::Clips(_) | BounceTarget::Track(_) => {
                     for clip in &item.clips {
                         project.apply(if project.midi_clip(*clip).is_some() {
                             Command::RemoveMidiClip(*clip)
@@ -490,5 +540,108 @@ mod tests {
             editor.project().snapshot().tracks,
             original.snapshot().tracks
         );
+    }
+    #[test]
+    fn whole_track_refuses_incomplete_content_without_mutating_history() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { track, clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "original.wav".into(),
+                sample_rate: 48_000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let target = BounceTarget::Track(track);
+        assert!(
+            editor
+                .project()
+                .plan_arrangement_bounce(&target, false)
+                .is_err()
+        );
+        editor
+            .execute(Command::SetClipActive {
+                clip,
+                active: false,
+            })
+            .unwrap();
+        assert!(
+            editor
+                .project()
+                .plan_arrangement_bounce(&target, true)
+                .unwrap_err()
+                .to_string()
+                .contains("activate all")
+        );
+        editor
+            .execute(Command::SetClipActive { clip, active: true })
+            .unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        editor
+            .execute(Command::CopyArrangementAudioClipToSession {
+                source: clip,
+                scene,
+            })
+            .unwrap();
+        let before = editor.project().clone();
+        assert!(
+            editor
+                .project()
+                .plan_arrangement_bounce(&target, true)
+                .unwrap_err()
+                .to_string()
+                .contains("console clips")
+        );
+        assert!(
+            editor
+                .execute(Command::CommitArrangementBounce {
+                    target,
+                    in_place: true,
+                    files: vec![BounceFile {
+                        track,
+                        start: 0,
+                        frames: 100,
+                        path: "bounce.wav".into()
+                    }],
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+        assert!(editor.undo());
+        assert!(
+            editor
+                .project()
+                .plan_arrangement_bounce(&BounceTarget::Track(track), true)
+                .is_ok()
+        );
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: crate::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        for id in [track, group] {
+            assert!(
+                editor
+                    .project()
+                    .plan_arrangement_bounce(&BounceTarget::Track(id), true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ungrouped")
+            );
+        }
     }
 }

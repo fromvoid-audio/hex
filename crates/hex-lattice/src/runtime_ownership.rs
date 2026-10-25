@@ -22,6 +22,13 @@ pub(super) enum RuntimeOwnership {
     Foreign(ForeignRuntime),
 }
 impl RuntimeOwnership {
+    pub(super) fn take_dynamics_meter(&mut self) -> Option<crate::DynamicsMeter> {
+        match self {
+            Self::Legacy { primary, .. } => primary.take_dynamics_meter(),
+            Self::Owned(runtime) => runtime.take_dynamics_meter(),
+            Self::Memoryless | Self::Foreign(_) => None,
+        }
+    }
     pub(super) fn prepare(
         factory: Option<&PreparedProcessorFactory>,
     ) -> Result<Self, DeviceContractError> {

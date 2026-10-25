@@ -1,0 +1,600 @@
+{
+  "schema": 1,
+  "observed_date": "2026-10-25",
+  "reference": {
+    "version": "12.4.7 (2026-10-16_cf213561fb)",
+    "architecture": "arm64",
+    "executable_sha256": "0f0df09d84ecb6cf2bef96958de68618c30d28ae77a401bd50ae5990a3e0da6c"
+  },
+  "sources": [
+    "https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#limiter",
+    "https://docs.cycling74.com/reference/abl.device.limiter~"
+  ],
+  "method": "original fixture generated in Python; native Live UI insertion/control and individual-track offline exports; original user set preserved, new Untitled template saved separately in ignored artifact storage",
+  "input_sha256": "0f4c7ae660f8d9784f9e36240c32ad8a7c69e2c43c4dea4d6990c1253a32637b",
+  "settings": {
+    "rate": 44100,
+    "input_gain_db": 12,
+    "ceiling_db": -3,
+    "manual_release_ms": 100,
+    "auto_release": false,
+    "lookahead_ms": 1.5,
+    "lr_link": 1,
+    "ms_link": 0,
+    "maximize": false,
+    "clip_gain": 1,
+    "track_gain": 1,
+    "warp": false,
+    "preceding_template_rack": "disabled",
+    "return_main_processing": false,
+    "normalize": false,
+    "export": "stereo float32 wav",
+    "reference_block_size": "offline renderer internal size unknown"
+  },
+  "observations": [
+    "rendered inserted Limiter ceiling default was 0db; bundled factory default preset stores approximately -0.3db, so a user default override is possible",
+    "bypass unity export equals all 352800 original decoded 24bit frames exactly (maximum absolute error 0)",
+    "export compensates device latency; no time alignment was applied to these sample peaks",
+    "m/s routing recalled link0 independently from l/r link1"
+  ],
+  "renders": {
+    "live-bypass-unity 38-limiter-original-fixture.wav": {
+      "sha256": "1179be4b0c8363bd2c08875e54e24378bd7c77c84e97f0513b48a355043527f4",
+      "frames": 352800,
+      "sample_rate": 44100,
+      "windows": [
+        {
+          "seconds": [
+            0,
+            0.49
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "seconds": [
+            0.5,
+            1
+          ],
+          "peak": [
+            0.7499998807907104,
+            0.7499998807907104
+          ]
+        },
+        {
+          "seconds": [
+            1.1,
+            1.9
+          ],
+          "peak": [
+            0.7999998331069946,
+            0.7999998331069946
+          ]
+        },
+        {
+          "seconds": [
+            2.1,
+            2.9
+          ],
+          "peak": [
+            0.7999998331069946,
+            0.07999992370605469
+          ]
+        },
+        {
+          "seconds": [
+            3.1,
+            3.9
+          ],
+          "peak": [
+            0.5656852722167969,
+            0.5656852722167969
+          ]
+        },
+        {
+          "seconds": [
+            4.1,
+            4.9
+          ],
+          "peak": [
+            0.7999998331069946,
+            0.7999998331069946
+          ]
+        },
+        {
+          "seconds": [
+            5.5,
+            5.9
+          ],
+          "peak": [
+            0.07999992370605469,
+            0.07999992370605469
+          ]
+        },
+        {
+          "seconds": [
+            7,
+            8
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "mode": "standard",
+      "routing": "l/r",
+      "auto_release": false,
+      "bypassed": true
+    },
+    "live-softclip-lr-unity 38-limiter-original-fixture.wav": {
+      "sha256": "92121bcb2d1168e940b81efcbef23c519e4c5b9127ab37e17417ff5eabecb4f9",
+      "frames": 352800,
+      "sample_rate": 44100,
+      "windows": [
+        {
+          "seconds": [
+            0,
+            0.49
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "seconds": [
+            0.5,
+            1
+          ],
+          "peak": [
+            0.6593402624130249,
+            0.6593402624130249
+          ]
+        },
+        {
+          "seconds": [
+            1.1,
+            1.9
+          ],
+          "peak": [
+            0.6593403220176697,
+            0.6593403220176697
+          ]
+        },
+        {
+          "seconds": [
+            2.1,
+            2.9
+          ],
+          "peak": [
+            0.6593403220176697,
+            0.08141116052865982
+          ]
+        },
+        {
+          "seconds": [
+            3.1,
+            3.9
+          ],
+          "peak": [
+            0.6592950224876404,
+            0.6592950224876404
+          ]
+        },
+        {
+          "seconds": [
+            4.1,
+            4.9
+          ],
+          "peak": [
+            0.6593403220176697,
+            0.6593403220176697
+          ]
+        },
+        {
+          "seconds": [
+            5.5,
+            5.9
+          ],
+          "peak": [
+            0.31630027294158936,
+            0.31630027294158936
+          ]
+        },
+        {
+          "seconds": [
+            7,
+            8
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "mode": "soft clip",
+      "routing": "l/r",
+      "auto_release": false,
+      "bypassed": false
+    },
+    "live-standard-lr-unity 38-limiter-original-fixture.wav": {
+      "sha256": "3c6f71e7859ab3c3bbb675f4b5d00c12758c0868d52c9d2fd541f884ada5b560",
+      "frames": 352800,
+      "sample_rate": 44100,
+      "windows": [
+        {
+          "seconds": [
+            0,
+            0.49
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "seconds": [
+            0.5,
+            1
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.7079439163208008
+          ]
+        },
+        {
+          "seconds": [
+            1.1,
+            1.9
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.7079439163208008
+          ]
+        },
+        {
+          "seconds": [
+            2.1,
+            2.9
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.07079441100358963
+          ]
+        },
+        {
+          "seconds": [
+            3.1,
+            3.9
+          ],
+          "peak": [
+            0.7077960968017578,
+            0.7077960968017578
+          ]
+        },
+        {
+          "seconds": [
+            4.1,
+            4.9
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.7079439163208008
+          ]
+        },
+        {
+          "seconds": [
+            5.5,
+            5.9
+          ],
+          "peak": [
+            0.3184454143047333,
+            0.3184454143047333
+          ]
+        },
+        {
+          "seconds": [
+            7,
+            8
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "mode": "standard",
+      "routing": "l/r",
+      "auto_release": false,
+      "bypassed": false
+    },
+    "live-standard-ms-unity 38-limiter-original-fixture.wav": {
+      "sha256": "fee5d07a0b149391bb5fe3427d80f3e78f01744e8be1ad881a84bc768d05b685",
+      "frames": 352800,
+      "sample_rate": 44100,
+      "windows": [
+        {
+          "seconds": [
+            0,
+            0.49
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "seconds": [
+            0.5,
+            1
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.7079439163208008
+          ]
+        },
+        {
+          "seconds": [
+            1.1,
+            1.9
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.7079439163208008
+          ]
+        },
+        {
+          "seconds": [
+            2.1,
+            2.9
+          ],
+          "peak": [
+            0.7079439759254456,
+            0.06415369361639023
+          ]
+        },
+        {
+          "seconds": [
+            3.1,
+            3.9
+          ],
+          "peak": [
+            0.7020074725151062,
+            0.7020074725151062
+          ]
+        },
+        {
+          "seconds": [
+            4.1,
+            4.9
+          ],
+          "peak": [
+            0.7077392339706421,
+            0.7077392339706421
+          ]
+        },
+        {
+          "seconds": [
+            5.5,
+            5.9
+          ],
+          "peak": [
+            0.3183532655239105,
+            0.3183532655239105
+          ]
+        },
+        {
+          "seconds": [
+            7,
+            8
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "mode": "standard",
+      "routing": "m/s",
+      "auto_release": false,
+      "bypassed": false
+    },
+    "live-truepeak-lr-unity 38-limiter-original-fixture.wav": {
+      "sha256": "18db6b429bcc4a9429e2278b79e7317cfe8bc33f2ca6bd57365df2bcce935075",
+      "frames": 352800,
+      "sample_rate": 44100,
+      "windows": [
+        {
+          "seconds": [
+            0,
+            0.49
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "seconds": [
+            0.5,
+            1
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.7079439163208008
+          ]
+        },
+        {
+          "seconds": [
+            1.1,
+            1.9
+          ],
+          "peak": [
+            0.7077670097351074,
+            0.7077670097351074
+          ]
+        },
+        {
+          "seconds": [
+            2.1,
+            2.9
+          ],
+          "peak": [
+            0.7077670097351074,
+            0.07077667862176895
+          ]
+        },
+        {
+          "seconds": [
+            3.1,
+            3.9
+          ],
+          "peak": [
+            0.5004592537879944,
+            0.5004592537879944
+          ]
+        },
+        {
+          "seconds": [
+            4.1,
+            4.9
+          ],
+          "peak": [
+            0.7077670097351074,
+            0.7077670097351074
+          ]
+        },
+        {
+          "seconds": [
+            5.5,
+            5.9
+          ],
+          "peak": [
+            0.3184454143047333,
+            0.3184454143047333
+          ]
+        },
+        {
+          "seconds": [
+            7,
+            8
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "mode": "true peak",
+      "routing": "l/r",
+      "auto_release": false,
+      "bypassed": false
+    },
+    "live-auto-lr-unity 38-limiter-original-fixture.wav": {
+      "sha256": "14d641f9c6307e7ca9f9c998a97d557ac33e49ae3aa9d18122673260d77ce99e",
+      "frames": 352800,
+      "sample_rate": 44100,
+      "windows": [
+        {
+          "seconds": [
+            0,
+            0.49
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "seconds": [
+            0.5,
+            1
+          ],
+          "peak": [
+            0.7079437971115112,
+            0.7079437971115112
+          ]
+        },
+        {
+          "seconds": [
+            1.1,
+            1.9
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.7079439163208008
+          ]
+        },
+        {
+          "seconds": [
+            2.1,
+            2.9
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.07079438865184784
+          ]
+        },
+        {
+          "seconds": [
+            3.1,
+            3.9
+          ],
+          "peak": [
+            0.704460859298706,
+            0.704460859298706
+          ]
+        },
+        {
+          "seconds": [
+            4.1,
+            4.9
+          ],
+          "peak": [
+            0.7079439163208008,
+            0.7079439163208008
+          ]
+        },
+        {
+          "seconds": [
+            5.5,
+            5.9
+          ],
+          "peak": [
+            0.31425705552101135,
+            0.31425705552101135
+          ]
+        },
+        {
+          "seconds": [
+            7,
+            8
+          ],
+          "peak": [
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "mode": "standard",
+      "routing": "l/r",
+      "auto_release": true,
+      "bypassed": false
+    }
+  },
+  "unknowns": [
+    "proprietary attack, softclip, automatic release and reconstruction laws",
+    "live realtime callback latency and physical device deadlines",
+    "full acoustic parity; these four original signal intervals do not establish general equivalence"
+  ],
+  "local_study_set_sha256": "c99bdce599c2d59abf6022dc3930e604e1b28f95fd59b7814a28b2f94630dbd9",
+  "study_set_final_state": "standard l/r, auto release enabled, gain12db ceiling-3db, preceding template rack disabled; earlier named exports have their stated mode settings",
+  "inferences": [
+    "manual release recovery following the 5second amplitude drop is close to a 100ms exponential in linear gain; auto release in this workload is close to 220ms",
+    "soft clip steady 997hz output versus the normalized Standard waveform closely fits sign(x)*sqrt(tanh(x*x)) with limiter-stage peak approximately1.15 times the authored ceiling; this is a measured fit, not evidence of proprietary implementation identity",
+    "recovery between two still-limiting levels follows the current detector target rather than unity; a separate approximately220ms linked m/s physical-output recovery fits the asymmetric-to-mono transition while the authored encoded-stage release remains100ms; these are finite measured fits, not proprietary source identity"
+  ]
+}
