@@ -25,6 +25,7 @@ use std::{
 
 mod auto_pan_panel;
 mod bindings;
+mod overdrive_panel;
 pub(super) use bindings::effective_parameter_value;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
@@ -149,6 +150,7 @@ pub(super) struct DevicePanelState {
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
+    overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_results: HashMap<
@@ -475,6 +477,7 @@ pub(super) fn view(
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
         view.device_panel.auto_pan_previews.clear();
+        view.device_panel.overdrive_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_results.clear();
         if let Some(audio) = view.audio.as_mut() {
@@ -581,6 +584,7 @@ pub(super) fn view(
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
         view.device_panel.auto_pan_previews.clear();
+        view.device_panel.overdrive_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_results.clear();
         view.device_panel.chain_window = Default::default();
@@ -1136,6 +1140,9 @@ fn retire_transfer_previews(
     panel.compressor_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
     });
+    panel.overdrive_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.overdrive"))
+    });
     panel.auto_pan_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
     });
@@ -1155,6 +1162,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.auto-pan")) => auto_pan_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     frame_width + gain_meters::WIDTH
@@ -1517,6 +1525,8 @@ fn render_effect(
                 compressor_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
+                overdrive_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
@@ -1617,6 +1627,7 @@ fn render_effect(
         Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => gate_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => auto_pan_panel::FRAME_WIDTH,
+        Ok("hex.overdrive") => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
