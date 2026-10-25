@@ -218,6 +218,7 @@ struct Observation {
     midi_clips: usize,
     waveform_paints: usize,
     geometry_entries: usize,
+    envelope_points: usize,
 }
 
 fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observation {
@@ -267,6 +268,11 @@ fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observati
         let cache = view.waveform_geometry_cache.borrow();
         result.waveform_paints = cache.painted_waveforms().len();
         result.geometry_entries = cache.entry_count();
+        result.envelope_points = cache
+            .painted_waveforms()
+            .iter()
+            .map(|sample| sample.envelope_points)
+            .sum();
         result
     })
 }
@@ -297,6 +303,9 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
     );
     println!(
         "NAV_CSV,content,tracks,row_mode,density,action,iteration,warmup,event_us,draw_us,arena_clear_us,cpu_total_us,warm_cpu_total_us,viewport_start,viewport_length,visible_tracks,audio_clips,midi_clips,child_builds,waveform_paints,geometry_entries"
+    );
+    println!(
+        "NAV_WAVEFORM_CSV,content,tracks,row_mode,density,action,iteration,warmup,projected_envelope_points"
     );
     if stage_timing {
         println!(
@@ -495,6 +504,16 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         warm_stages,
                     ) in rows
                     {
+                        println!(
+                            "NAV_WAVEFORM_CSV,{content},{tracks},{},{density},{action},{iteration},{},{}",
+                            if single_row {
+                                "single_visible"
+                            } else {
+                                "normal"
+                            },
+                            iteration < warmup,
+                            observation.envelope_points,
+                        );
                         println!(
                             "NAV_CSV,{content},{tracks},{},{density},{action},{iteration},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{}",
                             if single_row {
