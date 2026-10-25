@@ -195,6 +195,14 @@ fn clip_editor_audio_w_l_and_brace_keep_full_placement_and_released_paint(cx: &m
         assert!(p.loop_region().is_none());
         assert_eq!(v.audio_loop_time_selection(), Some(selected));
     });
+    assert_eq!(
+        visual
+            .debug_bounds("audio-loop-end-marker")
+            .unwrap()
+            .right(),
+        visual.debug_bounds("audio-loop-end").unwrap().right(),
+        "painted end boundary matches its canonical edge"
+    );
     let edge = visual.debug_bounds("audio-loop-start").unwrap();
     let bar = visual.debug_bounds("audio-loop-ruler").unwrap();
     let down = edge.center();

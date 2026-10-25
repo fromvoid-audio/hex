@@ -117,12 +117,10 @@ impl EditorView {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::Stateful<Div>> {
-        let Some(state) = self.state.as_ref() else {
-            return None;
-        };
-        let Some(clip) = self.detail_clip_id().and_then(|id| state.project.clip(id)) else {
-            return None;
-        };
+        let state = self.state.as_ref()?;
+        let clip = self
+            .detail_clip_id()
+            .and_then(|id| state.project.clip(id))?;
         let id = clip.id();
         let generation = self.project_generation;
         let revision = state.revision;
@@ -184,24 +182,15 @@ impl EditorView {
             .w_full()
             .overflow_hidden()
             .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .track_focus(&self.audio_event_focus)
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .text_xs()
-                    .text_color(rgb(color))
-                    .child(theme::text("loop")),
-            );
-        if let Some(reason) = refusal {
-            ruler = ruler.tooltip(move |_, cx| {
-                cx.new(|_| crate::editor::transport::MiniTooltip {
-                    kind: crate::tooltips::Kind::control("clip loop"),
-                    description: reason.clone().into(),
-                })
-                .into()
-            });
-        }
+            .track_focus(&self.audio_event_focus);
+        let description=refusal.unwrap_or_else(||format!("clip loop {} · drag ends · w/l uses time selection · hold cmd/control to invert snap",if looping {"on"} else {"off"}));
+        ruler = ruler.tooltip(move |_, cx| {
+            cx.new(|_| crate::editor::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control("clip loop"),
+                description: description.clone().into(),
+            })
+            .into()
+        });
         if let (Some(a), Some(b)) = (a, b) {
             if a < b && b > 0.0 && a < 1.0 {
                 ruler = ruler.child(
@@ -238,7 +227,23 @@ impl EditorView {
                         } else {
                             gpui::CursorStyle::ResizeRight
                         })
-                        .child(div().mt(px(3.0)).w(px(3.0)).h(px(9.0)).bg(rgb(color)))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(3.0))
+                                .w(px(3.0))
+                                .h(px(9.0))
+                                .bg(rgb(color))
+                                .when(start_edge, |line| line.left_0())
+                                .when(!start_edge, |line| line.right_0())
+                                .debug_selector(move || {
+                                    if start_edge {
+                                        "audio-loop-start-marker".into()
+                                    } else {
+                                        "audio-loop-end-marker".into()
+                                    }
+                                }),
+                        )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
