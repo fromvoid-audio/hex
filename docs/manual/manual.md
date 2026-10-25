@@ -293,6 +293,12 @@ repeat handle. **escape** cancels a held edit; one undo restores a completed dra
 
 ## audio event fades
 
+the audio event editor marks the clip's playback start with a fixed vertical
+line and a small right-pointing arrow at the top. it follows the clip's source
+crop and loop phase, independently of the edit cursor and loop brace. zooming
+or scrolling can move the marker out of view; it returns when that source
+position is visible again. the marker is a read-only guide.
+
 select an audio clip and choose **events** in its detail area. focus the event
 waveform and hold **f** to show its fade controls. release **f** to hide default
 controls; edited fades remain visible. the computer midi keyboard must be off.
