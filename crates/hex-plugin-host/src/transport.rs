@@ -293,7 +293,7 @@ impl Callback {
     }
     /// Diagnostic observation of actual committed transport progress. Staging
     /// alone does not advance it; this grants no worker/readiness authority.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "allocation-probe"))]
     pub fn committed_position_for_test(&self) -> u64 {
         self.state.position
     }

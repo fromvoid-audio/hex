@@ -38,6 +38,22 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    /// Headless control-side progress only. Compare each original installed
+    /// endpoint's committed request prefix with its matching actual worker;
+    /// source swaps, idle sources and new epochs have independent prefixes.
+    /// None includes control contention or a source no longer queryable.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn workers_idle_on_control(&self, root: &CandidateRoot) -> Option<bool> {
+        for endpoint in self.entries.iter().flatten() {
+            let callback = endpoint.0.callback.as_ref()?;
+            let quantum = u64::try_from(callback.quantum_frames()).ok()?;
+            let requested = callback.committed_frames_for_test().checked_div(quantum)?;
+            if root.native_source_completed_blocks(endpoint.0.binding)? < requested {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
     pub(crate) fn runtime_transports_are_live(
         &self,
         playback: &hex_engine::playback::Playback,

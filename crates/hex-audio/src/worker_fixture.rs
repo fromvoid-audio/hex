@@ -85,6 +85,30 @@ impl HeadlessBackend {
             .and_then(Guard::owner_ref)
             .map(NativeCallbackOwner::borrowed_status)
     }
+    /// Observe actual completion of all committed copied requests while the
+    /// headless callback is quiescent on the test control thread. Never use a
+    /// Session worker's polling cadence as the native worker's clock. None is
+    /// closed/unsupported/contended; true is diagnostic, not native admission.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn native_workers_idle_on_control(&mut self) -> Option<bool> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut result = None;
+        owner.run(|callback, _| result = callback.native_workers_idle_on_control());
+        result
+    }
+    /// Hold original native Work on a separate test control thread. The
+    /// callback entry ends before taking that exclusion; native state and its
+    /// actual owners remain in Root. Never call from a measured render scope.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn with_native_source_work_held_on_control<R>(
+        &mut self,
+        run: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut root = None;
+        owner.run(|callback, _| root = Some(callback.native_root_for_control_fixture()));
+        root?.with_native_source_work_held_on_control(run)
+    }
     /// One caller-supplied physical callback through actual foreign processing
     /// and final stereo host acceptance. No device/physical-latency claim. The
     /// existing callback validates the real extent against its bound quantum.

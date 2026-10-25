@@ -596,15 +596,31 @@ impl Custody {
         &self,
         binding: Binding,
     ) -> Option<String> {
-        let work = self.work.try_lock().ok()?;
-        let bank = self.bank.try_lock().ok()?;
-        let index = bank.sources.index(binding)?;
-        let cell = work.sources.cells.get(index)?;
-        match (cell.cause(), &cell.cleanup_error) {
+        self.try_native_source_error(binding).ok().flatten()
+    }
+    pub(in crate::candidate_custody) fn try_native_source_error(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<String>, &'static str> {
+        let work = self
+            .work
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let bank = self
+            .bank
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let index = bank.sources.index(binding).ok_or("native source differs")?;
+        let cell = work
+            .sources
+            .cells
+            .get(index)
+            .ok_or("native source cell unavailable")?;
+        Ok(match (cell.cause(), &cell.cleanup_error) {
             (Some(error), Some(cleanup)) => Some(format!("{error} · cleanup: {cleanup}")),
             (Some(error), None) | (None, Some(error)) => Some(error.to_string()),
             (None, None) => None,
-        }
+        })
     }
 
     pub(super) fn advance_native_sources(&self, work: &mut Work, abandoned: bool) {
@@ -908,6 +924,17 @@ impl CandidateRoot {
             _ => None,
         }
     }
+    /// Headless control fixture only: retain the actual Work exclusion while
+    /// another control request observes contention. This runs outside a callback
+    /// entry and changes no slot, source, native state or acknowledgement.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn with_native_source_work_held_on_control<R>(
+        &self,
+        run: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let _work = self.0.eligible.work.lock().ok()?;
+        Some(run())
+    }
     pub(crate) fn retire_native_source_preparation(&self, binding: Binding) -> bool {
         let accepted = self.0.eligible.retire_native_source(binding);
         crate::lifecycle::request_candidate_cleanup(self);
@@ -915,6 +942,12 @@ impl CandidateRoot {
     }
     pub(crate) fn native_source_preparation_error(&self, binding: Binding) -> Option<String> {
         self.0.eligible.native_source_error(binding)
+    }
+    pub(crate) fn try_native_source_preparation_error(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<String>, &'static str> {
+        self.0.eligible.try_native_source_error(binding)
     }
     pub(crate) fn recover_native_source_preparation(
         &self,

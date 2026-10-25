@@ -347,6 +347,16 @@ impl PublicationControl {
     pub fn native_source_preparation_error(&self, binding: Binding) -> Option<String> {
         self.candidate_root.native_source_preparation_error(binding)
     }
+    /// Observe the same original diagnostic without confusing control contention
+    /// with a successfully observed absence of error. Busy is nondestructive;
+    /// stale bindings refuse. This read grants no source/terminal custody.
+    pub fn try_native_source_preparation_error(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<String>, &'static str> {
+        self.candidate_root
+            .try_native_source_preparation_error(binding)
+    }
     pub fn recover_native_source_preparation(
         &mut self,
         binding: Binding,
@@ -374,6 +384,19 @@ impl PublicationControl {
     }
 }
 impl Callback {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_root_for_control_fixture(
+        &self,
+    ) -> crate::candidate_custody::CandidateRoot {
+        self.candidate_root.clone()
+    }
+    /// Read-only headless control query, outside rendering/allocation probes.
+    /// This grants no readiness, endpoint loan, graph admission or native ACK.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_workers_idle_on_control(&self) -> Option<bool> {
+        self.native_sources
+            .workers_idle_on_control(&self.candidate_root)
+    }
     pub(super) fn current_native_epoch_fence_source(&self) -> Option<AppliedAudioSource> {
         if !self.status.sampler_edit.ordinary_native_epoch_active() {
             return self.current_native_epoch_source();

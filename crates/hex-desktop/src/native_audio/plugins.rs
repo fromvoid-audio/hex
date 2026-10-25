@@ -29,6 +29,11 @@ struct Pending {
     context: AudioSourceContext,
     result: Option<Result<NativeDeviceState, String>>,
 }
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(super) struct FactsGate {
+    pub(super) reached: mpsc::SyncSender<()>,
+    pub(super) resume: mpsc::Receiver<()>,
+}
 #[derive(Default)]
 pub(super) struct Plugins {
     host: Option<Hosting>,
@@ -48,6 +53,8 @@ pub(super) struct Plugins {
     pub(super) queued: Option<Arc<AtomicBool>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) records: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) facts_gate: Option<FactsGate>,
 }
 impl Plugins {
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -279,6 +286,23 @@ impl Plugins {
                     .iter_mut()
                     .find(|s| s.binding == pending.binding)
                 {
+                    #[cfg(all(test, feature = "allocation-probe"))]
+                    if matches!(
+                        control.native_source_preparation_progress(source.binding),
+                        Some(Progress::Facts(_))
+                    ) && let Some(gate) = self.facts_gate.take()
+                    {
+                        assert!(
+                            gate.reached.send(()).is_ok(),
+                            "test facts gate disconnected"
+                        );
+                        assert!(
+                            gate.resume
+                                .recv_timeout(std::time::Duration::from_secs(10))
+                                .is_ok(),
+                            "test facts gate was not released"
+                        );
+                    }
                     #[cfg(not(all(test, feature = "allocation-probe")))]
                     let presentation = None;
                     #[cfg(all(test, feature = "allocation-probe"))]
@@ -380,11 +404,20 @@ fn advance_source(
 ) -> Result<Option<NativeDeviceState>, String> {
     match control.native_source_preparation_progress(source.binding) {
         Some(Progress::Facts(_)) => {
-            host.complete_on_control(control, source.binding, presentation)?;
+            match host.complete_on_control(control, source.binding, presentation) {
+                Ok(()) => {}
+                // Root has not taken or changed this source when Work is busy.
+                // Retain its exact operation and re-poll through the existing
+                // worker loop; contention is neither native ACK nor refusal.
+                Err(reason) if reason == "native preparation is busy" => return Ok(None),
+                Err(reason) => return Err(reason),
+            }
         }
-        Some(Progress::Prepared { .. }) => control
-            .start_native_effect(source.binding)
-            .map_err(str::to_owned)?,
+        Some(Progress::Prepared { .. }) => match control.start_native_effect(source.binding) {
+            Ok(()) => {}
+            Err("native preparation is busy") => return Ok(None),
+            Err(reason) => return Err(reason.to_owned()),
+        },
         Some(Progress::Effect { .. }) => {
             if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding) {
                 if !live || (source.queued && !loaned) {
@@ -394,7 +427,7 @@ fn advance_source(
             if !source.queued {
                 match control.publish_native_source_endpoint(source.binding) {
                     Ok(()) => source.queued = true,
-                    Err("native endpoint publication is busy") => {
+                    Err("native endpoint publication is busy" | "native preparation is busy") => {
                         return Ok(None);
                     }
                     Err(reason) => return Err(reason.to_owned()),
@@ -405,9 +438,12 @@ fn advance_source(
             }
         }
         Some(Progress::Failed | Progress::Complete | Progress::Retiring) => {
-            return Err(control
-                .native_source_preparation_error(source.binding)
-                .unwrap_or_else(|| "vst3 preparation refused".into()));
+            return match control.try_native_source_preparation_error(source.binding) {
+                Ok(Some(reason)) => Err(reason),
+                Ok(None) => Err("vst3 preparation refused".into()),
+                Err("native preparation is busy") => Ok(None),
+                Err(reason) => Err(reason.to_owned()),
+            };
         }
         Some(Progress::Preparing) | None => {}
     }

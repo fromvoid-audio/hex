@@ -96,6 +96,27 @@ fn restored_terminal(h: &mut ResidentHarness) -> Event {
     }
 }
 
+/// These effect-only edits reuse an already installed immutable file domain.
+/// Keep the simulated device held until the existing precommit worker queues
+/// its graph; CPU scheduling must not choose the musical cut in a PCM oracle.
+fn same_source_edit(h: &mut ResidentHarness, request: Request) -> Event {
+    h.service.submit(request).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            assert!(event.playback.is_none());
+            return event;
+        }
+        assert!(
+            Instant::now() < end,
+            "same-source effect edit did not queue without advancing the device"
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return_main() {
@@ -459,7 +480,7 @@ fn native_effect_history_case(stop_while_undone: bool, drain_tail: bool) {
         .unwrap();
     h.render_plugin_block();
     wait(|| h.plugin_completed.load(Acquire) == 1);
-    let undone = h.run(Request::Undo);
+    let undone = same_source_edit(&mut h, Request::Undo);
     (applied, _) = h.applied(applied);
     assert!(undone.state.project.main_devices().is_empty());
     assert_eq!(
@@ -518,8 +539,7 @@ fn native_effect_history_case(stop_while_undone: bool, drain_tail: bool) {
         assert!(restored.stopped_playback_restore_complete);
         (applied, _) = h.applied(applied);
     }
-    h.service.submit(Request::Redo).unwrap();
-    let redone = h.next();
+    let redone = same_source_edit(&mut h, Request::Redo);
     assert!(
         redone.error.is_none(),
         "stop_while_undone={stop_while_undone}: {:?}",
@@ -593,6 +613,491 @@ fn native_effect_history_case(stop_while_undone: bool, drain_tail: bool) {
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop() {
+    use hex_project::BeatTime;
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let files = Files::new();
+    let sampler_files = Files::new();
+    h.run(Request::Import(files.wav(48_000, 4096)));
+    (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("sampler track")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: sampler_files.wav(48_000, 4096),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("sampler midi clip")
+    };
+    (applied, _) = h.applied(applied);
+    let original = h
+        .run(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        }))
+        .state;
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let dry: Vec<_> = (0..3).flat_map(|_| h.render_plugin_block()).collect();
+    assert!(
+        dry.iter().any(|frame| frame[0] > 0.25),
+        "registered sampler did not contribute beside the original file clip"
+    );
+    h.audio.as_ref().unwrap().control.stop();
+    h.render_plugin_block();
+    assert!(
+        h.run(Request::RestoreStoppedPlayback)
+            .stopped_playback_restore_complete
+    );
+    (applied, _) = h.applied(applied);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &original,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert!(accepted.plugin_effect_complete[0].accepted);
+    assert_eq!(accepted.state.revision, original.revision + 1);
+    assert_eq!(accepted.state.project.tracks(), original.project.tracks());
+    assert_eq!(
+        accepted.state.project.assets().collect::<Vec<_>>(),
+        original.project.assets().collect::<Vec<_>>()
+    );
+    (applied, _) = h.applied(applied);
+    for epoch in 0..2 {
+        if epoch > 0 {
+            h.audio.as_ref().unwrap().control.stop();
+            h.render_plugin_block();
+            let mut restored = h.run(Request::RestoreStoppedPlayback);
+            if !restored.stopped_playback_restore_complete {
+                restored = restored_terminal(&mut h);
+            }
+            assert!(restored.error.is_none(), "{:?}", restored.error);
+            assert_eq!(restored.state.project, accepted.state.project);
+            assert_eq!(restored.state.revision, accepted.state.revision);
+            (applied, _) = h.applied(applied);
+        }
+        wait(|| h.plugin_completed.load(Acquire) == 0);
+        wait(|| {
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .is_ok()
+        });
+        let mut output = Vec::new();
+        for block in 0..5 {
+            output.extend(h.render_plugin_block());
+            wait(|| h.plugin_completed.load(Acquire) > block);
+        }
+        assert!(output[..512].iter().all(|frame| *frame == [0.0; 2]));
+        for (index, (actual, reference)) in output[512..].iter().zip(&dry).enumerate() {
+            let scale = 0.5 + (epoch * 5 + index / 256) as f32 * 0.125;
+            assert_eq!(
+                *actual,
+                reference.map(|sample| sample * scale),
+                "original mixed PCM: epoch={epoch}, frame={index}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tail_pcm() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let files = Files::new();
+    let original = h.run(Request::Import(files.wav(48_000, 4096))).state;
+    (applied, _) = h.applied(applied);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &original,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let device = inserted.state.project.main_devices()[0].id();
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render_plugin_block();
+    wait(|| h.plugin_completed.load(Acquire) == 1);
+    for bypassed in [true, false] {
+        let changed = same_source_edit(
+            &mut h,
+            Request::Edit(Command::SetDeviceBypass { device, bypassed }),
+        );
+        assert_eq!(
+            changed.state.project.device(device).unwrap().bypassed(),
+            bypassed
+        );
+        assert_eq!(changed.state.project.tracks(), original.project.tracks());
+        (applied, _) = h.applied(applied);
+        let start = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .performance_frame
+            .load(Acquire);
+        for block in 0..3 {
+            let before = h.plugin_completed.load(Acquire);
+            let output = h.render_plugin_block();
+            wait(|| h.plugin_completed.load(Acquire) > before);
+            for (offset, frame) in output.into_iter().enumerate() {
+                let absolute = start + block * 256 + offset as u64;
+                let expected = if absolute < 512 {
+                    0.0
+                } else if bypassed {
+                    0.25
+                } else {
+                    0.25 * (0.5 + ((absolute - 512) / 256) as f32 * 0.125)
+                };
+                assert_eq!(frame, [expected; 2], "bypass={bypassed}, frame={absolute}");
+            }
+        }
+        assert_eq!(h.plugin_records.load(Acquire), 1);
+    }
+    let cut = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .performance_frame
+        .load(Acquire);
+    let removed = same_source_edit(&mut h, Request::Edit(Command::RemoveDevice(device)));
+    assert!(removed.state.project.main_devices().is_empty());
+    assert_eq!(removed.state.project.tracks(), original.project.tracks());
+    assert_eq!(
+        removed.state.project.assets().collect::<Vec<_>>(),
+        original.project.assets().collect::<Vec<_>>()
+    );
+    h.applied(applied);
+    let start = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .performance_frame
+        .load(Acquire);
+    for block in 0..4 {
+        let before = h.plugin_completed.load(Acquire);
+        let output = h.render_plugin_block();
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .native_effect_source()
+            .is_some()
+        {
+            wait(|| h.plugin_completed.load(Acquire) > before);
+        }
+        for (offset, frame) in output.into_iter().enumerate() {
+            let absolute = start + block * 256 + offset as u64;
+            let tail = if absolute >= 512 && absolute < cut + 512 {
+                0.25 * (0.5 + ((absolute - 512) / 256) as f32 * 0.125)
+            } else {
+                0.0
+            };
+            assert_eq!(
+                frame,
+                [0.25 + tail; 2],
+                "removed Main original tail: cut={cut}, frame={absolute}"
+            );
+        }
+    }
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .native_effect_source()
+            .is_none()
+    );
+    assert_eq!(
+        h.plugin_records.load(Acquire),
+        1,
+        "original source must remain available for actual Undo"
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_coordinator_reorder_waits_for_original_zero_input_prefix_and_undo() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let files = Files::new();
+    let original = h.run(Request::Import(files.wav(48_000, 4096))).state;
+    (applied, _) = h.applied(applied);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &original,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let native = inserted.state.project.main_devices()[0].id();
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render_plugin_block();
+    wait(|| h.plugin_completed.load(Acquire) == 1);
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let utility_type = hex_engine::native_device_catalog_for_class(class)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.type_id.as_str() == Ok("hex.utility"))
+        .unwrap()
+        .type_id;
+    let added = same_source_edit(
+        &mut h,
+        Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: hex_engine::default_native_device_state_for_class(class, utility_type).unwrap(),
+        }),
+    );
+    let Some(Created::Device(utility)) = added.created else {
+        panic!("utility")
+    };
+    (applied, _) = h.applied(applied);
+    let moved = same_source_edit(
+        &mut h,
+        Request::Edit(Command::MoveMainDevice {
+            device: utility,
+            before: Some(native),
+        }),
+    );
+    assert_eq!(
+        moved
+            .state
+            .project
+            .main_devices()
+            .iter()
+            .map(|device| device.id())
+            .collect::<Vec<_>>(),
+        [utility, native]
+    );
+    assert_eq!(moved.state.project.tracks(), original.project.tracks());
+    let before = h.plugin_completed.load(Acquire);
+    h.render_plugin_block();
+    wait(|| h.plugin_completed.load(Acquire) > before);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied,
+        "one endpoint cannot be current and an outgoing tail before its real zero-input prefix"
+    );
+    let end = Instant::now() + Duration::from_secs(10);
+    while h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_revision
+        .load(Acquire)
+        <= applied
+    {
+        let before = h.plugin_completed.load(Acquire);
+        h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > before);
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .rejected_revision()
+                .is_none(),
+            "actual reorder was refused"
+        );
+        assert!(
+            Instant::now() < end,
+            "actual native reorder did not reach its zero-input boundary"
+        );
+    }
+    (applied, _) = h.applied(applied);
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .performance_frame
+            .load(Acquire)
+            >= 4096
+    );
+    assert_eq!(h.plugin_records.load(Acquire), 1);
+    let undone = same_source_edit(&mut h, Request::Undo);
+    assert_eq!(
+        undone
+            .state
+            .project
+            .main_devices()
+            .iter()
+            .map(|device| device.id())
+            .collect::<Vec<_>>(),
+        [native, utility]
+    );
+    assert_eq!(undone.state.revision, moved.state.revision + 1);
+    h.applied(applied);
+    let before = h.plugin_completed.load(Acquire);
+    assert_eq!(h.render_plugin_block(), [[0.0; 2]; 256]);
+    wait(|| h.plugin_completed.load(Acquire) > before);
+    assert_eq!(
+        h.plugin_records.load(Acquire),
+        1,
+        "reorder/Undo replaced the original native source"
+    );
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for known_presentation in [false, true] {
+        let (reached, facts) = mpsc::sync_channel(1);
+        let (resume, resumed) = mpsc::sync_channel(1);
+        let mut h = ResidentHarness::with_plugins_paused_at_facts(
+            host(),
+            known_presentation.then_some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+            crate::native_audio::plugins::FactsGate {
+                reached,
+                resume: resumed,
+            },
+        );
+        let initial = h.next();
+        assert!(initial.error.is_none());
+        h.applied(0);
+        let input = request(&initial.state, PluginEffectDestination::Main);
+        h.service
+            .submit(Request::InsertPluginEffect(input.clone()))
+            .unwrap();
+        facts.recv_timeout(Duration::from_secs(10)).unwrap();
+        let (held, observed_hold) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let holder = h.hold_native_work_on_control(held, released);
+        observed_hold.recv_timeout(Duration::from_secs(10)).unwrap();
+        resume.send(()).unwrap();
+        let pending = h.next();
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(
+            pending.error.is_none(),
+            "actual Work contention became a terminal: {:?}",
+            pending.error
+        );
+        assert!(pending.request_complete && pending.plugin_effect_complete.is_empty());
+        assert_eq!(pending.state.project, initial.state.project);
+        assert_eq!(pending.state.revision, initial.state.revision);
+        let finished = terminal(&mut h);
+        assert!(Arc::ptr_eq(
+            &finished.plugin_effect_complete[0].control,
+            &input.control
+        ));
+        assert_eq!(
+            finished.plugin_effect_complete[0].accepted,
+            known_presentation
+        );
+        if known_presentation {
+            assert!(finished.error.is_none(), "{:?}", finished.error);
+            assert_eq!(finished.state.revision, initial.state.revision + 1);
+            assert_eq!(finished.state.project.main_devices().len(), 1);
+        } else {
+            assert!(
+                finished.error.as_ref().unwrap().contains("presentation"),
+                "{:?}",
+                finished.error
+            );
+            assert_eq!(finished.state.project, initial.state.project);
+            assert_eq!(finished.state.revision, initial.state.revision);
+            assert!(!finished.state.can_undo);
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_history_edit() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let mut h = ResidentHarness::with_plugins(host(), None);
@@ -607,7 +1112,11 @@ fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_h
     if refused.plugin_effect_complete.is_empty() {
         refused = terminal(&mut h);
     }
-    assert!(refused.error.as_ref().unwrap().contains("presentation"));
+    assert!(
+        refused.error.as_ref().unwrap().contains("presentation"),
+        "unexpected native refusal: {:?}",
+        refused.error
+    );
     assert_eq!(refused.state.project, initial.state.project);
     assert!(!refused.state.can_undo);
     assert!(!refused.plugin_effect_complete[0].accepted);
