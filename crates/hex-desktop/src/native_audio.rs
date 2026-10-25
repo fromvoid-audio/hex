@@ -1228,18 +1228,22 @@ impl WorkerAudioSink for NativeAudioSink {
     }
     fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
         let mut hold = self.sampler_hold();
-        if self.plugins.pool_held {
+        if self.plugins.pool_held || self.plugins.control_held() {
             if let Ok(policy) = self.policy.as_ref() {
-                hold.retained_bytes = hold
-                    .retained_bytes
-                    .checked_add(policy.plugins.retained)
-                    .and_then(|n| n.checked_add(crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES))
-                    .unwrap_or(usize::MAX);
-                hold.construction_bytes = hold
-                    .construction_bytes
-                    .checked_add(policy.plugins.peak)
-                    .and_then(|n| n.checked_add(crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES))
-                    .unwrap_or(usize::MAX);
+                let (mut retained, mut peak) = if self.plugins.pool_held {
+                    (policy.plugins.retained, policy.plugins.peak)
+                } else {
+                    (0, 0)
+                };
+                // Helper provenance/records remain owned after profile refusal
+                // and output teardown, independently of any configured Root pool.
+                if self.plugins.control_held() {
+                    retained =
+                        retained.saturating_add(crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES);
+                    peak = peak.saturating_add(crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES);
+                }
+                hold.retained_bytes = hold.retained_bytes.saturating_add(retained);
+                hold.construction_bytes = hold.construction_bytes.saturating_add(peak);
             } else {
                 hold.retained_bytes = usize::MAX;
                 hold.construction_bytes = usize::MAX;

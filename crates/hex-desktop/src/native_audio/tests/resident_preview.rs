@@ -328,7 +328,7 @@ impl ResidentHarness {
         let plugin_queued = Arc::new(AtomicBool::new(false));
         let plugin_records = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         if let Some((host, presentation)) = plugin {
-            inner.plugins = plugins::Plugins::with_fixture(host, presentation);
+            inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
             inner.plugins.completed = Some(Arc::clone(&plugin_completed));
             inner.plugins.queued = Some(Arc::clone(&plugin_queued));
             inner.plugins.records = Some(Arc::clone(&plugin_records));

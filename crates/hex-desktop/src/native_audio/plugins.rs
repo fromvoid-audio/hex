@@ -72,6 +72,9 @@ impl Plugins {
     pub fn wants_profile(&self) -> bool {
         self.host.is_some() && !self.profile_failed
     }
+    pub fn control_held(&self) -> bool {
+        self.host.is_some() || self.sources.capacity() != 0 || self.pending.is_some()
+    }
     pub fn refuse_profile(&mut self, reason: String) {
         self.profile_failed = true;
         self.configured = false;
@@ -263,6 +266,7 @@ impl Plugins {
                     let result = (|| {
                         match control.native_source_preparation_progress(source.binding) {
                             Some(Progress::Facts(_)) => {
+                                #[cfg(not(all(test, feature = "allocation-probe")))]
                                 let presentation = None;
                                 #[cfg(all(test, feature = "allocation-probe"))]
                                 let presentation = self.presentation;

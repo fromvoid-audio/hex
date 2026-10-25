@@ -152,6 +152,16 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
         assert!(
             matches!(accepted.created, Some(Created::Device(id)) if id.value() == state.project.next_identity())
         );
+        assert_eq!(
+            accepted.state.project.track(track).unwrap().clips(),
+            state.project.track(track).unwrap().clips(),
+            "effect insertion changed authored clips"
+        );
+        assert_eq!(
+            accepted.state.project.assets().collect::<Vec<_>>(),
+            state.project.assets().collect::<Vec<_>>(),
+            "effect insertion changed original media references"
+        );
         h.applied(applied);
         h.audio
             .as_mut()
@@ -159,21 +169,43 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
             .control
             .command(PlaybackCommand::Play)
             .unwrap();
+        let completed_before_play = h.plugin_completed.load(Acquire);
         let mut output = Vec::new();
-        for block in 0..8 {
+        for block in 0..10 {
             output.extend(h.render_plugin_block());
-            wait(|| h.plugin_completed.load(Acquire) >= block + 1);
+            wait(|| h.plugin_completed.load(Acquire) > block);
         }
         assert!(output[..512].iter().all(|frame| *frame == [0.0; 2]));
-        let expected = if location == 1 {
-            [0.3125; 2]
-        } else {
-            [0.125; 2]
+        assert_eq!(
+            completed_before_play, 0,
+            "fresh stopped effect dispatched unexpected DSP"
+        );
+        // The independent original SDK fixture deliberately ramps its gain by
+        // native block:0.5 + block/8. This distinguishes replayed/dropped blocks
+        // from a renderer that merely happens to output the first correct gain.
+        let expected_at = |index: usize| {
+            let scale = 0.5 + ((index - 512) / 256) as f32 * 0.125;
+            if location == 1 {
+                [0.25 + 0.125 * scale; 2]
+            } else {
+                [0.25 * scale; 2]
+            }
         };
+        let mismatch = output
+            .iter()
+            .enumerate()
+            .skip(512)
+            .find(|(index, frame)| **frame != expected_at(*index));
         assert!(
-            output[512..].iter().all(|frame| *frame == expected),
-            "native PCM differs at location{location}: {:?}",
-            &output[512..528]
+            mismatch.is_none(),
+            "native PCM differs at location{location}: first={mismatch:?}, completed={}, fault={:?}",
+            h.plugin_completed.load(Acquire),
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .render_fault_snapshot()
         );
     }
 }
@@ -211,4 +243,102 @@ fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_h
         );
         std::thread::yield_now();
     }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_coordinator_cancel_or_stop_before_ack_preserves_history_and_recovers_original() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for stop in [false, true] {
+        let mut h = ResidentHarness::with_plugins(
+            host(),
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+        );
+        let initial = h.next();
+        assert!(initial.error.is_none(), "{:?}", initial.error);
+        h.applied(0);
+        let first = request(&initial.state, PluginEffectDestination::Main);
+        h.service
+            .submit(Request::InsertPluginEffect(first.clone()))
+            .unwrap();
+        let pending = h.next();
+        assert!(pending.error.is_none(), "{:?}", pending.error);
+        assert!(pending.plugin_effect_complete.is_empty());
+        wait(|| h.plugin_queued.load(Acquire));
+        if stop {
+            h.audio.as_ref().unwrap().control.stop();
+        } else {
+            assert!(first.control.cancel());
+        }
+        let refused = terminal(&mut h);
+        assert!(!refused.request_complete);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project, initial.state.project);
+        assert_eq!(refused.state.revision, initial.state.revision);
+        assert!(!refused.state.can_undo);
+        assert_eq!(refused.plugin_effect_complete.len(), 1);
+        assert!(!refused.plugin_effect_complete[0].accepted);
+        assert!(Arc::ptr_eq(
+            &refused.plugin_effect_complete[0].control,
+            &first.control
+        ));
+        let end = Instant::now() + Duration::from_secs(10);
+        while h.plugin_records.load(Acquire) != 0 {
+            h.render();
+            assert!(
+                Instant::now() < end,
+                "original source/endpoint did not reach report recovery"
+            );
+            std::thread::yield_now();
+        }
+        let next = request(&refused.state, PluginEffectDestination::Main);
+        h.service
+            .submit(Request::InsertPluginEffect(next.clone()))
+            .unwrap();
+        let pending = h.next();
+        assert!(pending.error.is_none(), "{:?}", pending.error);
+        let accepted = if pending.plugin_effect_complete.is_empty() {
+            terminal(&mut h)
+        } else {
+            pending
+        };
+        assert!(accepted.error.is_none(), "{:?}", accepted.error);
+        assert_eq!(accepted.state.revision, initial.state.revision + 1);
+        assert!(
+            matches!(accepted.created, Some(Created::Device(id)) if id.value() == initial.state.project.next_identity())
+        );
+        assert!(accepted.plugin_effect_complete[0].accepted);
+        assert!(Arc::ptr_eq(
+            &accepted.plugin_effect_complete[0].control,
+            &next.control
+        ));
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper receipt required"]
+fn native_effect_metadata_hold_survives_profile_refusal_without_opening_a_device() {
+    let (sender, _events) = mpsc::sync_channel(4);
+    let mut sink = NativeAudioSink::new(sender);
+    sink.plugins = crate::native_audio::plugins::Plugins::with_fixture(host(), None);
+    assert!(!sink.plugins.pool_held);
+    let held = sink.native_sampler_hold();
+    assert_eq!(
+        held.retained_bytes,
+        crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES
+    );
+    assert_eq!(
+        held.construction_bytes,
+        crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES
+    );
+    sink.plugins
+        .refuse_profile("fixture backend profile unavailable".into());
+    sink.plugins.fresh_output();
+    assert!(!sink.plugins.pool_held);
+    let retained = sink.native_sampler_hold();
+    assert_eq!(retained.retained_bytes, held.retained_bytes);
+    assert_eq!(retained.construction_bytes, held.construction_bytes);
 }
