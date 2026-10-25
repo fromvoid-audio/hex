@@ -90,6 +90,14 @@ invalid layer contexts/ranges/geometry and near-order-overflow reservations.
 macOS native image-buffer Surface allocation is outside this fixture; its
 unchanged shared append branch remains compiled, without a fake native handle.
 
+Draw-order queries first compare a leaf/subtree's existing maximum order with
+its known best result. Geometry is skipped when that order cannot improve the
+result; topology, traversal order, bounds arithmetic and reserved intervals stay
+unchanged. A test-support-only verifier compares deterministic live/reserved
+queries with an independent linear scan, including clear and overflow refusal,
+and counts coordinate comparisons to enforce the geometry-work bound. It runs
+through the existing locked Hex UI test graph alongside the replay oracle.
+
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
 and `fr` helpers accept `Into<f32>`; this preserves the same values/layout and

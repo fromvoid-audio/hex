@@ -155,7 +155,7 @@ where
                 order: ordering,
                 ..
             } => {
-                if bounds.intersects(node_bounds) {
+                if *ordering > max_ordering && bounds.intersects(node_bounds) {
                     max_ordering = cmp::max(*ordering, max_ordering);
                 }
             }
@@ -166,7 +166,7 @@ where
                 max_order: node_max_ordering,
                 ..
             } => {
-                if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
+                if max_ordering < *node_max_ordering && bounds.intersects(node_bounds) {
                     let left_max_ordering = self.nodes[*left].max_ordering();
                     let right_max_ordering = self.nodes[*right].max_ordering();
                     if left_max_ordering > right_max_ordering {
@@ -253,6 +253,170 @@ where
                 ..
             } => *max_ordering,
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn verify_ordering() -> Result<(), String> {
+    ordering_verification::verify()
+}
+
+// Std-only fixtures use Hex's existing locked test-support dependency graph.
+#[cfg(any(test, feature = "test-support"))]
+mod ordering_verification {
+    use super::*;
+    use crate::{Point, Size};
+    use std::{cell::Cell, cmp::Ordering};
+
+    fn require(value: bool, message: &str) -> Result<(), String> {
+        if value {
+            Ok(())
+        } else {
+            Err(message.to_owned())
+        }
+    }
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> Bounds<f32> {
+        Bounds {
+            origin: Point { x, y },
+            size: Size { width, height },
+        }
+    }
+
+    pub(super) fn verify() -> Result<(), String> {
+        for scale in [1.0, 2.0] {
+            for seed in 1..=24_u64 {
+                let mut tree = BoundsTree::default();
+                let mut leaves: Vec<(Bounds<f32>, u32)> = Vec::new();
+                let mut random = seed;
+                for i in 0..128 {
+                    if i % 43 == 0 {
+                        tree.clear();
+                        leaves.clear();
+                    }
+                    random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let x = ((random >> 16) % 512) as f32 * 0.25 - 64.0;
+                    let y = ((random >> 32) % 256) as f32 * 0.5 - 64.0;
+                    let bounds = if i % 7 == 0 {
+                        rect((i % 16) as f32 * 4.0 * scale, 0.0, 4.0 * scale, 8.0 * scale)
+                    } else {
+                        rect(
+                            x * scale,
+                            y * scale,
+                            (i % 9) as f32 * 0.5 * scale,
+                            (i % 11) as f32 * 0.25 * scale,
+                        )
+                    };
+                    let order = if i % 13 == 0 {
+                        let base = leaves.iter().map(|(_, order)| *order).max().unwrap_or(0) + 1;
+                        let span = (i % 5) as u32;
+                        require(
+                            tree.reserve(bounds, span) == Some(base),
+                            "reserved draw-order interval differs from scan",
+                        )?;
+                        base + span
+                    } else {
+                        // Independent linear oracle; no tree topology/query is
+                        // used to establish the expected maximum or next order.
+                        let order = leaves
+                            .iter()
+                            .filter(|(b, _)| b.intersects(&bounds))
+                            .map(|(_, order)| *order)
+                            .max()
+                            .unwrap_or(0)
+                            + 1;
+                        require(
+                            tree.insert(bounds) == order,
+                            "live draw order differs from linear scan",
+                        )?;
+                        order
+                    };
+                    leaves.push((bounds, order));
+                }
+            }
+        }
+        let mut edge = BoundsTree::default();
+        let bounds = rect(-2.0, 0.25, 8.0, 4.0);
+        require(
+            edge.reserve(bounds, u32::MAX - 2) == Some(1),
+            "near-maximum reservation failed",
+        )?;
+        require(
+            edge.reserve(bounds, 1).is_none(),
+            "overflowing reservation was admitted",
+        )?;
+        require(
+            edge.insert(bounds) == u32::MAX,
+            "refusal changed following live order",
+        )?;
+        edge.clear();
+        require(edge.insert(bounds) == 1, "clear retained old order state")?;
+        verify_geometry_work()
+    }
+
+    thread_local! { static COMPARISONS: Cell<usize> = const { Cell::new(0) }; }
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    struct Counted(f32);
+    impl PartialOrd for Counted {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            COMPARISONS.with(|count| count.set(count.get() + 1));
+            self.0.partial_cmp(&other.0)
+        }
+    }
+    impl Add for Counted {
+        type Output = Self;
+        fn add(self, other: Self) -> Self {
+            Self(self.0 + other.0)
+        }
+    }
+    impl Sub for Counted {
+        type Output = Self;
+        fn sub(self, other: Self) -> Self {
+            Self(self.0 - other.0)
+        }
+    }
+    impl Half for Counted {
+        fn half(&self) -> Self {
+            Self(self.0 * 0.5)
+        }
+    }
+
+    fn verify_geometry_work() -> Result<(), String> {
+        for internal in [false, true] {
+            let bounds = Bounds {
+                origin: Point {
+                    x: Counted(0.0),
+                    y: Counted(0.0),
+                },
+                size: Size {
+                    width: Counted(4.0),
+                    height: Counted(4.0),
+                },
+            };
+            let mut tree = BoundsTree::default();
+            tree.insert(bounds);
+            if internal {
+                tree.insert(bounds);
+            }
+            let Some(root) = tree.root else {
+                return Err("query fixture has no root".into());
+            };
+            let best = tree.nodes[root].max_ordering();
+            COMPARISONS.with(|count| count.set(0));
+            require(
+                tree.find_max_ordering(root, &bounds, best) == best,
+                "known order changed",
+            )?;
+            require(
+                COMPARISONS.with(|count| count.get()) == 0,
+                if internal {
+                    "internal query compared geometry below the known order"
+                } else {
+                    "leaf query compared geometry below the known order"
+                },
+            )?;
+        }
+        Ok(())
     }
 }
 
