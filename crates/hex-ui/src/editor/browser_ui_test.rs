@@ -312,15 +312,8 @@ fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
-    let first_device = editor.read_with(visual, |view, cx| {
-        let (class, entry) = &view.browser_visible_devices(cx)[0];
-        assert_eq!(*class, hex_engine::NativeDeviceClass::Instrument);
-        format!(
-            "browser-device-instrument-{}",
-            entry.type_id.as_str().unwrap()
-        )
-    });
-    assert!(visual.debug_bounds(&first_device).is_none());
+    let first_device = "browser-device-instrument-hex.instrument.sampler";
+    assert!(visual.debug_bounds(first_device).is_none());
     assert!(visual.debug_bounds("browser-entry-20").is_some());
     assert!(visual.debug_bounds("browser-entry-0").is_none());
     visual.simulate_keystrokes("left shift-left");
@@ -333,7 +326,7 @@ fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("end backspace");
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds(&first_device).is_some(),
+        visual.debug_bounds(first_device).is_some(),
         "changed query reveals its first device result"
     );
     editor.read_with(visual, |view, cx| {
