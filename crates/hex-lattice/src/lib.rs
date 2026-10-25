@@ -1617,10 +1617,8 @@ impl NativeRuntimeChain {
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
             entry.runtime.commit();
-            if let Some(reading) = entry.runtime.take_dynamics_meter()
-                && entry.metering
-                && !entry.bypassed
-            {
+            let reading = entry.runtime.take_dynamics_meter();
+            if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
                 entry.meter.observe_dynamics(reading);
             }
         }
