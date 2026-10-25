@@ -848,7 +848,9 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
     visual.run_until_parked();
     visual.simulate_keystrokes("enter");
     editor.read_with(&visual, |view, _| {
-        assert!(matches!(view.pending_requests.back(), Some(hex_session::service::Request::ImportAudioBatch { paths, .. }) if paths == &vec![first.clone()]), "sample import: {:?}", view.error);
+        assert!(view.error.is_none(), "sample import: {:?}", view.error);
+        assert!(view.audio_batch.is_some());
+        assert!(matches!(view.last_enqueued_import_to_track.as_ref(), Some((path, target, _, _)) if path == &first && *target == track));
     });
 }
 
