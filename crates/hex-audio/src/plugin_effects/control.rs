@@ -1,6 +1,7 @@
 //! Original worker custody while its unique callback is loaned through Root's
 //! existing carrier. There is no public constructor, clone or worker extraction.
 use super::*;
+use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
 
 pub(crate) struct NativeEffectControl {
     worker: NativeWorker,
@@ -9,6 +10,15 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker.begin_state_capture_on_control()
+    }
+    pub(crate) fn poll_state_capture(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        self.worker.poll_state_capture_on_control(request)
+    }
     #[allow(clippy::result_large_err)] // Refusal retains the entire original pair, without an error-path allocation.
     pub(crate) fn loan_on_control(
         self,
@@ -32,6 +42,15 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker.begin_state_capture_on_control()
+    }
+    pub(crate) fn poll_state_capture(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        self.worker.poll_state_capture_on_control(request)
+    }
     pub(crate) fn transport_is_live_on_control(&self) -> bool {
         self.worker.transport_is_live_on_control()
     }

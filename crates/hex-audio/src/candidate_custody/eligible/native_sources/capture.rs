@@ -1,8 +1,111 @@
-//! Current state stays inside original quiescent Root custody during SDK I/O.
+//! Current state follows original quiescent or active Root/worker custody.
 //! A copied envelope grants no resume, endpoint or graph publication authority.
 use super::*;
+use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+#[cfg(test)]
+mod tests;
 
 impl Custody {
+    // Work excludes source replacement/return; bank is held only for admission
+    // and terminal context checks, never copied-state allocation or worker I/O.
+    fn with_live_capture<R>(
+        &self,
+        binding: Binding,
+        run: impl FnOnce(&mut Owner) -> Result<R, &'static str>,
+    ) -> Result<R, &'static str> {
+        let mut work = self
+            .work
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let index = {
+            let bank = lock(&self.bank);
+            if !self.enabled() || bank.closing {
+                return Err("native capture is closing");
+            }
+            let index = bank.sources.index(binding).ok_or("native source differs")?;
+            let slot = &bank.sources.slots[index];
+            let cell = &work.sources.cells[index];
+            if slot.phase != Phase::Accepted
+                || slot.retiring
+                || slot.starting
+                || slot.cancellation_requested
+                || slot.cancellation.is_none()
+                || slot.facts.is_none()
+                || slot.presentation.is_none()
+                || cell.pending
+                || cell.first_panic.is_some()
+                || cell.cause().is_some()
+                || cell.cleanup_error.is_some()
+                || cell.disposal.is_some()
+            {
+                return Err("native capture source is not active");
+            }
+            let matches = match cell.owner.as_ref() {
+                Some(Owner::Effect(owner)) => {
+                    owner.binding() == binding
+                        && slot.identity == Some(owner.identity())
+                        && slot.processor == Some(owner.prepared())
+                        && !slot.endpoint_loaned
+                        && slot.endpoint_return.is_none()
+                        && owner.constructor_storage_on_control().is_some()
+                }
+                Some(Owner::Loaned(owner)) => {
+                    owner.binding() == binding
+                        && slot.identity == Some(owner.identity())
+                        && slot.processor == Some(owner.prepared())
+                        && slot.endpoint_loaned
+                        && slot.endpoint_return.is_some()
+                        && owner.constructor_storage_on_control().is_some()
+                }
+                _ => false,
+            };
+            if !matches {
+                return Err("native capture requires original active effect custody");
+            }
+            index
+        };
+        let owner = work.sources.cells[index]
+            .owner
+            .as_mut()
+            .ok_or("native capture owner missing")?;
+        let result = run(owner)?;
+        let current = {
+            let bank = lock(&self.bank);
+            let slot = &bank.sources.slots[index];
+            !bank.closing
+                && slot.binding == Some(binding)
+                && slot.phase == Phase::Accepted
+                && !slot.retiring
+                && !slot.starting
+                && !slot.cancellation_requested
+        };
+        if !current {
+            drop(result); // Copied payload/token destruction outside bank.
+            return Err("native capture source is closing");
+        }
+        Ok(result)
+    }
+    pub(in crate::candidate_custody) fn begin_live_native_capture(
+        &self,
+        binding: Binding,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.begin_state_capture(),
+            Owner::Loaned(owner) => owner.begin_state_capture(),
+            _ => Err("native capture owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn poll_live_native_capture(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_state_capture(request),
+            Owner::Loaned(owner) => owner.poll_state_capture(request),
+            _ => Err("native capture owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn capture_native_source(
         &self,
         binding: Binding,
@@ -100,6 +203,25 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    pub(crate) fn begin_live_native_capture(
+        &self,
+        binding: Binding,
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        self.require_native_source_control_open()?;
+        self.0.eligible.begin_live_native_capture(binding)
+    }
+    pub(crate) fn poll_live_native_capture(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.poll_live_native_capture(binding, request)?;
+        // Constructor close precedes eligible-bank close. Recheck this outer
+        // gate too; copied result destruction occurs after its lock is gone.
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
     pub(crate) fn capture_native_source_state(
         &self,
         binding: Binding,

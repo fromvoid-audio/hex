@@ -4,6 +4,7 @@ use super::*;
 use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
 use std::collections::BTreeMap;
 
+mod capture;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;

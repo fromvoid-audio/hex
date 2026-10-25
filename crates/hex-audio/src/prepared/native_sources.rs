@@ -14,6 +14,39 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Admit one live capture through the original Root-held effect/control,
+    /// including an active callback loan. No graph/endpoint is returned or
+    /// replaced. The caller owns/accounting for its correlation token and must
+    /// retire it on the exact terminal, including source close/refusal.
+    pub fn begin_native_source_state_capture_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root.begin_live_native_capture(binding)
+    }
+    /// Current state is copied data only, never canonical/source installation.
+    /// Root binding/token checks do not prove the latest document/editor or
+    /// applied graph context when a source is reused. Recheck that owning
+    /// context before using data in a save; preserve confirmed state on error.
+    pub fn poll_native_source_state_capture_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_live_native_capture(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
     #[cfg(feature = "allocation-probe")]
