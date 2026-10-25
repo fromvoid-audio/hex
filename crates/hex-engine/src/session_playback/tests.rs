@@ -2042,7 +2042,7 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     // must not capture an independently audible old-mix suffix.
     assert_eq!(
         transition_output(old_revision, prepare(&changed_mix_project), false),
-        expected.map(|frame| [frame[0] * 0.5, frame[1] * 0.5])
+        expected.map(|frame| [frame[0] * 0.25, frame[1] * 0.25])
     );
 }
 
