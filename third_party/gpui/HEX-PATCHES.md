@@ -271,3 +271,19 @@ archive/file hashes and unrelated patch blocks are retained; changed hashes and
 the cumulative patch are regenerated from the verified original archive. Native
 hover selection is checked headlessly; actual cursor appearance remains a user
 interaction acceptance item on the optimized macOS app.
+
+25 October immutable path mesh sharing: Path retains vertex arrays in private
+Arc<Vec<_>> storage. Clones retain immutable mesh bytes while order, PathId,
+mask, color, bounds and contour state remain independent values. Public path
+construction detaches once per triangle through Arc::make_mut; scaling retains
+its original per-vertex arithmetic/order and creates a fresh transformed array.
+The existing metal, blade and directx upload iterators still copy vertex values
+into their renderer-owned uploads; no borrowed GPU lifetime, native/unsafe call,
+new dependency or public path method is introduced. The root-locked scene oracle
+checks real shared storage, independent clone/original edits and exact scaled
+xy/ST/mask bits alongside mixed-alpha painter/order/refusal and repeated replay.
+Additional Arc construction/reference-count work is included in complete arranger
+navigation profiles, with process RSS/tails separate from native GPU acceptance.
+Published baseline/license, source hashes and unrelated cumulative diff blocks
+remain; the changed scene block is replayed against verified original bytes and
+the offline full cumulative-patch guard checks exact reproduction.

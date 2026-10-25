@@ -13,6 +13,7 @@ use std::{
     iter::Peekable,
     ops::{Add, Range, Sub},
     slice,
+    sync::Arc,
 };
 
 #[allow(non_camel_case_types, unused)]
@@ -828,7 +829,9 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub(crate) order: DrawOrder,
     pub(crate) bounds: Bounds<P>,
     pub(crate) content_mask: ContentMask<P>,
-    pub(crate) vertices: Vec<PathVertex<P>>,
+    // Immutable clones share mesh bytes; public path construction remains
+    // value-like through copy-on-write in push_triangle. Renderer uploads borrow.
+    pub(crate) vertices: Arc<Vec<PathVertex<P>>>,
     pub(crate) color: Background,
     start: Point<P>,
     current: Point<P>,
@@ -841,7 +844,7 @@ impl Path<Pixels> {
         Self {
             id: PathId(0),
             order: DrawOrder::default(),
-            vertices: Vec::new(),
+            vertices: Arc::new(Vec::new()),
             start,
             current: start,
             bounds: Bounds {
@@ -865,7 +868,8 @@ impl Path<Pixels> {
                 .vertices
                 .iter()
                 .map(|vertex| vertex.scale(factor))
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             start: self.start.map(|start| start.scale(factor)),
             current: self.current.scale(factor),
             contour_count: self.contour_count,
@@ -930,17 +934,18 @@ impl Path<Pixels> {
                 size: Default::default(),
             });
 
-        self.vertices.push(PathVertex {
+        let vertices = Arc::make_mut(&mut self.vertices);
+        vertices.push(PathVertex {
             xy_position: xy.0,
             st_position: st.0,
             content_mask: Default::default(),
         });
-        self.vertices.push(PathVertex {
+        vertices.push(PathVertex {
             xy_position: xy.1,
             st_position: st.1,
             content_mask: Default::default(),
         });
-        self.vertices.push(PathVertex {
+        vertices.push(PathVertex {
             xy_position: xy.2,
             st_position: st.2,
             content_mask: Default::default(),
@@ -1051,7 +1056,7 @@ mod replay_verification {
                     xy_position: bounds.origin,
                     st_position: point(0.0, 0.0),
                     content_mask,
-                }],
+                }].into(),
                 color: color.into(),
                 start: bounds.origin,
                 current: bounds.bottom_right(),
@@ -1326,7 +1331,83 @@ mod replay_verification {
         (scene, start..end)
     }
 
+    fn verify_path_clone_value_semantics() -> Result<(), String> {
+        fn bits<P: Clone + Debug + Default + PartialEq>(
+            vertices: &[PathVertex<P>],
+            raw: impl Fn(&P) -> f32,
+        ) -> Vec<[u32; 8]> {
+            vertices
+                .iter()
+                .map(|v| {
+                    [
+                        raw(&v.xy_position.x).to_bits(),
+                        raw(&v.xy_position.y).to_bits(),
+                        v.st_position.x.to_bits(),
+                        v.st_position.y.to_bits(),
+                        raw(&v.content_mask.bounds.origin.x).to_bits(),
+                        raw(&v.content_mask.bounds.origin.y).to_bits(),
+                        raw(&v.content_mask.bounds.size.width).to_bits(),
+                        raw(&v.content_mask.bounds.size.height).to_bits(),
+                    ]
+                })
+                .collect()
+        }
+        let mut original = Path::new(point(Pixels(-0.0), Pixels(0.25)));
+        original.line_to(point(Pixels(2.5), Pixels(-3.75)));
+        original.curve_to(
+            point(Pixels(6.25), Pixels(4.5)),
+            point(Pixels(1.125), Pixels(-0.0)),
+        );
+        let before = bits(&original.vertices, |v| v.0);
+        let before_bounds = original.bounds;
+        let mut edited = original.clone();
+        require(
+            std::ptr::eq(original.vertices.as_ptr(), edited.vertices.as_ptr()),
+            "immutable path clone copied mesh storage",
+        )?;
+        edited.line_to(point(Pixels(123.0), Pixels(456.0)));
+        require(
+            bits(&original.vertices, |v| v.0) == before && original.bounds == before_bounds,
+            "clone mutation changed original mesh or bounds",
+        )?;
+        require(
+            edited.vertices.len() > original.vertices.len()
+                && !std::ptr::eq(original.vertices.as_ptr(), edited.vertices.as_ptr()),
+            "clone append did not detach mesh storage",
+        )?;
+        let retained = original.clone();
+        original.line_to(point(Pixels(-70.0), Pixels(-80.0)));
+        require(
+            bits(&retained.vertices, |v| v.0) == before,
+            "original mutation changed retained clone",
+        )?;
+        for factor in [0.5, 1.0, 1.25, 2.0, 3.0] {
+            let scaled = retained.scale(factor);
+            let expected = before
+                .iter()
+                .map(|old| {
+                    let mut next = *old;
+                    for i in [0, 1, 4, 5, 6, 7] {
+                        next[i] = (f32::from_bits(old[i]) * factor).to_bits();
+                    }
+                    next
+                })
+                .collect::<Vec<_>>();
+            require(
+                bits(&scaled.vertices, |v| v.0) == expected,
+                "scaled shared path differs from scalar coordinate/ST/mask bits",
+            )?;
+            let other = scaled.clone();
+            require(
+                std::ptr::eq(scaled.vertices.as_ptr(), other.vertices.as_ptr()),
+                "scaled path clone copied mesh storage",
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn verify() -> Result<(), String> {
+        verify_path_clone_value_semantics()?;
         for scale in [1.0, 2.0] {
             for seed in 1..=12 {
                 let (previous, range) = source(scale, seed);
