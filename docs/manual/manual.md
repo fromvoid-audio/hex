@@ -181,10 +181,11 @@ bounce writes float audio before the track mixer. mixer automation, sends, retur
 and main processing remain live. in-place bounce removes the baked devices, so it
 refuses if that would change unselected material or a tail would overlap it; use
 **command+b** instead. routed inputs, verified streaming and nonzero-latency device
-paths currently refuse. a release that does not finish within ten seconds refuses
-without applying an edit. source files remain unchanged. while editing text,
-numeric values or midi notes, or using the computer midi keyboard, these arrange
-bounce shortcuts do not run.
+paths currently refuse. clip bounces keep up to 30 seconds of release after the
+selected span. if the tail is still sounding then, hex cuts it at that limit and
+finishes the bounce. shorter tails finish when silent. source files remain unchanged.
+while editing text, numeric values or midi notes, or using the computer midi keyboard,
+these arrange bounce shortcuts do not run.
 
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
