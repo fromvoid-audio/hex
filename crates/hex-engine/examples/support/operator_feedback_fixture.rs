@@ -146,10 +146,9 @@ pub fn project_with_operators(
 }
 
 /// Shared-source workload with one registered Operator instance and all tracks
-/// contributing MIDI to its single receiver. Notes are authored in waves of at
-/// most 16, one beat apart. The fixture refuses workloads that exceed the
-/// current shared-source voice envelope while preserving the independent
-/// fixture's total authored note count.
+/// contributing MIDI to its single receiver. Notes use the independent fixture's
+/// pitches, simultaneous onset and 120-beat hold so steady measurements cover
+/// the same sustained workload. Larger workloads exceed the source voice bound.
 pub fn shared_source_project_with_operators(
     tracks: usize,
     notes_per_track: usize,
@@ -188,7 +187,6 @@ pub fn shared_source_project_with_operators(
         .id();
     let mut contributors = Vec::with_capacity(tracks);
     let clip_length = BeatTime::from_quarters(128)?;
-    let mut global_note = 0_usize;
     for track_index in 0..tracks {
         let Created::Track(track) = editor.execute(Command::AddMidiTrack {
             name: format!("operator contributor {track_index:03}"),
@@ -208,20 +206,15 @@ pub fn shared_source_project_with_operators(
         else {
             return Err("shared source fixture did not create a MIDI clip".into());
         };
-        for _ in 0..notes_per_track {
-            let wave = global_note / 16;
-            let start = BeatTime::from_quarters(u64::try_from(wave)?)?;
+        for note_index in 0..notes_per_track {
             editor.execute(Command::AddMidiNote {
                 clip,
-                start,
-                duration: BeatTime::ONE,
-                pitch: 48 + (global_note % 36) as u8,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(120)?,
+                pitch: 48 + ((track_index + note_index) % 36) as u8,
                 channel: 0,
                 velocity: 100,
             })?;
-            global_note = global_note
-                .checked_add(1)
-                .ok_or("shared fixture note index overflow")?;
         }
         contributors.push(track);
     }
@@ -244,7 +237,7 @@ pub fn shared_source_project_with_operators(
         source_count: 1,
         contributor_count: tracks,
         authored_notes,
-        peak_authored_voices: authored_notes.min(16),
+        peak_authored_voices: authored_notes,
     })
 }
 
