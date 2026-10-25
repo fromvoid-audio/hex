@@ -8,6 +8,28 @@ use crate::{
     SessionPlaybackCommand, StreamSourceKey, StreamedSourceMetadata,
 };
 use std::collections::BTreeMap;
+struct Pages<'a> {
+    samples: &'a [Frame],
+    key: StreamSourceKey,
+    extents: &'a [crate::StreamPageExtent],
+}
+impl MediaPages for Pages<'_> {
+    fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
+        assert!(
+            self.extents
+                .iter()
+                .any(|extent| extent.source == key && extent.page_index == index)
+        );
+        (key == self.key && index == 0).then_some(BorrowedMediaPage {
+            page_index: 0,
+            frames: self.samples,
+        })
+    }
+    fn request_page(&mut self, _: StreamSourceKey, _: u64) {
+        panic!("all demanded source pages are installed")
+    }
+}
+
 #[test]
 fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_relaxing_constructor_scope()
  {
@@ -98,27 +120,6 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
         runtime
             .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
             .unwrap();
-    }
-    struct Pages<'a> {
-        samples: &'a [Frame],
-        key: StreamSourceKey,
-        extents: &'a [crate::StreamPageExtent],
-    }
-    impl MediaPages for Pages<'_> {
-        fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
-            assert!(
-                self.extents
-                    .iter()
-                    .any(|extent| extent.source == key && extent.page_index == index)
-            );
-            (key == self.key && index == 0).then_some(BorrowedMediaPage {
-                page_index: 0,
-                frames: self.samples,
-            })
-        }
-        fn request_page(&mut self, _: StreamSourceKey, _: u64) {
-            panic!("all demanded source pages are installed")
-        }
     }
     for action in [
         None,
@@ -234,4 +235,156 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
             .unwrap();
     }
     assert_eq!(observed, expected);
+}
+
+#[test]
+fn main_only_latency_and_retired_main_history_keep_batched_ordinary_stream_demand() {
+    let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
+    let asset = *f.media.keys().next().unwrap();
+    let key = StreamSourceKey::new(31, asset);
+    let sources = BTreeMap::from([(
+        asset,
+        PreparedAudioSource::Streamed(Arc::new(
+            StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                1024,
+                1024,
+                hex_project::IDENTITY_CONVERSION,
+                [31; 32],
+            )
+            .unwrap(),
+        )),
+    )]);
+    f.editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 0,
+            end: 127,
+            enabled: true,
+        })
+        .unwrap();
+    let state = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        crate::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    let hex_project::Created::Device(device) = f
+        .editor
+        .execute(hex_project::Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("main limiter");
+    };
+    let effects = hex_devices::native_registry().unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let prepare = |project: &hex_project::Project| {
+        Arc::new(
+            PreparedRevision::prepare_with_source_bank(
+                project,
+                crate::compile::SourceBank::Mixed(&sources, 31),
+                Arc::new(SineTable::new()),
+                None,
+                &effects,
+                &instruments,
+                &crate::audio_transform::AudioTransformPreparation::default(),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let mut actual = Playback::from_prepared(prepare(f.editor.project()));
+    let mut oracle = Playback::from_prepared(Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    ));
+    for runtime in [&mut actual, &mut oracle] {
+        runtime.apply(PlaybackCommand::Play);
+    }
+    let context = crate::AudioSourceContext {
+        project_generation: 9,
+        editor_revision: 2,
+    };
+    for removed in [false, true] {
+        if removed {
+            f.editor
+                .execute(hex_project::Command::RemoveDevice(device))
+                .unwrap();
+            let mut successor = Playback::from_prepared(prepare(f.editor.project()));
+            let mut resident = Playback::from_prepared(Arc::new(
+                PreparedRevision::prepare(
+                    f.editor.project(),
+                    &f.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            ));
+            successor.try_inherit_runtime_from(&mut actual).unwrap();
+            resident.try_inherit_runtime_from(&mut oracle).unwrap();
+            actual = successor;
+            oracle = resident;
+        }
+        // Finish with queued Limiter output, so removal must carry its real
+        // history and content-origin stamps rather than merely a fresh graph.
+        for count in [64, 63, 17, 257] {
+            let mut expected = vec![[0.0; 2]; count];
+            oracle.render(&mut expected).unwrap();
+            let mut observed = vec![[0.0; 2]; count];
+            let mut offset = 0;
+            while offset < count {
+                let clock = (actual.position(), actual.performance_frame());
+                let mut extents = Vec::new();
+                let window = actual
+                    .stream_playback(context)
+                    .visit_next_stream_chunk(count - offset, None, &mut |extent| {
+                        extents.push(extent);
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(
+                    window.frames,
+                    (count - offset).min(256).min(127 - clock.0 as usize),
+                    "Main-only latency must not begin a whole render transaction per sample; removed={removed}"
+                );
+                assert_eq!((actual.position(), actual.performance_frame()), clock);
+                assert_eq!(
+                    extents,
+                    [crate::StreamPageExtent {
+                        source: key,
+                        page_index: 0,
+                        start: clock.0 as usize,
+                        end: clock.0 as usize + window.frames,
+                    }]
+                );
+                actual
+                    .stream_playback(context)
+                    .render_with_pages_and_signal_observers(
+                        &mut observed[offset..offset + window.frames],
+                        &mut Pages {
+                            samples: &f.samples,
+                            key,
+                            extents: &extents,
+                        },
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                offset += window.frames;
+            }
+            assert_eq!(observed, expected, "removed={removed}");
+            assert_eq!(
+                (actual.position(), actual.performance_frame()),
+                (oracle.position(), oracle.performance_frame())
+            );
+        }
+    }
 }
