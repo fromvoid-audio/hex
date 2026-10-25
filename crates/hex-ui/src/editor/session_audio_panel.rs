@@ -168,13 +168,19 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 ))),
         )
         .child(gain_adjust_button(cx, captured, gain, 1, edit_pending));
-    row = row.child(loop_button(cx, captured, loop_range, None, edit_pending));
+    row = row.child(session_audio_loop_button(
+        cx,
+        captured,
+        loop_range,
+        None,
+        edit_pending,
+    ));
     if let Some(range) = loop_range {
         for (edge, glyph) in [
             (SourceEdge::StartEarlier, "‹"),
             (SourceEdge::StartLater, "›"),
         ] {
-            row = row.child(loop_button(
+            row = row.child(session_audio_loop_button(
                 cx,
                 captured,
                 loop_range,
@@ -189,7 +195,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 .child(theme::text(format!("{}–{}", range.start(), range.end()))),
         );
         for (edge, glyph) in [(SourceEdge::EndEarlier, "‹"), (SourceEdge::EndLater, "›")] {
-            row = row.child(loop_button(
+            row = row.child(session_audio_loop_button(
                 cx,
                 captured,
                 loop_range,
@@ -224,7 +230,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     Some(row)
 }
 
-fn loop_button(
+fn session_audio_loop_button(
     cx: &mut Context<EditorView>,
     window: SourceWindow,
     range: Option<hex_project::SessionAudioLoop>,
