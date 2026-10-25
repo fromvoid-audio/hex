@@ -125,6 +125,8 @@ impl EditorView {
 pub(crate) fn fixture_catalog(
     root: &std::path::Path,
     selected: &PluginEffectSelection,
+    subcategories: &str,
+    factory_flags: u32,
 ) -> Result<(), String> {
     selected.validate()?;
     let root = root.canonicalize().map_err(|error| error.to_string())?;
@@ -143,7 +145,7 @@ pub(crate) fn fixture_catalog(
         "cleanup":{"direct_reaped":true,"direct_exit_code":0,"direct_exit_signal":null,"custody_lost":false,"cleanup_unconfirmed":false,
           "exit_observed_before_signals":true,"original_group_term":{"status":"absent"},"original_group_kill":{"status":"absent"},"direct_kill":null,"descendants":"unknown","pending":false},
         "discovery":{"request":1,"sdk":"3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96","public_sdk":"586dc5e6c8012c3e4b01c79389375cbe96bdb1da","platform":"darwin-arm64",
-          "factory_flags":0,"vendor":"original fixture","url":"","email":"","classes":[{"cid":selected.cid,"cardinality":1,"category":"Audio Module Class","name":"original processor","class_flags":0,"subcategories":"Fx","class_vendor":"original fixture","class_version":"1","class_sdk_version":"3.8"}]}
+          "factory_flags":factory_flags,"vendor":"original fixture","url":"","email":"","classes":[{"cid":selected.cid,"cardinality":1,"category":"Audio Module Class","name":"original processor","class_flags":0,"subcategories":subcategories,"class_vendor":"original fixture","class_version":"1","class_sdk_version":"3.8"}]}
     })).map_err(|error| error.to_string())?;
     hex_plugin_catalog::storage::update(&root.join("plugin-catalog.json"), |catalog| {
         catalog.record(selected.module.clone(), Ok((report, "e".repeat(40))))

@@ -3,6 +3,7 @@
 //! No fixture grants admission, native facts, endpoint ACK or canonical edits.
 use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+use std::path::Path;
 
 fn repaint(cx: &mut TestAppContext, visual: &mut VisualTestContext) {
     cx.background_executor
@@ -47,6 +48,7 @@ struct BrowserFixture {
     facts: mpsc::Receiver<()>,
     resume: mpsc::SyncSender<()>,
     original_catalog: Vec<u8>,
+    module: PathBuf,
     files: Files,
 }
 
@@ -54,6 +56,32 @@ fn open_browser(
     cx: &mut TestAppContext,
     location: u8,
     presentation: Option<EffectPresentation>,
+) -> BrowserFixture {
+    open_browser_metadata(cx, location, presentation, "Fx", 0)
+}
+
+fn copy_original_module(source: &Path, target: &Path) {
+    fs::create_dir(target).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let destination = target.join(entry.file_name());
+        let kind = entry.file_type().unwrap();
+        assert!(!kind.is_symlink(), "original fixture must contain no links");
+        if kind.is_dir() {
+            copy_original_module(&entry.path(), &destination);
+        } else {
+            assert!(kind.is_file());
+            fs::copy(entry.path(), destination).unwrap();
+        }
+    }
+}
+
+fn open_browser_metadata(
+    cx: &mut TestAppContext,
+    location: u8,
+    presentation: Option<EffectPresentation>,
+    subcategories: &str,
+    factory_flags: u32,
 ) -> BrowserFixture {
     let (reached, facts) = mpsc::sync_channel(1);
     let (resume, resumed) = mpsc::sync_channel(1);
@@ -89,8 +117,14 @@ fn open_browser(
     } else if location == 2 {
         target = "main-track-header".into();
     }
-    let selected = selection();
-    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected).unwrap();
+    let mut selected = selection();
+    // Each rendered test owns its bundle copy. Missing/replacement controls
+    // must never modify the shared qualified original fixture or user modules.
+    let module = files.0.canonicalize().unwrap().join("original.vst3");
+    copy_original_module(&selected.module, &module);
+    selected.module = module.clone();
+    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected, subcategories, factory_flags)
+        .unwrap();
     let original_catalog = fs::read(files.0.join("plugin-catalog.json")).unwrap();
     // A real read-only request supplies the latest canonical snapshot after
     // fixture authoring; the view never receives a fabricated project event.
@@ -146,6 +180,7 @@ fn open_browser(
         facts,
         resume,
         original_catalog,
+        module,
         files,
     }
 }
@@ -171,6 +206,15 @@ impl BrowserFixture {
         repaint(cx, &mut self.visual);
     }
     fn activate_to_facts(&mut self, cx: &mut TestAppContext, pointer: bool) {
+        self.activate(pointer);
+        until("actual native facts before endpoint construction", || {
+            repaint(cx, &mut self.visual);
+            let view = self.view(cx);
+            assert!(view.error.is_none() && view.pending, "{:?}", view.error);
+            self.facts.try_recv().is_ok()
+        });
+    }
+    fn activate(&mut self, pointer: bool) {
         let row = self.visual.debug_bounds("browser-vst3-row-0").unwrap();
         if pointer {
             self.visual.simulate_event(gpui::MouseDownEvent {
@@ -187,12 +231,127 @@ impl BrowserFixture {
                 .simulate_click(row.center(), Modifiers::default());
             self.visual.simulate_keystrokes("enter");
         }
-        until("actual native facts before endpoint construction", || {
-            repaint(cx, &mut self.visual);
-            let view = self.view(cx);
-            assert!(view.error.is_none() && view.pending, "{:?}", view.error);
-            self.facts.try_recv().is_ok()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InvalidSource {
+    Missing,
+    ReplacedExecutable,
+    ReplacedInfo,
+    InstrumentOnly,
+    UnknownType,
+    DynamicInventory,
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_before_spawn(
+    cx: &mut TestAppContext,
+) {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for (invalid, pointer) in [
+        InvalidSource::Missing,
+        InvalidSource::ReplacedExecutable,
+        InvalidSource::ReplacedInfo,
+        InvalidSource::InstrumentOnly,
+        InvalidSource::UnknownType,
+        InvalidSource::DynamicInventory,
+    ]
+    .into_iter()
+    .flat_map(|invalid| [false, true].map(move |pointer| (invalid, pointer)))
+    {
+        let categories = match invalid {
+            InvalidSource::InstrumentOnly => "Instrument|Synth",
+            InvalidSource::UnknownType => "MyFx",
+            _ => "Fx",
+        };
+        let flags = u32::from(matches!(invalid, InvalidSource::DynamicInventory));
+        let mut fixture = open_browser_metadata(
+            cx,
+            2,
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+            categories,
+            flags,
+        );
+        // Change the owned source only after the last-good catalog has loaded
+        // and its actual row has painted. Admission must revalidate at use.
+        match invalid {
+            InvalidSource::Missing => fs::remove_dir_all(&fixture.module).unwrap(),
+            InvalidSource::ReplacedExecutable => {
+                let path = fixture.module.join("Contents/MacOS/fixture");
+                let mut bytes = fs::read(&path).unwrap();
+                bytes.push(0);
+                fs::write(path, bytes).unwrap();
+            }
+            InvalidSource::ReplacedInfo => {
+                let path = fixture.module.join("Contents/Info.plist");
+                let mut bytes = fs::read(&path).unwrap();
+                bytes.push(b'\n');
+                fs::write(path, bytes).unwrap();
+            }
+            _ => {}
+        }
+        fixture.activate(pointer);
+        until("actual source/metadata refusal terminal", || {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            assert_eq!(
+                fixture.records.load(Acquire),
+                0,
+                "{invalid:?} pointer={pointer}: unexpected native source reservation"
+            );
+            !view.pending && view.error.is_some()
         });
+        let expected = match invalid {
+            InvalidSource::Missing => "instance source refused",
+            InvalidSource::ReplacedExecutable | InvalidSource::ReplacedInfo => {
+                "selected vst3 source changed"
+            }
+            InvalidSource::InstrumentOnly | InvalidSource::UnknownType => "not a reported effect",
+            InvalidSource::DynamicInventory => "requires a rescan",
+        };
+        assert!(
+            fixture.view(cx).error.unwrap().contains(expected),
+            "{invalid:?} pointer={pointer}: {:?}",
+            fixture.view(cx).error
+        );
+        for _ in 0..3 {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            let state = view.state.as_ref().unwrap();
+            assert!(!view.pending && view.applied.is_none());
+            assert_eq!(state.project, fixture.state.project, "{invalid:?}");
+            assert_eq!(
+                (state.revision, state.can_undo, state.can_redo),
+                (
+                    fixture.state.revision,
+                    fixture.state.can_undo,
+                    fixture.state.can_redo
+                )
+            );
+            assert_eq!(fixture.records.load(Acquire), 0);
+            assert_eq!(fixture.completed.load(Acquire), 0);
+            assert!(fixture.facts.try_recv().is_err());
+            assert!(
+                fixture
+                    .visual
+                    .debug_bounds(Box::leak(
+                        format!("device-shell-{}", state.project.next_identity()).into_boxed_str()
+                    ))
+                    .is_none()
+            );
+            assert_eq!(
+                fs::read(fixture.files.0.join("plugin-catalog.json")).unwrap(),
+                fixture.original_catalog,
+                "refusal must preserve last-good catalog bytes"
+            );
+        }
+        fixture.visual.update(|window, _| window.remove_window());
+        fixture.visual.run_until_parked();
     }
 }
 
@@ -590,6 +749,7 @@ fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
             facts: _,
             resume,
             original_catalog,
+            module: _,
             files,
         } = fixture;
         // The real worker is held at Facts, before it can queue this endpoint.

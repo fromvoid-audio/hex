@@ -119,8 +119,10 @@ pub fn plugin_effect_test_view(
 pub fn write_plugin_effect_test_catalog(
     root: &std::path::Path,
     selection: &hex_session::service::PluginEffectSelection,
+    subcategories: &str,
+    factory_flags: u32,
 ) -> Result<(), String> {
-    editor::plugin_effect_fixture_catalog(root, selection)
+    editor::plugin_effect_fixture_catalog(root, selection, subcategories, factory_flags)
 }
 
 /// Read-only headless source metadata and peak-only table; no native owner.
