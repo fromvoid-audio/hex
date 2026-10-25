@@ -48,6 +48,11 @@ use export_lane::ExportLane;
 pub use sampler_parameter::SamplerEdit;
 mod device_comparison;
 mod effect_bus;
+mod plugin_effect;
+pub use plugin_effect::{
+    PluginEffectCompletion, PluginEffectControl, PluginEffectDestination, PluginEffectInsertion,
+    PluginEffectPreparation, PluginEffectPreparationState, PluginEffectSelection,
+};
 #[cfg(test)]
 mod effect_bus_tests;
 #[cfg(test)]
@@ -211,6 +216,8 @@ pub struct Event {
     /// Metadata-only completion of one first-load action, on success or refusal.
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
     pub sampler_edit_complete: Option<u64>,
+    /// At most two exact terminals: a refused new request and an invalidated pending one.
+    pub plugin_effect_complete: Vec<PluginEffectCompletion>,
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
     pub midi_take_complete: Option<MidiTakeCompletion>,
@@ -511,6 +518,10 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
     },
+    /// Captured VST3 catalog choice; native preparation remains on the canonical worker.
+    InsertPluginEffect(PluginEffectInsertion),
+    /// Worker-internal wakeup; never a FIFO request completion.
+    ContinuePluginEffect,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
     InsertEffectBusDevice {
         project_generation: u64,
@@ -1832,6 +1843,7 @@ fn run_worker(
                 request_complete: false,
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
+                plugin_effect_complete: Vec::new(),
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
                 tuning_audition_complete: None,
@@ -1869,6 +1881,7 @@ fn run_worker(
             request_complete: false,
             sampler_load_complete: None,
             sampler_edit_complete: None,
+            plugin_effect_complete: Vec::new(),
             computer_keyboard_complete: None,
             midi_take_complete: None,
             tuning_audition_complete: None,
@@ -1962,9 +1975,17 @@ fn run_worker(
     }
 
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
+    let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
     while let Some(request) = events.next_request_with_control_poll(
         &requests,
         session.native_reservation.is_some(),
+        pending_plugin_effect
+            .as_ref()
+            .map(|pending| &pending.insertion),
+        hex_engine::AudioSourceContext {
+            project_generation,
+            editor_revision: revision,
+        },
         |mut audio| {
             if let Some(seek) = resident_seek.as_mut() {
                 seek.drive(
@@ -2029,7 +2050,11 @@ fn run_worker(
             _ => None,
         };
         let mut seek_submitted = false;
-        let request_complete = !matches!(&request, Request::ContinueSamplerEdit);
+        let request_complete = !matches!(
+            &request,
+            Request::ContinueSamplerEdit | Request::ContinuePluginEffect
+        );
+        let mut plugin_effect_complete = Vec::new();
         let mut sampler_edit_complete = None;
         if matches!(
             &request,
@@ -2695,6 +2720,8 @@ fn run_worker(
                     | Request::RestartRecovery(_)
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
+                    | Request::InsertPluginEffect(_)
+                    | Request::ContinuePluginEffect
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
@@ -3121,6 +3148,103 @@ fn run_worker(
                     error = Some(
                         "instrument insertion request was not prepared; select it again".into(),
                     );
+                }
+                request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
+                    if let Request::InsertPluginEffect(insertion) = request {
+                        match plugin_effect::Pending::new(insertion, session.project()) {
+                            Err(reason) => error = Some(reason),
+                            Ok(pending) if pending_plugin_effect.is_some() => {
+                                plugin_effect_complete
+                                    .push(pending.finish(events.sampler_edit_audio(), false));
+                                error = Some("another vst3 effect is still preparing".into());
+                            }
+                            Ok(pending)
+                                if pending_sampler_parameter.is_some()
+                                    || device_gesture.snapshot().is_some()
+                                    || tuning_gesture.snapshot().is_some() =>
+                            {
+                                plugin_effect_complete
+                                    .push(pending.finish(events.sampler_edit_audio(), false));
+                                error = Some("finish or cancel the active gesture before inserting a vst3 effect".into());
+                            }
+                            Ok(pending) => pending_plugin_effect = Some(pending),
+                        }
+                    }
+                    // A refused second request must not drive or retire the first one.
+                    if error.is_none()
+                        && let Some(pending) = pending_plugin_effect.as_mut()
+                    {
+                        let context = hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        };
+                        let result = events
+                            .sampler_edit_audio()
+                            .ok_or_else(|| "vst3 hosting unavailable for this output".to_string())
+                            .and_then(|sink| {
+                                pending.prepare(
+                                    &session,
+                                    context,
+                                    compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                    sink,
+                                )
+                            });
+                        match result {
+                            Ok(PluginEffectPreparationState::Preparing) => {
+                                status = Some("preparing vst3 effect".into())
+                            }
+                            result => {
+                                if let Some(pending) = pending_plugin_effect.take() {
+                                    let admission = export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }),
+                                        resident_seek.as_ref(), resident_preview.as_ref(),
+                                    );
+                                    let committed = result.and_then(|state| {
+                                        let PluginEffectPreparationState::Ready(state) = state
+                                        else {
+                                            return Err("vst3 preparation did not finish".into());
+                                        };
+                                        // Recheck the captured target before preparing the canonical transaction.
+                                        pending.insertion.validate(context, session.project())?;
+                                        let command = pending.insertion.command(state)?;
+                                        let sink = events
+                                            .resident_audio()
+                                            .ok_or("native worker unavailable")?;
+                                        session
+                                            .plugin_effect_resident_snapshot(
+                                                command,
+                                                Arc::clone(&pending.insertion.control),
+                                                hex_engine::AudioSourceContext {
+                                                    editor_revision: revision.saturating_add(1),
+                                                    ..context
+                                                },
+                                                sink,
+                                                admission,
+                                                resident_snapshot.as_ref(),
+                                            )
+                                            .map_err(|e| e.to_string())
+                                    });
+                                    let accepted = committed.is_ok();
+                                    match committed {
+                                        Ok((new, snapshot)) => {
+                                            created = Some(new);
+                                            unsaved = true;
+                                            replacement_revision =
+                                                Some(Arc::clone(&snapshot.prepared));
+                                            resident_snapshot = Some(snapshot);
+                                            status = Some(
+                                                "vst3 effect inserted · waiting for audio".into(),
+                                            );
+                                        }
+                                        Err(reason) => error = Some(reason),
+                                    }
+                                    plugin_effect_complete.push(
+                                        pending.finish(events.sampler_edit_audio(), accepted),
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 Request::InsertEffectBusDevice { .. } => {
                     error =
@@ -6388,6 +6512,20 @@ fn run_worker(
                 }
             }
         }
+        if pending_plugin_effect.as_ref().is_some_and(|pending| {
+            pending.insertion.context
+                != hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                }
+                || pending.insertion.control.is_cancelled()
+                || pending_sampler_parameter.is_some()
+                || device_gesture.snapshot().is_some()
+                || tuning_gesture.snapshot().is_some()
+        }) && let Some(pending) = pending_plugin_effect.take()
+        {
+            plugin_effect_complete.push(pending.finish(events.sampler_edit_audio(), false));
+        }
         if !events.send_with_control_poll(
             Event {
                 state: Arc::clone(&state),
@@ -6398,6 +6536,7 @@ fn run_worker(
                 request_complete,
                 sampler_load_complete,
                 sampler_edit_complete,
+                plugin_effect_complete,
                 computer_keyboard_complete,
                 midi_take_complete,
                 tuning_audition_complete,

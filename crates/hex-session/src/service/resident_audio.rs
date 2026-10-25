@@ -26,6 +26,7 @@ struct Inputs<'a> {
     max_frames: u64,
     shutdown: &'a AtomicBool,
     cancel: Option<&'a AtomicBool>,
+    plugin_effect: Option<&'a PluginEffectControl>,
     admission: sampler_export::Admission<'a>,
     current: Option<&'a Snapshot>,
     predecessor: Option<&'a Session>,
@@ -484,6 +485,7 @@ impl Inputs<'_> {
             runtime,
             snapshot.resources.metadata_bytes()?,
         )?;
+        let mut plugin_admitted = false;
         sink.publish_resident_with_files(
             playback,
             Some(&snapshot.resources),
@@ -508,6 +510,14 @@ impl Inputs<'_> {
                         .is_some_and(|cancel| cancel.load(Ordering::Acquire))
                 {
                     return Err("resident publication cancelled".into());
+                }
+                if let Some(control) = self.plugin_effect
+                    && !plugin_admitted
+                {
+                    if !control.begin_commit() {
+                        return Err("vst3 effect insertion cancelled before admission".into());
+                    }
+                    plugin_admitted = true;
                 }
                 Ok(())
             },
@@ -825,6 +835,7 @@ pub(super) fn prepare_bounce_import(
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
     let inputs = Inputs {
+        plugin_effect: None,
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
         limits: input.limits.ok_or(SessionError::Invalid(
@@ -977,6 +988,10 @@ pub(super) fn import_file(
 
 enum Transition {
     Command(Box<Command>),
+    PluginEffect {
+        command: Box<Command>,
+        control: Arc<PluginEffectControl>,
+    },
     History {
         redo: bool,
     },
@@ -1059,6 +1074,7 @@ impl Session {
             destination,
             |project, media, table, transforms, waveforms, stage, _| {
                 let inputs = Inputs {
+                    plugin_effect: None,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1084,6 +1100,7 @@ impl Session {
             },
             |project, snapshot, stage| {
                 let inputs = Inputs {
+                    plugin_effect: None,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1308,6 +1325,7 @@ impl Session {
         cancelled: Option<&'a AtomicBool>,
     ) -> Result<Inputs<'a>, SessionError> {
         Ok(Inputs {
+            plugin_effect: None,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1337,6 +1355,7 @@ impl Session {
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
+            plugin_effect: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
                 "resident resource reservation unavailable",
@@ -1392,6 +1411,7 @@ impl Session {
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
+            plugin_effect: None,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1593,6 +1613,30 @@ impl Session {
             "resident command produced no transition",
         ))
     }
+    pub(super) fn plugin_effect_resident_snapshot(
+        &mut self,
+        command: Command,
+        control: Arc<PluginEffectControl>,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<(Created, Snapshot), SessionError> {
+        self.resident_transition(
+            Transition::PluginEffect {
+                command: Box::new(command),
+                control,
+            },
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )?
+        .ok_or(SessionError::Invalid(
+            "plugin effect produced no transition",
+        ))
+    }
     /// A same-audio A/B edge retains its proved compiler owner and existing correlation binding.
     /// An audible edge constructs/admit/enqueues before the Editor's reserved canonical commit.
     pub(super) fn comparison_resident_snapshot(
@@ -1614,6 +1658,7 @@ impl Session {
             return Err(SessionError::Invalid("comparison command required"));
         }
         let inputs = Inputs {
+            plugin_effect: None,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1687,6 +1732,7 @@ impl Session {
         cancel: Option<&AtomicBool>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
         if let Transition::Command(command)
+        | Transition::PluginEffect { command, .. }
         | Transition::MidiCommand(command)
         | Transition::SectionCommand { command, .. } = &transition
         {
@@ -1698,7 +1744,12 @@ impl Session {
                 return Err(SessionError::DeviceAssetClipUnsupported(*asset));
             }
         }
+        let plugin_control = match &transition {
+            Transition::PluginEffect { control, .. } => Some(Arc::clone(control)),
+            _ => None,
+        };
         let inputs = Inputs {
+            plugin_effect: plugin_control.as_deref(),
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1796,7 +1847,9 @@ impl Session {
             Ok(snapshot)
         };
         match transition {
-            Transition::Command(command) | Transition::SectionCommand { command, .. } => self
+            Transition::Command(command)
+            | Transition::PluginEffect { command, .. }
+            | Transition::SectionCommand { command, .. } => self
                 .editor
                 .execute_prepared_transition(*command, prepare)
                 .map(Some),
@@ -1822,6 +1875,7 @@ impl Session {
 mod tests {
     mod bounce_tests;
     mod export_tests;
+    mod plugin_effect_tests;
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Duration;
@@ -1836,6 +1890,11 @@ mod tests {
         keyboard_peak: Mutex<f32>,
         keyboard_publications: AtomicUsize,
         effect_compilations: AtomicUsize,
+        plugin_preparations: AtomicUsize,
+        plugin_ready: AtomicBool,
+        plugin_terminals: Mutex<Vec<(Arc<PluginEffectControl>, bool)>>,
+        cancel_at_admission: Mutex<Option<Arc<PluginEffectControl>>>,
+        cancel_after_admission: Mutex<Option<Arc<PluginEffectControl>>>,
     }
     struct OfflineSink {
         observed: Arc<Observed>,
@@ -1846,6 +1905,35 @@ mod tests {
         )>,
     }
     impl WorkerAudioSink for OfflineSink {
+        fn prepare_plugin_effect(
+            &mut self,
+            _input: PluginEffectPreparation<'_>,
+        ) -> Result<PluginEffectPreparationState, String> {
+            self.observed
+                .plugin_preparations
+                .fetch_add(1, Ordering::Release);
+            if self.observed.plugin_ready.load(Ordering::Acquire) {
+                // Deliberately wrong provider: the worker must refuse rather than admit it.
+                hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .map(PluginEffectPreparationState::Ready)
+                .map_err(|e| e.to_string())
+            } else {
+                Ok(PluginEffectPreparationState::Preparing)
+            }
+        }
+        fn plugin_effect_ready(&self) -> bool {
+            self.observed.plugin_ready.load(Ordering::Acquire)
+        }
+        fn finish_plugin_effect(&mut self, control: &Arc<PluginEffectControl>, accepted: bool) {
+            self.observed
+                .plugin_terminals
+                .lock()
+                .unwrap()
+                .push((Arc::clone(control), accepted));
+        }
         fn prepare_resident_effects(
             &mut self,
             _project: &Project,
@@ -1904,7 +1992,16 @@ mod tests {
                 let candidate =
                     DeviceResourceAdmission::unpublished_on_control(&playback, Some(&resources));
                 let old = self.resident_admission();
+                if let Some(control) = self.observed.cancel_at_admission.lock().unwrap().take() {
+                    assert!(control.cancel());
+                }
                 admit(&[candidate, old[0]])?;
+                if let Some(control) = self.observed.cancel_after_admission.lock().unwrap().take() {
+                    assert!(
+                        !control.cancel(),
+                        "accepted admission must win over a late cancellation"
+                    );
+                }
                 if self.observed.refuse.load(Ordering::Acquire) {
                     return Err("fixture publication refused".into());
                 }

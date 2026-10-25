@@ -118,6 +118,22 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Start/poll this exact explicit source request on the canonical worker.
+    /// The implementation retains actual native preparation under its Root;
+    /// Session receives captured state only after real native and endpoint ACKs.
+    fn prepare_plugin_effect(
+        &mut self,
+        _input: PluginEffectPreparation<'_>,
+    ) -> Result<PluginEffectPreparationState, String> {
+        Err("vst3 hosting unavailable for this output".into())
+    }
+    fn plugin_effect_ready(&self) -> bool {
+        false
+    }
+    /// Match the exact request control; never cancel an unrelated later source.
+    /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
+    /// acceptance transfers display/request custody, never the native source's lifetime.
+    fn finish_plugin_effect(&mut self, _control: &Arc<PluginEffectControl>, _accepted: bool) {}
     /// Borrow the actual host's effect facts for one synchronous registered
     /// compiler invocation on the canonical worker. None means no host facts
     /// were supplied, so builtin-only preparation remains unchanged. The
@@ -514,6 +530,8 @@ impl WorkerEvents {
         &mut self,
         requests: &Receiver<Request>,
         bounded: bool,
+        plugin_effect: Option<&PluginEffectInsertion>,
+        context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
     ) -> Option<Request> {
         control_poll(
@@ -553,6 +571,16 @@ impl WorkerEvents {
                 .is_some_and(|a| a.sampler_edit_ready().is_some())
             {
                 return Some(Request::ContinueSamplerEdit);
+            }
+            if plugin_effect.is_some_and(|insertion| {
+                insertion.context != context
+                    || insertion.control.is_cancelled()
+                    || self
+                        .audio
+                        .as_ref()
+                        .is_some_and(|audio| audio.plugin_effect_ready())
+            }) {
+                return Some(Request::ContinuePluginEffect);
             }
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {
