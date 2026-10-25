@@ -953,12 +953,34 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                     "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
                 );
             }
+            // A new loop pass dispatches the shortened prefix signature. Undo
+            // must work after this boundary, independently of worker timing.
+            if unchanged_prefix && event.state.project.arrangement_sections().len() > 2 {
+                for _ in 0..loop_frames.div_ceil(64) + 1 {
+                    h.render();
+                }
+            }
             event = run_callback(&mut h, Request::Undo);
             assert!(event.error.is_none(), "{:?}", event.error);
             (applied, _) = h.applied(applied);
             let mut restored = event.state.project.snapshot();
             restored.next_id = before.next_id;
             assert_eq!(restored, before);
+            if unchanged_prefix {
+                let start = h
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .position
+                    .load(Acquire);
+                assert_eq!(
+                    h.render(),
+                    expected_from_start(start),
+                    "Undo must preserve the original sampler phase without a second NoteOn"
+                );
+            }
         }
         for _ in 0..800 {
             h.render();
