@@ -76,10 +76,10 @@ impl Sample {
         for (i, initial) in [0.0, 0.5, 1.0].into_iter().enumerate() {
             let config = NumericControlConfig::new(
                 id(&format!("sandbox-number-{i}")),
-                theme::text(if matches!(item.demo, Demo::Waveform(_)) {
-                    ["selection start", "amplitude", "selection end"][i]
-                } else {
-                    ["minimum", "middle", "maximum"][i]
+                theme::text(match item.demo {
+                    Demo::Waveform(_) => ["selection start", "amplitude", "selection end"][i],
+                    Demo::Rules => ["position", "thickness", "opacity"][i],
+                    _ => ["minimum", "middle", "maximum"][i],
                 }),
                 appearance,
                 spec.clone(),
@@ -626,6 +626,33 @@ impl Sample {
                         )),
                 )
                 .child(self.controls()),
+            Demo::Rules => {
+                let values: [f32; 3] =
+                    std::array::from_fn(|i| self.numbers[i].read(cx).value() as f32 / 100.0);
+                let rules = [
+                    VerticalRule::new(0.25, px(1.0), s.border, 0.42),
+                    VerticalRule::new(0.5, px(1.5), s.border, 0.42),
+                    VerticalRule::new(0.75, px(1.0), s.border, 0.24),
+                    VerticalRule::new(values[0], px(0.5 + values[1] * 6.0), s.accent, values[2]),
+                ];
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .h(px(140.0))
+                            .overflow_hidden()
+                            .debug_selector({
+                                let id = self.id("sandbox-rules");
+                                move || id.clone()
+                            })
+                            .children(vertical_rule_layer(rules.into_iter().flatten())),
+                    )
+                    .child(self.controls())
+            }
             Demo::Curve | Demo::Spectrum => {
                 let amount = self.numbers[1].read(cx).value() as f32 / 100.0;
                 let points = [
@@ -720,7 +747,7 @@ impl Render for Sample {
             .child(div().id("widget-preview").debug_selector({let id = self.id("widget-preview"); move || id.clone()}).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .when(!matches!(self.item.demo, Demo::Graph), |sample| sample.child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus")))
-            .child(theme::text(match self.item.demo {Demo::TimeRange=>"upper third moves · lower body paints/repaints · shift paints · escape cancels held input · accept or refuse pending paint",Demo::Rectangle(_)=>"drag body / brackets / touching seam · shift selects · escape cancels held input · accept or refuse pending paint",Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Waveform(_)=>"generated peak fixture · selection start / amplitude / selection end · silence and dc regions · read-only display, no audio",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(match self.item.demo {Demo::TimeRange=>"upper third moves · lower body paints/repaints · shift paints · escape cancels held input · accept or refuse pending paint",Demo::Rectangle(_)=>"drag body / brackets / touching seam · shift selects · escape cancels held input · accept or refuse pending paint",Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Waveform(_)=>"generated peak fixture · selection start / amplitude / selection end · silence and dc regions · read-only display, no audio",Demo::Rules=>"passive native rules · position / thickness / opacity · local display fixture",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
             .child(theme::text(if matches!(self.item.demo,Demo::Color){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }

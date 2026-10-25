@@ -363,41 +363,28 @@ pub(super) fn clip_grid_layer(
         return None;
     }
     let width = end - start;
-    let children = lines
-        .iter()
-        .filter_map(|line| {
-            let offset = line.frame.checked_sub(start)?;
-            if offset == 0 || offset >= width {
-                return None;
-            }
-            Some(
-                div()
-                    .debug_selector(|| format!("clip-grid-line-{}", line.frame))
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(relative((offset as f64 / width as f64) as f32))
-                    .w(px(if line.meter_marker { 1.5 } else { 1.0 }))
-                    .bg(rgb(if line.meter_marker {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Grid)
-                    }))
-                    .opacity(if line.meter_marker || line.bar_start {
-                        0.42
-                    } else {
-                        0.24
-                    }),
-            )
-        })
-        .collect::<Vec<_>>();
-    (!children.is_empty()).then(|| {
-        div()
-            .debug_selector(|| "clip-musical-grid".to_owned())
-            .absolute()
-            .inset_0()
-            .children(children)
-    })
+    let rules = lines.iter().filter_map(|line| {
+        let offset = line.frame.checked_sub(start)?;
+        if offset == 0 || offset >= width {
+            return None;
+        }
+        hex_widgets::VerticalRule::new(
+            (offset as f64 / width as f64) as f32,
+            px(if line.meter_marker { 1.5 } else { 1.0 }),
+            theme::color(if line.meter_marker {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Grid
+            }),
+            if line.meter_marker || line.bar_start {
+                0.42
+            } else {
+                0.24
+            },
+        )
+    });
+    hex_widgets::vertical_rule_layer(rules)
+        .map(|layer| layer.debug_selector(|| "clip-musical-grid".to_owned()))
 }
 
 pub(super) struct ClipViewTimeline<'a> {

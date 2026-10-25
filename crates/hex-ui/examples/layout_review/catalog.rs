@@ -23,6 +23,7 @@ pub(super) enum Demo {
     Curve,
     Spectrum,
     Waveform(bool),
+    Rules,
     Chrome(&'static str),
     Layout(DeviceLayout),
     Section(u8, DeviceSectionSurface),
@@ -67,6 +68,7 @@ impl Item {
             Demo::Curve => ("curve plot", "graphics", "curve_plot"),
             Demo::Spectrum => ("spectrum plot", "graphics", "layered_spectrum_plot"),
             Demo::Waveform(_) => ("waveform", "graphics", "waveform_plot"),
+            Demo::Rules => ("vertical rules", "graphics", "vertical_rule_layer"),
             Demo::Chrome("action" | "device action" | "device segment")
             | Demo::Workspace(WorkspaceKind::Button(_) | WorkspaceKind::RoundAction(_)) => {
                 ("action surface", "chrome", "action_surface")
@@ -284,6 +286,7 @@ pub(super) fn inventory() -> Vec<Item> {
         ("layered spectrum plot", Demo::Spectrum),
         ("mono waveform", Demo::Waveform(false)),
         ("stereo waveform", Demo::Waveform(true)),
+        ("vertical rules", Demo::Rules),
     ] {
         add("graphics", name, demo);
     }

@@ -35,6 +35,8 @@ mod numeric;
 mod numeric_control;
 mod numeric_text;
 mod response_graph;
+mod rule_layer;
+pub use rule_layer::{MAX_RULE_LAYER_RULES, VerticalRule, vertical_rule_layer};
 mod spectrum_painter;
 mod spectrum_plot;
 mod splitter;

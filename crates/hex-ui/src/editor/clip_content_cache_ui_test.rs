@@ -131,17 +131,11 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
     assert_eq!(original.entity_id(), themed.entity_id());
     let themed_epoch = themed.read_with(cx, |content, _| content.epoch);
     assert_ne!(original_epoch, themed_epoch);
-    let grid_frame = themed.read_with(cx, |content, _| {
-        content
-            .key
-            .grid
-            .iter()
-            .find(|line| line.frame > 0 && line.frame < 96_000)
-            .expect("interior clip grid line")
-            .frame
-    });
-    let grid_selector = Box::leak(format!("clip-grid-line-{grid_frame}").into_boxed_str());
-    assert!(visual.debug_bounds(grid_selector).is_some());
+    assert!(
+        !super::super::clip_drag_ui_test::painted_grid_rules(&mut visual, "clip-musical-grid")
+            .is_empty(),
+        "palette invalidation must retain actual painted grid rules"
+    );
     let selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
     assert_eq!(
         visual.rendered_background(selector),
@@ -174,7 +168,8 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
     let ungridded_builds = ungridded.read_with(cx, |content, _| content.builds);
     assert_ne!(themed_epoch, ungridded_epoch);
     assert!(
-        visual.debug_bounds(grid_selector).is_none(),
+        super::super::clip_drag_ui_test::painted_grid_rules(&mut visual, "clip-musical-grid")
+            .is_empty(),
         "snap off paints no musical grid"
     );
     visual.simulate_resize(gpui::size(gpui::px(980.0), gpui::px(680.0)));

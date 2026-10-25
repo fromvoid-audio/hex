@@ -11,6 +11,38 @@ use std::sync::Arc;
 
 const TIMELINE_FRAMES: u64 = 384_000;
 
+// Canvas/native leaf rules have no per-line debug element. Inspect the actual
+// clipped scene fills, including cache replay, rather than a synthetic selector.
+pub(super) fn painted_grid_rules(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+) -> Vec<(usize, gpui::Bounds<gpui::ScaledPixels>)> {
+    let scale = visual.update(|window, _| window.scale_factor());
+    let colors = [
+        super::theme::PaletteRole::Grid,
+        super::theme::PaletteRole::Primary,
+    ]
+    .into_iter()
+    .flat_map(|role| {
+        [0.24, 0.42].map(|opacity| {
+            let background: gpui::Background = gpui::rgb(super::theme::color(role)).into();
+            background.opacity(opacity)
+        })
+    })
+    .collect::<Vec<_>>();
+    visual
+        .rendered_filled_quads(selector)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, (bounds, background))| {
+            (colors.contains(&background)
+                && bounds.size.width <= px(2.0).scale(scale)
+                && bounds.size.height > px(10.0).scale(scale))
+            .then_some((index, bounds))
+        })
+        .collect()
+}
+
 pub(super) fn audio_project() -> (
     Project,
     hex_project::TrackId,
@@ -780,25 +812,9 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     assert_eq!(original_bounds.origin.y, lane.origin.y);
     assert_eq!(original_bounds.size.height, lane.size.height);
     assert!(visual.debug_bounds("clip-musical-grid").is_some());
-    let grid_frame = editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().expect("project state");
-        let viewport = view.visible_viewport(state.timeline_frames);
-        let width = view
-            .arrangement_bounds
-            .map(|bounds| bounds.width - super::tracks::TRACK_HEADER_WIDTH)
-            .unwrap_or(400.0);
-        super::musical_time::grid_lines(&state.project, viewport, width, view.snap_grid)
-            .into_iter()
-            .find(|line| line.frame > 0 && line.frame < 96_000)
-            .map(|line| line.frame)
-    });
-    let grid_frame = grid_frame.expect("adaptive grid has an interior line in the audio clip");
     assert!(
-        visual
-            .debug_bounds(Box::leak(
-                format!("clip-grid-line-{grid_frame}").into_boxed_str()
-            ))
-            .is_some()
+        !painted_grid_rules(&mut visual, "clip-musical-grid").is_empty(),
+        "interior musical grid must paint inside the audio clip"
     );
     let down = point(
         handle_bounds.origin.x + handle_bounds.size.width / 2.0,

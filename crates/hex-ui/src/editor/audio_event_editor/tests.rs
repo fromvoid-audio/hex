@@ -25,28 +25,37 @@ fn event_grid_paints_over_opaque_audio_at_full_and_zoomed_extents(cx: &mut TestA
             .debug_bounds("audio-event-musical-grid")
             .expect("visible event grid");
         assert!(grid.top() >= body.top() + px(22.0));
-        let frame = editor.read_with(&visual, |v, _| {
-            let root = v.event_context().unwrap().1;
-            let viewport = v.event_project_viewport(&root).unwrap();
-            super::super::musical_time::grid_lines(
-                &v.state.as_ref().unwrap().project,
-                viewport,
-                f32::from(body.size.width),
-                SnapGrid::Quarter,
-            )
-            .into_iter()
-            .find(|l| l.frame > viewport.start && l.frame < viewport.end().unwrap())
-            .unwrap()
-            .frame
-        });
-        let selector = Box::leak(format!("clip-grid-line-{frame}").into_boxed_str());
-        let line = visual.debug_bounds(selector).unwrap();
-        assert!(line.top() >= grid.top() && line.bottom() <= grid.bottom());
-        let lines = visual.rendered_quad_paint_layers(selector, false);
-        let events = visual.rendered_quad_paint_layers("audio-event-1", false);
+        let scale = visual.update(|window, _| window.scale_factor());
+        let grid = grid.scale(scale);
+        let event = visual.debug_bounds("audio-event-1").unwrap().scale(scale);
+        let fill = visual
+            .rendered_background("audio-event-1")
+            .expect("opaque event fill");
+        let quads = visual.rendered_filled_quads("audio-event-musical-grid");
+        let events = quads
+            .iter()
+            .enumerate()
+            .filter(|(_, (bounds, background))| *background == fill && bounds.intersects(&event))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let lines = super::super::clip_drag_ui_test::painted_grid_rules(
+            &mut visual,
+            "audio-event-musical-grid",
+        );
         assert!(!lines.is_empty() && !events.is_empty());
         assert!(
-            lines.iter().map(|x| x.0).min().unwrap() > events.iter().map(|x| x.0).max().unwrap(),
+            lines
+                .iter()
+                .all(|(_, line)| line.top() >= grid.top() && line.bottom() <= grid.bottom())
+        );
+        let overlapping = lines
+            .iter()
+            .filter(|(_, line)| line.intersects(&event))
+            .collect::<Vec<_>>();
+        assert!(!overlapping.is_empty(), "grid must cross the opaque event");
+        assert!(
+            overlapping.iter().map(|(index, _)| *index).min().unwrap()
+                > *events.iter().max().unwrap(),
             "grid must remain visible over the opaque event fill"
         );
     }
