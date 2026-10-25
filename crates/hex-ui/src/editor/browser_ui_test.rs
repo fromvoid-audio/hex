@@ -312,6 +312,15 @@ fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
+    let first_device = editor.read_with(visual, |view, cx| {
+        let (class, entry) = &view.browser_visible_devices(cx)[0];
+        assert_eq!(*class, hex_engine::NativeDeviceClass::Instrument);
+        format!(
+            "browser-device-instrument-{}",
+            entry.type_id.as_str().unwrap()
+        )
+    });
+    assert!(visual.debug_bounds(&first_device).is_none());
     assert!(visual.debug_bounds("browser-entry-20").is_some());
     assert!(visual.debug_bounds("browser-entry-0").is_none());
     visual.simulate_keystrokes("left shift-left");
@@ -324,8 +333,8 @@ fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("end backspace");
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds("browser-entry-0").is_some(),
-        "changed query reveals its first result"
+        visual.debug_bounds(&first_device).is_some(),
+        "changed query reveals its first device result"
     );
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.search.read(cx).text(), "sampl");
@@ -496,7 +505,7 @@ fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) 
             "utility",
             "late files must not retarget device selection"
         );
-        assert_eq!(view.browser.selected_index, 1);
+        assert_eq!(view.browser.selected_index, 0);
     });
     cx.simulate_keystrokes(handle, "enter");
     editor.read_with(cx, |view, _| {
@@ -2945,7 +2954,9 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
             .position(|(_, entry)| entry.name.to_lowercase() == "utility")
             .unwrap();
         let identity = (devices[device_index].0, devices[device_index].1.type_id);
-        view.browser.selected_index = entries.len() + device_index;
+        view.browser.selected_index = view
+            .browser_history_index(&super::BrowserItemKey::Device(identity.0, identity.1), cx)
+            .unwrap();
         view.browser.results_focused = true;
         cx.notify();
         identity

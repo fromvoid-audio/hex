@@ -750,7 +750,7 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
 ) {
     use crate::editor::browser::BrowserItemKey;
     cx.update(crate::editor::bind_editor_keys);
-    let (handle, editor, _, directory, wave) = browser_drag_fixture(cx);
+    let (handle, editor, track, directory, wave) = browser_drag_fixture(cx);
     let first = directory.0.join("a utility.wav");
     let last = directory.0.join("z utility.wav");
     for path in [&first, &last] {
@@ -770,6 +770,7 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
         view.apply_plugin_catalog(catalog.clone(), cx);
         view.apply_sample_catalog(
             hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
@@ -847,7 +848,7 @@ fn all_search_devices_precede_samples_and_refresh_keeps_activation_identity(
     visual.run_until_parked();
     visual.simulate_keystrokes("enter");
     editor.read_with(&visual, |view, _| {
-        assert!(matches!(view.pending_requests.back(), Some(hex_session::service::Request::ImportAudioBatch { paths, .. }) if paths == &vec![first.clone()]));
+        assert!(matches!(view.pending_requests.back(), Some(hex_session::service::Request::ImportAudioBatch { paths, .. }) if paths == &vec![first.clone()]), "sample import: {:?}", view.error);
     });
 }
 
