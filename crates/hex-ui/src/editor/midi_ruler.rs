@@ -27,6 +27,9 @@ pub(super) struct State {
     gesture: Option<Gesture>,
 }
 impl State {
+    pub(super) fn held(&self) -> bool {
+        self.gesture.is_some()
+    }
     pub(super) fn cancel(&mut self) -> bool {
         self.gesture.take().is_some()
     }
@@ -247,11 +250,7 @@ impl EditorView {
             return;
         }
         let changed = gesture.preview;
-        if let Some(command) = self.state.as_ref().and_then(|state| {
-            midi_source_controls::edit_command(&state.project, gesture.context.clip, changed)
-        }) {
-            self.enqueue(Request::Edit(command));
-        }
+        self.commit_midi_clip_loop(gesture.context.clip, changed);
     }
     pub(super) fn midi_source_ruler(&mut self, cx: &mut ViewContext<Self>) -> Div {
         let start = self.piano_beat_start.raw();
@@ -260,6 +259,11 @@ impl EditorView {
             .midi_ruler
             .gesture
             .map(|gesture| gesture.preview.source_start)
+            .or_else(|| {
+                self.detail_clip_id()
+                    .and_then(|id| self.pending_clip_loop_midi(id))
+                    .map(|v| v.source_start)
+            })
             .or_else(|| self.midi_clip().map(|source| source.source_start().raw()));
         let rendered = self.midi_ruler_context(CanvasBounds {
             x: 0.0,
@@ -523,6 +527,8 @@ impl EditorView {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_ruler_ui_tests.rs"]
 mod tests;
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) use tests::roundtrip;
 
 #[cfg(test)]
 mod geometry_tests {

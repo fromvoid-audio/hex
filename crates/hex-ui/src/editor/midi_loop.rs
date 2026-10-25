@@ -78,6 +78,10 @@ impl EditorView {
             .gesture
             .map(|gesture| gesture.preview)
             .or_else(|| {
+                self.detail_clip_id()
+                    .and_then(|id| self.pending_clip_loop_midi(id))
+            })
+            .or_else(|| {
                 self.midi_clip().map(|source| {
                     SourceValues::from_source(source, 0, source.source_length().raw())
                 })

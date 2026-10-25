@@ -840,6 +840,7 @@ impl Render for EditorView {
                 }
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
+                    | view.cancel_audio_loop_gesture()
                     | view.cancel_loop_rail_gesture()
                     | view.project_spectrum_splitter_event(
                         hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
