@@ -1,6 +1,7 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod limiter;
 mod plugins;
 mod resident_authoring;
 mod resident_bounce;
@@ -9,6 +10,7 @@ mod resident_export;
 mod resident_grouping;
 mod resident_lifecycle;
 mod resident_preview;
+mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
 mod sampler;

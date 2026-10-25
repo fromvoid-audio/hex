@@ -196,7 +196,7 @@
   },
   "patched_files": {
     "src/app/test_context.rs": "0dd768fded82f0801728d98b0fd311a81fff2a8f9674c8bbe87cd55edd32a9a0",
-    "src/bounds_tree.rs": "028e5a80bef30544929de60cbb132afa9d00d6f30bcd461b2c8fd00ef1b59fb0",
+    "src/bounds_tree.rs": "3b81bf3f9e0addf59c247546f47e418ef1c0ea1297be082613b51fdcefa40b05",
     "src/elements/div.rs": "d9d7cebcc439e61eefc47869ea16c7f0d3794b6359959414f85e5f712fd9a1f9",
     "src/gpui.rs": "b26a450e27b580824e68b48cbceb200e39fa03ea8f8c39599d30e41784adc2f8",
     "src/interactive.rs": "dd5fdbffdd9c7c50af965163ba2380c4868708396a5cd82e4f529bdf99b9710a",
@@ -211,11 +211,12 @@
     "src/platform/test/platform.rs": "c297f4f1f4c77c77c708bcdc19be8d5be7c72e5c38129ee11a9e0af70dfe0daf",
     "src/platform/windows/events.rs": "57ec8c2a9b6ceda1e25d88ce45334423feec499b995919f3fa92a60e265adf15",
     "src/platform/windows/util.rs": "f81851f840f468e187739162f23840a1f8e81c7e17648fc244a5b2edc9eb62b2",
-    "src/scene.rs": "7b613087da31c10785f3fcd16b147a6251e76a3418801e86377e03f5ba757632",
+    "src/scene.rs": "cca0a5d0562e0d09bcc4a8de0c3d051c07fe96ef89d4f1cff66a11bf910197bc",
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
     "src/view.rs": "106968c2296e1063d92c13bddd459a1416c7cbc6d45bfbaa6647316b9cd047bf",
-    "src/window.rs": "4cb9cf112cc65622c23f19e72808a80b934e20b2cca043983933fc462d4bb39b",
-    "src/app.rs": "96b8289143726557a749f45453c1a627405de793cc9d9d4fdcc53518fc5f3652"
+    "src/window.rs": "1079d0c277c3b48b06a3e7fefa29642949be382d1f1829c32a5ebcbdba2c1c6e",
+    "src/app.rs": "96b8289143726557a749f45453c1a627405de793cc9d9d4fdcc53518fc5f3652",
+    "src/element.rs": "93dbbe830b6cc8fc961e50d2119a3ebf5680024b8e293ea54c3c7e16f1b7c365"
   },
   "added_files": {
     "src/accessibility.rs": "8396d22a2be0c369d1b2e6fac782b67afa8d924e1c1deac76ba8dd78abeef416",

@@ -15,6 +15,9 @@ use hex_lattice_contract::{
 use hex_project::{Command, Created, Editor};
 use std::any::Any;
 
+#[path = "tests/limiter_latency.rs"]
+mod limiter_latency;
+
 #[path = "tests/eq_automation.rs"]
 mod eq_automation;
 
@@ -509,7 +512,11 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
         }],
     };
     routed_midi_fixture::separate_midi(&mut snapshot, 0);
-    f.editor = Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    f.editor = Editor::new(
+        hex_project::Project::from_legacy_snapshot(snapshot).unwrap(),
+        8,
+    )
+    .unwrap();
     let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
     let effects = NativeDeviceRegistry::new(&effects).unwrap();
     let instruments: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&InstrumentDefinition];
@@ -869,6 +876,7 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(unknown.performance_frame_at_offset(0), None);
     assert_eq!(unknown.transport_is_running(), None);
     let source = TransportStamp {
+        tempo_micro_bpm: Some(123_000_000),
         performance_frame: 900,
         transport_is_running: true,
         arrangement_frame: 12,
@@ -877,6 +885,9 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         arrangement_beat_raw: Some(1 << 32),
     };
     let clock = OriginClock(Some(source));
+    assert_eq!(clock.tempo_micro_bpm_at_offset(0), Some(123_000_000));
+    assert_eq!(clock.tempo_micro_bpm_at_offset(1), None);
+    assert_eq!(unknown.tempo_micro_bpm_at_offset(0), None);
     assert_eq!(clock.performance_frame_at_offset(0), Some(900));
     assert_eq!(clock.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(clock.loop_pass_at_offset(0), Some(7));

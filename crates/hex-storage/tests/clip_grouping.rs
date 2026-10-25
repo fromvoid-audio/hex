@@ -2,6 +2,7 @@
 use hex_project::{AudioEventEdit, ClipId, Command, Created, Editor, Project};
 use hex_storage::{decode, encode};
 use serde_json::{Value, json};
+mod common;
 fn fixture() -> (Editor, Vec<ClipId>) {
     let mut e = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     let Created::Imported { track, clip: a, .. } = e
@@ -61,6 +62,7 @@ fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
 fn strip_flat_hierarchy(value: &mut Value) {
+    common::restore_pre_binding_instruments(value);
     let expected: Vec<_> = value["tracks"]
         .as_array()
         .unwrap()
@@ -345,7 +347,11 @@ fn grouped_and_retained_child_fades_roundtrip_with_independent_captured_tempo() 
         42
     );
     assert!(!value["grouped_audio"][0]["group"]["events"][0]["fade"].is_null());
-    assert!(!value["grouped_audio"][0]["group"]["sources"][0]["document"]["audio_event_fades"][0]["events"][0]["fade"].is_null());
+    assert!(
+        !value["grouped_audio"][0]["group"]["sources"][0]["document"]["audio_event_fades"][0]
+            ["events"][0]["fade"]
+            .is_null()
+    );
     let restored = decode(&data).unwrap();
     assert_eq!(restored, *e.project());
     let roots = restored.clip(group).unwrap().audio_events().sources;
@@ -414,4 +420,58 @@ fn current_group_inventory_requires_each_clip_and_explicit_nullable_state() {
         duplicate["grouped_audio"].as_array_mut().unwrap().push(row);
         assert!(decode(&bytes(&duplicate)).is_err());
     }
+}
+
+#[test]
+fn time_group_midi_empty_margins_and_note_timing_survive_current_codec() {
+    use hex_project::{BeatTime, TimeRange};
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = e
+        .execute(Command::AddTrack {
+            name: "notes".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = e
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ONE,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    e.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })
+    .unwrap();
+    let end = e
+        .project()
+        .tempo_map()
+        .beat_to_frame(BeatTime::from_quarters(3).unwrap())
+        .unwrap();
+    let Created::Clip(group) = e
+        .execute(Command::GroupTimeRange(
+            TimeRange::new(vec![track], 0, end).unwrap(),
+        ))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let reopened = decode(&encode(e.project()).unwrap()).unwrap();
+    assert_eq!(reopened, *e.project());
+    let clip = reopened.midi_clip(group).unwrap();
+    assert_eq!(
+        (clip.start(), clip.length()),
+        (BeatTime::ZERO, BeatTime::from_quarters(3).unwrap())
+    );
+    assert_eq!(clip.notes()[0].start(), BeatTime::ONE);
 }

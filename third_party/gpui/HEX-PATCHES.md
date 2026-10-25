@@ -271,3 +271,40 @@ archive/file hashes and unrelated patch blocks are retained; changed hashes and
 the cumulative patch are regenerated from the verified original archive. Native
 hover selection is checked headlessly; actual cursor appearance remains a user
 interaction acceptance item on the optimized macOS app.
+
+25 October immutable scaled path mesh sharing: Path uses a private owned/shared
+vertex store. Mutable logical-pixel construction retains its directly owned Vec,
+while scaling keeps original arithmetic/order and publishes a fresh shared
+Arc<Vec<_>> array. Cloned scaled Scene paths retain immutable mesh bytes; order,
+PathId, mask, color, bounds and contour state remain independent values. Editing
+a shared path detaches through Arc::make_mut; normal construction avoids that
+atomic work. Existing metal/blade/directx iterators still copy vertex values into
+renderer-owned uploads; no borrowed GPU lifetime, native/unsafe call, dependency
+or public method change. The root-locked oracle checks clone/original edits,
+shared mutation and exact scaled xy/ST/mask bits with retained mixed-alpha/order/
+refusal/repeated replay coverage. Full navigation profiles include construction,
+sharing and metadata costs, and retain RSS/tails separately from native GPU
+acceptance. Published archive/license and unrelated cumulative blocks remain;
+changed scene bytes are reproduced by original-archive and offline full guards.
+
+25 October sibling query upper-bound reuse: BoundsTree's private draw-order
+query retains both child maxima already loaded for visitation order. After the
+first recursive result it visits the second child only if that child's maximum
+can improve the result. No new geometric predicate or placement-path pruning,
+topology, storage, allocation, reservation or painter-order change. The locked
+independent leaf-scan oracle includes higher-child misses, tied maxima and
+already-satisfied queries, retaining numeric union/clear/overflow coverage.
+
+### Compact element identities
+
+`GlobalElementId` and Window's active/deferred ID stacks use eight inline
+`ElementId` entries instead of 32. The existing SmallVec dynamic spill retains
+longer paths without a depth limit or truncation. This reduces inline payloads
+moved through Drawable phases and state-map keys. It changes the concrete inline
+capacity exposed through GlobalElementId's derived Deref target; callers retain
+the same complete sequence, equality/hash/display and push/pop semantics. No
+identity interning, shared ownership, lifecycle, dispatch, layout or painter
+contract changes. Deep identical-prefix click/focus and held-click repaint tests,
+plus keys built in ordinary/forced-dynamic storage, exercise the retained values
+and state through the existing root-locked UI test-support graph. Source size
+alone is not navigation performance or native acceptance evidence.

@@ -145,7 +145,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "midi one-shot policy references a missing midi clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 #[cfg(test)]
@@ -251,7 +251,7 @@ mod tests {
             panic!("midi")
         };
         clip.source.one_shot_boundary = boundary;
-        Project::from_snapshot(s).unwrap()
+        Project::from_legacy_snapshot(s).unwrap()
     }
     #[test]
     fn policy39_roundtrip_preserves_retained_notes_and_all_frozen38_fields() {
@@ -352,7 +352,7 @@ mod tests {
                 panic!("hybrid")
             };
             midi_clips[0].one_shot_boundary = MidiOneShotBoundary::LoopEnd;
-            let loop_end = Project::from_snapshot(snapshot).unwrap();
+            let loop_end = Project::from_legacy_snapshot(snapshot).unwrap();
             assert!(matches!(
                 writer(&loop_end),
                 Err(StorageError::Invalid(

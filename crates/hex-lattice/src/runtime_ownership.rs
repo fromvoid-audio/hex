@@ -22,6 +22,13 @@ pub(super) enum RuntimeOwnership {
     Foreign(ForeignRuntime),
 }
 impl RuntimeOwnership {
+    pub(super) fn take_dynamics_meter(&mut self) -> Option<crate::DynamicsMeter> {
+        match self {
+            Self::Legacy { primary, .. } => primary.take_dynamics_meter(),
+            Self::Owned(runtime) => runtime.take_dynamics_meter(),
+            Self::Memoryless | Self::Foreign(_) => None,
+        }
+    }
     pub(super) fn prepare(
         factory: Option<&PreparedProcessorFactory>,
     ) -> Result<Self, DeviceContractError> {
@@ -136,6 +143,20 @@ impl RuntimeOwnership {
                 new.inherit_from(old.as_ref())
             }
             _ => {}
+        }
+    }
+    pub(super) fn transfer_history_from(&mut self, old: &mut Self) {
+        if let (Self::Owned(new), Self::Owned(previous)) = (&mut *self, &mut *old) {
+            if new.can_inherit_from(previous.as_ref()) {
+                new.transfer_history_from(previous.as_mut());
+            }
+        } else {
+            self.inherit_from(old);
+        }
+    }
+    pub(super) fn begin_output_tail(&mut self) {
+        if let Self::Owned(runtime) = self {
+            runtime.begin_output_tail();
         }
     }
     pub(super) fn begin(&mut self) {

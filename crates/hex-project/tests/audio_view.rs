@@ -6,6 +6,84 @@ use hex_project::{
 };
 const Q: u64 = 1 << 32;
 
+#[test]
+fn repeat_handle_extension_projects_only_audible_musical_occurrences() {
+    for (sample_rate, micro_bpm) in [(48_000, 120_000_000), (44_100, 149_123_456)] {
+        let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 32).unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(micro_bpm).unwrap(),
+            })
+            .unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "fractional musical cycle".into(),
+                path: "never-opened.wav".into(),
+                sample_rate,
+                frames: 1_006,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        for repeats in 1..=8 {
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip,
+                    operation: AudioViewResizeOperation::RepeatOuterEnd {
+                        project_frame: 1_006 * repeats,
+                    },
+                })
+                .unwrap();
+            let canonical = editor.project().clip(clip).unwrap();
+            let projection =
+                AudioViewProjection::new(canonical, editor.project().tempo_map()).unwrap();
+            let mut next = 0;
+            for index in 0..projection.occurrence_count() {
+                let occurrence = projection.occurrence(index).unwrap();
+                assert_eq!(occurrence.destination_start, next);
+                assert!(occurrence.destination_start < occurrence.destination_end);
+                assert_eq!(occurrence.root_end - occurrence.root_start, 1_006);
+                next = occurrence.destination_end;
+            }
+            assert_eq!(next, 1_006 * repeats);
+            assert_eq!(projection.occurrence_count(), repeats);
+            assert_eq!(canonical.source_length(), 1_006);
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip,
+                    operation: AudioViewResizeOperation::RepeatOuterEnd {
+                        project_frame: 1_006 * repeats + 1,
+                    },
+                })
+                .unwrap();
+            let projection = AudioViewProjection::new(
+                editor.project().clip(clip).unwrap(),
+                editor.project().tempo_map(),
+            )
+            .unwrap();
+            assert_eq!(
+                projection.occurrence_count(),
+                repeats + 1,
+                "a real one-frame final occurrence must remain"
+            );
+            let tail = projection.occurrence(repeats).unwrap();
+            assert_eq!(
+                (tail.destination_start, tail.destination_end),
+                (1_006 * repeats, 1_006 * repeats + 1)
+            );
+            assert_eq!((tail.root_start, tail.root_end), (0, 1));
+        }
+    }
+}
+
 fn review_adjacent_fixture() -> (Editor, ClipId, ClipId, ClipId) {
     let (mut editor, clip) = frame_fixture(AudioViewMode::Repeat);
     let track = editor.project().tracks()[0].id();
@@ -761,22 +839,50 @@ fn invalid_clock_phase_zero_span_and_overflow_refuse_without_altering_original()
         .unwrap()
         .outer_length = AudioDomainClock::Beats(beat(u64::MAX));
     assert!(Project::from_snapshot(invalid).is_err());
-    let mut invalid = e.project().snapshot();
-    let placement = invalid.tracks[0].audio_clips_mut().unwrap()[0]
-        .edit
-        .as_mut()
-        .unwrap()
-        .placement
-        .as_mut()
-        .unwrap();
-    placement.cycle_phase = 2 * Q - 1;
-    assert!(
-        Project::from_snapshot(invalid).is_err(),
-        "positive beat span that quantizes to no first frame must refuse"
-    );
     assert_eq!(
         Project::from_snapshot(original.clone()).unwrap().snapshot(),
         original
+    );
+}
+
+#[test]
+fn musical_repeat_skips_a_subframe_intro_without_changing_its_authored_cursor() {
+    let (e, id) = beat_fixture();
+    let mut snapshot = e.project().snapshot();
+    let clip = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    let placement = clip.edit.as_mut().unwrap().placement.as_mut().unwrap();
+    placement.cycle_phase = 2 * Q - 1;
+
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let canonical = project.clip(id).unwrap();
+    let projection = AudioViewProjection::new(canonical, project.tempo_map()).unwrap();
+    let start = canonical
+        .audio_edit()
+        .unwrap()
+        .live_musical_start()
+        .unwrap();
+    assert_eq!(projection.placement_reference(), i128::from(start.raw()));
+    assert!(projection.has_subframe_intro());
+    assert_eq!(
+        canonical
+            .audio_edit()
+            .unwrap()
+            .placement
+            .unwrap()
+            .cycle_phase,
+        2 * Q - 1
+    );
+    assert!(projection.occurrence_count() > 0);
+    let ranges = projection
+        .root_ranges_for_frames(canonical.start()..canonical.start() + 1)
+        .unwrap();
+    assert_eq!(
+        ranges[0].as_ref().unwrap().start,
+        canonical.audio_edit().unwrap().view_start
+    );
+    assert!(
+        ranges[1].is_none(),
+        "an inaudible intro must not select the previous cycle's tail"
     );
 }
 

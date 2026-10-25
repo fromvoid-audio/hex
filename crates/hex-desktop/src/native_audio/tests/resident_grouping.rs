@@ -203,7 +203,84 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     }
     assert_eq!(replay(&mut h), repeated);
     h.run(Request::Undo);
+    let (applied, _) = h.applied(applied);
+    assert_eq!(replay(&mut h), expected);
+    // Re-group a repeated retained root through the actual render/admission lane.
+    let before_render = h.run(Request::Edit(Command::ResizeAudioClipView {
+        clip: group,
+        operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 205 },
+    }));
+    let (mut applied, _) = h.applied(applied);
+    let expected = replay(&mut h);
+    let clips = before_render
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .clips()
+        .iter()
+        .map(|c| c.id())
+        .collect::<Vec<_>>();
+    let request = || Request::GroupClips {
+        project_generation: before_render
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context()
+            .project_generation,
+        revision: before_render.state.revision,
+        clips: clips.clone(),
+    };
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service.submit(request()).unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("final admission refusal")
+    );
+    assert_eq!(refused.state.project, before_render.state.project);
+    assert_eq!(refused.state.revision, before_render.state.revision);
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    let rendered = h.run(request());
+    (applied, _) = h.applied(applied);
+    let Some(Created::Clip(result)) = rendered.created else {
+        panic!("one clip")
+    };
+    assert_eq!(
+        rendered.state.project.track(track).unwrap().clips().len(),
+        1
+    );
+    assert!(
+        !rendered
+            .state
+            .project
+            .clip(result)
+            .unwrap()
+            .has_retained_audio_roots()
+    );
+    assert_eq!(replay(&mut h), expected);
+    let undone = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    let mut restored = before_render.state.project.snapshot();
+    restored.next_id = undone.state.project.snapshot().next_id;
+    assert_eq!(undone.state.project.snapshot(), restored);
+    assert_eq!(replay(&mut h), expected);
+    let redone = h.run(Request::Redo);
     h.applied(applied);
+    assert_eq!(redone.state.project, rendered.state.project);
+    assert_eq!(replay(&mut h), expected);
+    let saved = files.0.join("rendered-group.hex");
+    h.run(Request::SaveNew(saved.clone()));
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::Open(saved));
+    assert_eq!(reopened.state.project, rendered.state.project);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    h.applied(0);
     assert_eq!(replay(&mut h), expected);
 }
 

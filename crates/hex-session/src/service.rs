@@ -63,6 +63,9 @@ pub use request_cancellation::RequestCancellation;
 mod effect_bus_tests;
 #[cfg(test)]
 mod format_upgrade_tests;
+#[cfg(test)]
+#[path = "service/limiter_tests.rs"]
+mod limiter_tests;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -1238,7 +1241,9 @@ impl Service {
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
         if let Request::BounceArrangement {
-            target: hex_project::BounceTarget::Clips(ids),
+            target:
+                hex_project::BounceTarget::Clips(ids)
+                | hex_project::BounceTarget::AudioGroup { clips: ids, .. },
             ..
         } = &request
         {
@@ -2422,7 +2427,20 @@ fn run_worker(
             _ => None,
         };
         let (request, resolution_failure) = match resolved_edit {
-            Some(Ok(command)) => (Request::Edit(command), None),
+            Some(Ok(command)) => match session.project().audio_group_render_target(&command) {
+                Ok(Some(target)) => (
+                    Request::BounceArrangement {
+                        project_generation,
+                        revision,
+                        target,
+                        in_place: true,
+                        control: hex_export::ExportControl::default(),
+                    },
+                    None,
+                ),
+                Ok(None) => (Request::Edit(command), None),
+                Err(reason) => (request, Some(reason.to_string())),
+            },
             Some(Err(reason)) => (request, Some(reason)),
             None => (request, None),
         };
@@ -3817,7 +3835,13 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
-                Request::Edit(command) if private_sampler => {
+                Request::Edit(command)
+                    if private_sampler
+                        || matches!(&command,
+                        Command::BindTrackSource { source: Some(source), .. }
+                        if session.project().native_source(*source).is_some_and(|definition|
+                            hex_engine::native_device_resources::requires_private_sampler_state(definition.instrument().state()))) =>
+                {
                     let current = compiled.as_ref().map(|(_, p)| {
                         hex_engine::native_device_resources::ControlSamplerSelection {
                             sources: current_sources.as_ref(),
@@ -5021,10 +5045,17 @@ fn run_worker(
                     in_place,
                     control,
                 } => {
+                    let grouping = target.is_audio_group();
                     let result = if captured_generation != project_generation
                         || captured_revision != revision
                     {
                         Err("bounce cancelled · project changed".into())
+                    } else if grouping
+                        && (pending_sampler_parameter.is_some()
+                            || device_gesture.snapshot().is_some()
+                            || tuning_gesture.snapshot().is_some())
+                    {
+                        Err("finish or cancel the active gesture before grouping clips".into())
                     } else if control.is_cancelled() {
                         Err("bounce cancelled".into())
                     } else {
@@ -5080,7 +5111,14 @@ fn run_worker(
                             unsaved = true;
                             replacement_revision = Some(prepared);
                             created = Some(result);
-                            status = Some("arrangement bounced to audio".into());
+                            status = Some(
+                                if grouping {
+                                    "audio grouped into one clip"
+                                } else {
+                                    "arrangement bounced to audio"
+                                }
+                                .into(),
+                            );
                         }
                         Err(reason) => error = Some(reason),
                     }

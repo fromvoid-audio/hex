@@ -72,7 +72,7 @@ impl Drop for FileCustody {
         }
     }
 }
-pub(super) fn roundtrip(
+pub(in crate::editor) fn roundtrip(
     editor: &Entity<EditorView>,
     visual: &mut VisualTestContext,
     environment: &Arc<Environment>,

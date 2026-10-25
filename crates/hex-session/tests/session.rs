@@ -918,6 +918,97 @@ fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
 }
 
 #[test]
+fn musical_repeat_handle_extension_prepares_pcm_history_and_reopens_without_empty_occurrences() {
+    use hex_project::AudioViewResizeOperation as Resize;
+    let directory = TempDir::new();
+    let samples: Vec<[i16; 2]> = (0..1_006)
+        .map(|i| {
+            let value = ((i % 17) as i16 - 8) * 1_000;
+            [value, -value]
+        })
+        .collect();
+    let mut session = Session::new(48_000, 32, 16_384).unwrap();
+    let (created, mut previous) = session
+        .import_prepared_revision(
+            prepare(&directory, "fractional-cycle.wav", 48_000, &samples),
+            None,
+        )
+        .unwrap();
+    let (_, asset, clip) = imported_ids(created);
+    for command in [
+        Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        },
+        Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        },
+    ] {
+        (_, previous) = session
+            .command_prepared_revision(command, Some(&previous))
+            .unwrap();
+    }
+    for repeats in [2, 3, 8] {
+        let before = session.project().clone();
+        // Keep a genuinely audible one-frame final repeat in the last case.
+        let end = 1_006 * repeats + u64::from(repeats == 8);
+        (_, previous) = session
+            .command_prepared_revision(
+                Command::ResizeAudioClipView {
+                    clip,
+                    operation: Resize::RepeatOuterEnd { project_frame: end },
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let expected: Vec<_> = samples
+            .iter()
+            .cycle()
+            .take(end as usize)
+            .map(|frame| frame.map(|sample| f32::from(sample) / 32_768.0))
+            .collect();
+        for block in [1, 127, 257] {
+            let mut renderer = hex_engine::Renderer::new(previous.arrangement());
+            renderer.play();
+            assert_eq!(render_blocks(&mut renderer, end as usize, block), expected);
+        }
+        let after = session.project().clone();
+        previous = session
+            .undo_prepared_revision(Some(&previous))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &before);
+        previous = session
+            .redo_prepared_revision(Some(&previous))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &after);
+    }
+    let path = directory.path().join("musical-loop.hex");
+    hex_storage::save_new(&path, session.project()).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(&loaded, session.project());
+    let pcm = decode_wav_file(
+        directory.path().join("fractional-cycle.wav"),
+        Limits::new(65_536, 8_192),
+    )
+    .unwrap();
+    let reopened = Session::from_loaded(loaded, 8, 16_384, vec![(asset, pcm)]).unwrap();
+    let graph = reopened.compile().unwrap();
+    let mut renderer = hex_engine::Renderer::new(&graph);
+    renderer.play();
+    let expected: Vec<_> = samples
+        .iter()
+        .cycle()
+        .take(8_049)
+        .map(|frame| frame.map(|sample| f32::from(sample) / 32_768.0))
+        .collect();
+    assert_eq!(render_blocks(&mut renderer, expected.len(), 31), expected);
+}
+
+#[test]
 fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_history() {
     use hex_project::{AudioViewResizeOperation as Resize, TrimEdge};
     let directory = TempDir::new();
@@ -1142,4 +1233,225 @@ fn clip_loop_resize_midi_trimmed_window_reopens_and_exports_the_same_prepared_no
     assert!(session.redo());
     assert!(session.redo());
     assert_eq!(session.project(), &resized);
+}
+
+#[test]
+fn retained_native_sources_survive_session_history_track_removal_and_media_reopen() {
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    let directory = TempDir::new();
+    let mut session = Session::new(48000, 8, 64).unwrap();
+    let Created::Imported { track, asset, .. } = session
+        .import(prepare(
+            &directory,
+            "retained.wav",
+            48000,
+            &[[8192, -4096]; 8],
+        ))
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let state = hex_project::default_instrument_state()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    let Created::NativeSource(source) = session
+        .command(Command::CreateNativeSource {
+            name: "retained".into(),
+            devices: vec![state],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    session.command(Command::RemoveTrack(track)).unwrap();
+    let retained = session.project().native_source(source).unwrap().clone();
+    assert!(session.command(Command::RemoveAsset(asset)).is_err());
+    let saved = directory.path().join("retained.hex");
+    hex_storage::save_new(&saved, session.project()).unwrap();
+    let loaded = hex_storage::load(&saved).unwrap();
+    let pcm =
+        decode_wav_file(directory.path().join("retained.wav"), Limits::new(4096, 64)).unwrap();
+    assert!(
+        Session::from_loaded(loaded.clone(), 8, 64, vec![]).is_err(),
+        "missing media refuses open"
+    );
+    let mut reopened = Session::from_loaded(loaded, 8, 64, vec![(asset, pcm)]).unwrap();
+    assert!(!reopened.can_undo());
+    assert_eq!(reopened.project().native_source(source), Some(&retained));
+    assert!(reopened.project().tracks().is_empty());
+    let graph = reopened.compile().unwrap();
+    let mut renderer = hex_engine::Renderer::new(&graph);
+    renderer.play();
+    let mut output = [[1.0; 2]; 8];
+    renderer.render(&mut output).unwrap();
+    assert_eq!(
+        output, [[0.0; 2]; 8],
+        "unassigned sources must not create implicit playback"
+    );
+    reopened
+        .command(Command::RenameNativeSource {
+            source,
+            name: "renamed".into(),
+        })
+        .unwrap();
+    assert!(reopened.undo());
+    assert_eq!(reopened.project().native_source(source), Some(&retained));
+    assert!(reopened.redo());
+    assert_eq!(
+        reopened.project().native_source(source).unwrap().name(),
+        "renamed"
+    );
+    reopened
+        .command(Command::RemoveNativeSource(source))
+        .unwrap();
+    assert!(reopened.project().native_source(source).is_none());
+    assert!(reopened.undo());
+    assert!(reopened.project().native_source(source).is_some());
+    std::fs::remove_file(directory.path().join("retained.wav")).unwrap();
+    assert!(decode_wav_file(directory.path().join("retained.wav"), Limits::new(4096, 64)).is_err());
+    assert_eq!(
+        hex_storage::load(&saved).unwrap().native_source(source),
+        Some(&retained),
+        "missing files do not erase authored references"
+    );
+}
+
+#[test]
+fn bound_synth_preserves_local_prefix_suffix_audio_mix_through_save_reopen_and_unlink() {
+    fn add_note(session: &mut Session, track: TrackId) {
+        let Created::Clip(clip) = session
+            .command(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ONE,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        session
+            .command(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 69,
+                channel: 0,
+                velocity: 110,
+            })
+            .unwrap();
+    }
+    fn render(session: &Session) -> Vec<[f32; 2]> {
+        let graph = session.compile().unwrap();
+        let mut renderer = hex_engine::Renderer::new(&graph);
+        renderer.play();
+        let mut output = vec![[0.0; 2]; 24512];
+        renderer.render(&mut output).unwrap();
+        output
+    }
+    let directory = TempDir::new();
+    let mut session = Session::new(48000, 32, 64).unwrap();
+    let (track, asset, _) = imported_ids(
+        session
+            .import(prepare(&directory, "audio.wav", 48000, &[[8192, -4096]; 8]))
+            .unwrap(),
+    );
+    let Created::Device(instrument) = session
+        .command(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument")
+    };
+    let source = session.project().track(track).unwrap().source_id().unwrap();
+    let utility = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: Some(instrument),
+            state: utility.clone().with_input_gain_millidb(-6000).unwrap(),
+        })
+        .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: utility.with_input_gain_millidb(3000).unwrap(),
+        })
+        .unwrap();
+    session.command(Command::Gain { track, gain: 0.7 }).unwrap();
+    add_note(&mut session, track);
+    let mut reference = Session::new(48000, 8, 0).unwrap();
+    let Created::Track(reference_track) = reference
+        .command(Command::InsertTrackWithDevice {
+            name: "sine oracle".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("reference track")
+    };
+    add_note(&mut reference, reference_track);
+    let sine = render(&reference);
+    assert!(sine[24000..].iter().any(|f| f[0].abs() > 0.001));
+    let actual = render(&session);
+    let prefix = 10.0_f32.powf(-6.0 / 20.0);
+    let suffix = 10.0_f32.powf(3.0 / 20.0);
+    for (frame, (actual, tone)) in actual.iter().zip(&sine).enumerate() {
+        for channel in 0..2 {
+            let audio = if frame < 8 {
+                [0.25_f32, -0.125][channel]
+            } else {
+                0.0
+            };
+            let expected = (audio * prefix + tone[channel]) * suffix * 0.7;
+            assert!(
+                (actual[channel] - expected).abs() < 2.0e-6,
+                "frame{frame}/channel{channel}: {} vs {expected}",
+                actual[channel]
+            );
+        }
+    }
+    let saved = directory.path().join("bound.hex");
+    hex_storage::save_new(&saved, session.project()).unwrap();
+    let restored = hex_storage::load(&saved).unwrap();
+    assert_eq!(restored.track(track).unwrap().source_id(), Some(source));
+    assert_eq!(
+        restored.track(track).unwrap().instrument_position(),
+        Some(1)
+    );
+    let pcm = decode_wav_file(directory.path().join("audio.wav"), Limits::new(4096, 64)).unwrap();
+    let mut reopened = Session::from_loaded(restored, 32, 64, vec![(asset, pcm)]).unwrap();
+    assert_eq!(render(&reopened), actual);
+    let definition = reopened.project().native_source(source).unwrap().clone();
+    reopened
+        .command(Command::BindTrackSource {
+            track,
+            source: None,
+        })
+        .unwrap();
+    assert_eq!(reopened.project().native_source(source), Some(&definition));
+    let detached = render(&reopened);
+    assert_eq!(
+        &detached[..8],
+        &actual[..8],
+        "local audio processing is unchanged by unlink"
+    );
+    assert!(detached[8..].iter().all(|f| *f == [0.0; 2]));
+    assert!(reopened.undo());
+    assert_eq!(render(&reopened), actual);
+    assert!(reopened.redo());
+    assert_eq!(render(&reopened), detached);
 }

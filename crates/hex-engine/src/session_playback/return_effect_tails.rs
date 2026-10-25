@@ -49,7 +49,8 @@ impl ReturnEffectTail {
         }
     }
 
-    pub(super) fn new(chain: NativeRuntimeChain, bus: &ReturnBus) -> Self {
+    pub(super) fn new(mut chain: NativeRuntimeChain, bus: &ReturnBus) -> Self {
+        chain.begin_output_tail();
         Self {
             chain,
             destination: TailDestination::Return(bus.id),
@@ -613,8 +614,9 @@ impl ReturnEffectTailPlan {
         self.validate_main(bank, old)?;
         if let Some((target, start, arrival)) = self.main_capture {
             current
-                .inherit_from_excluding_old_range(old, start..old.len())
+                .transfer_history_excluding_old_range(old, start..old.len())
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            old.begin_output_tail();
             let chain = std::mem::replace(old, NativeRuntimeChain::empty());
             bank.slots[target] = Some(ReturnEffectTail {
                 chain,

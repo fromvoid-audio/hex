@@ -1,5 +1,7 @@
 //! One active local draft and read-only prepared curves; the actor owns every
 //! committed edit. Detail and inline plots share pointer/command semantics.
+//! Inline automation owns its target independently of background clip selection;
+//! the detail lane follows the selected track only outside automation view.
 //! Released markers retain their source-stamped ordered receipt until the exact
 //! terminal and canonical state arrive in one receive; cancellation of held input
 //! never revokes already-admitted display custody.

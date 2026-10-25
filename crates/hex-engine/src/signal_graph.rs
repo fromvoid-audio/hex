@@ -506,6 +506,17 @@ impl SignalGraph {
                 .any(|track| !track.audio_feeds.is_empty())
             || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
     }
+    /// Serial Main latency needs clock history, but does not require rendering
+    /// all upstream sources and effects one sample at a time. Typed audio feeds
+    /// and pre-Main latency still use the general compensated routing kernel.
+    pub(crate) fn needs_upstream_frame_routing(&self) -> bool {
+        self.main_latency() != 0
+            || self
+                .tracks
+                .iter()
+                .any(|track| !track.audio_feeds.is_empty())
+            || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
+    }
     pub(crate) fn pre_main_compatible(&self, other: &Self) -> bool {
         if self.tracks.len() != other.tracks.len()
             || self.returns.len() != other.returns.len()
@@ -1043,6 +1054,12 @@ impl SignalRuntime {
 }
 pub(crate) struct OriginClock(pub(crate) Option<TransportStamp>);
 impl hex_lattice::NativeInstrumentClock for OriginClock {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        if offset != 0 {
+            return None;
+        }
+        self.0.and_then(|stamp| stamp.tempo_micro_bpm)
+    }
     fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
         if offset != 0 {
             return None;

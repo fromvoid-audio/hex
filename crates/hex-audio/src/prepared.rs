@@ -70,6 +70,8 @@ pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
 mod applied_source;
 #[cfg(all(test, feature = "allocation-probe"))]
+mod delay_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
 mod device_resources_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
@@ -2868,6 +2870,14 @@ impl Callback {
                         }
                     }
                     Some(Ok(None)) => {
+                        if self.active.is_some()
+                            && let Some(streams) = next.streams.as_mut()
+                        {
+                            // Pending wanted extents reserve pool capacity too.
+                            // Yield speculation before the predecessor renders
+                            // its next chunk, as eligible publications do.
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
                         self.deferred = Some(next);
                         return;
                     }
@@ -4150,7 +4160,8 @@ mod tests {
             state = settings.encode().unwrap();
             return_state = state.clone();
         }
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
@@ -4279,19 +4290,6 @@ mod tests {
     #[cfg(feature = "allocation-probe")]
     fn saturator_track_and_return_graph(drive_db: f32) -> Playback {
         use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-        use hex_project::{
-            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
-            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
-            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
-        };
-
-        const TRACK_ID: u64 = 1;
-        const ASSET_ID: u64 = 4;
-        const CLIP_ID: u64 = 5;
-        const TRACK_DEVICE_ID: u64 = 6;
-        const RETURN_ID: u64 = 7;
-        const RETURN_DEVICE_ID: u64 = 8;
-        const FRAMES: u64 = 512;
         let make_state = || {
             let mut state = hex_engine::default_native_device_state_for_class(
                 hex_engine::NativeDeviceClass::Effect,
@@ -4311,7 +4309,29 @@ mod tests {
             )
             .expect("saturator curve")
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        native_effect_track_and_return_graph(make_state())
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn native_effect_track_and_return_graph(
+        state: hex_lattice_contract::NativeDeviceState,
+    ) -> Playback {
+        use hex_project::{
+            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
+            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
+            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
+        };
+
+        const TRACK_ID: u64 = 1;
+        const ASSET_ID: u64 = 4;
+        const CLIP_ID: u64 = 5;
+        const TRACK_DEVICE_ID: u64 = 6;
+        const RETURN_ID: u64 = 7;
+        const RETURN_DEVICE_ID: u64 = 8;
+        const FRAMES: u64 = 512;
+        let make_state = || state.clone();
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4440,7 +4460,8 @@ mod tests {
             )
             .expect("compressor threshold")
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4543,19 +4564,6 @@ mod tests {
     #[cfg(feature = "allocation-probe")]
     fn gate_track_and_return_graph(floor_db: f32) -> Playback {
         use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-        use hex_project::{
-            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
-            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
-            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
-        };
-
-        const TRACK_ID: u64 = 1;
-        const ASSET_ID: u64 = 4;
-        const CLIP_ID: u64 = 5;
-        const TRACK_DEVICE_ID: u64 = 6;
-        const RETURN_ID: u64 = 7;
-        const RETURN_DEVICE_ID: u64 = 8;
-        const FRAMES: u64 = 512;
         let make_state = || {
             let mut state = hex_engine::default_native_device_state_for_class(
                 hex_engine::NativeDeviceClass::Effect,
@@ -4581,7 +4589,28 @@ mod tests {
             )
             .expect("gate floor")
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        native_track_and_return_graph(Some(make_state()))
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn native_track_and_return_graph(
+        state: Option<hex_lattice_contract::NativeDeviceState>,
+    ) -> Playback {
+        use hex_project::{
+            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
+            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
+            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
+        };
+
+        const TRACK_ID: u64 = 1;
+        const ASSET_ID: u64 = 4;
+        const CLIP_ID: u64 = 5;
+        const TRACK_DEVICE_ID: u64 = 6;
+        const RETURN_ID: u64 = 7;
+        const RETURN_DEVICE_ID: u64 = 8;
+        const FRAMES: u64 = 512;
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4613,12 +4642,16 @@ mod tests {
                 balance: 0.0,
                 muted: false,
                 soloed: false,
-                devices: vec![DeviceSnapshot {
-                    comparison: None,
-                    id: TRACK_DEVICE_ID,
-                    bypassed: false,
-                    state: make_state(),
-                }],
+                devices: state
+                    .as_ref()
+                    .map(|state| DeviceSnapshot {
+                        comparison: None,
+                        id: TRACK_DEVICE_ID,
+                        bypassed: false,
+                        state: state.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
@@ -4647,12 +4680,16 @@ mod tests {
                 name: "gate return fixture".into(),
                 gain: 0.75,
                 muted: false,
-                devices: vec![DeviceSnapshot {
-                    comparison: None,
-                    id: RETURN_DEVICE_ID,
-                    bypassed: false,
-                    state: make_state(),
-                }],
+                devices: state
+                    .as_ref()
+                    .map(|state| DeviceSnapshot {
+                        comparison: None,
+                        id: RETURN_DEVICE_ID,
+                        bypassed: false,
+                        state: state.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
             }],
             session: SessionSnapshot::default(),
             loop_region: None,
@@ -5152,6 +5189,46 @@ mod tests {
 
     #[cfg(feature = "allocation-probe")]
     #[test]
+    fn overdrive_track_return_handoff_and_render_allocate_nothing() {
+        use hex_devices::overdrive::{OVERDRIVE_DEFINITION as d, parameter};
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let original = d.default_state().unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(original.clone()))
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        let changed = d
+            .patch_parameter(&original, parameter::DRIVE, ParameterValue::Float(1.0))
+            .unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(changed))
+            .unwrap();
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
     fn compressor_track_and_return_revision_admission_and_render_allocate_nothing() {
         let (mut control, mut callback) = channel(48_000).expect("channel");
         control
@@ -5213,6 +5290,106 @@ mod tests {
         assert_eq!(output.as_slice(), expected_after.as_slice());
         control.request_shutdown();
         callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn reverb_track_return_render_edit_removal_stop_seek_and_shutdown_allocate_nothing() {
+        use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+        let state =
+            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))
+                .unwrap();
+        let changed = hex_engine::patch_native_device_parameter(
+            &state,
+            ParameterId::from_static(1),
+            ParameterValue::Float(2.5),
+        )
+        .unwrap();
+        let frozen = hex_engine::patch_native_device_parameter(
+            &changed,
+            ParameterId::from_static(26),
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut block = [[0.0; 2]; 127];
+        for state in [state, changed, frozen] {
+            control
+                .publish(native_track_and_return_graph(Some(state)))
+                .unwrap();
+            control.command(PlaybackCommand::Play).unwrap();
+            let counts = allocation_counter::measure(|| {
+                for _ in 0..40 {
+                    callback.begin_block();
+                    callback.render(&mut block).unwrap();
+                }
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(block.iter().flatten().any(|v| v.abs() > 0.0));
+            control.reclaim();
+        }
+        control
+            .publish(native_track_and_return_graph(None))
+            .unwrap();
+        let counts = allocation_counter::measure(|| {
+            for _ in 0..8 {
+                callback.begin_block();
+                callback.render(&mut block).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(
+            block.iter().flatten().any(|v| v.abs() > 0.0),
+            "removed effects drain their real boxed histories"
+        );
+        control.reclaim();
+        for command in [PlaybackCommand::Seek(0), PlaybackCommand::Stop] {
+            control.command(command).unwrap();
+            let counts = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut block).unwrap();
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        assert_eq!(block, [[0.0; 2]; 127]);
+        control.request_shutdown();
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
         control.reclaim();
     }
 
@@ -7622,7 +7799,8 @@ mod tests {
             SessionCellContentSnapshot, SessionCellSnapshot, SessionSnapshot, Snapshot, Tempo,
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -7669,6 +7847,7 @@ mod tests {
                     track: 1,
                     scene: 2,
                     content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                        loop_range: None,
                         active: true,
                         flavor: hex_project::ClipFlavor::default(),
                         gain: hex_project::ClipGain::UNITY,
@@ -8131,7 +8310,8 @@ mod tests {
             Project as CanonicalProject, SessionSnapshot, Snapshot, Tempo, TempoPoint,
             TrackContentSnapshot, TrackSnapshot,
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),

@@ -113,7 +113,7 @@ fn event_ruler_selection_grid_and_shortcuts_stay_inside_clip_editor(cx: &mut Tes
         assert_eq!(view.audio_event_editor.grid, SnapGrid::Off);
         assert_eq!(view.snap_grid, SnapGrid::Adaptive);
     });
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx,|view,_|assert!(matches!(view.last_enqueued_edit,Some(Command::EditAudioEvents{clip:id,operation:AudioEventEdit::SplitRange{start:_,end}}) if id==clip && end==cursor)));
 }
 
@@ -1022,4 +1022,79 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
             "back preserves automatic full-view mode"
         )
     });
+}
+
+#[gpui::test]
+fn loop_brace_matches_retained_source_coordinates_during_zoom_and_pan(cx: &mut TestAppContext) {
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, cx| {
+        let mut model =
+            hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 1)
+                .unwrap();
+        model
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: 24000,
+                    end: 48000,
+                    looping: true,
+                },
+            })
+            .unwrap();
+        let prior = v.state.as_ref().unwrap();
+        v.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
+            project: std::sync::Arc::new(model.project().clone()),
+            canonical_audio_source: prior.canonical_audio_source.clone(),
+            comparison_audio: prior.comparison_audio.clone(),
+            waveforms: prior.waveforms.clone(),
+            source_overviews: prior.source_overviews.clone(),
+            audio_clip_waveforms: prior.audio_clip_waveforms.clone(),
+            midi_preview: prior.midi_preview.clone(),
+            gain_preview: prior.gain_preview.clone(),
+            timeline_frames: prior.timeline_frames,
+            can_undo: prior.can_undo,
+            can_redo: prior.can_redo,
+            revision: prior.revision,
+            unsaved: prior.unsaved,
+            document_path: prior.document_path.clone(),
+        }));
+        cx.notify();
+    });
+    for (viewport, first, last) in [
+        (None, 0.25, 0.5),
+        (
+            Some(Viewport {
+                start: 0,
+                length: 48000,
+            }),
+            0.5,
+            1.0,
+        ),
+        (
+            Some(Viewport {
+                start: 24000,
+                length: 48000,
+            }),
+            0.0,
+            0.5,
+        ),
+    ] {
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.viewport = viewport;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let body = visual.debug_bounds("audio-events-waveform").unwrap();
+        let bar = visual.debug_bounds("audio-loop-ruler").unwrap();
+        assert_eq!((body.left(), body.size.width), (bar.left(), bar.size.width));
+        let a = visual.debug_bounds("audio-loop-start-marker").unwrap();
+        let b = visual.debug_bounds("audio-loop-end-marker").unwrap();
+        assert!(
+            (f32::from(a.left() - bar.left()) - f32::from(bar.size.width) * first).abs() < 0.05
+        );
+        assert!(
+            (f32::from(b.right() - bar.left()) - f32::from(bar.size.width) * last).abs() < 0.05
+        );
+    }
 }

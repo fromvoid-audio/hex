@@ -19,6 +19,13 @@ impl<'a> CanonicalMidiTiming<'a> {
     }
 }
 impl MidiTiming for CanonicalMidiTiming<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        Some(
+            self.canonical
+                .tempo_at(self.canonical.frame_to_beat(frame).ok()?)
+                .micro_bpm(),
+        )
+    }
     fn sample_rate(&self) -> u32 {
         self.canonical.sample_rate()
     }

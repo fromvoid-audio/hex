@@ -268,3 +268,109 @@ fn g_time_selection_cuts_boundary_clips_and_overrides_retained_clip_selection(
         assert_eq!(restored, before.snapshot());
     });
 }
+
+#[gpui::test]
+fn g_time_selection_keeps_empty_margins_and_original_event_timing(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, clips[2], false);
+    editor.update(&mut visual, |v, _| {
+        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+        v.time_selection = Some(super::super::time_selection::TimeSelection {
+            anchor_track: track,
+            end_track: track,
+            anchor_frame: 36_000,
+            end_frame: 132_000,
+        });
+    });
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let p = &v.state.as_ref().unwrap().project;
+        let group = p.clip(v.selected_clip.unwrap()).unwrap();
+        assert_eq!((group.start(), group.duration()), (36_000, 96_000));
+        assert_eq!(
+            group
+                .audio_events()
+                .events
+                .iter()
+                .map(|event| (event.start, event.end))
+                .collect::<Vec<_>>(),
+            vec![(12_000, 36_000), (60_000, 84_000)]
+        );
+        assert_eq!(p.clip(clips[2]).unwrap().start(), 144_000);
+        assert_eq!(p.tracks()[0].clips().len(), 2);
+    });
+}
+
+#[gpui::test]
+fn g_renders_a_repeated_audio_group_and_selects_its_one_result(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupClips(clips[..2].to_vec()))));
+    });
+    pump(&editor, &mut visual);
+    let group = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0]
+            .clips()
+            .iter()
+            .find(|c| c.has_retained_audio_roots())
+            .unwrap()
+            .id()
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 140_000
+            },
+        })));
+    });
+    pump(&editor, &mut visual);
+    click(&mut visual, group, false);
+    click(&mut visual, clips[2], true);
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = &view.state.as_ref().unwrap().project;
+        let selected = view.selected_clip.unwrap();
+        assert_eq!(project.tracks()[0].clips().len(), 1);
+        assert_eq!(view.selected_clip_ids(), vec![selected]);
+        assert!(!project.clip(selected).unwrap().has_retained_audio_roots());
+        assert!(!project.clip(selected).unwrap().looping());
+        assert!(view.bounce_control.is_none());
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let restored = view.state.as_ref().unwrap().project.snapshot();
+        let mut expected = before;
+        expected.next_id = restored.next_id;
+        assert_eq!(restored, expected);
+        let mut selected = vec![group, clips[2]];
+        selected.sort();
+        assert_eq!(view.selected_clip_ids(), selected);
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let selected = view.selected_clip.unwrap();
+        assert_eq!(view.selected_clip_ids(), vec![selected]);
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(selected)
+                .is_some()
+        );
+    });
+}

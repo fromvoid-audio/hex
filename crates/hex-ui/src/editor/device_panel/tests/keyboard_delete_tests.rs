@@ -770,14 +770,19 @@ fn pointer_remove_retains_keyboard(cx: &mut TestAppContext, kind: u8) {
         .expect("remove control");
     visual.simulate_click(remove.center(), Modifiers::default());
     pump_until(&editor, cx, |view| {
+        let project = &view.state.as_ref().unwrap().project;
         settled(view)
-            && view
-                .state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(device)
-                .is_none()
+            && if kind == 1 {
+                project.track(track).unwrap().instrument().is_none()
+            } else {
+                project.device(device).is_none()
+            }
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.native_sources(),
+            original.native_sources()
+        );
     });
     visual.run_until_parked();
     let focused = visual.update(|window, cx| window.focused(cx).is_some());
@@ -787,14 +792,7 @@ fn pointer_remove_retains_keyboard(cx: &mut TestAppContext, kind: u8) {
         "pointer X retired the focused card and blurred the editor before real Cmd-Z"
     );
     pump_until(&editor, cx, |view| {
-        settled(view)
-            && view
-                .state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(device)
-                .is_some()
+        settled(view) && view.state.as_ref().unwrap().project == original
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original)
@@ -965,6 +963,15 @@ fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
     for device in [effect, instrument] {
         let point = title(&mut visual, device);
         visual.simulate_click(point, Modifiers::default());
+        visual.simulate_keystrokes("a");
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+            assert!(
+                !view.automation_view.enabled,
+                "a focused card keeps its own context"
+            );
+        });
         visual.simulate_keystrokes("c");
         pump_until(&editor, cx, settled);
         let changed = editor.read_with(cx, |view, _| {

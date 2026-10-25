@@ -1909,6 +1909,17 @@ impl Session {
                         "live section edits that change the tempo map require stopped playback",
                     ));
                 }
+                if current.map_or_else(
+                    || snapshot.prepared.has_arrangement_mutable_instruments(),
+                    |old| {
+                        old.prepared
+                            .section_midi_relocation_requires_stop(&snapshot.prepared)
+                    },
+                ) {
+                    return Err(SessionError::Invalid(
+                        "stop playback before relocating instrument midi with section edits or history",
+                    ));
+                }
                 // Keep the launched loop at its musical timeline range. A section
                 // move changes the music under that range, never teleports transport.
                 let region = section_loop
@@ -1975,6 +1986,7 @@ mod tests {
     mod bounce_tests;
     mod export_tests;
     mod plugin_effect_tests;
+    mod source_binding_tests;
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Duration;

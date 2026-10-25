@@ -709,59 +709,183 @@ fn directed_clip_previews_share_the_total_waveform_leaf_budget() {
 
 #[test]
 fn time_range_group_prepares_identical_audio_and_roundtrips_complete_state() {
-    let (mut session, first, previous) = fixture();
-    let (_, previous) = session
-        .command_prepared_revision(
-            Command::SplitClip {
-                clip: first,
-                frame: 4_000,
-            },
-            Some(&previous),
-        )
-        .unwrap();
-    let before = session.project().clone();
-    let track = before.tracks()[0].id();
-    let render = |revision: &hex_engine::PreparedRevision, block| {
-        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
-        renderer.play();
-        let mut out = vec![[0.0; 2]; 8_000];
-        for chunk in out.chunks_mut(block) {
-            renderer.render(chunk).unwrap();
-        }
-        out
-    };
-    let expected = render(&previous, 63);
-    let (Created::Clip(group), changed) = session
-        .command_prepared_revision(
-            Command::GroupTimeRange(
-                hex_project::TimeRange::new(vec![track], 1_000, 7_000).unwrap(),
+    for (start, end) in [(500, 4_500), (1_000, 11_000), (500, 11_000)] {
+        let (mut session, first, previous) = fixture();
+        let (_, previous) = session
+            .command_prepared_revision(
+                Command::MoveClip {
+                    track: session.project().tracks()[0].id(),
+                    clip: first,
+                    start: 1_000,
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let (_, previous) = session
+            .command_prepared_revision(
+                Command::SplitClip {
+                    clip: first,
+                    frame: 5_000,
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let before = session.project().clone();
+        let track = before.tracks()[0].id();
+        let render = |revision: &hex_engine::PreparedRevision, block| {
+            let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+            renderer.play();
+            let mut out = vec![[0.0; 2]; 12_000];
+            for chunk in out.chunks_mut(block) {
+                renderer.render(chunk).unwrap();
+            }
+            out
+        };
+        let expected = render(&previous, 63);
+        let (Created::Clip(group), changed) = session
+            .command_prepared_revision(
+                Command::GroupTimeRange(
+                    hex_project::TimeRange::new(vec![track], start, end).unwrap(),
+                ),
+                Some(&previous),
+            )
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        assert_eq!(
+            (
+                session.project().clip(group).unwrap().start(),
+                session.project().clip(group).unwrap().duration()
             ),
-            Some(&previous),
-        )
-        .unwrap()
-    else {
-        panic!("group")
-    };
-    assert_eq!(session.project().clip(group).unwrap().duration(), 6_000);
-    assert_eq!(render(&changed, 257), expected);
-    let after = session.project().clone();
-    assert_eq!(
-        hex_storage::decode(&hex_storage::encode(&after).unwrap()).unwrap(),
-        after
-    );
-    let undone = session
-        .undo_prepared_revision(Some(&changed))
-        .unwrap()
-        .unwrap();
-    let restored = session.project().snapshot();
-    let mut expected_before = before.snapshot();
-    expected_before.next_id = restored.next_id;
-    assert_eq!(restored, expected_before);
-    assert_eq!(render(&undone, 63), expected);
-    let redone = session
-        .redo_prepared_revision(Some(&undone))
-        .unwrap()
-        .unwrap();
-    assert_eq!(session.project(), &after);
-    assert_eq!(render(&redone, 127), expected);
+            (start, end - start)
+        );
+        assert_eq!(render(&changed, 257), expected);
+        let after = session.project().clone();
+        assert_eq!(
+            hex_storage::decode(&hex_storage::encode(&after).unwrap()).unwrap(),
+            after
+        );
+        let undone = session
+            .undo_prepared_revision(Some(&changed))
+            .unwrap()
+            .unwrap();
+        let restored = session.project().snapshot();
+        let mut expected_before = before.snapshot();
+        expected_before.next_id = restored.next_id;
+        assert_eq!(restored, expected_before);
+        assert_eq!(render(&undone, 63), expected);
+        let redone = session
+            .redo_prepared_revision(Some(&undone))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &after);
+        assert_eq!(render(&redone, 127), expected);
+    }
+}
+
+#[test]
+fn clip_loop_cycle_range_repeats_retained_pcm_without_changing_placement_or_history_custody() {
+    use hex_project::{AudioViewMode, AudioViewResizeOperation};
+    fn render(revision: &hex_engine::PreparedRevision) -> Vec<hex_engine::Frame> {
+        let mut r = hex_engine::Renderer::new(revision.arrangement());
+        r.play();
+        let mut frames = vec![[0.0; 2]; 8000];
+        for block in frames.chunks_mut(113) {
+            r.render(block).unwrap();
+        }
+        frames
+    }
+    for (musical, pitched) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (mut session, clip, mut previous) = fixture();
+        if musical {
+            previous = session
+                .command_prepared_revision(
+                    Command::SetAudioClipMusical {
+                        clip,
+                        enabled: true,
+                    },
+                    Some(&previous),
+                )
+                .unwrap()
+                .1;
+        }
+        if pitched {
+            session.max_resident_frames = 100_000;
+            previous = session
+                .command_prepared_revision(
+                    Command::SetAudioClipPitch { clip, cents: 700 },
+                    Some(&previous),
+                )
+                .unwrap()
+                .1;
+        }
+        let original = session.project().snapshot();
+        let original_clip = session.project().clip(clip).unwrap().clone();
+        let root = original_clip.audio_event_root();
+        let expected = render(&previous);
+        let first = root.domain.clock.length() / 4;
+        let last = first * 3;
+        let (_, bounced) = session
+            .command_prepared_revision(
+                Command::ResizeAudioClipView {
+                    clip,
+                    operation: AudioViewResizeOperation::CycleRange {
+                        start: first,
+                        end: last,
+                        looping: true,
+                    },
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let c = session.project().clip(clip).unwrap();
+        let edited = c.audio_event_root();
+        assert_eq!(
+            (c.start(), c.duration()),
+            (original_clip.start(), original_clip.duration())
+        );
+        assert_eq!(edited.domain, root.domain);
+        assert_eq!((edited.view_start, edited.view_end), (first, last));
+        assert_eq!(edited.placement.unwrap().mode, AudioViewMode::Repeat);
+        let actual = render(&bounced);
+        for (i, frame) in actual.iter().enumerate() {
+            assert_eq!(*frame, expected[2000 + i % 4000], "{musical} frame {i}");
+        }
+        let saved = session.project().snapshot();
+        let bytes = hex_storage::encode(session.project()).unwrap();
+        assert_eq!(hex_storage::decode(&bytes).unwrap().snapshot(), saved);
+        let resident = session.resident_frames;
+        for (start, end) in [(first, first), (0, u64::MAX)] {
+            assert!(
+                session
+                    .command_prepared_revision(
+                        Command::ResizeAudioClipView {
+                            clip,
+                            operation: AudioViewResizeOperation::CycleRange {
+                                start,
+                                end,
+                                looping: true
+                            },
+                        },
+                        Some(&bounced)
+                    )
+                    .is_err()
+            );
+            assert_eq!(session.project().snapshot(), saved);
+            assert_eq!(session.resident_frames, resident);
+        }
+        let undo = session
+            .undo_prepared_revision(Some(&bounced))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().snapshot().tracks, original.tracks);
+        assert_eq!(render(&undo), expected);
+        let redo = session
+            .redo_prepared_revision(Some(&undo))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().snapshot().tracks, saved.tracks);
+        assert_eq!(render(&redo), actual);
+    }
 }
