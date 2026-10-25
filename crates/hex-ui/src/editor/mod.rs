@@ -493,8 +493,8 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-right", TrimRight, Some("hex_editor")),
         KeyBinding::new("backspace", DeleteClip, Some("hex_editor")),
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
-        KeyBinding::new("alt-backspace", DeleteSectionMarker, Some("hex_editor")),
-        KeyBinding::new("alt-delete", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("cmd-backspace", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("cmd-delete", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new(
             "g",
             GroupSelection,
