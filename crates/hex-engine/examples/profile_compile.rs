@@ -1,5 +1,8 @@
 //! Profile canonical edit and control-side compilation for a dense arrangement.
 //! This excludes fixture construction, PCM decoding, GPUI, queues, and audio devices.
+//! `--return-feed` adds two silent Return buses and a feed to exercise routing
+//! admission with the same clip workload/output oracle; this does not benchmark
+//! audible Return mixing.
 use hex_engine::{Frame, Renderer, compile};
 use hex_project::{
     AssetSnapshot, ClipSnapshot, Command, Editor, IDENTITY_CONVERSION, Project, Snapshot,
@@ -163,8 +166,30 @@ fn report(label: &str, samples: &mut [u128]) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    let routed = match arguments.as_slice() {
+        [] => false,
+        [argument] if argument == "--return-feed" => true,
+        _ => return Err("usage: profile_compile [--return-feed]".into()),
+    };
     let project = fixture()?;
     let mut editor = Editor::new(project, 32)?;
+    if routed {
+        let mut returns = Vec::new();
+        for name in ["first", "second"] {
+            let Created::ReturnTrack(id) =
+                editor.execute(Command::AddReturnTrack { name: name.into() })?
+            else {
+                return Err("expected fixture return".into());
+            };
+            returns.push(id);
+        }
+        editor.execute(Command::SetReturnFeed {
+            source: returns[0],
+            destination: returns[1],
+            gain: 0.5,
+        })?;
+    }
     let media_id = editor
         .project()
         .assets()
@@ -230,6 +255,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::consts::ARCH,
         std::env::consts::OS
     );
+    println!("return feed mode: {routed}; returns receive no source signal");
     report("canonical edits", &mut edit_times);
     report("control-side compile", &mut compile_times);
     Ok(())
