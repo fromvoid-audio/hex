@@ -49,16 +49,22 @@ where
 
     fn insert_with_order(&mut self, new_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
         // If the tree is empty, make the root the new leaf.
-        if self.root.is_none() {
+        let Some(root) = self.root else {
             let order = reserved.unwrap_or(1);
             let new_node = self.push_leaf(new_bounds, order);
             self.root = Some(new_node);
             return order;
-        }
+        };
 
         // Search for the best place to add the new leaf based on heuristics.
-        let mut max_intersecting_ordering = 0;
-        let mut index = self.root.unwrap();
+        // Resolve against the unmodified tree, visiting higher orders first.
+        // Placement then only maintains bounds and the existing best-fit topology.
+        let max_intersecting_ordering = if reserved.is_none() {
+            self.find_max_ordering(root, &new_bounds, 0)
+        } else {
+            0
+        };
+        let mut index = root;
         while let Node::Internal {
             left,
             right,
@@ -73,23 +79,14 @@ where
 
             // Descend to the best-fit child, based on which one would increase
             // the surface area the least. This attempts to keep the tree balanced
-            // in terms of surface area. If there is an intersection with the other child,
-            // add its keys to the intersections vector.
+            // in terms of surface area. Draw order was resolved before placement.
             let left_cost = new_bounds.union(self.nodes[left].bounds()).half_perimeter();
             let right_cost = new_bounds
                 .union(self.nodes[right].bounds())
                 .half_perimeter();
             if left_cost < right_cost {
-                if reserved.is_none() {
-                    max_intersecting_ordering =
-                        self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
-                }
                 index = left;
             } else {
-                if reserved.is_none() {
-                    max_intersecting_ordering =
-                        self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
-                }
                 index = right;
             }
         }
@@ -97,19 +94,6 @@ where
         // We've found a leaf ('index' now refers to a leaf node).
         // We'll insert a new parent node above the leaf and attach our new leaf to it.
         let sibling = index;
-
-        // Check for collision with the located leaf node
-        let Node::Leaf {
-            bounds: sibling_bounds,
-            order: sibling_ordering,
-            ..
-        } = &self.nodes[index]
-        else {
-            unreachable!();
-        };
-        if reserved.is_none() && sibling_bounds.intersects(&new_bounds) {
-            max_intersecting_ordering = cmp::max(max_intersecting_ordering, *sibling_ordering);
-        }
 
         let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
         let new_node = self.push_leaf(new_bounds, ordering);
@@ -253,6 +237,104 @@ where
                 ..
             } => *max_ordering,
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn verify_ordering() -> Result<(), String> {
+    ordering_verification::verify()
+}
+
+// Std-only fixtures use Hex's existing locked test-support dependency graph.
+#[cfg(any(test, feature = "test-support"))]
+mod ordering_verification {
+    use super::*;
+    use crate::{Point, Size};
+
+    fn require(value: bool, message: &str) -> Result<(), String> {
+        if value {
+            Ok(())
+        } else {
+            Err(message.to_owned())
+        }
+    }
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> Bounds<f32> {
+        Bounds {
+            origin: Point { x, y },
+            size: Size { width, height },
+        }
+    }
+
+    pub(super) fn verify() -> Result<(), String> {
+        for scale in [1.0, 2.0] {
+            for seed in 1..=24_u64 {
+                let mut tree = BoundsTree::default();
+                let mut leaves: Vec<(Bounds<f32>, u32)> = Vec::new();
+                let mut random = seed;
+                for i in 0..128 {
+                    if i % 43 == 0 {
+                        tree.clear();
+                        leaves.clear();
+                    }
+                    random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let x = ((random >> 16) % 512) as f32 * 0.25 - 64.0;
+                    let y = ((random >> 32) % 256) as f32 * 0.5 - 64.0;
+                    let bounds = if i % 7 == 0 {
+                        rect((i % 16) as f32 * 4.0 * scale, 0.0, 4.0 * scale, 8.0 * scale)
+                    } else {
+                        rect(
+                            x * scale,
+                            y * scale,
+                            (i % 9) as f32 * 0.5 * scale,
+                            (i % 11) as f32 * 0.25 * scale,
+                        )
+                    };
+                    let order = if i % 13 == 0 {
+                        let base = leaves.iter().map(|(_, order)| *order).max().unwrap_or(0) + 1;
+                        let span = (i % 5) as u32;
+                        require(
+                            tree.reserve(bounds, span) == Some(base),
+                            "reserved draw-order interval differs from scan",
+                        )?;
+                        base + span
+                    } else {
+                        // Independent linear oracle; no tree topology/query is
+                        // used to establish the expected maximum or next order.
+                        let order = leaves
+                            .iter()
+                            .filter(|(b, _)| b.intersects(&bounds))
+                            .map(|(_, order)| *order)
+                            .max()
+                            .unwrap_or(0)
+                            + 1;
+                        require(
+                            tree.insert(bounds) == order,
+                            "live draw order differs from linear scan",
+                        )?;
+                        order
+                    };
+                    leaves.push((bounds, order));
+                }
+            }
+        }
+        let mut edge = BoundsTree::default();
+        let bounds = rect(-2.0, 0.25, 8.0, 4.0);
+        require(
+            edge.reserve(bounds, u32::MAX - 2) == Some(1),
+            "near-maximum reservation failed",
+        )?;
+        require(
+            edge.reserve(bounds, 1).is_none(),
+            "overflowing reservation was admitted",
+        )?;
+        require(
+            edge.insert(bounds) == u32::MAX,
+            "refusal changed following live order",
+        )?;
+        edge.clear();
+        require(edge.insert(bounds) == 1, "clear retained old order state")?;
+        Ok(())
     }
 }
 
