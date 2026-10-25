@@ -272,6 +272,8 @@ pub(super) fn render_return_effect(
                 super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
+                super::overdrive_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
@@ -372,6 +374,7 @@ pub(super) fn render_return_effect(
         Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
+        Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
