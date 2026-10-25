@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[gpui::test]
-fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAppContext) {
+fn clicked_audio_cursor_is_visible_and_e_uses_it_offline(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -88,13 +88,15 @@ fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAp
             < 0.002
     );
     visual.simulate_keystrokes("cmd-e");
+    editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
     });
 }
 
 #[gpui::test]
-fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext) {
+fn command_click_is_free_and_e_routes_midi_split(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, _, clip) = midi_project();
     let (_, preview) =
@@ -142,16 +144,14 @@ fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext
             .frame_to_beat(frame)
             .expect("beat")
     });
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitMidiClip { clip: id, beat: position }) if id == clip && position == beat));
     });
 }
 
 #[gpui::test]
-fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
-    cx: &mut TestAppContext,
-) {
+fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_e(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (base, audio_track, midi_track, _) = audio_project();
     let mut project_editor = Editor::new(base, 8).expect("project editor");
@@ -228,7 +228,7 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     visual.simulate_mouse_up(header, MouseButton::Left, unsnapped);
     visual.run_until_parked();
     assert!(visual.debug_bounds("section-edit-cursor").is_some());
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(
             view.last_enqueued_edit.is_none(),
@@ -250,7 +250,7 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
     let lane = visual
         .debug_bounds(Box::leak(
@@ -264,7 +264,7 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.edit_cursor.expect("cursor on empty track").track,

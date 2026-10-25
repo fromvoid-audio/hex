@@ -592,7 +592,7 @@ pub(in crate::editor) fn view(
         .items_center()
         .gap_1()
         .child(
-            waveform::button("✂", "split audio event · cmd+e", ("audio-event-split", 0)).on_click(
+            waveform::button("✂", "split audio event · e", ("audio-event-split", 0)).on_click(
                 cx.listener(|view, _, window, cx| {
                     view.audio_event_focus.focus(window);
                     view.event_split();
