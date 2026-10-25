@@ -20,7 +20,7 @@ impl Prepared {
     pub fn validate_worker_transfer_on_control(&mut self) -> Result<()> {
         self.require_live_epoch()
     }
-    fn require_live_epoch(&mut self) -> Result<()> {
+    pub(super) fn require_live_epoch(&mut self) -> Result<()> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
         }
@@ -47,6 +47,9 @@ impl Prepared {
     ) -> std::result::Result<Quiescent, PreparationFailure> {
         let result = (|| {
             self.require_live_epoch()?;
+            if self.live_capture.is_some() {
+                return Err(Error::Protocol("native capture is still pending"));
+            }
             let until = end_after(self.limits.startup)?;
             let token = self.lease.cancellation.clone();
             let request = protocol::quiesce(&self.config, self.sequence)?;

@@ -1510,6 +1510,8 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
 
 #[path = "native_tests/epoch.rs"]
 mod epoch;
+#[path = "native_tests/live_capture.rs"]
+mod live_capture;
 
 #[cfg(feature = "allocation-probe")]
 #[test]

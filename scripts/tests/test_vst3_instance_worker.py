@@ -496,6 +496,56 @@ class NativeInstanceTests(unittest.TestCase):
                 self.terminal(session, 8)
                 self.assertEqual(self.observation()[10], 0)
 
+    def test_live_capture_poll_keeps_pcm_prefix_and_rejects_consumed_operation(self):
+        session = self.session()
+        self.ready(session)
+
+        def capture(magic, operation):
+            session.socket.sendall(struct.pack("<4sHHH6x7Q", magic, 1, 0, 0,
+                                              *BINDING, session.sequence, session.frames, operation))
+            return session.message()
+
+        magic, body = capture(b"HXVL", 1)
+        self.assertEqual(magic, b"HXVLCA01")
+        self.assertEqual(body, struct.pack("<H7QBH", 1, *BINDING, 0, 0, 1, 0, 0))
+        header, _, (magic, pcm) = session.render(8)
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(pcm[:64], header)
+        for _ in range(10000):
+            magic, body = capture(b"HXVP", 1)
+            self.assertEqual(magic, b"HXVLCA01")
+            self.assertEqual(body[:58], struct.pack("<H7Q", 1, *BINDING, 1, 8, 1))
+            if body[58]:
+                break
+        else:
+            self.fail("actual SDK live capture did not complete")
+        self.assertEqual(body[58], 1)
+        self.assertEqual(struct.unpack_from("<H", body, 59)[0], len(body) - 61)
+        self.assertEqual(body[61:65], b"HXVS")
+        self.assertEqual(body[69:85], CID)
+        self.assertEqual(capture(b"HXVP", 1), (b"HXVIER01", struct.pack("<HB4QI", 1, 1, *BINDING, 8)))
+        self.assertEqual(session.process.wait(timeout=10), 8)
+
+    def test_live_capture_rejects_stale_or_overlapping_control(self):
+        for bad in ("zero", "skipped", "prefix", "binding", "overlap", "poll_without_start"):
+            with self.subTest(bad=bad):
+                session = self.session()
+                self.ready(session)
+
+                def packet(magic, operation, binding=BINDING, sequence=0):
+                    return struct.pack("<4sHHH6x7Q", magic, 1, 0, 0, *binding, sequence, 0, operation)
+
+                if bad == "overlap":
+                    session.socket.sendall(packet(b"HXVL", 1))
+                    self.assertEqual(session.message()[0], b"HXVLCA01")
+                request = packet(b"HXVP" if bad == "poll_without_start" else b"HXVL",
+                                 0 if bad == "zero" else 2 if bad in ("skipped", "overlap") else 1,
+                                 (1, 2, 3, 99) if bad == "binding" else BINDING,
+                                 1 if bad == "prefix" else 0)
+                session.socket.sendall(request)
+                self.assertEqual(session.message(), (b"HXVIER01", struct.pack("<HB4QI", 1, 1, *BINDING, 8)))
+                self.assertEqual(session.process.wait(timeout=10), 8)
+
     def test_epoch_control_rejects_bad_prefix_and_resume_before_quiescence(self):
         base = bytearray(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0, *BINDING, 0, 0))
         cases = []

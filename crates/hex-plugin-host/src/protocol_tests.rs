@@ -31,6 +31,57 @@ fn config() -> Configuration {
 }
 
 #[test]
+fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state() {
+    let config = config();
+    let state = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: Some(b"live component"),
+        controller: Some(b"live controller"),
+    })
+    .unwrap();
+    for poll in [false, true] {
+        let request = live_capture_request(&config, 9, 2, poll).unwrap();
+        assert_eq!(&request[..4], if poll { b"HXVP" } else { b"HXVL" });
+        assert_eq!(&request[48..56], &9_u64.to_le_bytes());
+        assert_eq!(&request[56..64], &72_u64.to_le_bytes());
+        assert_eq!(&request[64..], &2_u64.to_le_bytes());
+        assert!(live_capture_request(&config, 9, 0, poll).is_err());
+    }
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for value in [9_u64, 72, 2] {
+        body.extend(value.to_le_bytes());
+    }
+    body.extend([0, 0, 0]);
+    assert_eq!(live_captured_state(&body, &config, 9, 2).unwrap(), None);
+    body[58] = 1;
+    body[59..61].copy_from_slice(&(state.payload().len() as u16).to_le_bytes());
+    body.extend(state.payload());
+    assert_eq!(
+        live_captured_state(&body, &config, 9, 2).unwrap(),
+        Some(state)
+    );
+    assert!(live_captured_state(&body, &config, 8, 2).is_err());
+    assert!(live_captured_state(&body, &config, 9, 1).is_err());
+    for end in 0..body.len() {
+        assert!(live_captured_state(&body[..end], &config, 9, 2).is_err());
+    }
+    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 59, 65, 69, 85, 117] {
+        let mut invalid = body.clone();
+        invalid[offset] ^= 128;
+        assert!(
+            live_captured_state(&invalid, &config, 9, 2).is_err(),
+            "offset {offset}"
+        );
+    }
+    body[58] = 0;
+    assert!(
+        live_captured_state(&body, &config, 9, 2).is_err(),
+        "pending cannot carry bytes"
+    );
+}
+
+#[test]
 fn quiescent_capture_binds_source_pcm_prefix_and_operation_before_copying_state() {
     let config = config();
     let state = hex_plugin_state::encode(State {

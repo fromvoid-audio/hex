@@ -6,7 +6,7 @@ use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState
 use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
 mod capture;
-pub use capture::{capture_request, captured_state};
+pub use capture::{capture_request, captured_state, live_capture_request, live_captured_state};
 
 pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;

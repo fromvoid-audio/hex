@@ -217,7 +217,9 @@ public:
     bool capture_initial_state_on_control(CapturedState& result) {
         return capture_state_on_control(result,true);
     }
-    // Existing activated instance after acknowledged processing quiescence.
+    // Existing activated instance, including concurrent realtime processing as
+    // permitted by IComponent::getState. The main lane owns these streams;
+    // the protocol must finish capture before epoch changes or teardown.
     // Reuse only exclusive control streams; never initialize/synchronize the
     // controller again or replace the original startup capture.
     bool capture_current_state_on_control(CapturedState& result) {
@@ -225,7 +227,7 @@ public:
     }
 private:
     bool capture_state_on_control(CapturedState& result,bool initial) {
-        if (![NSThread isMainThread] || !configured || !active || processing.load() || quarantined.load() ||
+        if (![NSThread isMainThread] || !configured || !active || (initial && processing.load()) || quarantined.load() ||
             (initial && (component_stream || controller_stream))) return false;
         CapturedState captured{};
         if(initial) component_stream=new(std::nothrow) StateStream(StateStream::capacity);
