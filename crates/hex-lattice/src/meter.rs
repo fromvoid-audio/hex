@@ -10,6 +10,10 @@ pub struct DynamicsMeter {
     pub clipped: bool,
 }
 
+/// Scalar endpoint retained by charged playback observations. On 64-bit hosts,
+/// align its payload with the Arc counter header so payload-plus-header storage
+/// declarations include all trailing allocation padding as fields are added.
+#[cfg_attr(target_pointer_width = "64", repr(align(8)))]
 #[derive(Debug, Default)]
 pub struct DeviceMeter {
     input: AtomicU32,
@@ -108,6 +112,22 @@ impl DeviceMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn endpoint_payload_plus_counter_header_accounts_for_arc_tail_padding() {
+        use std::{mem::size_of, sync::atomic::AtomicUsize};
+        // The pinned native ArcInner is repr(C): strong, weak, then data.
+        #[repr(C)]
+        struct ArcInnerLayout {
+            strong: AtomicUsize,
+            weak: AtomicUsize,
+            data: DeviceMeter,
+        }
+        assert_eq!(
+            size_of::<DeviceMeter>() + 2 * size_of::<usize>(),
+            size_of::<ArcInnerLayout>(),
+        );
+    }
+
     #[test]
     fn short_transients_survive_quiet_blocks_and_invalid_samples() {
         let meter = DeviceMeter::default();
