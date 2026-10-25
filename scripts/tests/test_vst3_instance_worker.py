@@ -19,7 +19,10 @@ class Session:
     def __init__(self, binary, bundle, trace, *, variant=0, channels=(2, 2), maximum=256,
                  rate=48000, cid=CID, corrupt_hash=False, precision=0, config_frame=None, auto_present=True, startup_state=None, startup_frame=None, tail_frames=None):
         self.socket, peer = socket.socketpair()
-        self.socket.settimeout(10)  # deadlock guard, not a sample/timing oracle
+        # Fresh copied macOS modules can spend over10s in dyld's code-signature
+        # validation before their first reply (see native test failure samples).
+        # This is a loader deadlock guard, never a plugin/callback deadline.
+        self.socket.settimeout(60)
         env = {**os.environ, "HEX_ORIGINAL_INSTANCE_VARIANT": str(variant),
                "HEX_ORIGINAL_INSTANCE_TRACE": str(trace)}
         self.tail_frames = tail_frames if tail_frames is not None else 0
@@ -72,6 +75,9 @@ class Session:
         if length > 8192:
             raise AssertionError("unbounded helper control reply")
         body = self.exact(length)
+        # Loading has replied. Keep all processing/capture/retirement protocol
+        # waits at their existing bound; only first-response startup differs.
+        self.socket.settimeout(10)
         if magic == b"HXVIFA03" and self.auto_present:
             if len(body) != 135 + len(self.restore_suffix) or body[:126] != self.facts_prefix or body[134] not in (0, 1) or body[135:] != self.restore_suffix:
                 raise AssertionError("wrong source/configuration preparation facts")

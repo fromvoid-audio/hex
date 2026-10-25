@@ -253,7 +253,9 @@ impl Plugins {
         Ok(())
     }
     pub fn ready(&self) -> bool {
-        self.pending.as_ref().is_some_and(|p| p.result.is_some())
+        // Session queries this only for its held insertion. No Root binding yet
+        // means a contended admission must retry, not wait for nonexistent facts.
+        self.pending.as_ref().is_none_or(|p| p.result.is_some())
     }
     pub fn prepare(
         &mut self,
@@ -298,7 +300,7 @@ impl Plugins {
                 .editor_revision
                 .checked_add(1)
                 .ok_or("vst3 graph revision exhausted")?;
-            let binding = host.begin_on_control(
+            let binding = match host.begin_on_control(
                 control,
                 EffectSelection {
                     module: &selection.module,
@@ -312,7 +314,17 @@ impl Plugins {
                 graph,
                 output.sample_rate,
                 None,
-            )?;
+            ) {
+                Ok(binding) => binding,
+                // Root's contended Work mutex refuses before reserving a slot
+                // or native owner. Retain the existing ordered request and retry
+                // through its normal continuation, as project reopen does.
+                Err(reason) if reason == "native preparation is busy" => {
+                    edits::poll_control(control);
+                    return Ok(PluginEffectPreparationState::Preparing);
+                }
+                Err(reason) => return Err(reason),
+            };
             #[cfg(all(test, feature = "allocation-probe"))]
             if let Some(gate) = self.facts_gate.as_mut() {
                 gate.binding = Some(binding);

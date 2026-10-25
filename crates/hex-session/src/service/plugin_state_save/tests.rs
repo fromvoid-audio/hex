@@ -156,6 +156,14 @@ fn save_projection_preserves_complete_model_comparison_and_host_trims() {
         count += 1;
     }
     assert_eq!(count, 4);
+    // The current-format registry owns the bound instrument state. Its track
+    // projection alone cannot qualify a complete saved project.
+    assert_eq!(restored.native_sources.len(), 1);
+    let retained = &mut restored.native_sources[0].devices[0];
+    let decoded = hex_plugin_state::decode(&retained.state).unwrap();
+    assert_eq!(decoded.component, Some(&b"current"[..]));
+    assert_eq!(decoded.controller, Some(&b"current gui"[..]));
+    retained.state = state(b"original", b"original gui");
     assert_eq!(Project::from_snapshot(restored).unwrap(), original);
 }
 

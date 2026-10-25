@@ -170,6 +170,19 @@ pub(super) fn project_with_captures(
             .with_input_gain_millidb(target.state.input_gain_millidb())
             .and_then(|state| state.with_output_gain_millidb(target.state.output_gain_millidb()))
             .map_err(|_| "captured state host gains are invalid")?;
+        // Bound instruments are resolved views of the retained registry owner.
+        // Project's strict current snapshot requires both representations to
+        // agree. This save-only clone updates that same globally unique device;
+        // inactive comparison state and every unrelated source remain intact.
+        let saved_state = target.state.clone();
+        if let Some(source_device) = snapshot
+            .native_sources
+            .iter_mut()
+            .flat_map(|source| &mut source.devices)
+            .find(|device| device.id == capture.device_id)
+        {
+            source_device.state = saved_state;
+        }
     }
     hex_project::Project::from_snapshot(snapshot).map_err(|error| error.to_string().to_lowercase())
 }

@@ -284,6 +284,81 @@ fn native_effect_pending_state_edit_keeps_fifo_save_and_document_cancellation() 
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn native_effect_contended_admission_retries_or_cancels_the_exact_insertion() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for cancel in [false, true] {
+        let mut h = ResidentHarness::with_plugins(
+            host(),
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+        );
+        let initial = h.next();
+        assert!(initial.error.is_none());
+        h.applied(0);
+        let input = request(&initial.state, PluginEffectDestination::Main);
+        let (held, observed_hold) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let holder = h.hold_native_work_on_control(held, released);
+        observed_hold.recv_timeout(Duration::from_secs(10)).unwrap();
+        h.service
+            .submit(Request::InsertPluginEffect(input.clone()))
+            .unwrap();
+        let pending = h.next();
+        let cancelled = if cancel && pending.error.is_none() {
+            assert!(
+                input.control.cancel(),
+                "unadmitted request must remain cancellable"
+            );
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let event = h.next();
+                if !event.plugin_effect_complete.is_empty() {
+                    break Some(event);
+                }
+                assert!(event.error.is_none(), "{:?}", event.error);
+                assert_eq!(event.state.project, initial.state.project);
+                assert!(
+                    Instant::now() < deadline,
+                    "contended insertion cancellation"
+                );
+            }
+        } else {
+            None
+        };
+        // Release actual Work even when inspecting a pre-fix refusal. No native
+        // facts/endpoint/ACK are synthesized by this existing exclusion fixture.
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(pending.error.is_none(), "{:?}", pending.error);
+        assert!(pending.plugin_effect_complete.is_empty());
+        assert_eq!(pending.state.project, initial.state.project);
+        assert_eq!(pending.state.revision, initial.state.revision);
+        let finished = cancelled.unwrap_or_else(|| terminal(&mut h));
+        assert_eq!(finished.plugin_effect_complete.len(), 1);
+        assert!(Arc::ptr_eq(
+            &finished.plugin_effect_complete[0].control,
+            &input.control
+        ));
+        assert_eq!(finished.plugin_effect_complete[0].accepted, !cancel);
+        if cancel {
+            assert!(finished.error.is_some());
+            assert_eq!(finished.state.project, initial.state.project);
+            assert_eq!(finished.state.revision, initial.state.revision);
+            assert!(!finished.state.can_undo);
+            assert_eq!(h.plugin_records.load(Acquire), 0);
+        } else {
+            assert!(finished.error.is_none(), "{:?}", finished.error);
+            assert_eq!(finished.state.revision, initial.state.revision + 1);
+            assert_eq!(finished.state.project.main_devices().len(), 1);
+            assert_eq!(h.plugin_records.load(Acquire), 1);
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_failed_state_restore_preserves_last_confirmed_state_and_history() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let (mut h, files, saved) = fixture(Start::Saved);
@@ -355,7 +430,8 @@ fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_re
                 PluginEffectDestination::Track(track),
             )))
             .unwrap();
-        assert!(h.next().error.is_none());
+        let queued = h.next();
+        assert!(queued.error.is_none(), "insert queue: {:?}", queued.error);
         let inserted = terminal(&mut h);
         assert!(inserted.error.is_none(), "{:?}", inserted.error);
         state = inserted.state;
