@@ -1288,7 +1288,7 @@ impl EditorView {
         }
         true
     }
-    /// Return true when the lane owns Command-E, including refused/stale points.
+    /// Return true when the lane owns E, including refused/stale points.
     /// Never fall through to clip splitting after a section-context refusal.
     pub(super) fn split_section_at_cursor(&mut self, window: &Window) -> bool {
         if self.sections.naming() {
@@ -1596,7 +1596,7 @@ impl EditorView {
                 .text_xs()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
-                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: markers only · command: snap · shift-click: range · cmd-shift-click: select · g: merge · cmd-d: duplicate · cmd-e: split"
+                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: markers only · command: snap · shift-click: range · cmd-shift-click: select · g: merge · cmd-d: duplicate · e: split"
                             .into(),
                     })
                     .into()
@@ -3768,7 +3768,7 @@ mod tests {
             );
             assert!(v.sections.pending.is_none());
         });
-        visual.simulate_keystrokes("cmd-e");
+        visual.simulate_keystrokes("e");
         let preview = [bounds(&mut visual, 0), bounds(&mut visual, 1)];
         assert_eq!(preview[0].right(), preview[1].left());
         let event = editor.update(cx, |v, _| next(&v.service));
@@ -3822,7 +3822,7 @@ mod tests {
             visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             assert!(visual.debug_bounds("section-edit-cursor").is_some());
-            visual.simulate_keystrokes("cmd-e");
+            visual.simulate_keystrokes("e");
             editor.read_with(cx, |v, _| {
                 assert!(v.sections.pending.is_none());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -3837,7 +3837,7 @@ mod tests {
         visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
         editor.update(cx, |v, _| v.sections.cursor.as_mut().unwrap().revision += 1);
-        visual.simulate_keystrokes("cmd-e");
+        visual.simulate_keystrokes("e");
         editor.read_with(cx, |v, _| {
             assert!(v.sections.pending.is_none());
             assert!(
@@ -3849,8 +3849,12 @@ mod tests {
         visual.simulate_keystrokes("cmd-r");
         visual.run_until_parked();
         editor.read_with(cx, |v, _| assert!(v.sections.naming()));
-        visual.simulate_keystrokes("cmd-e");
-        editor.read_with(cx, |v, _| assert!(v.sections.pending.is_none()));
+        visual.simulate_keystrokes("cmd-a e");
+        editor.read_with(cx, |v, cx| {
+            assert!(v.sections.pending.is_none());
+            assert_eq!(v.sections.name.as_ref().unwrap().input.read(cx).text(), "e");
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         // A regular-track point releases the lane and preserves clip splitting.
@@ -3863,7 +3867,7 @@ mod tests {
         visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |v, _| assert!(v.sections.cursor.is_none()));
-        visual.simulate_keystrokes("cmd-e");
+        visual.simulate_keystrokes("e");
         let event = editor.update(cx, |v, _| next(&v.service));
         assert!(event.error.is_none(), "{:?}", event.error);
         assert_eq!(event.state.project.arrangement_sections().len(), 2);

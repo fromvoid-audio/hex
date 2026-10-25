@@ -505,7 +505,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-d", DuplicateClip, Some("hex_editor")),
         KeyBinding::new("cmd-alt-up", MoveSceneUp, Some("hex_editor")),
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
-        KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
+        KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
         KeyBinding::new(
             "b",
@@ -563,7 +563,7 @@ fn bind_editor_keys(cx: &mut App) {
             "cmd-shift-m",
             "cmd-r",
             "cmd-d",
-            "cmd-e",
+            "e",
             "b",
             "cmd-b",
             "r",
