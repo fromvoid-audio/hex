@@ -121,3 +121,28 @@ fn cached_order_preserves_legacy_unicode_native_paths_and_stable_ties() {
         }
     }
 }
+
+#[test]
+fn folder_equal_names_keep_input_order_while_catalog_uses_native_paths() {
+    let entries: Vec<_> = [
+        (EntryKind::Project, "/b"),
+        (EntryKind::WaveAudio, "/a"),
+        (EntryKind::Project, "/a"),
+    ]
+    .into_iter()
+    .map(|(kind, path)| LibraryEntry {
+        name: "same".into(),
+        path: path.into(),
+        kind,
+    })
+    .collect();
+    let mut folder = entries.clone();
+    crate::sort_entries(&mut folder, false);
+    assert_eq!(folder, entries);
+    let mut catalog = entries.clone();
+    crate::sort_entries(&mut catalog, true);
+    assert_eq!(
+        catalog,
+        vec![entries[1].clone(), entries[2].clone(), entries[0].clone()]
+    );
+}
