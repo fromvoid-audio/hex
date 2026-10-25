@@ -548,6 +548,12 @@ impl Track {
             .as_ref()
             .map(native_sources::SourceBinding::source_id)
     }
+    /// Whether this track is the selected audio receiver for its bound source.
+    pub fn receives_source_audio(&self) -> bool {
+        self.instrument
+            .as_ref()
+            .is_some_and(|source| source.receiver() == Some(self.id))
+    }
     /// Number of track-local effects before the source/audio merge, if present.
     pub fn instrument_position(&self) -> Option<usize> {
         self.instrument_position

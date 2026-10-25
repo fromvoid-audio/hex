@@ -103,6 +103,7 @@ impl TuningContinuationFamily {
 /// Arrangement playback and Session inventory share a stable instrument table;
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
+    source_routing: crate::PreparedSourceRouting,
     pub(crate) resource_scope: Option<u64>,
     pub(crate) device_resource_scope: Option<u64>,
     tuning_family: TuningContinuationFamily,
@@ -468,6 +469,12 @@ impl PreparedRevision {
                 shared_contexts,
                 samplers,
             )?;
+            session.validate_shared_source_capacity(project, &arrangement)?;
+            let source_routing = crate::PreparedSourceRouting::prepare_for_playback(
+                project,
+                &arrangement,
+                &session,
+            )?;
             crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
                 .map_err(|_| {
                     Invalid("active effect and mutable instrument runtime budget exceeded")
@@ -494,6 +501,7 @@ impl PreparedRevision {
                 midi_bank_references,
             )?;
             Ok(Self {
+                source_routing,
                 resource_scope: samplers.and_then(|sources| sources.private_scope()),
                 device_resource_scope: samplers.and_then(|sources| sources.device_scope()),
                 tuning_family: TuningContinuationFamily::fresh()?,
@@ -771,6 +779,9 @@ impl PreparedRevision {
                 &instruments,
                 shared_contexts,
             )?;
+        session.validate_shared_source_capacity(project, &arrangement)?;
+        let source_routing =
+            crate::PreparedSourceRouting::prepare_for_playback(project, &arrangement, &session)?;
         crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
             .map_err(|_| Invalid("active effect and mutable instrument runtime budget exceeded"))?;
         let mutable_track_revisions =
@@ -790,6 +801,7 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
+            source_routing,
             resource_scope: None,
             device_resource_scope: None,
             tuning_family: TuningContinuationFamily::fresh()?,
@@ -800,6 +812,11 @@ impl PreparedRevision {
             authored_midi_sources: Vec::new(),
             gain_recording_track: None,
         })
+    }
+
+    /// Immutable contributor/receiver metadata; no independent DSP owner.
+    pub fn source_routing(&self) -> &crate::PreparedSourceRouting {
+        &self.source_routing
     }
 
     pub fn arrangement(&self) -> &Arc<PlaybackProject> {
@@ -881,6 +898,91 @@ impl PreparedRevision {
                     .iter()
                     .any(|device| device.definition.is_some())
             })
+    }
+
+    /// Source identity/configuration is independent of receiver position and
+    /// every contributor's local effects. Reuse existing exact canonical device
+    /// descriptors; this query creates no competing source/resource owner.
+    pub(crate) fn analytic_context_for_track(&self, track: TrackId) -> Option<u16> {
+        self.arrangement()
+            .tracks()
+            .iter()
+            .position(|row| row.canonical_track_id() == Some(track))
+            .and_then(|index| self.source_routing.source(index))
+            .and_then(|source| self.arrangement.shared_contexts().index_for_source(source))
+            .or_else(|| self.arrangement.shared_contexts().index_for_track(track))
+    }
+
+    pub(crate) fn track_retains_source_configuration(
+        &self,
+        candidate: &Self,
+        track: TrackId,
+    ) -> bool {
+        let source = |revision: &Self| {
+            revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .position(|row| row.canonical_track_id() == Some(track))
+                .filter(|index| revision.source_routing.receiver_index(*index).is_some())
+                .and_then(|index| revision.source_routing.source(index))
+        };
+        source(self)
+            .zip(source(candidate))
+            .is_some_and(|(old, new)| {
+                old == new && self.retained_source_configuration_matches(candidate, old)
+            })
+    }
+
+    pub(crate) fn retained_source_identity_matches(
+        &self,
+        candidate: &Self,
+        source: hex_project::SourceId,
+    ) -> bool {
+        let device = |revision: &Self| {
+            revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .enumerate()
+                .find(|(index, _)| revision.source_routing.source(*index) == Some(source))
+                .and_then(|(_, track)| track.canonical_track_id())
+                .and_then(|track| revision.mutable_track_revision(track))
+                .and_then(|track| track.instrument.as_ref())
+                .map(|device| (device.id, device.state.type_id(), device.bypassed))
+        };
+        // Retargeting may change tuning/state only through the target-bound
+        // provider proof. Exact configuration matching below still includes
+        // tuning; source identity alone never grants runtime compatibility.
+        device(self)
+            .zip(device(candidate))
+            .is_some_and(|(old, new)| old == new)
+    }
+
+    pub(crate) fn retained_source_configuration_matches(
+        &self,
+        candidate: &Self,
+        source: hex_project::SourceId,
+    ) -> bool {
+        fn instrument(
+            revision: &PreparedRevision,
+            source: hex_project::SourceId,
+        ) -> Option<&PreparedDeviceIdentity> {
+            revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .enumerate()
+                .find(|(index, _)| revision.source_routing.source(*index) == Some(source))
+                .and_then(|(_, track)| track.canonical_track_id())
+                .and_then(|track| revision.mutable_track_revision(track))
+                .and_then(|track| track.instrument.as_ref())
+        }
+        self.arrangement.shared_contexts().tuning_identity()
+            == candidate.arrangement.shared_contexts().tuning_identity()
+            && instrument(self, source)
+                .zip(instrument(candidate, source))
+                .is_some_and(|(old, new)| old == new)
     }
 
     pub(crate) fn mutable_track_topology_matches(&self, other: &Self, track: TrackId) -> bool {
@@ -969,7 +1071,9 @@ impl PreparedRevision {
                         .checked_add(clip.source_identity().retained_control_metadata_bytes()?)?;
                 }
             }
-            bytes.checked_add(authored_midi::construction_bytes(project).ok()?)
+            bytes
+                .checked_add(authored_midi::construction_bytes(project).ok()?)?
+                .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
         })();
         let candidate = bytes.ok_or(Invalid("device handoff metadata byte count overflow"))?;
         // Tuning continuation validates same_except_tuning before rebuilding predecessor
@@ -1013,7 +1117,9 @@ impl PreparedRevision {
                     bytes = bytes.checked_add(clip.source.retained_control_metadata_bytes()?)?;
                 }
             }
-            bytes.checked_add(authored_midi::retained_bytes(&self.authored_midi_sources)?)
+            bytes
+                .checked_add(authored_midi::retained_bytes(&self.authored_midi_sources)?)?
+                .checked_add(self.source_routing.retained_bytes())
         })();
         bytes.ok_or(crate::AudioStorageError::Overflow)
     }

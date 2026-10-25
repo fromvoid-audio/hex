@@ -3,6 +3,8 @@
 //! Providers receive only borrowed inventories. Runtime leases are created on control and move
 //! with their runtime, including into an outgoing tail; configuration equality never rebinds a
 //! carried voice. The revision carries a nonowning set identity, not a source owner.
+//! A retained source contributes one configuration at its explicit audio receiver;
+//! contributor tracks borrow its provider and never create a second resource lease.
 use super::{resident::NativeBankLoan, *};
 use crate::{AudioRootStorageLedger, owned_shared::OwnedShared};
 use hex_lattice::{DevicePreparationContext, NativeInstrumentRegistry, PreparedNativeInstrument};
@@ -161,12 +163,16 @@ impl PreparedDeviceResources {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| ResourcePreparationError::InvalidScope)?;
         let devices = || {
-            project.tracks().iter().filter_map(|track| {
-                track
-                    .instrument()
-                    .filter(|device| !device.state().asset_references().is_empty())
-                    .map(|device| (track.id(), device))
-            })
+            project
+                .tracks()
+                .iter()
+                .filter(|track| track.receives_source_audio())
+                .filter_map(|track| {
+                    track
+                        .instrument()
+                        .filter(|device| !device.state().asset_references().is_empty())
+                        .map(|device| (track.id(), device))
+                })
         };
         let count = devices().count();
         let (configuration_bytes, overhead) = OwnedShared::<Configuration>::declared_parts()
@@ -430,7 +436,11 @@ impl PreparedDeviceResources {
             ));
         }
         let mut count = 0usize;
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track
                 .instrument()
                 .filter(|device| !device.state().asset_references().is_empty())

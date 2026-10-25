@@ -894,14 +894,14 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     );
     #[cfg(target_pointer_width = "64")]
     {
-        // Sampler authority and the frozen clip-volume scalar each add eight
-        // bytes; tuning custody uses padding. Admission ceilings stay unchanged.
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 496);
+        // Inline source origin and paused monitor age add 32 bounded bytes.
+        // No per-entry allocation; the 18/36 MiB scoped ceilings stay unchanged.
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 528);
         assert_eq!(span_buffer_bytes, 82_952 + 192 * 8);
-        assert_eq!(current_bytes, 16_337_416);
+        assert_eq!(current_bytes, 17_385_992);
         assert_eq!(shared_owner_slots, 131_072);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 16_861_704);
+        assert_eq!(scoped_bytes, 17_910_280);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)
@@ -922,7 +922,7 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         })
         .expect("fixed MIDI storage growth is bounded");
     assert_eq!(current_bytes - previous_bytes, expected_growth);
-    assert!(current_bytes < 16 * 1024 * 1024);
+    assert!(current_bytes < 17 * 1024 * 1024);
 }
 
 /// These hand-authored fixtures model the schema 1–14
@@ -3223,13 +3223,18 @@ fn reset_checkpoint_track(playback: &mut SessionPlayback, track: hex_project::Tr
         .session()
         .mutable_instrument_factory(track)
         .unwrap();
-    playback.mutable_instruments[route] = Some(
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
-            factory,
-            playback.revision.arrangement().sample_rate(),
-        )
-        .unwrap(),
-    );
+    let source_live = playback.mutable_instruments[route]
+        .as_ref()
+        .is_some_and(MutableInstrumentTrackRuntime::is_source_owner);
+    let mut fresh = crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
+        factory,
+        playback.revision.arrangement().sample_rate(),
+    )
+    .unwrap();
+    if source_live {
+        fresh.enable_source_live();
+    }
+    playback.mutable_instruments[route] = Some(fresh);
 }
 
 #[test]
@@ -11780,37 +11785,41 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
     assert_eq!(counter.load(Ordering::Relaxed), before_byte_refusal);
 
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
-    // Isolate the count ceiling with the existing tiny, truthful zero-tail
-    // factory. The larger occurrence ledger must not make this accidentally
-    // hit the independent byte ceiling before the sixteenth capture.
+    // Minimize processor charge with the truthful zero-tail factory. A source
+    // checkpoint also reserves its mandatory live ledger, so the byte ceiling
+    // may be reached before the independent entry-count ceiling.
     let (revision, track) = mutable_checkpoint_fixture_with_release(8 << 32, 0);
     let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut count_limited = MutableRuntimeCheckpointStore::new();
-    while count_limited.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS {
+    let mut source_bounded = MutableRuntimeCheckpointStore::new();
+    let byte_refusal_with_source_ledger = loop {
         render_checkpoint_prefix(&mut playback, 1);
-        count_limited.capture_track(&playback, track).unwrap();
-    }
-    assert_eq!(
-        count_limited.checkpoint_count(),
-        MAX_MUTABLE_RUNTIME_CHECKPOINTS
-    );
+        let before_attempt = counter.load(Ordering::Relaxed);
+        match source_bounded.capture_track(&playback, track) {
+            Ok(()) => {}
+            Err(error) => {
+                assert_eq!(
+                    error,
+                    MutableRuntimeCheckpointError::CheckpointBudgetExceeded
+                );
+                assert_eq!(counter.load(Ordering::Relaxed), before_attempt);
+                break error;
+            }
+        }
+    };
+    assert!(source_bounded.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS);
     let before_refusal = counter.load(Ordering::Relaxed);
     render_checkpoint_prefix(&mut playback, 1);
     assert_eq!(
-        count_limited.capture_track(&playback, track),
-        Err(MutableRuntimeCheckpointError::CheckpointCountExceeded)
+        source_bounded.capture_track(&playback, track),
+        Err(byte_refusal_with_source_ledger)
     );
-    assert_eq!(
-        count_limited.checkpoint_count(),
-        MAX_MUTABLE_RUNTIME_CHECKPOINTS
-    );
-    assert!(count_limited.declared_storage_bytes() <= MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES);
+    assert!(source_bounded.declared_storage_bytes() <= MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES);
     assert_eq!(counter.load(Ordering::Relaxed), before_refusal);
-    count_limited.clear();
-    assert_eq!(count_limited.checkpoint_count(), 0);
+    source_bounded.clear();
+    assert_eq!(source_bounded.checkpoint_count(), 0);
     assert_eq!(
-        count_limited.declared_storage_bytes(),
+        source_bounded.declared_storage_bytes(),
         MutableRuntimeCheckpointStore::new().declared_storage_bytes()
     );
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
@@ -11835,6 +11844,12 @@ mod silence_effect_tests;
 
 #[path = "source_loop_tests.rs"]
 mod source_loop_tests;
+
+#[path = "tests/shared_live_nonlinear.rs"]
+mod shared_live_nonlinear;
+
+#[path = "tests/checkpoint_sources.rs"]
+mod checkpoint_sources;
 
 #[path = "transport_loop_tests.rs"]
 mod transport_loop_tests;

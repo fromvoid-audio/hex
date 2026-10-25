@@ -171,6 +171,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
             name: "source".into(),
             devices: vec![valid.tracks[0].instrument.clone().unwrap()],
             instrument_index: 0,
+            receiver: Some(valid.tracks[0].id),
         });
     assert_eq!(
         Project::from_snapshot(valid).unwrap().tracks()[0].instrument_position(),

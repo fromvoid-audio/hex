@@ -93,6 +93,7 @@ impl ControlSamplerSources {
         let count = project
             .tracks()
             .iter()
+            .filter(|track| track.receives_source_audio())
             .filter(|t| {
                 t.instrument()
                     .is_some_and(|d| hex_devices::sampler::state::requires_source(d.state()))
@@ -108,6 +109,7 @@ impl ControlSamplerSources {
         for device in project
             .tracks()
             .iter()
+            .filter(|track| track.receives_source_audio())
             .filter_map(|t| t.instrument())
             .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
         {
@@ -147,7 +149,11 @@ impl ControlSamplerSources {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
         let mut scan = max_scan_frames;
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track
                 .instrument()
                 .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
@@ -232,7 +238,11 @@ impl ControlSamplerSources {
         project: &hex_project::Project,
     ) -> Result<(), crate::Invalid> {
         let mut count = 0usize;
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track
                 .instrument()
                 .filter(|d| hex_devices::sampler::state::requires_source(d.state()))

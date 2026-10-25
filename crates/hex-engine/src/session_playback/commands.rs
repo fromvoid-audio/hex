@@ -1,5 +1,6 @@
 use super::*;
 use crate::MidiTiming;
+mod pause_analytic;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
@@ -41,7 +42,20 @@ impl SessionPlayback {
         }
         match command {
             SessionPlaybackCommand::Play => self.playing = true,
-            SessionPlaybackCommand::Pause => self.playing = false,
+            SessionPlaybackCommand::Pause => {
+                if self.playing {
+                    self.pause_analytic_sources()?;
+                    for runtime in self
+                        .mutable_instruments
+                        .iter_mut()
+                        .flatten()
+                        .filter(|runtime| runtime.is_source_owner())
+                    {
+                        runtime.cut_gate_deadlines_at(self.performance_frame);
+                    }
+                }
+                self.playing = false;
+            }
             SessionPlaybackCommand::Stop => {
                 self.clear_gain_recording_override();
                 if self.stop_transport() {
@@ -315,7 +329,7 @@ impl SessionPlayback {
                 .filter(|entry| entry.until_frame > self.performance_frame),
         );
         self.release_scratch
-            .retain(|entry| entry.voice.end_frame() > self.performance_frame);
+            .retain(|entry| entry.end_frame() > self.performance_frame);
         let (target_frame, target_beat) = match command {
             SessionPlaybackCommand::LaunchClip { quantization, .. }
             | SessionPlaybackCommand::LaunchScene { quantization, .. }
@@ -487,6 +501,91 @@ impl SessionPlayback {
         Ok(moment)
     }
 
+    /// A MIDI contributor borrows its source's sole receiver runtime. Returning
+    /// an index does not transfer its DSP or resource lease to the contributor.
+    pub(super) fn shared_source_runtime_index(&self, contributor: usize) -> Option<usize> {
+        let routing = self.revision.source_routing();
+        if !routing.is_shared(contributor) {
+            return None;
+        }
+        let receiver = routing.receiver_index(contributor)?;
+        self.mutable_instruments
+            .get(receiver)
+            .and_then(Option::as_ref)
+            .map(|_| receiver)
+    }
+
+    /// Reserve the existing source ledger plus every prospective contributor's
+    /// full admitted voice envelope. Released voices stay charged through their
+    /// quiet deadline. Silence is always allowed to release notes, even when a
+    /// new launch would exceed the source's capacity.
+    pub(super) fn check_shared_transition_capacity(
+        &self,
+        root: usize,
+        next_owner: RouteOwner,
+        frame: u64,
+        speculative: bool,
+    ) -> Result<(), SessionPlaybackError> {
+        if matches!(
+            next_owner,
+            RouteOwner::Silence | RouteOwner::SessionAudio { .. }
+        ) {
+            return Ok(());
+        }
+        let routing = self.revision.source_routing();
+        for receiver in 0..self.route_scratch.len() {
+            let Some(runtime) = self.mutable_instruments[receiver].as_ref() else {
+                continue;
+            };
+            if !routing.is_shared(receiver) || routing.receiver_index(receiver) != Some(receiver) {
+                continue;
+            }
+            let contributors = routing.contributors(receiver);
+            let affected = contributors.iter().any(|&index| {
+                let index = usize::from(index);
+                self.revision.arrangement().tracks()[index]
+                    .midi_source_index
+                    .unwrap_or(index)
+                    == root
+            });
+            if !affected {
+                continue;
+            }
+            let mut charge = runtime
+                .transition_proofs(speculative)
+                .iter()
+                .filter(|occurrence| occurrence.quiet_deadline_frame > frame)
+                .count();
+            for &contributor in contributors {
+                let index = usize::from(contributor);
+                let track = &self.revision.arrangement().tracks()[index];
+                if !track.source_input_enabled() {
+                    continue;
+                }
+                let owner = if track.midi_source_index.unwrap_or(index) == root {
+                    next_owner
+                } else {
+                    effective_midi_route(&self.revision, &self.route_scratch, index)?.owner
+                };
+                if matches!(owner, RouteOwner::Arrangement | RouteOwner::Session { .. }) {
+                    charge = charge
+                        .checked_add(self.source_voice_envelope(index))
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                }
+            }
+            if charge
+                > runtime
+                    .max_active_occurrences()
+                    .min(runtime.transition_proof_capacity())
+            {
+                return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                    "shared source launch exceeds retained voice capacity",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn commit_route_scratch(&mut self) {
         // Entire command/scene has passed all fallible planning. Accepted cuts
         // change only committed deadlines; DSP receives NoteOff next segment.
@@ -503,6 +602,15 @@ impl SessionPlayback {
                         runtime.cut_gate_deadlines_at(self.performance_frame);
                     }
                 }
+            }
+        }
+        for contributor in 0..self.routes.len() {
+            if self.routes[contributor].current_incarnation
+                != self.route_scratch[contributor].current_incarnation
+                && let Some(receiver) = self.shared_source_runtime_index(contributor)
+                && let Some(runtime) = self.mutable_instruments[receiver].as_mut()
+            {
+                runtime.cut_contributor_at(self.routes[contributor].id, self.performance_frame);
             }
         }
         let route_changed = self.routes != self.route_scratch;
@@ -552,6 +660,9 @@ impl SessionPlayback {
             (owner, None) => owner,
             _ => return Err(SessionPlaybackError::InvalidCommand),
         };
+        if next_owner != owner || matches!(target, RouteTarget::Session(_)) {
+            self.check_shared_transition_capacity(index, next_owner, moment.target_frame, false)?;
+        }
         let proven_current = self.current_sampler_route_track(index);
         let current_reservation = if proven_current
             && (next_owner != owner || matches!(target, RouteTarget::Session(_)))
@@ -584,6 +695,7 @@ impl SessionPlayback {
                 continue;
             }
             if !proven_current
+                && self.shared_source_runtime_index(destination).is_none()
                 && self
                     .mutable_instruments
                     .get(destination)
@@ -619,12 +731,20 @@ impl SessionPlayback {
                         .unwrap_or(destination)
                         == index
                     {
-                        self.capture_outgoing(
-                            destination,
-                            owner,
-                            moment.source_frame,
-                            moment.performance_frame,
-                        )?;
+                        if self.shared_source_runtime_index(destination).is_some() {
+                            self.route_scratch[destination].current_incarnation = self
+                                .route_scratch[destination]
+                                .current_incarnation
+                                .checked_add(1)
+                                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        } else {
+                            self.capture_outgoing(
+                                destination,
+                                owner,
+                                moment.source_frame,
+                                moment.performance_frame,
+                            )?;
+                        }
                     }
                 }
             }
@@ -671,6 +791,19 @@ impl SessionPlayback {
         performance_frame: u64,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
+        let source_origin = ReleaseSourceOrigin::capture(&self.revision, index);
+        let audio_index = self
+            .revision
+            .source_routing()
+            .receiver_index(index)
+            .unwrap_or(index);
+        let audio_track = arrangement
+            .tracks()
+            .get(audio_index)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        if source_origin.is_some() && !arrangement.tracks()[index].source_input_enabled() {
+            return Ok(());
+        }
         match owner {
             RouteOwner::Arrangement => {
                 let track = arrangement
@@ -685,7 +818,18 @@ impl SessionPlayback {
                         // owner. A note whose onset equals `source_frame` has
                         // not rendered yet and must not be carried as an
                         // outgoing tail.
-                        if span.start >= source_frame {
+                        if span.start >= source_frame
+                            || is_suppressed_in(
+                                &self.suppression_scratch,
+                                self.routes[index].id,
+                                ContinuationKey {
+                                    clip: span.clip,
+                                    note: span.note,
+                                    iteration: span.iteration,
+                                },
+                                performance_frame,
+                            )
+                        {
                             return;
                         }
                         let voice = match MidiReleaseVoice::from_finite_span(
@@ -724,7 +868,9 @@ impl SessionPlayback {
                                 self.release_capacity,
                                 &mut next_order,
                                 ReleaseEntry {
-                                    location: match ReleaseLocation::new(index, None) {
+                                    source_origin: source_origin,
+                                    monitor_offset: 0,
+                                    location: match ReleaseLocation::new(audio_index, None) {
                                         Ok(location) => location,
                                         Err(error) => {
                                             failure = Some(error);
@@ -734,7 +880,7 @@ impl SessionPlayback {
                                     track_id: route.id,
                                     order: 0,
                                     mix: gain_recording::effective_mix(
-                                        track,
+                                        audio_track,
                                         source_frame,
                                         self.revision.gain_recording_track(),
                                         self.gain_recording_override,
@@ -828,12 +974,8 @@ impl SessionPlayback {
                             .routes
                             .get(index)
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
-                        let track = arrangement
-                            .tracks()
-                            .get(index)
-                            .ok_or(SessionPlaybackError::UnknownTrack)?;
                         let mix = gain_recording::effective_mix(
-                            track,
+                            audio_track,
                             source_frame,
                             self.revision.gain_recording_track(),
                             self.gain_recording_override,
@@ -852,7 +994,9 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut self.release_order_scratch,
                             ReleaseEntry {
-                                location: ReleaseLocation::new(index, None)?,
+                                source_origin: source_origin,
+                                monitor_offset: 0,
+                                location: ReleaseLocation::new(audio_index, None)?,
                                 track_id: route.id,
                                 order: 0,
                                 mix,

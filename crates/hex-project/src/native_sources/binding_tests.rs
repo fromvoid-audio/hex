@@ -64,12 +64,26 @@ fn instrument_creation_registers_once_and_unlink_delete_reuse_preserve_source_an
     .unwrap();
     assert!(e.project().track(a).unwrap().instrument().is_none());
     assert_eq!(e.project().track(a).unwrap().devices()[0].id(), effect);
-    assert_eq!(e.project().native_source(retained), Some(&original));
+    assert_eq!(
+        e.project()
+            .native_source(retained)
+            .unwrap()
+            .instrument()
+            .id(),
+        original.instrument().id()
+    );
+    assert_eq!(
+        e.project().native_source(retained).unwrap().receiver(),
+        None
+    );
     assert!(e.undo());
     assert_eq!(e.project().track(a).unwrap().source_id(), Some(retained));
     assert!(e.redo());
     e.execute(Command::RemoveTrack(a)).unwrap();
-    assert_eq!(e.project().native_source(retained), Some(&original));
+    assert_eq!(
+        e.project().native_source(retained).unwrap().receiver(),
+        None
+    );
     let b = track(&mut e, "reused");
     e.execute(Command::BindTrackSource {
         track: b,
@@ -82,18 +96,27 @@ fn instrument_creation_registers_once_and_unlink_delete_reuse_preserve_source_an
     assert_eq!(Project::from_snapshot(saved).unwrap(), *e.project());
     let bound = e.project().clone();
     e.execute(Command::RemoveTrack(b)).unwrap();
-    assert_eq!(e.project().native_source(retained), Some(&original));
+    assert_eq!(
+        e.project().native_source(retained).unwrap().receiver(),
+        None
+    );
     assert!(e.undo());
     assert_eq!(e.project(), &bound);
     assert!(e.redo());
     assert!(e.project().track(b).is_none());
-    assert_eq!(e.project().native_source(retained), Some(&original));
+    assert_eq!(
+        e.project().native_source(retained).unwrap().receiver(),
+        None
+    );
     assert!(e.undo());
     let before = e.project().clone();
     assert!(e.execute(Command::RemoveNativeSource(retained)).is_err());
     assert_eq!(e.project(), &before);
     e.execute(Command::RemoveInstrument { track: b }).unwrap();
-    assert_eq!(e.project().native_source(retained), Some(&original));
+    assert_eq!(
+        e.project().native_source(retained).unwrap().receiver(),
+        None
+    );
     e.execute(Command::RemoveNativeSource(retained)).unwrap();
     assert!(e.project().native_source(retained).is_none());
     assert!(e.undo());
@@ -185,15 +208,21 @@ fn reassignment_and_unsupported_bindings_are_explicit_atomic_and_identity_scoped
         source: Some(other),
     })
     .unwrap();
-    let before = e.project().clone();
-    assert!(
-        e.execute(Command::BindTrackSource {
-            track: a,
-            source: Some(other)
-        })
-        .is_err()
+    e.execute(Command::BindTrackSource {
+        track: a,
+        source: Some(other),
+    })
+    .unwrap();
+    assert_eq!(e.project().track(a).unwrap().source_id(), Some(other));
+    assert_eq!(e.project().track(b).unwrap().source_id(), Some(other));
+    assert_eq!(
+        e.project().native_source(other).unwrap().receiver(),
+        Some(b)
     );
-    assert_eq!(e.project(), &before);
+    assert_eq!(
+        e.project().track(a).unwrap().instrument().unwrap().id(),
+        e.project().track(b).unwrap().instrument().unwrap().id()
+    );
     let Created::NativeSource(chain) = e
         .execute(Command::CreateNativeSource {
             name: "chain".into(),
@@ -228,12 +257,95 @@ fn reassignment_and_unsupported_bindings_are_explicit_atomic_and_identity_scoped
     let mut forged = e.project().snapshot();
     forged.tracks[1].instrument = forged.tracks[0].instrument.clone();
     forged.tracks[1].instrument_position = Some(0);
+    let shared = Project::from_snapshot(forged.clone()).unwrap();
+    assert_eq!(shared.source_contributors(other).count(), 2);
+    let source_snapshot = forged
+        .native_sources
+        .iter_mut()
+        .find(|source| source.id == other.value())
+        .unwrap();
+    source_snapshot.receiver = Some(999_999);
     assert!(Project::from_snapshot(forged).is_err());
     let mut forged = e.project().snapshot();
     forged.tracks[0].instrument.as_mut().unwrap().bypassed = true;
     assert!(
         Project::from_snapshot(forged).is_err(),
         "a projection cannot overwrite authoritative state"
+    );
+}
+
+#[test]
+fn shared_source_uses_one_explicit_receiver_and_never_promotes_contributors() {
+    let mut e = editor();
+    let a = track(&mut e, "receiver");
+    let b = track(&mut e, "contributor");
+    let device = instrument(&mut e, a);
+    let source = e.project().track(a).unwrap().source_id().unwrap();
+    assert_eq!(
+        e.project().native_source(source).unwrap().receiver(),
+        Some(a)
+    );
+
+    e.execute(Command::BindTrackSource {
+        track: b,
+        source: Some(source),
+    })
+    .unwrap();
+    assert_eq!(e.project().source_contributors(source).count(), 2);
+    assert_eq!(
+        e.project().track(a).unwrap().instrument().unwrap().id(),
+        device
+    );
+    assert_eq!(
+        e.project().track(b).unwrap().instrument().unwrap().id(),
+        device
+    );
+    assert!(e.project().track(a).unwrap().receives_source_audio());
+    assert!(!e.project().track(b).unwrap().receives_source_audio());
+
+    e.execute(Command::SetNativeSourceReceiver {
+        source,
+        track: Some(b),
+    })
+    .unwrap();
+    assert!(!e.project().track(a).unwrap().receives_source_audio());
+    assert!(e.project().track(b).unwrap().receives_source_audio());
+    assert!(e.undo());
+    assert!(e.project().track(a).unwrap().receives_source_audio());
+    assert!(!e.project().track(b).unwrap().receives_source_audio());
+    assert!(e.redo());
+    assert!(!e.project().track(a).unwrap().receives_source_audio());
+    assert!(e.project().track(b).unwrap().receives_source_audio());
+
+    e.execute(Command::SetNativeSourceReceiver {
+        source,
+        track: None,
+    })
+    .unwrap();
+    assert!(e.project().track(a).unwrap().source_id().is_some());
+    assert!(e.project().track(b).unwrap().source_id().is_some());
+    assert!(!e.project().track(a).unwrap().receives_source_audio());
+    assert!(!e.project().track(b).unwrap().receives_source_audio());
+
+    e.execute(Command::BindTrackSource {
+        track: b,
+        source: None,
+    })
+    .unwrap();
+    assert!(e.project().track(a).unwrap().source_id().is_some());
+    assert!(!e.project().track(a).unwrap().receives_source_audio());
+    assert_eq!(e.project().native_source(source).unwrap().receiver(), None);
+
+    e.execute(Command::SetNativeSourceReceiver {
+        source,
+        track: Some(a),
+    })
+    .unwrap();
+    assert!(e.project().track(a).unwrap().receives_source_audio());
+    assert!(e.execute(Command::RemoveNativeSource(source)).is_err());
+    assert_eq!(
+        Project::from_snapshot(e.project().snapshot()).unwrap(),
+        *e.project()
     );
 }
 #[test]
@@ -287,6 +399,7 @@ fn explicit_track_duplication_copies_source_but_instrument_move_preserves_its_id
     .unwrap();
     assert!(e.project().track(a).unwrap().source_id().is_none());
     assert_eq!(e.project().track(b).unwrap().source_id(), Some(original));
+    assert!(e.project().track(b).unwrap().receives_source_audio());
     e.execute(Command::DuplicateTracks {
         tracks: crate::TrackSelectionIds::new(&[b]).unwrap(),
         without_clips: true,
@@ -305,4 +418,5 @@ fn explicit_track_duplication_copies_source_but_instrument_move_preserves_its_id
             .state()
     );
     assert_eq!(e.project().native_sources().len(), 2);
+    assert!(copy.receives_source_audio());
 }

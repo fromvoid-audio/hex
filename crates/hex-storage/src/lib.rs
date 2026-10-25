@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 46;
+pub const CURRENT_SCHEMA_VERSION: u32 = 47;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -284,6 +284,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     }
     match header.version {
         CURRENT_SCHEMA_VERSION => schema::native_sources::decode(bytes),
+        46 => schema::native_sources::decode46(bytes),
         45 => schema::native_sources::decode45(bytes),
         44 => schema::track_groups::decode(bytes),
         43 => schema::grouped_audio::decode(bytes),

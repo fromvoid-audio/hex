@@ -1,10 +1,13 @@
 mod compensated;
 mod computer_keyboard;
+mod shared_source;
+mod source_live;
 use super::capture::CaptureSink;
 use super::{commands::transition_captures, *};
 use crate::compile::PreparedAudioSource;
 use crate::{MediaPages, MidiTiming, StreamedPageSpan, render_streamed_page_span};
 use hex_project::LoopRegion;
+use shared_source::{render_source_instrument_chunk, shared_source_has_route};
 use std::sync::Arc;
 
 impl SessionPlayback {
@@ -360,7 +363,30 @@ impl SessionPlayback {
         if output.is_empty()
             || (!self.playing
                 && self.computer_keyboard.is_none()
-                && self.current_sampler_keyboards.is_empty())
+                && self.current_sampler_keyboards.is_empty()
+                && self
+                    .mutable_instruments
+                    .iter()
+                    .flatten()
+                    .all(|runtime| runtime.committed_is_quiescent())
+                && !self.has_analytic_release_output()
+                && self
+                    .device_chains
+                    .iter()
+                    .all(|chain| chain.committed_range_is_quiescent(0..chain.len()))
+                && self
+                    .return_chains
+                    .iter()
+                    .all(|chain| chain.committed_range_is_quiescent(0..chain.len()))
+                && self
+                    .main_chain
+                    .committed_range_is_quiescent(0..self.main_chain.len())
+                && !self.tail_output_active.iter().any(|active| *active)
+                && self
+                    .tail_mutable_instruments
+                    .iter()
+                    .flatten()
+                    .all(|tail| tail.runtime.committed_is_quiescent()))
         {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
@@ -375,13 +401,14 @@ impl SessionPlayback {
             if let Some(runtime) = runtime {
                 runtime.expression = match selected {
                     Some((track, instrument, snapshot))
-                        if track == route.id && runtime.expression_identity == Some(instrument) =>
+                        if (track == route.id
+                            || self.revision.source_routing().receiver(track)
+                                == Some(route.id))
+                            && runtime.expression_identity == Some(instrument) =>
                     {
                         Some(snapshot)
                     }
-                    _ => runtime
-                        .expression
-                        .map(|_| crate::live_expression::Snapshot::default()),
+                    _ => runtime.expression,
                 };
             }
         }
@@ -393,10 +420,7 @@ impl SessionPlayback {
                 {
                     Some(snapshot)
                 }
-                _ => tail
-                    .runtime
-                    .expression
-                    .map(|_| crate::live_expression::Snapshot::default()),
+                _ => tail.runtime.expression,
             };
         }
         if let Some(keyboard) = self.computer_keyboard.as_mut() {
@@ -467,6 +491,11 @@ impl SessionPlayback {
                     return Err(SessionPlaybackError::DeviceRuntime);
                 }
             }
+            if !self.playing {
+                std::mem::swap(&mut self.releases, &mut self.release_scratch);
+                self.tail_output_active
+                    .copy_from_slice(&self.tail_output_scratch);
+            }
             if let Some(keyboard) = &mut self.computer_keyboard {
                 keyboard.commit();
             }
@@ -533,7 +562,7 @@ impl SessionPlayback {
         self.release_scratch.extend_from_slice(&self.releases);
         self.release_order_scratch = self.release_order;
         self.release_scratch
-            .retain(|entry| entry.voice.end_frame() > self.performance_frame);
+            .retain(|entry| entry.end_frame() > self.performance_frame);
         self.suppression_scratch.clear();
         self.suppression_scratch.extend(
             self.suppressions
@@ -567,6 +596,9 @@ impl SessionPlayback {
             }
             let mut chunk_frames = (output.len() - output_offset)
                 .min(if self.compensation.is_some() { 1 } else { 256 });
+            if let Some(keyboard) = self.computer_keyboard.as_ref() {
+                chunk_frames = keyboard.source_input_span(chunk_frames);
+            }
             let current_first_frame = self.current_sampler_console
                 && self.route_scratch.iter().any(|r| r.current_first_frame);
             if current_first_frame {
@@ -683,7 +715,7 @@ impl SessionPlayback {
                     normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
             }
             self.release_scratch
-                .retain(|entry| entry.voice.end_frame() > performance_frame);
+                .retain(|entry| entry.end_frame() > performance_frame);
             self.suppression_scratch
                 .retain(|entry| entry.until_frame > performance_frame);
             output_offset = chunk_end;
@@ -730,6 +762,31 @@ impl SessionPlayback {
         let mut captured_release = false;
         let mut applied_route = false;
         self.preflight_current_due_routes(performance_frame, arrangement_frame)?;
+        self.preflight_shared_due_routes(performance_frame)?;
+        // Validate every shared restart identity before cutting any speculative
+        // gate. Selected MIDI roots may own several independent destinations.
+        for (index, route) in self.route_scratch.iter().enumerate() {
+            if !route
+                .pending
+                .is_some_and(|pending| pending.frame <= performance_frame)
+            {
+                continue;
+            }
+            for destination in 0..self.route_scratch.len() {
+                if self.revision.source_routing().is_shared(destination)
+                    && self.revision.arrangement().tracks()[destination]
+                        .midi_source_index
+                        .unwrap_or(destination)
+                        == index
+                {
+                    self.route_scratch[destination]
+                        .current_incarnation
+                        .checked_add(1)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                }
+            }
+        }
+
         for index in 0..self.route_scratch.len() {
             let Some(pending) = self.route_scratch[index]
                 .pending
@@ -764,6 +821,26 @@ impl SessionPlayback {
                     != index
                 {
                     continue;
+                }
+                if self.revision.source_routing().is_shared(destination) {
+                    self.route_scratch[destination].current_incarnation = self.route_scratch
+                        [destination]
+                        .current_incarnation
+                        .checked_add(1)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    if let Some(receiver) =
+                        self.revision.source_routing().receiver_index(destination)
+                        && let Some(runtime) = self
+                            .mutable_instruments
+                            .get_mut(receiver)
+                            .and_then(Option::as_mut)
+                    {
+                        runtime.cut_contributor_speculative_at(
+                            self.route_scratch[destination].id,
+                            performance_frame,
+                        );
+                        continue;
+                    }
                 }
                 if self
                     .mutable_instruments
@@ -863,22 +940,23 @@ impl SessionPlayback {
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
             });
             let metered_instrument = self.device_metering && track.instrument_id.is_some();
-            let live_target = self
-                .computer_keyboard
-                .as_ref()
-                .is_some_and(|keyboard| keyboard.track() == self.route_scratch[index].id);
+            let live_target = self.computer_keyboard.as_ref().is_some_and(|keyboard| {
+                !keyboard.is_source_input() && keyboard.track() == self.route_scratch[index].id
+            }) || self.source_input_receiver() == Some(index);
             let live_target = live_target
                 || self
                     .current_sampler_keyboards
                     .iter()
                     .any(|k| k.track() == self.route_scratch[index].id);
-            let buffered = live_target
+            let shared_source = revision.source_routing().is_shared(index);
+            let buffered = shared_source
+                || live_target
                 || stateful_effects
                 || mutable_active
                 || !track.sends().is_empty()
                 || track.has_gain_automation()
                 || metered_instrument;
-            let ordered = live_target || track.requires_ordered_processing();
+            let ordered = shared_source || live_target || track.requires_ordered_processing();
             let already_mixed = metered_instrument
                 && !ordered
                 && !stateful_effects
@@ -903,7 +981,10 @@ impl SessionPlayback {
                 .iter()
                 .any(|entry| entry.location.tail_group().is_none());
             let midi_route = effective_midi_route(&self.revision, &self.route_scratch, index)?;
-            let has_current_route = live_target
+            let has_current_route = (shared_source
+                && shared_source_has_route(&self.revision, &self.route_scratch, index)?)
+                || mutable_active
+                || live_target
                 || !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
                 || !matches!(midi_route.owner, RouteOwner::Silence);
             let has_current_effect_tail = !has_current_route
@@ -933,7 +1014,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target,
+                            raw: live_target || shared_source,
                             timing: &timing,
                             table,
                         },
@@ -998,7 +1079,7 @@ impl SessionPlayback {
                             )?;
                         }
                     }
-                    render_route_source_chunk(
+                    render_source_instrument_chunk(
                         RouteSourceContext {
                             revision: &self.revision,
                             midi: crate::session_inventory::EffectiveSessionMidi::new(
@@ -1010,17 +1091,42 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target,
+                            raw: live_target || shared_source,
                             timing: &timing,
                             table,
                         },
+                        &self.route_scratch,
+                        self.historical_floor,
+                        &self.route_historical_floors,
                         &mut self.spans,
                         performance_frame,
                         arrangement_frame,
                         render_output,
-                        pages.as_deref_mut(),
-                        SourceStage::Instrument,
                     )?;
+                    if self.source_input_receiver() == Some(index) {
+                        let authored = self
+                            .revision
+                            .source_routing()
+                            .contributors(index)
+                            .iter()
+                            .try_fold(0usize, |sum, &contributor| {
+                                sum.checked_add(
+                                    self.source_voice_envelope(usize::from(contributor)),
+                                )
+                            })
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        source_live::render_source_live_input(
+                            self.computer_keyboard.as_mut().map(Box::as_mut),
+                            self.mutable_instruments[index].as_mut(),
+                            &mut self.mutable_onsets,
+                            &mut self.mutable_events,
+                            authored,
+                            performance_frame,
+                            render_output,
+                            &timing,
+                            true,
+                        )?;
+                    }
                     render_mutable_instrument_chunk(
                         MutableInstrumentChunkContext {
                             revision: &self.revision,
@@ -1048,11 +1154,10 @@ impl SessionPlayback {
                         index,
                         render_output,
                     )?;
-                    if let Some(keyboard) = self
-                        .computer_keyboard
-                        .as_mut()
-                        .filter(|keyboard| keyboard.track() == self.route_scratch[index].id)
-                    {
+                    if let Some(keyboard) = self.computer_keyboard.as_mut().filter(|keyboard| {
+                        !keyboard.is_source_input()
+                            && keyboard.track() == self.route_scratch[index].id
+                    }) {
                         let clock = keyboard
                             .musical_clock(&timing, performance_frame, true)
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -1874,6 +1979,9 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
     index: usize,
     output: &mut [Frame],
 ) -> Result<(), SessionPlaybackError> {
+    if context.revision.source_routing().is_shared(index) {
+        return shared_source::render_mutable_source_chunk(context, index, output);
+    }
     let MutableInstrumentChunkContext {
         revision,
         midi,
@@ -2260,6 +2368,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
         .tracks()
         .get(index)
         .ok_or(SessionPlaybackError::UnknownTrack)?;
+    if matches!(stage, SourceStage::Audio) && !track.audio_content_enabled() {
+        return Ok(());
+    }
     let source_mix = if raw {
         crate::PreparedTrackMix::identity()
     } else {
@@ -2488,7 +2599,8 @@ fn render_release_captured(
     for (offset, frame) in output.iter_mut().enumerate() {
         let relative =
             u64::try_from(offset).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-        let absolute = performance_frame
+        let absolute = release
+            .sample_frame(performance_frame)?
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if let Some(sample) = release
@@ -2525,7 +2637,8 @@ fn render_release_raw(
     for (offset, frame) in output.iter_mut().enumerate() {
         let relative =
             u64::try_from(offset).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-        let absolute = performance_frame
+        let absolute = release
+            .sample_frame(performance_frame)?
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if let Some(sample) = release

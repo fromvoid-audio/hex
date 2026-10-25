@@ -66,16 +66,21 @@ impl RendererRuntime {
                             let track = &project.tracks[index];
                             let mut audio = [[0.0; 2]];
                             let mut generator = [[0.0; 2]];
-                            if let Some(pages) = pages.as_deref_mut() {
-                                track.render_audio_range_with_pages(frame, end, &mut audio, pages);
-                            } else {
-                                track.render_audio_range(frame, end, &mut audio);
+                            if track.audio_content_enabled() {
+                                crate::render_track_audio_raw(
+                                    track,
+                                    frame,
+                                    end,
+                                    &mut audio,
+                                    pages.as_deref_mut(),
+                                );
                             }
-                            track.render_instrument_range(
+                            crate::render_source_generators(
+                                project,
+                                index,
                                 frame,
                                 end,
                                 &mut generator,
-                                None,
                                 volume_timing,
                             )?;
                             let processed = compensation.process_track(

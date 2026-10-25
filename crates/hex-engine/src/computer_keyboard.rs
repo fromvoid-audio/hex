@@ -1,4 +1,5 @@
 //! Bounded, transient native keyboard audition. Preparation and destruction are control work.
+use crate::mutable_instrument::MutableInstrumentTrackRuntime;
 use crate::{Frame, Invalid};
 use hex_lattice::{
     NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
@@ -45,6 +46,7 @@ mod capture;
 mod live_notes;
 mod live_runtime;
 pub(crate) mod ordered_keys;
+mod source_input;
 pub use live_notes::{LiveNoteActivation, LiveNoteEvent, LiveNoteInput, LiveNotePublishError};
 pub use ordered_keys::MidiKeyActivation;
 /// Full exact-velocity hardware banks are prepared only for opted-in roots.
@@ -399,6 +401,7 @@ pub(crate) struct ComputerKeyboardRuntime {
     supported: SupportedNotes,
     context: Option<Box<dyn PreparedSharedAnalyticContext>>,
     mutable: Option<NativeInstrumentRuntimePair>,
+    source_input: Option<Box<source_input::SourceInputState>>,
     pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     retarget: Option<Box<dyn hex_lattice::PreparedInstrumentHistoryRetarget>>,
     tuning_family: Option<crate::prepared_revision::TuningContinuationFamily>,
@@ -498,6 +501,7 @@ impl ComputerKeyboardRuntime {
             Some(instrument),
             factory.as_deref(),
             None,
+            None,
         )
     }
     pub(crate) fn prepare_resource_mutable(
@@ -514,6 +518,7 @@ impl ComputerKeyboardRuntime {
             None,
             Some(factory),
             Some(resources),
+            None,
         )
     }
     fn prepare_from_capabilities(
@@ -523,6 +528,7 @@ impl ComputerKeyboardRuntime {
         instrument: Option<&dyn hex_lattice::PreparedNativeInstrument>,
         factory: Option<&dyn hex_lattice::PreparedMutableInstrumentRuntime>,
         resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+        source: Option<&source_input::SourceInputPreparation<'_>>,
     ) -> Result<Self, Invalid> {
         let resource_view = resources.as_ref().map_or(
             &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
@@ -553,7 +559,7 @@ impl ComputerKeyboardRuntime {
             })
             .transpose()
             .map_err(|_| Invalid("computer keyboard runtime exceeds its storage budget"))?;
-        let context = if mutable.is_none() {
+        let context = if mutable.is_none() && source.is_none() {
             instrument
                 .ok_or(Invalid(
                     "computer keyboard analytic capability is unavailable",
@@ -571,7 +577,7 @@ impl ComputerKeyboardRuntime {
             ));
         }
         let mut samplers = Vec::new();
-        if mutable.is_none() {
+        if mutable.is_none() && source.and_then(|source| source.runtime).is_none() {
             samplers
                 .try_reserve_exact(input.template_count())
                 .map_err(|_| Invalid("computer keyboard storage is unavailable"))?;
@@ -581,9 +587,14 @@ impl ComputerKeyboardRuntime {
         } else {
             SupportedNotes::Computer([false; COMPUTER_NOTES])
         };
-        let mut release_frames = mutable
-            .as_ref()
-            .map_or(0, NativeInstrumentRuntimePair::max_release_tail_frames);
+        let mut release_frames = source.and_then(|source| source.runtime).map_or_else(
+            || {
+                mutable
+                    .as_ref()
+                    .map_or(0, NativeInstrumentRuntimePair::max_release_tail_frames)
+            },
+            MutableInstrumentTrackRuntime::max_release_tail_frames,
+        );
         for (index, supported_note) in supported
             .iter_mut()
             .enumerate()
@@ -592,6 +603,10 @@ impl ComputerKeyboardRuntime {
             let (pitch, velocity) = input
                 .template_note(index)
                 .ok_or(Invalid("keyboard template index is invalid"))?;
+            if let Some(runtime) = source.and_then(|source| source.runtime) {
+                *supported_note = runtime.validates_live_note(pitch, velocity);
+                continue;
+            }
             if let Some(runtime) = mutable.as_ref() {
                 // Validate against the actual native runtime too. A provider's
                 // optional source validator may not cover every pitch domain.
@@ -611,7 +626,13 @@ impl ComputerKeyboardRuntime {
                     .is_ok();
                 continue;
             }
-            let sampler = if let Some(context) = &context {
+            let sampler = if let Some(owner) = source.and_then(|source| source.context.as_ref()) {
+                owner
+                    .context()
+                    .prepare_note(pitch, velocity)
+                    .ok()
+                    .map(Sampler::Shared)
+            } else if let Some(context) = &context {
                 context
                     .prepare_note(pitch, velocity)
                     .ok()
@@ -687,6 +708,9 @@ impl ComputerKeyboardRuntime {
             supported,
             context,
             mutable,
+            source_input: source
+                .map(|source| source_input::SourceInputState::prepare(track, source))
+                .transpose()?,
             retarget,
             tuning_family: None,
             tuning_preservation: false,
@@ -743,7 +767,11 @@ impl ComputerKeyboardRuntime {
             family: self.tuning_family?,
             track: self.track,
             input: Arc::clone(self.input.lease()?),
-            promoted: self.mutable.is_some(),
+            promoted: self.mutable.is_some()
+                || self
+                    .source_input
+                    .as_ref()
+                    .is_some_and(|source| source.mutable),
         })
     }
     pub(crate) fn prepare_for_tuning(
@@ -803,6 +831,11 @@ impl ComputerKeyboardRuntime {
 
     pub(crate) fn storage_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>()
+            .checked_add(
+                self.source_input
+                    .as_ref()
+                    .map_or(0, |_| std::mem::size_of::<source_input::SourceInputState>()),
+            )?
             .checked_add(self.supported.extra_storage_bytes())?
             .checked_add(self.capture.as_ref().map_or(0, |_| {
                 std::mem::size_of::<crate::midi_capture::CaptureStorage>()
@@ -878,7 +911,12 @@ impl ComputerKeyboardRuntime {
         self.preserve_on_handoff = true;
     }
     fn preserves_input_identity(&self, previous: &Self) -> bool {
-        self.preserve_on_handoff && self.input.same_lease(&previous.input)
+        (self.preserve_on_handoff
+            || (self.source_input.is_some()
+                && previous.source_input.is_some()
+                && self.track == previous.track
+                && self.instrument_id == previous.instrument_id))
+            && self.input.same_lease(&previous.input)
     }
     pub(crate) fn requests_preservation_from(&self, previous: &Self) -> bool {
         self.preserves_input_identity(previous) && !self.input.is_cancelled()
@@ -908,7 +946,13 @@ impl ComputerKeyboardRuntime {
                     "held computer keyboard pitch is unsupported by tuning",
                 ));
             }
-            if self.mutable.is_none() && self.tuning != previous.tuning {
+            if self.mutable.is_none()
+                && self.tuning != previous.tuning
+                && !self
+                    .source_input
+                    .as_ref()
+                    .is_some_and(|source| source.mutable)
+            {
                 let target = self.samplers.get(voice.sampler).copied().flatten();
                 let source = voice
                     .inline_override
@@ -958,7 +1002,7 @@ impl ComputerKeyboardRuntime {
             (Some(current), Some(previous)) => current.compatible(previous),
             _ => false,
         };
-        if !resources_match {
+        if !resources_match || self.source_input.is_some() != previous.source_input.is_some() {
             return false;
         }
 
@@ -969,7 +1013,7 @@ impl ComputerKeyboardRuntime {
             || previous.faulted
             || self.track != previous.track
             || self.instrument_id != previous.instrument_id
-            || self.release_frames != previous.release_frames
+            || (self.release_frames != previous.release_frames && self.source_input.is_none())
             || self.continued_voices(previous).is_err()
         {
             return false;
@@ -983,7 +1027,9 @@ impl ComputerKeyboardRuntime {
                             .as_ref()
                             .is_some_and(|proof| next.can_retarget_from(old, proof.as_ref())))
             }
-            (None, None) => self.samplers.len() == previous.samplers.len(),
+            (None, None) => {
+                self.source_input.is_some() || self.samplers.len() == previous.samplers.len()
+            }
             (Some(next), None) if self.tuning_preservation_matches(previous) => {
                 let Some(context) = previous.context.as_deref() else {
                     return false;
@@ -1048,6 +1094,15 @@ impl ComputerKeyboardRuntime {
             }
             _ => {}
         }
+        if let Some((next, old)) = self
+            .source_input
+            .as_mut()
+            .zip(previous.source_input.as_ref())
+        {
+            next.id = old.id;
+            next.release = old.release;
+            next.scratch_release = old.release;
+        }
         self.primary = voices;
         self.scratch = voices;
         self.desired = previous.desired;
@@ -1098,6 +1153,9 @@ impl ComputerKeyboardRuntime {
         self.track
     }
     pub(crate) fn cancel(&mut self) {
+        if let Some(source) = &mut self.source_input {
+            source.release = true;
+        }
         self.fail_capture(crate::midi_capture::MidiCaptureFault::InputChanged);
         if !self.lease_detached {
             self.input.cancel();
@@ -1109,6 +1167,13 @@ impl ComputerKeyboardRuntime {
         }
     }
     fn reset_voices(&mut self) {
+        if let Some(source) = &mut self.source_input {
+            source.release = true;
+        }
+        let source_next_id = self
+            .source_input
+            .as_ref()
+            .map(|_| self.next_id.max(self.scratch_next_id));
         self.primary.fill(None);
         self.scratch.fill(None);
         self.live_activation = None;
@@ -1116,8 +1181,8 @@ impl ComputerKeyboardRuntime {
         self.desired.fill(0);
         self.rejected_desired.fill(0);
         self.scratch_rejected_desired.fill(0);
-        self.next_id = 0;
-        self.scratch_next_id = 0;
+        self.next_id = source_next_id.unwrap_or(0);
+        self.scratch_next_id = self.next_id;
         self.age = 0;
         self.scratch_age = 0;
         self.audition_start = None;
@@ -1280,6 +1345,10 @@ impl ComputerKeyboardRuntime {
         self.scratch_audition_start = self.audition_start;
         self.scratch_monitor_anchor = self.monitor_anchor;
         self.boundary = true;
+        if let Some(source) = &mut self.source_input {
+            source.scratch_release = source.release;
+            source.len = 0;
+        }
         if let Some(runtime) = &mut self.mutable {
             runtime.begin_block();
         }
@@ -1290,6 +1359,9 @@ impl ComputerKeyboardRuntime {
         }
     }
     pub(crate) fn commit(&mut self) {
+        if let Some(source) = &mut self.source_input {
+            source.release = false;
+        }
         if let Some(capture) = &mut self.capture {
             if let Some((queue, batch)) = self
                 .input
@@ -1398,7 +1470,10 @@ impl ComputerKeyboardRuntime {
         if output.is_empty() {
             return Ok(());
         }
-        if let Some(expression) = self.expression.filter(|_| self.boundary) {
+        if let Some(expression) = self
+            .expression
+            .filter(|_| self.boundary && self.source_input.is_none())
+        {
             events[len..len + 3].copy_from_slice(&expression.events());
             len += 3;
         }
@@ -1448,19 +1523,18 @@ impl ComputerKeyboardRuntime {
                     self.input.reject();
                     continue;
                 }
-                let capacity = self
-                    .mutable
-                    .as_ref()
-                    .map_or(VOICES, NativeInstrumentRuntimePair::max_active_occurrences);
+                let capacity = self.voice_capacity();
                 let event_capacity = self.mutable.as_ref().map_or(
                     2 * VOICES,
                     NativeInstrumentRuntimePair::max_events_per_block,
                 );
                 if self.scratch.iter().flatten().count() >= capacity || len >= event_capacity {
                     self.input.reject();
-                    if self.input.lease().is_some_and(|input| {
-                        input.live_notes.is_some() || input.ordered_keys.is_some()
-                    }) {
+                    if self.source_input.is_some()
+                        || self.input.lease().is_some_and(|input| {
+                            input.live_notes.is_some() || input.ordered_keys.is_some()
+                        })
+                    {
                         // Refuse this physical press once without cancelling hardware
                         // or replaying the held token later when a tail expires.
                         self.scratch_rejected_desired[key] = token;
@@ -1518,7 +1592,13 @@ impl ComputerKeyboardRuntime {
             .resources
             .as_ref()
             .map_or(resources, |lease| lease.resources());
-        if let Some(runtime) = &mut self.mutable {
+        if let Some(source) = self.source_input.as_mut().filter(|source| source.mutable) {
+            if len > source.events.len() {
+                return Err(Invalid("source live event capacity exceeded"));
+            }
+            source.events[..len].copy_from_slice(&events[..len]);
+            source.len = len;
+        } else if let Some(runtime) = &mut self.mutable {
             runtime
                 .process_block_with_clock(&events[..len], output, clock, resources)
                 .map_err(|_| Invalid("computer keyboard runtime refused a note block"))?;
@@ -1541,11 +1621,16 @@ impl ComputerKeyboardRuntime {
                         Sampler::Inline(note) => {
                             note.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
                         }
-                        Sampler::Shared(note) => self
-                            .context
-                            .as_ref()
-                            .ok_or(Invalid("computer keyboard context missing"))?
-                            .sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                        Sampler::Shared(note) => {
+                            let context = self
+                                .source_input
+                                .as_ref()
+                                .and_then(|source| source.context.as_ref())
+                                .map(|owner| owner.context())
+                                .or_else(|| self.context.as_deref())
+                                .ok_or(Invalid("computer keyboard context missing"))?;
+                            context.sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                        }
                     };
                     target[0] += sample[0];
                     target[1] += sample[1];

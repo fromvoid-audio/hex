@@ -55,6 +55,31 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        for runtime in self.mutable_instruments.iter_mut().flatten() {
+            runtime.begin_block();
+        }
+        self.release_scratch.clear();
+        self.release_scratch.extend(
+            self.releases
+                .iter()
+                .copied()
+                .filter(|entry| entry.end_frame() > self.performance_frame),
+        );
+        for release in &self.release_scratch {
+            release
+                .monitor_offset
+                .checked_add(output.len() as u64)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.begin_block();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.begin_block();
+        }
+        self.tail_output_scratch
+            .copy_from_slice(&self.tail_output_active);
+
         for chain in &mut self.device_chains {
             chain.begin_block();
         }
@@ -63,9 +88,20 @@ impl SessionPlayback {
         }
         self.main_chain.begin_block();
         self.route_scratch.copy_from_slice(&self.routes);
-        let step = if self.compensation.is_some() { 1 } else { 256 };
-        for (chunk_index, chunk) in output.chunks_mut(step).enumerate() {
-            let offset = chunk_index * step;
+        let mut offset = 0usize;
+        while offset < output.len() {
+            let max_frames =
+                (output.len() - offset).min(if self.compensation.is_some() { 1 } else { 256 });
+            let count = self
+                .computer_keyboard
+                .as_ref()
+                .map_or(max_frames, |keyboard| {
+                    keyboard.source_input_span(max_frames)
+                });
+            let end = offset
+                .checked_add(count)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let chunk = &mut output[offset..end];
             if self.compensation.is_some() {
                 self.render_compensated_route_frame::<dyn MediaPages>(
                     self.performance_frame,
@@ -90,6 +126,8 @@ impl SessionPlayback {
                         observer,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                self.advance_paused_analytic_releases(count)?;
+                offset = end;
                 continue;
             }
             for frames in &mut self.return_scratch {
@@ -100,11 +138,40 @@ impl SessionPlayback {
             for (index, track) in self.revision.arrangement().tracks().iter().enumerate() {
                 let mut frames = [[0.0; 2]; 256];
                 let frames = &mut frames[..chunk.len()];
-                if let Some(keyboard) = self
-                    .computer_keyboard
+                if self.source_input_receiver() == Some(index) {
+                    source_live::render_source_live_input(
+                        self.computer_keyboard.as_mut().map(Box::as_mut),
+                        self.mutable_instruments[index].as_mut(),
+                        &mut self.mutable_onsets,
+                        &mut self.mutable_events,
+                        0,
+                        self.performance_frame,
+                        frames,
+                        &timing,
+                        false,
+                    )?;
+                } else if let Some(runtime) = self.mutable_instruments[index]
                     .as_mut()
-                    .filter(|keyboard| Some(keyboard.track()) == track.canonical_track_id())
+                    .filter(|runtime| runtime.is_source_owner())
                 {
+                    self.mutable_onsets.clear();
+                    runtime
+                        .process_source_segment(
+                            self.performance_frame,
+                            frames,
+                            &mut self.mutable_onsets,
+                            &[],
+                            &mut self.mutable_events,
+                            None,
+                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                            None,
+                        )
+                        .map_err(|error| error.render_error())?;
+                }
+                if let Some(keyboard) = self.computer_keyboard.as_mut().filter(|keyboard| {
+                    !keyboard.is_source_input()
+                        && Some(keyboard.track()) == track.canonical_track_id()
+                }) {
                     let clock = keyboard
                         .musical_clock(&timing, self.performance_frame, false)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -124,6 +191,20 @@ impl SessionPlayback {
                     keyboard
                         .render_with_resources(frames, None, &resources)
                         .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+                }
+                for release in self.release_scratch.iter().filter(|release| {
+                    release.location.track_index() == index
+                        && release.location.tail_group().is_none()
+                }) {
+                    render_release_raw(
+                        release,
+                        self.revision.session().sine_table(),
+                        self.revision.arrangement().shared_contexts(),
+                        &self.retained_contexts,
+                        &self.analytic_continuations,
+                        self.performance_frame,
+                        frames,
+                    )?;
                 }
                 track.apply_instrument_output_gain(frames);
                 let chain = &mut self.device_chains[index];
@@ -176,6 +257,9 @@ impl SessionPlayback {
                 capture,
                 &mut hex_lattice::RefuseForeign,
             )?;
+            self.render_detached_tails(self.performance_frame, chunk, offset, capture)?;
+            self.advance_paused_analytic_releases(count)?;
+            offset = end;
         }
         if self.compensation.is_none() {
             let main_clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -194,6 +278,16 @@ impl SessionPlayback {
             )
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
+        for runtime in self.mutable_instruments.iter_mut().flatten() {
+            runtime.commit_block();
+        }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.commit_block();
+        }
+        for chain in self.tail_groups.iter_mut().flatten() {
+            chain.commit_block();
+        }
+
         self.main_chain.commit_block();
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {

@@ -1282,8 +1282,12 @@ impl AudioPreparationCustody {
                 )?;
             }
             if assemble_revision {
-                self.revision
-                    .construct(&mut self.arrangement_clips, &mut self.assembly)?;
+                self.revision.construct(
+                    &mut self.arrangement_clips,
+                    &mut self.assembly,
+                    crate::PreparedSourceRouting::prepare(project)
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                )?;
             }
 
             let view = self.revision.storage_view()?;

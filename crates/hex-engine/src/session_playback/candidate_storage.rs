@@ -28,6 +28,7 @@ impl SessionPlayback {
             anchor: _,
             historical_floor: _,
             route_historical_floors: _,
+            source_voice_envelopes: _,
             routes,
             route_scratch,
             device_chains,
