@@ -91,7 +91,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("track hierarchy inventory missing"))?,
     )?;
     object.insert("version".into(), 43.into());
-    let mut snapshot = super::grouped_audio::decode(&serde_json::to_vec(&value)?)?.snapshot();
+    let mut snapshot = super::grouped_audio::decode_parsed_current(value)?.snapshot();
     if rows.len() != snapshot.tracks.len() {
         return Err(StorageError::Invalid(
             "track hierarchy inventory is incomplete",
@@ -111,4 +111,106 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         track.parent_group = row.parent;
     }
     Project::from_snapshot(snapshot).map_err(invalid)
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+    fn legacy_decode(bytes: &[u8]) -> Result<Project, StorageError> {
+        let _: crate::schema::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
+        let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+        let object = value
+            .as_object_mut()
+            .ok_or(StorageError::Invalid("invalid track hierarchy envelope"))?;
+        if object.get("version").and_then(|v| v.as_u64()) != Some(44) {
+            return Err(StorageError::Invalid("invalid track hierarchy version"));
+        }
+        let Inventory(rows) = serde_json::from_value(
+            object
+                .remove("track_hierarchy")
+                .ok_or(StorageError::Invalid("track hierarchy inventory missing"))?,
+        )?;
+        object.insert("version".into(), 43.into());
+        let mut snapshot =
+            crate::schema::grouped_audio::decode(&serde_json::to_vec(&value)?)?.snapshot();
+        if rows.len() != snapshot.tracks.len() {
+            return Err(StorageError::Invalid(
+                "track hierarchy inventory is incomplete",
+            ));
+        }
+        for (track, row) in snapshot.tracks.iter_mut().zip(rows) {
+            if row.track != track.id {
+                return Err(StorageError::Invalid(
+                    "track hierarchy identities or order differ",
+                ));
+            }
+            track.kind = if row.group {
+                TrackKind::Group
+            } else {
+                TrackKind::Ordinary
+            };
+            track.parent_group = row.parent;
+        }
+        Project::from_snapshot(snapshot).map_err(invalid)
+    }
+
+    #[test]
+    fn parsed_handoff_matches_legacy_complete_hierarchy_and_float_bits() {
+        use hex_project::{Command, Created, Editor, TrackSelectionIds};
+        let flat = crate::decode(include_bytes!(
+            "../../tests/fixtures/track-groups/schema43-flat-tracks-15957517.json"
+        ))
+        .unwrap();
+        let mut editor = Editor::new(flat, 8).unwrap();
+        let ids = editor
+            .project()
+            .tracks()
+            .iter()
+            .take(2)
+            .map(|t| t.id())
+            .collect::<Vec<_>>();
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&ids).unwrap(),
+                name: "inner".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group not created")
+        };
+        editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[group]).unwrap(),
+                name: "outer".into(),
+            })
+            .unwrap();
+        for gain in [
+            0.0_f32,
+            -0.0,
+            f32::from_bits(1),
+            0.1,
+            f32::from_bits(0x3f800001),
+            2.0,
+        ] {
+            let mut snapshot = editor.project().snapshot();
+            snapshot.master_gain = gain;
+            let project = Project::from_snapshot(snapshot).unwrap();
+            let bytes = crate::encode(&project).unwrap();
+            let old = legacy_decode(&bytes).unwrap();
+            let new = decode(&bytes).unwrap();
+            assert_eq!(new.snapshot(), old.snapshot());
+            assert_eq!(new.snapshot(), project.snapshot());
+            assert_eq!(new.master_gain().to_bits(), old.master_gain().to_bits());
+            assert_eq!(crate::encode(&new).unwrap(), bytes);
+            let mut bad: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            bad["track_hierarchy"][0]["extra"] = true.into();
+            let bad = serde_json::to_vec(&bad).unwrap();
+            assert!(decode(&bad).is_err() && legacy_decode(&bad).is_err());
+            let text = String::from_utf8(bytes).unwrap();
+            let duplicate = text.replacen("\"group\":true", "\"group\":true,\"group\":false", 1);
+            assert_ne!(duplicate, text);
+            assert!(decode(duplicate.as_bytes()).is_err());
+            assert!(legacy_decode(duplicate.as_bytes()).is_err());
+        }
+    }
 }

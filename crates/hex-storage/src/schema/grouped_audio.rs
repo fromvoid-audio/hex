@@ -237,7 +237,20 @@ pub(crate) fn decode41(bytes: &[u8]) -> Result<Project, StorageError> {
 }
 fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value_version(value, version)
+}
+/// Current-schema composition only: the hierarchy codec already checked raw
+/// duplicate keys and JSON depth before parsing this owned map. A Value cannot
+/// retain duplicate map keys. All43 inventory/core/project checks still run;
+/// the public raw43/41 paths above keep their own raw-input validation.
+pub(super) fn decode_parsed_current(value: serde_json::Value) -> Result<Project, StorageError> {
+    decode_value_version(value, 43)
+}
+fn decode_value_version(
+    mut value: serde_json::Value,
+    version: u64,
+) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid grouped audio envelope"))?;
