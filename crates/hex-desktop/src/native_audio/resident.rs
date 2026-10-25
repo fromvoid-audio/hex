@@ -15,6 +15,7 @@ use hex_session::service::{
 
 pub(super) struct Pending {
     playback: Playback,
+    file_sources: Option<hex_session::service::ResidentFileSet>,
     resources: Option<PreparedDeviceResources>,
     observation: Arc<hex_engine::PreparedPlaybackObservation>,
     metadata: ResidentPublicationMetadata,
@@ -230,9 +231,23 @@ impl NativeAudioSink {
         policy: ResidentPublicationPolicy,
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+        file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.remember_applied_loop();
         self.poll_section_edit();
+        // A request can wake the Session worker directly after the callback's
+        // restore ACK, before its next idle poll. Retire that exact applied
+        // gate before testing a successor publication, as for section edits.
+        if let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        {
+            self.plugins.poll_restore(
+                control,
+                self.desired.as_ref().map(|source| source.context()),
+            );
+        }
         let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
                 Ok(policy) => Some(policy),
@@ -348,7 +363,17 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
-                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
+                    match self.plugins.restore_policy(metadata.context) {
+                        Ok(Some(policy)) if metadata.stopped_restore => policy,
+                        Ok(None) => hex_audio::prepared::PublicationPolicy::InstallFreshRuntime,
+                        Ok(Some(_)) => {
+                            return Err(ResidentPublicationRefusal {
+                                playback,
+                                error: "stopped vst3 restore owns publication".into(),
+                            });
+                        }
+                        Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+                    }
                 }
                 ResidentPublicationPolicy::ReplaceDocument => {
                     return Err(ResidentPublicationRefusal {
@@ -410,6 +435,9 @@ impl NativeAudioSink {
             );
             return match result {
                 Ok(audio_revision) => {
+                    if metadata.stopped_restore {
+                        self.plugins.restore_submitted(audio_revision);
+                    }
                     // Initial worker publication can precede Client exposure. The accepted
                     // control already proves this identity; retain its exact submission now
                     // rather than losing the observation while deliver_open is still pending.
@@ -494,6 +522,7 @@ impl NativeAudioSink {
         self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
         self.resident.pending = Some(Pending {
             playback,
+            file_sources: file_sources.cloned(),
             resources: captured,
             observation,
             metadata,
@@ -515,8 +544,27 @@ impl NativeAudioSink {
         let Some(pending) = self.resident.pending.take() else {
             return;
         };
+        if let Some(files) = pending.file_sources.as_ref() {
+            match self.poll_resident_files(files) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.resident.pending = Some(pending);
+                    return;
+                }
+                Err(error) => {
+                    self.observe(
+                        pending.metadata.context,
+                        "resident-source-refused",
+                        EditorPublicationState::Refused(error),
+                    );
+                    self.resident.pending = Some(pending);
+                    return;
+                }
+            }
+        }
         let Pending {
             playback,
+            file_sources,
             resources,
             observation,
             metadata,
@@ -541,9 +589,11 @@ impl NativeAudioSink {
             policy,
             0,
             &mut with_capture,
+            file_sources.as_ref(),
         ) {
             self.resident.pending = Some(Pending {
                 playback: refused.playback,
+                file_sources,
                 resources,
                 observation,
                 metadata,

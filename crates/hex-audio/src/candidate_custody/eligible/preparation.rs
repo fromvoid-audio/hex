@@ -133,6 +133,9 @@ impl Custody {
             slot.peak = held_peak;
             slot.retiring = false;
             slot.signal.return_requested.store(false, Ordering::Relaxed);
+            slot.signal
+                .endpoint_installed
+                .store(false, Ordering::Relaxed);
             AudioCandidateDomainToken {
                 root,
                 slot: index,

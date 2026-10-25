@@ -1228,6 +1228,26 @@ pub(crate) fn materialize_overwrite_ranges(
     original: &MidiClip,
     ranges: &[(u64, u64)],
 ) -> Result<Vec<MidiClip>, Invalid> {
+    materialize_overwrite_ranges_inner(original, ranges, None)
+}
+
+/// Frame-based overwrite retains only the audible part of a clipped occurrence.
+/// A generated remainder with both edges in the same frame has no surviving
+/// playback. Unclipped authored notes remain intact, including invalid gates
+/// that the engine must refuse. Beat-only section edits keep their existing law.
+pub(crate) fn materialize_overwrite_frame_ranges(
+    original: &MidiClip,
+    ranges: &[(u64, u64)],
+    tempo: &crate::TempoMap,
+) -> Result<Vec<MidiClip>, Invalid> {
+    materialize_overwrite_ranges_inner(original, ranges, Some(tempo))
+}
+
+fn materialize_overwrite_ranges_inner(
+    original: &MidiClip,
+    ranges: &[(u64, u64)],
+    frame_clipping: Option<&crate::TempoMap>,
+) -> Result<Vec<MidiClip>, Invalid> {
     let mut fragments = Vec::new();
     fragments
         .try_reserve_exact(ranges.len())
@@ -1290,6 +1310,13 @@ pub(crate) fn materialize_overwrite_ranges(
                 let kept_start = absolute_start.max(start);
                 let kept_end = absolute_end.min(end);
                 if kept_start < kept_end {
+                    if (kept_start != absolute_start || kept_end != absolute_end)
+                        && let Some(tempo) = frame_clipping
+                        && tempo.beat_to_frame(BeatTime::from_raw(kept_start))?
+                            == tempo.beat_to_frame(BeatTime::from_raw(kept_end))?
+                    {
+                        continue;
+                    }
                     generated = generated
                         .checked_add(1)
                         .filter(|n| *n <= MAX_NOTES)

@@ -10,6 +10,7 @@ unicode-segmentation = "=1.13.3"
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
 [dev-dependencies]
+lyon = "=1.0.19"
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade", "test-support"] }
 
 [lints]

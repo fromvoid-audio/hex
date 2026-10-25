@@ -9,11 +9,11 @@ struct Endpoint {
     slot: usize,
     binding: Binding,
     callback: Option<NativeEffectEntry>,
-    signal: Arc<AtomicBool>,
+    signal: Arc<EndpointSignal>,
 }
 impl NativeEndpointEnvelope {
     pub(super) fn loan_data_bytes() -> Option<usize> {
-        std::mem::size_of::<Endpoint>().checked_add(std::mem::size_of::<AtomicBool>())
+        std::mem::size_of::<Endpoint>().checked_add(std::mem::size_of::<EndpointSignal>())
     }
     fn index_for(&self, root: u64) -> Option<usize> {
         (self.0.binding.root == root && self.0.slot < MAX_SOURCES && self.0.callback.is_some())
@@ -31,8 +31,101 @@ pub(crate) struct NativeEndpointBank {
     routing: [usize; MAX_SOURCES],
     routing_len: usize,
     cycle: NativeEffectCycle,
+    // An exact stopped-runtime return or the last actual requested endpoint
+    // return establishes the empty frontier. Consumed only by the first fresh
+    // live constructor-paired endpoint after every old endpoint has returned.
+    epoch_returned: bool,
+    ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    /// Headless control-side progress only. Compare each original installed
+    /// endpoint's committed request prefix with its matching actual worker;
+    /// source swaps, idle sources and new epochs have independent prefixes.
+    /// None includes control contention or a source no longer queryable.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn workers_idle_on_control(&self, root: &CandidateRoot) -> Option<bool> {
+        for endpoint in self.entries.iter().flatten() {
+            let callback = endpoint.0.callback.as_ref()?;
+            let quantum = u64::try_from(callback.quantum_frames()).ok()?;
+            let requested = callback.committed_frames_for_test().checked_div(quantum)?;
+            if root.native_source_completed_blocks(endpoint.0.binding)? < requested {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+    pub(crate) fn runtime_transports_are_live(
+        &self,
+        playback: &hex_engine::playback::Playback,
+    ) -> bool {
+        if self.cycle.revoked() {
+            return false;
+        }
+        let mut live = true;
+        playback.visit_foreign_runtime_bindings(&mut |binding| {
+            let Some(binding) = binding else {
+                live = false;
+                return;
+            };
+            match self.routing[..self.routing_len].binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            }) {
+                Ok(position) => {
+                    live &= self.entries[self.routing[position]]
+                        .as_ref()
+                        .and_then(|entry| entry.0.callback.as_ref())
+                        .is_some_and(NativeEffectEntry::transport_is_live);
+                }
+                Err(_) => live = false,
+            }
+        });
+        live
+    }
+    pub(crate) fn ordinary_runtime_requires_sources(&self) -> bool {
+        self.ordinary_requirements
+            && self
+                .entries
+                .iter()
+                .flatten()
+                .any(|entry| entry.0.signal.runtime_required.load(Ordering::Acquire))
+    }
+    pub(crate) fn refresh_runtime_requirements(
+        &mut self,
+        playback: Option<&hex_engine::playback::Playback>,
+    ) {
+        if self.routing_len == 0 || (playback.is_none() && !self.ordinary_requirements) {
+            return;
+        }
+        self.ordinary_requirements = playback.is_some();
+        let mut required = [false; MAX_SOURCES];
+        let mut matched = true;
+        if let Some(playback) = playback {
+            playback.visit_foreign_runtime_bindings(&mut |binding| {
+                let Some(binding) = binding else {
+                    matched = false;
+                    return;
+                };
+                match self.routing[..self.routing_len]
+                    .binary_search_by_key(&Some(binding), |slot| {
+                        self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+                    }) {
+                    Ok(position) => required[self.routing[position]] = true,
+                    Err(_) => matched = false,
+                }
+            });
+        }
+        // Unknown runtime facts fail closed. Never release an original source
+        // because an unmatched node could not be mapped to its actual endpoint.
+        for (index, endpoint) in self.entries.iter().enumerate() {
+            if let Some(endpoint) = endpoint {
+                endpoint
+                    .0
+                    .signal
+                    .runtime_required
+                    .store(required[index] || !matched, Ordering::Release);
+            }
+        }
+    }
     pub(crate) fn new() -> Result<Self, &'static str> {
         let mut entries = Vec::new();
         entries
@@ -47,6 +140,8 @@ impl NativeEndpointBank {
             routing: [0; MAX_SOURCES],
             routing_len: 0,
             cycle: NativeEffectCycle::default(),
+            epoch_returned: false,
+            ordinary_requirements: false,
         })
     }
     pub(crate) fn data_quote() -> Option<usize> {
@@ -66,6 +161,12 @@ impl NativeEndpointBank {
             return Err(endpoint);
         };
         if self.cycle.active()
+            || !endpoint
+                .0
+                .callback
+                .as_ref()
+                .is_some_and(NativeEffectEntry::has_live_epoch)
+            || (self.cycle.revoked() && (!self.epoch_returned || self.routing_len != 0))
             || self.entries.get(index).is_none_or(Option::is_some)
             || self.routing_len == MAX_SOURCES
         {
@@ -82,7 +183,16 @@ impl NativeEndpointBank {
             .copy_within(position..self.routing_len, position + 1);
         self.routing[position] = index;
         self.routing_len += 1;
+        if self.cycle.revoked() {
+            // This is a new cohort built from actual returned predecessors and
+            // a live constructor pair, never reuse of a revoked old transport.
+            self.cycle = NativeEffectCycle::default();
+        }
+        self.epoch_returned = false;
         self.entries[index] = Some(endpoint);
+        if let Some(endpoint) = self.entries[index].as_ref() {
+            endpoint.0.signal.installed.store(true, Ordering::Release);
+        }
         Ok(())
     }
     pub(crate) fn take_requested(&mut self, index: usize) -> Option<NativeEndpointEnvelope> {
@@ -100,13 +210,32 @@ impl NativeEndpointBank {
             self.routing
                 .copy_within(position + 1..self.routing_len, position);
             self.routing_len -= 1;
-            entry.take()
+            if let Some(endpoint) = entry.as_ref() {
+                endpoint.0.signal.installed.store(false, Ordering::Release);
+            }
+            let returned = entry.take();
+            if self.routing_len == 0 && self.cycle.revoked() {
+                // Stop can win after endpoint installation but before any
+                // graph uses the cohort. Requests come from the exact stopped
+                // runtime return or Root's unreferenced-source retirement.
+                // Their last unique callback return is the empty frontier;
+                // installation still requires a fresh live original pair.
+                self.epoch_returned = true;
+            }
+            returned
         } else {
             None
         }
     }
     pub(crate) fn has_endpoints(&self) -> bool {
         self.routing_len != 0
+    }
+    pub(crate) fn request_epoch_return(&mut self) {
+        self.reject_rendering();
+        for endpoint in self.entries.iter().flatten() {
+            endpoint.0.signal.store(true, Ordering::Release);
+        }
+        self.epoch_returned = true;
     }
     pub(crate) fn extract(
         &mut self,
@@ -128,6 +257,9 @@ impl NativeEndpointBank {
             self.reject_rendering();
         }
         for (source, target) in self.entries.iter_mut().zip(destination) {
+            if let Some(endpoint) = source.as_ref() {
+                endpoint.0.signal.installed.store(false, Ordering::Release);
+            }
             *target = source.take();
         }
         self.routing_len = 0;
@@ -172,7 +304,7 @@ impl Custody {
                 .and_then(|s| s.data_bytes())
                 .and_then(|n| {
                     n.checked_add(std::mem::size_of::<Endpoint>())?
-                        .checked_add(std::mem::size_of::<AtomicBool>())
+                        .checked_add(std::mem::size_of::<EndpointSignal>())
                 })
                 .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES))
                 .ok_or("native endpoint data overflow")?;
@@ -189,7 +321,7 @@ impl Custody {
         cell.pending = true;
         // Allocate before extracting the unique pair. No ordinary bank barrier
         // spans allocation, construction or later endpoint destruction.
-        let signal = Arc::new(AtomicBool::new(false));
+        let signal = Arc::new(EndpointSignal::new());
         let mut envelope = NativeEndpointEnvelope(Box::new(Endpoint {
             slot: index,
             binding,
@@ -261,7 +393,7 @@ impl Custody {
             .storage()
             .data_bytes()
             .and_then(|n| n.checked_add(std::mem::size_of::<Endpoint>()))
-            .and_then(|n| n.checked_add(std::mem::size_of::<AtomicBool>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<EndpointSignal>()))
             .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
         if slot.binding != Some(endpoint.0.binding)
             || slot.processor != Some(control.prepared())

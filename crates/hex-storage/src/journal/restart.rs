@@ -21,7 +21,7 @@ impl std::fmt::Debug for JournalRestartToken {
     }
 }
 impl JournalRestartToken {
-    /// Capture only a bounded, recognized but unreadable regular journal. No file
+    /// Capture only a recognized but unreadable regular journal. No file
     /// is changed; readable checkpoints, missing slots and symbolic links refuse.
     pub fn capture(path: PathBuf) -> Result<Self, StorageError> {
         let bytes =

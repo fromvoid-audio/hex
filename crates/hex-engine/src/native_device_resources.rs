@@ -21,6 +21,9 @@ use hex_project::AssetId;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+const HASH_BLOCK_FRAMES: usize = 256;
+const HASH_STEREO_FRAME_BYTES: usize = 8;
+
 mod admission;
 pub(crate) mod current_sampler;
 mod ingress;
@@ -216,6 +219,9 @@ impl DeviceResourceCatalog {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
         let mut work = reservation.hash_frames;
+        // Fixed control-stack staging, outside resource DATA/owner accounting.
+        // Preserve the v1 little-endian bit protocol and existing poll interval.
+        let mut encoded = [0_u8; HASH_BLOCK_FRAMES * HASH_STEREO_FRAME_BYTES];
         for expected in expected() {
             cancellation(cancel)?;
             let token = bank.source_token(expected.asset)?;
@@ -237,13 +243,23 @@ impl DeviceResourceCatalog {
             hash.update(b"hex.device-resource.original-stereo.v1\0");
             hash.update(expected.sample_rate.to_le_bytes());
             hash.update(expected.frames.to_le_bytes());
-            for chunk in pcm.chunks(256) {
+            for chunk in pcm.chunks(HASH_BLOCK_FRAMES) {
                 cancellation(cancel)?;
-                for frame in chunk {
-                    for sample in frame {
-                        hash.update(sample.to_bits().to_le_bytes());
-                    }
+                for (frame, bytes) in chunk
+                    .iter()
+                    .zip(encoded.chunks_exact_mut(HASH_STEREO_FRAME_BYTES))
+                {
+                    bytes[..4].copy_from_slice(&frame[0].to_bits().to_le_bytes());
+                    bytes[4..].copy_from_slice(&frame[1].to_bits().to_le_bytes());
                 }
+                let used = chunk
+                    .len()
+                    .checked_mul(HASH_STEREO_FRAME_BYTES)
+                    .ok_or(ResourcePreparationError::InvalidSource)?;
+                let bytes = encoded
+                    .get(..used)
+                    .ok_or(ResourcePreparationError::InvalidSource)?;
+                hash.update(bytes);
             }
             let identity = DeviceResourceIdentity {
                 asset: DeviceAssetKey::new(expected.asset.value())

@@ -38,7 +38,7 @@ fn validate_foreign_tail_sources(
                     if current.binding() == Some(binding))
             })
         {
-            return Err(SessionPlaybackError::DeviceRuntime);
+            return Err(SessionPlaybackError::ForeignTailSourceBusy);
         }
     }
     Ok(())
@@ -436,6 +436,29 @@ impl SessionPlayback {
                         _ => RouteOwner::Arrangement,
                     };
                 }
+            }
+            if let Some(demand) = demand {
+                // This stopped reset is also a publication planning boundary.
+                // Enumerate its candidate routes before either runtime's capture
+                // epoch, DSP history or one-shot admission is changed.
+                demand.window = Some(
+                    self.visit_stream_chunk_in_scope(
+                        demand.ordinary,
+                        &self.route_scratch,
+                        self.performance_frame,
+                        self.arrangement_frame,
+                        self.route_state_generation,
+                        self.arrangement_loop_pass,
+                        demand.playing.unwrap_or(previous.playing),
+                        demand.maximum_frames,
+                        &mut demand.visit,
+                    )
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
+                );
+                return Ok(SessionHandoffReport {
+                    cancelled_pending: [None; MAX_TRACKS],
+                    cancelled_pending_len: 0,
+                });
             }
             self.routes.copy_from_slice(&self.route_scratch);
             self.capture_epoch = recipient_epoch;
@@ -3059,7 +3082,8 @@ impl SessionPlayback {
                 previous.route_state_generation
             };
             demand.window = Some(
-                self.visit_stream_chunk_at(
+                self.visit_stream_chunk_in_scope(
+                    demand.ordinary,
                     &self.route_scratch,
                     previous.performance_frame,
                     previous.arrangement_frame,

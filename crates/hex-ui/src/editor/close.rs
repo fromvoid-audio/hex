@@ -94,6 +94,7 @@ impl EditorView {
             self.opening_project,
             self.export_pending,
             self.device_gesture_pending()
+                || self.pending_plugin_effect.is_some()
                 || self.device_panel.has_pending_draft(cx)
                 || self.tuning.client.snapshot().is_some(),
         )
@@ -133,10 +134,11 @@ impl EditorView {
         let editor = cx.entity();
         cx.spawn(async move |_, cx| {
             let discard = answer.await.ok() == Some(1);
-            if let Err(error) = cx.update_window(handle, |_, window, cx| {
+            if let Err(error) = cx.update_window(handle, move |_, window, cx| {
                 editor.update(cx, |view, cx| {
                     view.close_prompt_open = false;
                     if discard {
+                        view.cancel_plugin_effect();
                         view.cancel_browser_sample_playback();
                         if let Some(control) = &view.export_control {
                             control.cancel();
@@ -146,6 +148,9 @@ impl EditorView {
                         cx.notify();
                     }
                 });
+                // Release the prompt's extra handle inside this app update,
+                // so removing the last window also flushes editor/Service drops.
+                drop(editor);
                 if discard {
                     window.remove_window();
                     if quit {

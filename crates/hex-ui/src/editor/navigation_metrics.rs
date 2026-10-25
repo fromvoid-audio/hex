@@ -19,12 +19,16 @@ pub(super) enum Stage {
     RequestLayout,
     Prepaint,
     Paint,
+    WaveformSampling,
+    WaveformPaths,
 }
+
+const STAGE_COUNT: usize = 12;
 
 #[derive(Clone, Copy)]
 pub(super) struct Measurements {
-    pub(super) ns: [u64; 10],
-    pub(super) calls: [u64; 10],
+    pub(super) ns: [u64; STAGE_COUNT],
+    pub(super) calls: [u64; STAGE_COUNT],
 }
 
 #[derive(Clone, Copy)]
@@ -36,7 +40,7 @@ struct State {
 thread_local! {
     static STATE: Cell<State> = const { Cell::new(State {
         enabled: false,
-        measurements: Measurements { ns: [0; 10], calls: [0; 10] },
+        measurements: Measurements { ns: [0; STAGE_COUNT], calls: [0; STAGE_COUNT] },
     }) };
 }
 
@@ -45,8 +49,8 @@ pub(super) fn reset(enabled: bool) {
         state.set(State {
             enabled,
             measurements: Measurements {
-                ns: [0; 10],
-                calls: [0; 10],
+                ns: [0; STAGE_COUNT],
+                calls: [0; STAGE_COUNT],
             },
         })
     });

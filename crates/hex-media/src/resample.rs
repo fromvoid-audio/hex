@@ -351,6 +351,8 @@ impl ResamplePlan {
             return Ok(());
         }
 
+        let radius = u64::try_from(self.kernel.inner.radius)
+            .map_err(|_| ImportError::Invalid("resampling radius exceeds project range"))?;
         for (output_offset, destination) in output.iter_mut().enumerate() {
             let global_index = global_output_start
                 .checked_add(u64::try_from(output_offset).map_err(|_| {
@@ -373,28 +375,48 @@ impl ResamplePlan {
                     .ok_or(ImportError::Invalid(
                         "resampling kernel table is incomplete",
                     ))?;
+            // The halo was validated for the whole output window above. Clip
+            // each row once to real source frames, keeping zero padding at the
+            // source edges and the original ascending tap accumulation order.
+            let first_source = center.saturating_sub(radius);
+            let end_source = center
+                .saturating_add(radius)
+                .saturating_add(1)
+                .min(self.source_frames);
+            let first_weight = usize::try_from(radius.saturating_sub(center)).map_err(|_| {
+                ImportError::Invalid("resampling weight offset exceeds addressable range")
+            })?;
+            let count = usize::try_from(end_source.saturating_sub(first_source)).map_err(|_| {
+                ImportError::Invalid("resampling tap count exceeds addressable range")
+            })?;
+            let end_weight = first_weight
+                .checked_add(count)
+                .ok_or(ImportError::Invalid("resampling weight range overflow"))?;
+            let weights = row
+                .get(first_weight..end_weight)
+                .ok_or(ImportError::Invalid(
+                    "resampling kernel table is incomplete",
+                ))?;
+            let source_offset = first_source
+                .checked_sub(source_start)
+                .and_then(|offset| usize::try_from(offset).ok())
+                .ok_or(ImportError::Invalid(
+                    "source tap offset exceeds addressable range",
+                ))?;
+            let source_end = source_offset
+                .checked_add(count)
+                .ok_or(ImportError::Invalid("source tap range overflow"))?;
+            let frames = source
+                .get(source_offset..source_end)
+                .ok_or(ImportError::Invalid(
+                    "source window is missing a required tap",
+                ))?;
             let mut left = 0.0_f64;
             let mut right = 0.0_f64;
-            for (tap_index, &weight) in row.iter().enumerate() {
+            for (&weight, frame) in weights.iter().zip(frames) {
                 if weight == 0.0 {
                     continue;
                 }
-                let tap_offset = tap_index as i64 - self.kernel.inner.radius as i64;
-                let source_index = if tap_offset < 0 {
-                    center.checked_sub(tap_offset.unsigned_abs())
-                } else {
-                    center.checked_add(tap_offset as u64)
-                };
-                let Some(source_index) = source_index.filter(|index| *index < self.source_frames)
-                else {
-                    continue;
-                };
-                let source_offset = usize::try_from(source_index - source_start).map_err(|_| {
-                    ImportError::Invalid("source tap offset exceeds addressable range")
-                })?;
-                let frame = source.get(source_offset).ok_or(ImportError::Invalid(
-                    "source window is missing a required tap",
-                ))?;
                 left += f64::from(frame[0]) * weight;
                 right += f64::from(frame[1]) * weight;
             }

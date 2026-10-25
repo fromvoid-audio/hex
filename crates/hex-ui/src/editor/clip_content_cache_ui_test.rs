@@ -2,6 +2,12 @@ use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
 
 #[gpui::test]
+fn draw_order_queries_match_independent_scan(cx: &mut TestAppContext) {
+    cx.verify_draw_order_queries()
+        .expect("private GPUI draw-order oracle");
+}
+
+#[gpui::test]
 fn cached_scene_bulk_replay_matches_legacy_painter_and_refusal_state(cx: &mut TestAppContext) {
     cx.verify_cached_scene_replay()
         .expect("private GPUI replay oracle");

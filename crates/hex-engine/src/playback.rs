@@ -969,6 +969,44 @@ impl Playback {
         self.prepared_revision.as_ref()
     }
 
+    /// Borrow the actual prepared foreign nodes on control. These immutable
+    /// facts grant no native source or endpoint custody: publication must match
+    /// them to the host's retained instances and protect their graph lifetime.
+    pub fn foreign_nodes_on_control(
+        &self,
+    ) -> impl Iterator<Item = &hex_lattice::PreparedRuntimeInstance> {
+        self.project
+            .tracks
+            .iter()
+            .flat_map(|track| track.device_chain.iter())
+            .chain(
+                self.project
+                    .return_buses
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(self.project.main_device_chain.iter())
+            .filter(|node| {
+                matches!(
+                    node.definition,
+                    Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                )
+            })
+    }
+
+    /// Observe actual current and committed release-tail foreign bindings.
+    /// The audio owner uses this bounded scalar visit before exposing a graph
+    /// return; copied immutable revision facts alone omit migrated tails.
+    /// No allocation, source transfer or concurrent runtime access is allowed.
+    pub fn visit_foreign_runtime_bindings(
+        &self,
+        visit: &mut impl FnMut(Option<hex_lattice_contract::ForeignProcessorBinding>),
+    ) {
+        if let Some(runtime) = self.session_runtime.as_ref() {
+            runtime.visit_foreign_runtime_bindings(visit);
+        }
+    }
+
     /// True only for an explicitly armed, admitted Session-capable runtime.
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.session_runtime
@@ -1158,6 +1196,18 @@ impl Playback {
         self.project.sample_rate()
     }
 
+    /// Control-side immutable prepared source facts; these are not page or
+    /// native publication authority. Legacy graphs without a complete prepared
+    /// revision return an explicit refusal rather than incomplete dependencies.
+    pub fn streamed_sources_on_control(
+        &self,
+    ) -> Result<impl Iterator<Item = &crate::StreamedSourceMetadata>, Invalid> {
+        Ok(self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid("prepared source inventory unavailable"))?
+            .streamed_sources())
+    }
     /// Whether any Arrangement or Session source needs the streamed page
     /// provider. Cached by the prepared revision, not rescanned per block.
     pub fn contains_streamed_sources(&self) -> bool {
@@ -1897,6 +1947,17 @@ impl Playback {
             .ok_or(Invalid("candidate session runtime unavailable"))?
             .visit_next_stream_chunk(maximum_frames, playing, visit)
     }
+    pub(crate) fn visit_ordinary_stream_chunk(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("ordinary session runtime unavailable"))?
+            .visit_ordinary_stream_chunk(maximum_frames, playing, visit)
+    }
     pub(crate) fn preview_stream_handoff(
         &mut self,
         previous: &mut Self,
@@ -1908,6 +1969,19 @@ impl Playback {
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
         next.preview_stream_handoff(old, maximum_frames, playing, visit)
+            .map_err(PlaybackHandoffError::Session)
+    }
+    pub(crate) fn preview_ordinary_stream_handoff(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
+        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
+        next.preview_stream_handoff_with_scope(old, maximum_frames, playing, visit, true)
             .map_err(PlaybackHandoffError::Session)
     }
     /// Render through the same Arrangement loop segmentation or mixed Session

@@ -45,7 +45,7 @@ pub use audio_candidate::{
     AudioCandidateEffects, AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation,
     AudioCandidateRefusal, AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed,
     AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
-    ClaimedAudioCandidateRuntime,
+    ClaimedAudioCandidateRuntime, StreamPlayback,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
@@ -663,6 +663,65 @@ impl Clip {
         self.audio.as_ref().map_or([0.0; 2], |audio| {
             audio.frames[self.source_offset + source_offset as usize]
         })
+    }
+
+    // Track supplies an intersected, neutral, uncaptured interval. Admit the
+    // source view before writing, then visit each contiguous piece in order.
+    // No PCM owner is cloned or reclaimed, and no position modulo is needed
+    // inside the per-frame mix loop.
+    fn render_neutral_additive(
+        &self,
+        position: u64,
+        phase: u64,
+        mut output: &mut [Frame],
+        mix: PreparedTrackMix,
+    ) -> bool {
+        let Some(source) = self.audio.as_ref().and_then(|audio| {
+            self.source_offset
+                .checked_add(self.source_length)
+                .and_then(|end| audio.frames().get(self.source_offset..end))
+        }) else {
+            return false;
+        };
+        let Ok(length) = u64::try_from(source.len()) else {
+            return false;
+        };
+        if length == 0 || phase >= length {
+            return false;
+        }
+        let Some(relative) = position.checked_sub(self.start) else {
+            return false;
+        };
+        let offset = if self.looping {
+            let relative = relative % length;
+            let until_wrap = length - phase;
+            if relative >= until_wrap {
+                relative - until_wrap
+            } else {
+                relative + phase
+            }
+        } else {
+            relative
+        };
+        let Ok(mut index) = usize::try_from(offset) else {
+            return false;
+        };
+        if index >= source.len() || (!self.looping && output.len() > source.len() - index) {
+            return false;
+        }
+        // All refusal paths precede mixing, so the caller can retain its
+        // established scalar fallback without adding any frame twice.
+        while !output.is_empty() {
+            let available = &source[index..];
+            let count = output.len().min(available.len());
+            let (chunk, tail) = output.split_at_mut(count);
+            for (destination, sample) in chunk.iter_mut().zip(available) {
+                mix.add_frame(destination, *sample);
+            }
+            output = tail;
+            index = 0;
+        }
+        true
     }
 
     /// Build a clip backed by a validated generation-scoped streamed source.
@@ -1708,6 +1767,18 @@ impl Track {
         let source_phase = metadata.map_or(0, |metadata| metadata.source_phase);
         let clip_gain = metadata.map_or(1.0, |metadata| metadata.gain);
         let fade = metadata.and_then(|metadata| metadata.fade.as_ref());
+        if fade.is_none()
+            && clip_gain == 1.0
+            && capture.is_none()
+            && clip.render_neutral_additive(
+                span_start,
+                source_phase,
+                &mut output[output_start..output_end],
+                source_mix,
+            )
+        {
+            return;
+        }
         if fade.is_some() || clip_gain != 1.0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
                 let position = span_start + offset as u64;
@@ -2248,6 +2319,12 @@ impl Project {
         &self.return_buses
     }
 
+    pub(crate) fn streamed_sources(&self) -> impl Iterator<Item = &StreamedSourceMetadata> {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter_map(|clip| clip.metadata.as_ref().and_then(|m| m.streamed.as_deref()))
+    }
     /// Whether any clip needs streamed pages to produce audio.
     pub fn contains_streamed_sources(&self) -> bool {
         self.has_streamed_sources
@@ -3393,10 +3470,10 @@ pub use session_inventory::{
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
-    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedStreamAction,
-    ProjectOutputTap, ProjectSignal, ProjectSignalObserver, SessionHandoffReport,
-    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
-    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedPrerollPages,
+    PreparedStreamAction, ProjectOutputTap, ProjectSignal, ProjectSignalObserver,
+    SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand,
+    SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };
 
 #[cfg(test)]

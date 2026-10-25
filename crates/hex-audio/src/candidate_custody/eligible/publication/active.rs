@@ -265,6 +265,13 @@ impl Queued {
     }
 }
 impl Active {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn matches_native_epoch_target(
+        &self,
+        target: &crate::candidate_custody::NativeEpochTarget,
+    ) -> bool {
+        self.state.stamp == target.0
+    }
     pub(crate) fn applied_audio_source(&self) -> Option<crate::prepared::AppliedAudioSource> {
         Some(crate::prepared::AppliedAudioSource {
             context: self.state.runtime.as_ref()?.source_context()?,
@@ -283,6 +290,17 @@ impl Active {
     }
     pub(crate) fn runtime_mut(&mut self) -> Option<&mut ClaimedAudioCandidateRuntime> {
         self.state.runtime.as_mut()
+    }
+    /// Caller has matched this exact current source and stopped fence. Unlike
+    /// replacement, no successor exists yet; original runtime disposal closes
+    /// its own origin book on control before a new native epoch can be admitted.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn return_stopped_native_epoch(self) -> Returned {
+        Returned {
+            stamp: self.state.stamp,
+            state: Some(self.state),
+            kind: AudioCandidateReturnKind::StoppedForNativeEpoch,
+        }
     }
     pub(crate) fn return_replaced(self) -> Returned {
         Returned {

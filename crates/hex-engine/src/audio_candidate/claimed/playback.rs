@@ -1,6 +1,8 @@
 //! Bounded operations on the same closed constructor runtime. No Playback,
 //! owning root handle or mutable DSP provider escapes through this facade.
 use super::*;
+mod stream_view;
+pub use stream_view::StreamPlayback;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioCandidateRuntimeStatus {

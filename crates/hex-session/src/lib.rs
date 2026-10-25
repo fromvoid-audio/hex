@@ -449,11 +449,53 @@ impl Session {
         native: Option<ResidentNativeReservation>,
         originals: native_assets::ReconstructedOriginalSources<'_>,
     ) -> Result<Self, SessionError> {
+        Self::from_prepared_with_original_and_file_sources(
+            project,
+            history_capacity,
+            max_resident_frames,
+            prepared_assets,
+            sine_table,
+            native,
+            originals,
+            None,
+        )
+    }
+
+    /// Assemble one recovery candidate from authenticated original banks,
+    /// bounded resident derivatives and independently verified ordinary files.
+    #[allow(clippy::too_many_arguments)] // Explicit original/file source custody is not interchangeable.
+    pub(crate) fn from_prepared_with_original_and_file_sources(
+        project: Project,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        prepared_assets: Vec<(AssetId, PreparedImport)>,
+        sine_table: Arc<hex_engine::SineTable>,
+        native: Option<ResidentNativeReservation>,
+        originals: native_assets::ReconstructedOriginalSources<'_>,
+        files: Option<audio_sources::ReconstructedFileSources>,
+    ) -> Result<Self, SessionError> {
         let native_assets::ReconstructedOriginalSources {
             assets: native_assets,
             overview_budget,
             cancel,
         } = originals;
+        let (source_reservation, verified_sources) = match files {
+            Some(files) => (Some(files.reservation.validate()?), files.files),
+            None => (None, BTreeMap::new()),
+        };
+        for (id, file) in &verified_sources {
+            let asset = project
+                .asset(*id)
+                .ok_or(SessionError::Invalid("file source is not in project"))?;
+            if asset.original_source().is_some()
+                || native_assets.contains(*id)
+                || !file.matches_asset(asset, project.sample_rate())
+            {
+                return Err(SessionError::Invalid(
+                    "reconstructed file source differs from saved facts",
+                ));
+            }
+        }
         let native_count = native_assets.ids().count();
         if native_count != 0 && native.is_none() {
             return Err(SessionError::Invalid(
@@ -507,7 +549,12 @@ impl Session {
         device_comparison::validate_project(&project)?;
         let asset_count = project.assets().count();
         let editor = Editor::new(project, history_capacity)?;
-        if prepared_assets.len().checked_add(native_count) != Some(asset_count) {
+        if prepared_assets
+            .len()
+            .checked_add(native_count)
+            .and_then(|n| n.checked_add(verified_sources.len()))
+            != Some(asset_count)
+        {
             return Err(SessionError::Invalid(
                 "prepared media does not match project assets",
             ));
@@ -524,7 +571,10 @@ impl Session {
                 .project()
                 .asset(asset_id)
                 .ok_or(SessionError::Invalid("decoded asset is not in project"))?;
-            if metadata.original_source().is_some() || native_assets.contains(asset_id) {
+            if metadata.original_source().is_some()
+                || native_assets.contains(asset_id)
+                || verified_sources.contains_key(&asset_id)
+            {
                 return Err(SessionError::Invalid(
                     "device-original media cannot become a prepared clip derivative",
                 ));
@@ -613,10 +663,14 @@ impl Session {
             native_reservation: native,
             overview_budget,
             source_overviews,
-            verified_sources: BTreeMap::new(),
-            semantic_source_epoch: 0,
+            verified_sources,
+            semantic_source_epoch: if source_reservation.is_some() {
+                audio_sources::fresh_source_epoch()?
+            } else {
+                0
+            },
             audio_mode: DocumentAudioMode::Resident,
-            source_reservation: None,
+            source_reservation,
             resident_frames,
             max_resident_frames,
             resident_waveform_bins,
@@ -1028,8 +1082,10 @@ impl Session {
             .map(|(_, prepared)| prepared)
     }
 
-    /// Prepare a static track-gain overlay through the existing resident preview
-    /// path. Only accepted coalesced changes prepare; canonical history is untouched.
+    /// Prepare absolute track-gain metadata through the shared preview compiler.
+    /// Canonical history stays untouched. In verified mode this logical artifact
+    /// grants no native pages or freshness: the worker separately pairs the gain
+    /// Project with its actual canonical source for the existing native constructor.
     pub fn preview_track_gain(
         &self,
         track: hex_project::TrackId,
@@ -1740,6 +1796,11 @@ impl Session {
         self.media
             .get(&asset)
             .map(|resident| Arc::clone(&resident.waveform))
+            .or_else(|| {
+                self.verified_sources
+                    .get(&asset)
+                    .and_then(|file| file.cached_waveform().cloned())
+            })
     }
 
     /// Clone only the small asset map and its shared waveform handles.
@@ -1747,6 +1808,11 @@ impl Session {
         self.media
             .iter()
             .map(|(id, resident)| (*id, Arc::clone(&resident.waveform)))
+            .chain(self.verified_sources.iter().filter_map(|(id, file)| {
+                file.cached_waveform()
+                    .cloned()
+                    .map(|waveform| (*id, waveform))
+            }))
             .collect()
     }
 

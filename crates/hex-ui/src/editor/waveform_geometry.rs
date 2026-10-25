@@ -455,6 +455,9 @@ pub(super) fn prepare_waveform_geometry(
         }
         WaveformMapping::Source { .. } => 1.0,
     };
+    #[cfg(all(test, feature = "ui-test-support"))]
+    let sampling_timer =
+        super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformSampling);
     let mut stereo_peaks = Vec::with_capacity(columns);
     for column in first..last {
         let start = grid
@@ -516,6 +519,11 @@ pub(super) fn prepare_waveform_geometry(
         stereo_peaks.push(peaks);
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    drop(sampling_timer);
+    #[cfg(all(test, feature = "ui-test-support"))]
+    let _paths_timer =
+        super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformPaths);
     let mut channels = Vec::with_capacity(2);
     #[cfg(test)]
     let mut outlines = std::array::from_fn(|_| WaveformChannelGeometry {
