@@ -207,15 +207,35 @@ impl Hosting {
     pub fn prepare_on_control(
         output: &PublicationControl,
         bindings: &[Binding],
+        unavailable: &[super::UnavailableEffect<'_>],
         prepare: &mut dyn FnMut(
             &AudioCandidateEffects<'_, '_>,
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
         output.with_native_effect_definition(bindings, |definition| {
-            AudioCandidateEffects::with_host_definitions(&[definition], prepare)
+            let definition = definition
+                .including_unavailable(unavailable)
+                .map_err(|error| error.to_string())?;
+            AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
                 .map_err(|error| error.to_string())
         })
+    }
+
+    /// Preserve validated opaque devices without claiming native processing.
+    /// The prepared graph contains identity placeholders, not foreign factories.
+    /// Callers must expose their absence through the applied graph observation.
+    pub fn prepare_unavailable_on_control(
+        unavailable: &[super::UnavailableEffect<'_>],
+        prepare: &mut dyn FnMut(
+            &AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        let definition =
+            NativeEffectDefinition::unavailable(unavailable).map_err(|error| error.to_string())?;
+        AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
+            .map_err(|error| error.to_string())
     }
 }
 

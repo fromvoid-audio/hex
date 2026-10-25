@@ -20,6 +20,7 @@ struct Meter {
     id: u64,
     kind: hex_lattice_contract::DeviceTypeId,
     meter: Arc<hex_lattice::DeviceMeter>,
+    foreign: bool,
 }
 #[derive(Debug)]
 struct TrackGates {
@@ -143,11 +144,12 @@ impl PreparedPlaybackObservation {
     ) -> Result<Self, Invalid> {
         let quote = Self::storage_quote(revision, midi)?;
         let mut meters = reserved(meter_sources(revision).count())?;
-        for (id, kind, meter) in meter_sources(revision) {
+        for (id, kind, meter, foreign) in meter_sources(revision) {
             meters.push(Meter {
                 id,
                 kind,
                 meter: Arc::clone(meter),
+                foreign,
             });
         }
         meters.sort_unstable_by_key(|meter| meter.id);
@@ -219,6 +221,21 @@ impl PreparedPlaybackObservation {
     }
     pub fn activity(&self) -> &PreparedMidiActivity {
         &self.activity
+    }
+    /// Whether this exact compiled device selected a foreign processor. This
+    /// scalar is not native admission or ACK: consumers must first match this
+    /// observation to the actual applied output/context/audio revision.
+    pub fn foreign_processor(
+        &self,
+        device_id: u64,
+        device_type: hex_lattice_contract::DeviceTypeId,
+    ) -> Option<bool> {
+        self.meters
+            .binary_search_by_key(&device_id, |meter| meter.id)
+            .ok()
+            .and_then(|index| self.meters.get(index))
+            .filter(|meter| meter.kind == device_type)
+            .map(|meter| meter.foreign)
     }
     pub fn retained_bytes_on_control(&self) -> Option<usize> {
         let mut bytes = std::mem::size_of::<Self>()
@@ -397,6 +414,7 @@ fn meter_sources(
         u64,
         hex_lattice_contract::DeviceTypeId,
         &Arc<hex_lattice::DeviceMeter>,
+        bool,
     ),
 > + Clone {
     revision
@@ -407,14 +425,19 @@ fn meter_sources(
             track
                 .instrument_id
                 .zip(track.instrument_state.as_ref())
-                .map(|(id, state)| (id.value(), state.type_id(), &track.instrument_meter))
+                .map(|(id, state)| (id.value(), state.type_id(), &track.instrument_meter, false))
                 .into_iter()
-                .chain(
-                    track
-                        .device_chain
-                        .iter()
-                        .map(|device| (device.device_id, device.device_type, &device.meter)),
-                )
+                .chain(track.device_chain.iter().map(|device| {
+                    (
+                        device.device_id,
+                        device.device_type,
+                        &device.meter,
+                        matches!(
+                            device.definition.as_ref(),
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        ),
+                    )
+                }))
         })
         .chain(
             revision
@@ -423,7 +446,17 @@ fn meter_sources(
                 .iter()
                 .flat_map(|bus| bus.device_chain.iter())
                 .chain(revision.arrangement().main_device_chain.iter())
-                .map(|device| (device.device_id, device.device_type, &device.meter)),
+                .map(|device| {
+                    (
+                        device.device_id,
+                        device.device_type,
+                        &device.meter,
+                        matches!(
+                            device.definition.as_ref(),
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        ),
+                    )
+                }),
         )
 }
 fn add(total: &mut usize, bytes: Option<usize>) -> Result<(), Invalid> {

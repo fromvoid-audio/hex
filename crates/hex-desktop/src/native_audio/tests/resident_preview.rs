@@ -473,6 +473,9 @@ impl ResidentHarness {
         }
     }
 
+    pub(super) fn submitted_observation(&self) -> Option<&PreparedPlaybackObservation> {
+        self.submitted_observation.as_deref()
+    }
     pub(super) fn pump(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {

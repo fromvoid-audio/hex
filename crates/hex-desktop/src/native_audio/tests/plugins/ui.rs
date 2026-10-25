@@ -870,6 +870,14 @@ fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
         let device = state.project.next_identity();
         assert!(
             visual
+                .debug_bounds(Box::leak(
+                    format!("device-vst3-active-{device}").into_boxed_str()
+                ))
+                .is_some(),
+            "accepted Track/Return/Main effect status must follow its actual applied graph"
+        );
+        assert!(
+            visual
                 .debug_bounds(Box::leak(format!("device-shell-{device}").into_boxed_str()))
                 .is_some(),
             "accepted effect must be painted in its selected chain"

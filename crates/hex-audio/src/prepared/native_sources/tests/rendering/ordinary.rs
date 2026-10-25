@@ -173,6 +173,7 @@ fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
             } else {
                 &[]
             },
+            &[],
             &mut |effects| {
                 effects.prepare_registered_revision(
                     f.editor.project(),

@@ -18,6 +18,7 @@ struct Source {
     binding: Binding,
     owner: ProcessorChainOwner,
     device: u64,
+    project_generation: u64,
     operation: Arc<PluginEffectControl>,
     accepted: bool,
     retiring: bool,
@@ -280,6 +281,7 @@ impl Plugins {
                 binding,
                 owner,
                 device: input.device_id,
+                project_generation: input.insertion.context.project_generation,
                 operation: Arc::clone(&input.insertion.control),
                 accepted: false,
                 retiring: false,
@@ -455,8 +457,9 @@ impl Plugins {
     }
     pub fn compile(
         &self,
-        output: &mut WorkerPreparedOutput,
+        output: Option<&mut WorkerPreparedOutput>,
         input: ResidentEffectPreparation<'_>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
@@ -465,20 +468,61 @@ impl Plugins {
         bindings
             .try_reserve_exact(self.sources.len())
             .map_err(|_| "vst3 compiler selection unavailable")?;
-        input.visit_plugin_effects(|owner, device| {
-            let source = self
-                .sources
-                .iter()
-                .find(|s| s.owner == owner && s.device == device && !s.retiring)
-                .ok_or("original vst3 source unavailable for this device")?;
-            bindings.push(source.binding);
+        let context = input.context();
+        let mut unavailable = Vec::new();
+        input.visit_plugin_effects(|owner, device, state| {
+            let source = self.sources.iter().find(|s| {
+                s.project_generation == context.project_generation
+                    && s.owner == owner
+                    && s.device == device
+                    && !s.retiring
+            });
+            if let Some(source) = source {
+                bindings.push(source.binding);
+                return Ok(());
+            }
+            // A staged document can preserve unresolved state, as can later
+            // edits retaining that same canonical device. This is never an
+            // admission path for a new unsupported same-document effect edit.
+            let mut preserved = desired.is_some_and(|source| {
+                source.context().project_generation.checked_add(1)
+                    == Some(context.project_generation)
+            });
+            if let Some(source) = desired
+                .filter(|source| source.context().project_generation == context.project_generation)
+            {
+                source.effect_preparation().visit_plugin_effects(
+                    |old_owner, old_device, old_state| {
+                        preserved |= old_owner == owner
+                            && old_device == device
+                            && old_state.processing_eq(state);
+                        Ok(())
+                    },
+                )?;
+            }
+            if !preserved {
+                return Err("original vst3 source unavailable for this device".into());
+            }
+            unavailable
+                .try_reserve(1)
+                .map_err(|_| "unavailable vst3 metadata allocation refused")?;
+            unavailable.push(hex_audio::plugin_effects::UnavailableEffect {
+                owner,
+                device_id: device,
+                state,
+            });
             Ok(())
         })?;
-        if bindings.is_empty() {
+        if bindings.is_empty() && unavailable.is_empty() {
             return Ok(None);
         }
-        let control = output.publication.control().ok_or("native output closed")?;
-        Hosting::prepare_on_control(control, &bindings, prepare).map(Some)
+        if bindings.is_empty() {
+            return Hosting::prepare_unavailable_on_control(&unavailable, prepare).map(Some);
+        }
+        let control = output
+            .and_then(|output| output.publication.control())
+            .ok_or("native output closed")?;
+        Hosting::prepare_on_control(control, &bindings, &unavailable, prepare).map(Some)
     }
 }
 

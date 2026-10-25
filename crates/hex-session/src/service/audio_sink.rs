@@ -17,17 +17,25 @@ pub use native_sampler::{
 /// project editing access nor a registry or native owner.
 pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) project: &'a Project,
+    pub(in crate::service) context: hex_engine::AudioSourceContext,
 }
-impl ResidentEffectPreparation<'_> {
+impl<'a> ResidentEffectPreparation<'a> {
+    pub fn context(&self) -> hex_engine::AudioSourceContext {
+        self.context
+    }
     pub fn visit_plugin_effects(
         &self,
-        mut visit: impl FnMut(hex_engine::ProcessorChainOwner, u64) -> Result<(), String>,
+        mut visit: impl FnMut(
+            hex_engine::ProcessorChainOwner,
+            u64,
+            &'a NativeDeviceState,
+        ) -> Result<(), String>,
     ) -> Result<(), String> {
-        let mut chain = |owner, devices: &[hex_project::Device]| {
+        let mut chain = |owner, devices: &'a [hex_project::Device]| {
             for device in devices.iter().filter(|d| {
                 d.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
             }) {
-                visit(owner, device.id().value())?;
+                visit(owner, device.id().value(), device.state())?;
             }
             Ok(())
         };

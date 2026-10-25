@@ -220,15 +220,18 @@ impl Inputs<'_> {
         };
         let mut invoked = false;
         let hosted = sink
-            .prepare_resident_effects(ResidentEffectPreparation { project }, &mut |effects| {
-                if invoked {
-                    return Err(hex_engine::Invalid(
-                        "host effect compiler was invoked more than once",
-                    ));
-                }
-                invoked = true;
-                prepare(Some(effects))
-            })
+            .prepare_resident_effects(
+                ResidentEffectPreparation { project, context },
+                &mut |effects| {
+                    if invoked {
+                        return Err(hex_engine::Invalid(
+                            "host effect compiler was invoked more than once",
+                        ));
+                    }
+                    invoked = true;
+                    prepare(Some(effects))
+                },
+            )
             .map_err(SessionError::NativeAudio)?;
         let prepared = match (hosted, invoked) {
             (Some(prepared), true) => prepared,

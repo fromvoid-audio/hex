@@ -265,6 +265,24 @@ pub(super) fn render_return_effect(
         })),
     );
     let rendered = match &device_view {
+        _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
+            let body = vst3_status_body(view, device);
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text("vst3"),
+                ),
+                theme::device_frame_style(selected),
+                leading,
+                actions,
+                body,
+            )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
+            .into_any_element()
+        }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)

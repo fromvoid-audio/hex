@@ -888,11 +888,12 @@ impl WorkerAudioSink for NativeAudioSink {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
-        let Some(output) = self.output.as_mut() else {
-            input.visit_plugin_effects(|_, _| Err("native vst3 output unavailable".into()))?;
-            return Ok(None);
-        };
-        self.plugins.compile(output, input, prepare)
+        self.plugins.compile(
+            self.output.as_mut(),
+            input,
+            self.desired.as_deref(),
+            prepare,
+        )
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         if !self.worker_owned_resident_graphs {

@@ -1,4 +1,5 @@
 //! Actual Session/desktop/native Root workflow; no device or app execution.
+mod state;
 mod ui;
 use super::resident_preview::ResidentHarness;
 use super::*;
