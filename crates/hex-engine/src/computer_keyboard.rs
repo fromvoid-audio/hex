@@ -271,6 +271,14 @@ pub(crate) enum KeyboardClock<'a> {
     },
 }
 impl hex_lattice::NativeInstrumentClock for KeyboardClock<'_> {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        match *self {
+            Self::Playing { timing, start } => {
+                timing.tempo_micro_bpm_at_frame(start.checked_add(offset as u64)?)
+            }
+            Self::Monitor { micro_bpm, .. } => Some(micro_bpm),
+        }
+    }
     fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
         match *self {
             Self::Playing { start, .. } => start.checked_add(u64::try_from(offset).ok()?),

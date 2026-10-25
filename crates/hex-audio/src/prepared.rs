@@ -70,6 +70,8 @@ pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
 mod applied_source;
 #[cfg(all(test, feature = "allocation-probe"))]
+mod delay_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
 mod device_resources_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
@@ -4151,6 +4153,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
@@ -4320,6 +4323,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let make_state = || state.clone();
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4449,6 +4453,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4590,6 +4595,7 @@ mod tests {
             .expect("gate floor")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -7671,6 +7677,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -8180,6 +8187,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),

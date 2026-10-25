@@ -1,6 +1,8 @@
 //! # Purpose
 //! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
-//! transactional history. Main-lane song sections are stable named/color/range
+//! transactional history. Unassigned native source definitions retain complete
+//! authored device chains and media references independently of track/history lifetime;
+//! they do not create live playback or track bindings. Main-lane song sections are stable named/color/range
 //! objects, separate from DSP clips. Structural reorder permutes complete
 //! supported song content atomically through retained source/history contracts.
 //! Clip-local MIDI volume has independent immutable identity
@@ -86,6 +88,10 @@ mod device;
 mod device_comparison;
 mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
+mod native_sources;
+pub use native_sources::{
+    MAX_NATIVE_SOURCES, MAX_SOURCE_DEVICES, NativeSource, NativeSourceSnapshot,
+};
 mod device_assets;
 pub use device::{
     DEFAULT_INSTRUMENT_TYPE_ID, Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK,
@@ -202,6 +208,7 @@ identifier!(DeviceId);
 identifier!(ReturnId);
 identifier!(RouteId);
 identifier!(SectionId);
+identifier!(SourceId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -597,6 +604,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) native_sources: Vec<NativeSource>,
     pub(crate) arrangement_sections: Vec<ArrangementSection>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
@@ -621,6 +629,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
@@ -649,6 +658,7 @@ impl Project {
     /// Used by prepared tuning publications; it does not authorize playback itself.
     pub fn same_except_tuning(&self, other: &Self) -> bool {
         let Self {
+            native_sources,
             arrangement_sections,
             tuning: _,
             routing,
@@ -667,7 +677,8 @@ impl Project {
             tempo_map,
             meter_map,
         } = self;
-        arrangement_sections == &other.arrangement_sections
+        native_sources == &other.native_sources
+            && arrangement_sections == &other.arrangement_sections
             && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes
@@ -876,6 +887,11 @@ impl Project {
             .flat_map(|track| track.devices().iter().chain(track.instrument.iter()))
             .chain(self.returns.iter().flat_map(|track| track.devices.iter()))
             .chain(self.main_devices.iter())
+            .chain(
+                self.native_sources
+                    .iter()
+                    .flat_map(|source| source.devices.iter()),
+            )
             .find(|device| device.id() == id)
     }
     pub(crate) fn device_mut(&mut self, id: DeviceId) -> Result<&mut Device, Invalid> {
@@ -894,6 +910,12 @@ impl Project {
                     .find_map(|track| track.devices.iter_mut().find(|device| device.id == id))
             })
             .or_else(|| self.main_devices.iter_mut().find(|device| device.id == id))
+            .or_else(|| {
+                self.native_sources
+                    .iter_mut()
+                    .flat_map(|source| source.devices.iter_mut())
+                    .find(|device| device.id == id)
+            })
             .ok_or(Invalid("device no longer exists"))
     }
     pub(crate) fn clip_mut(&mut self, id: ClipId) -> Result<&mut Clip, Invalid> {

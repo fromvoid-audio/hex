@@ -2578,6 +2578,10 @@ struct InstrumentClock<'a, T: ?Sized> {
     start: u64,
 }
 impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentClock<'_, T> {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        self.timing
+            .tempo_micro_bpm_at_frame(self.start.checked_add(offset as u64)?)
+    }
     fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
         self.start.checked_add(u64::try_from(offset).ok()?)
     }

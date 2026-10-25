@@ -11,6 +11,7 @@
 //! remain bounded and allocation-free.
 pub mod auto_pan;
 pub mod compressor;
+pub mod delay;
 pub mod eq8;
 pub use eq8::flexible as eq;
 pub mod fm4;
@@ -41,7 +42,7 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 8] = [
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 9] = [
     &utility::UTILITY_DEFINITION,
     &eq8::EQ8_DEFINITION,
     &eq::EQ_DEFINITION,
@@ -50,6 +51,7 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 8] = [
     &gate::GATE_DEFINITION,
     &auto_pan::AUTO_PAN_DEFINITION,
     &overdrive::OVERDRIVE_DEFINITION,
+    &delay::DEFINITION,
 ];
 static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 4] = [
     &SINE_INSTRUMENT,

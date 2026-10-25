@@ -124,6 +124,12 @@ widgets = (
     # Saturator composition uses typed shared controls and a normalized plot;
     # its axis/error text is routed through theme::text at the panel boundary.
     'plot)', 'plot.id(', 'self.project_spectrum_panel(', 'self.project_spectrum_pointer_events(', 'chooser)', 'drive)', 'wet)',
+    # Delay composition children are typed Div/shared controls; captions are
+    # normalized through theme::text by control()/channel()/segment_button().
+    'row()', 'mode)', 'timing)', 'offset)', 'right)', 'freeze)', 'smoothing)',
+    'ping)', 'mix)', 'filter)', 'frequency)', 'width)', 'filter_row)',
+    'disclosure)', 'delay_mod)', 'filter_mod)', 'modulation)', 'rate)', 'wave)',
+    'morph)', 'quality)', 'loudness)', 'timings)', 'center)',
     # Compressor composition uses shared typed numeric controls and normalized plot.
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
