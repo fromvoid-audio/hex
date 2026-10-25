@@ -2319,6 +2319,7 @@ fn render_add_menu(
     instruments: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
 ) -> impl IntoElement {
     let mut menu = div()
+        .occlude()
         .id("device-add-menu")
         .debug_selector(|| "device-add-menu".into())
         .absolute()

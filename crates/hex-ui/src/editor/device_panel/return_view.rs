@@ -406,6 +406,9 @@ fn render_return_add_menu(
     effects: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
 ) -> impl IntoElement {
     let mut menu = div()
+        // The expanding catalog can overlap an active device control.
+        // Its popup must own input rather than exposing underlying hitboxes.
+        .occlude()
         .id("device-add-menu")
         .debug_selector(|| "device-add-menu".into())
         .absolute()

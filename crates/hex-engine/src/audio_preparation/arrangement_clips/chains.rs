@@ -13,23 +13,6 @@ use hex_lattice::{
 use hex_lattice_contract::NativeDeviceMetadata;
 use std::sync::Arc;
 
-enum ConcreteProcessor {
-    Utility(hex_devices::utility::PreparedUtilityFilterRuntime),
-    Reverb(hex_devices::reverb::PreparedReverb),
-}
-impl ConcreteProcessor {
-    fn into_parts(
-        self,
-    ) -> (
-        Arc<dyn hex_lattice::PreparedNativeProcessor>,
-        SharedDeclaration,
-    ) {
-        match self {
-            Self::Utility(value) => OwnedShared::new_owned(value).into_processor_parts_on_control(),
-            Self::Reverb(value) => OwnedShared::new_owned(value).into_processor_parts_on_control(),
-        }
-    }
-}
 struct Entry {
     device_id: u64,
     owner: ProcessorChainOwner,
@@ -269,12 +252,15 @@ impl ChainCustody {
             let processor = if utility {
                 hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
-                    .map(ConcreteProcessor::Utility)
+                    .map(|value| OwnedShared::new_owned(value).into_processor_parts_on_control())
             } else if reverb {
-                Some(ConcreteProcessor::Reverb(
-                    hex_devices::reverb::ReverbDefinition::prepare_owned_room(&migrated, rate)
-                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
-                ))
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::reverb::ReverbDefinition::prepare_owned_room(&migrated, rate)
+                            .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
             } else {
                 None
             };
@@ -288,8 +274,7 @@ impl ChainCustody {
             let state = OwnedShared::new_owned(migrated);
             state.parts().ok_or(AudioStorageError::UnknownStorage)?;
             let (configuration, state) = state.into_paired_parts_on_control();
-            let (processor, processor_declaration) = if let Some(value) = processor {
-                let (owner, declaration) = value.into_parts();
+            let (processor, processor_declaration) = if let Some((owner, declaration)) = processor {
                 declaration
                     .parts(&owner)
                     .ok_or(AudioStorageError::UnknownStorage)?;
