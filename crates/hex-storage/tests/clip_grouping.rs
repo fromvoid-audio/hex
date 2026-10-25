@@ -71,6 +71,10 @@ fn strip_flat_hierarchy(value: &mut Value) {
         value.as_object_mut().unwrap().remove("track_hierarchy"),
         Some(json!(expected))
     );
+    assert_eq!(
+        value.as_object_mut().unwrap().remove("native_sources"),
+        Some(serde_json::json!([]))
+    );
 }
 #[test]
 fn grouped_sources_roundtrip_complete_original_state_and_missing_media_paths() {

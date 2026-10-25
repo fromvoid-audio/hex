@@ -44,6 +44,10 @@ fn assert_migrated_defaults(current: &mut Value, old: &Value) {
         current.as_object_mut().unwrap().remove("track_hierarchy"),
         Some(json!(hierarchy))
     );
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("native_sources"),
+        Some(serde_json::json!([]))
+    );
     let groups: Vec<_> = old["tracks"]
         .as_array()
         .unwrap()

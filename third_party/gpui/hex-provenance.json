@@ -211,7 +211,7 @@
     "src/platform/test/platform.rs": "c297f4f1f4c77c77c708bcdc19be8d5be7c72e5c38129ee11a9e0af70dfe0daf",
     "src/platform/windows/events.rs": "57ec8c2a9b6ceda1e25d88ce45334423feec499b995919f3fa92a60e265adf15",
     "src/platform/windows/util.rs": "f81851f840f468e187739162f23840a1f8e81c7e17648fc244a5b2edc9eb62b2",
-    "src/scene.rs": "7b613087da31c10785f3fcd16b147a6251e76a3418801e86377e03f5ba757632",
+    "src/scene.rs": "cca0a5d0562e0d09bcc4a8de0c3d051c07fe96ef89d4f1cff66a11bf910197bc",
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
     "src/view.rs": "106968c2296e1063d92c13bddd459a1416c7cbc6d45bfbaa6647316b9cd047bf",
     "src/window.rs": "4cb9cf112cc65622c23f19e72808a80b934e20b2cca043983933fc462d4bb39b",

@@ -4153,6 +4153,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
@@ -4322,6 +4323,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let make_state = || state.clone();
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4451,6 +4453,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4592,6 +4595,7 @@ mod tests {
             .expect("gate floor")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -7673,6 +7677,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -8182,6 +8187,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
