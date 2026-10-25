@@ -12,6 +12,8 @@ use std::{
 pub const VERIFIED_WAV_PAGE_BYTES: usize = 64 * 1024;
 const PAGE_BYTES: usize = VERIFIED_WAV_PAGE_BYTES;
 const DIGEST_BYTES: usize = 32;
+// Control-worker stack staging only; no retained reader/page/manifest growth.
+const DECODE_BATCH_BYTES: usize = 8 * 1024;
 
 /// Limits for verified sources. Manifest capacity is bounded independently of
 /// source bytes and is checked before hashing begins.
@@ -218,8 +220,10 @@ impl VerifiedWavReader {
         self.read_frames_into_with_cancel(start_frame, output, || false)
     }
 
-    /// Cancellable read variant, checked while verifying raw pages during
-    /// header parsing and source-frame decoding.
+    /// Cancellable read variant, checked by the page reader during header/data
+    /// access and once more before success. Conversion stages at most 8 KiB of
+    /// complete frames between reader checks, using fixed control-stack scratch.
+    /// Hashes, captured metadata and full-output clearing retain their owners.
     pub fn read_frames_into_with_cancel(
         &mut self,
         start_frame: u64,
@@ -293,7 +297,13 @@ impl VerifiedWavReader {
             let decode_count = usize::try_from(available.min(requested))
                 .map_err(|_| ImportError::Invalid("window frame count exceeds address space"))?;
             let block_align = layout.format.block_align;
-            let mut frame_bytes = [0_u8; 16];
+            let frames_per_batch = DECODE_BATCH_BYTES
+                .checked_div(block_align)
+                .filter(|count| *count > 0)
+                .ok_or(ImportError::Invalid(
+                    "decoder batch cannot hold a complete frame",
+                ))?;
+            let mut frame_bytes = [0_u8; DECODE_BATCH_BYTES];
             let byte_offset = start_frame
                 .checked_mul(block_align as u64)
                 .and_then(|offset| layout.data_offset.checked_add(offset))
@@ -301,12 +311,25 @@ impl VerifiedWavReader {
             verified
                 .seek(SeekFrom::Start(byte_offset))
                 .map_err(map_io_error)?;
-            for destination in output.iter_mut().take(decode_count) {
-                let frame_end = block_align;
-                verified
-                    .read_exact(&mut frame_bytes[..frame_end])
-                    .map_err(map_io_error)?;
-                *destination = wav::decode_frame(&frame_bytes[..frame_end], layout.format)?;
+            let decoded_output = output
+                .get_mut(..decode_count)
+                .ok_or(ImportError::Invalid("decoded window exceeds output"))?;
+            for destinations in decoded_output.chunks_mut(frames_per_batch) {
+                let byte_count = destinations
+                    .len()
+                    .checked_mul(block_align)
+                    .ok_or(ImportError::Invalid("decoded batch byte count overflow"))?;
+                let bytes = frame_bytes
+                    .get_mut(..byte_count)
+                    .ok_or(ImportError::Invalid("decoded batch exceeds scratch"))?;
+                // Preserve the verified reader's exact page/hash/metadata path;
+                // only amortize calls over a bounded group of complete frames.
+                verified.read_exact(bytes).map_err(map_io_error)?;
+                for (destination, frame) in
+                    destinations.iter_mut().zip(bytes.chunks_exact(block_align))
+                {
+                    *destination = wav::decode_frame(frame, layout.format)?;
+                }
             }
             decode_count
         };
