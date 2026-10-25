@@ -31,8 +31,10 @@ fn start_fixture(start: u64, duration: u64, limiter: Option<bool>) -> Arc<Prepar
 
 #[test]
 #[ignore = "optimized timing evidence; run with --release and --ignored"]
-fn profile_interactive_start_against_song_prefix_preparation() {
-    assert!(!cfg!(debug_assertions), "use --release for timing");
+fn profile_interactive_start_against_song_prefix_preparation() -> Result<(), &'static str> {
+    if cfg!(debug_assertions) {
+        return Err("use --release for timing");
+    }
     std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
         let prepared = mutable_hundred_track_preroll_revision();
         let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
@@ -57,6 +59,7 @@ fn profile_interactive_start_against_song_prefix_preparation() {
             eprintln!("interactive-start tracks=100 mutable-feedback-fixture rate=48000 block=256 destination={destination} warmup=1 samples=3 prefix-preparation-plus-first-render={old:?} reset-and-chase-plus-first-render={new:?}; excludes UI/OS/device and does not establish physical deadlines");
         }
     }).unwrap().join().unwrap();
+    Ok(())
 }
 
 #[test]
