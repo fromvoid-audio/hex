@@ -234,6 +234,11 @@ fn clip_editor_audio_w_l_and_brace_keep_full_placement_and_released_paint(cx: &m
         cx.notify();
     });
     visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("audio-loop-start").unwrap(),
+        held,
+        "acknowledged loop edits preserve the source ruler's coordinate system"
+    );
     editor.read_with(&visual, |v, _| {
         let c = v.state.as_ref().unwrap().project.clip(clip).unwrap();
         let r = c.audio_event_root();
@@ -243,6 +248,42 @@ fn clip_editor_audio_w_l_and_brace_keep_full_placement_and_released_paint(cx: &m
             (c.start(), c.duration()),
             (before.start(), before.duration())
         );
+    });
+    // Expanding the opposite marker stays inside the same retained-source view.
+    let end = visual.debug_bounds("audio-loop-end").unwrap().center();
+    let bar = visual.debug_bounds("audio-loop-ruler").unwrap();
+    let expanded = point(bar.left() + bar.size.width * 0.9, end.y);
+    visual.simulate_mouse_down(end, MouseButton::Left, free);
+    visual.simulate_mouse_move(expanded, MouseButton::Left, free);
+    visual.simulate_mouse_up(expanded, MouseButton::Left, free);
+    clip_drag_ui_test::pump_move(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .audio_event_root()
+                .view_end
+                > selected.1
+        )
+    });
+    visual.simulate_keystrokes("cmd-z");
+    clip_drag_ui_test::pump_move(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .audio_event_root()
+                .view_end,
+            selected.1
+        )
     });
     visual.simulate_keystrokes("cmd-z");
     clip_drag_ui_test::pump_move(&editor, &mut visual);

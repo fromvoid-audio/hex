@@ -1,5 +1,6 @@
 //! Audio clip loop brace in the event editor's retained-root viewport.
 use super::*;
+use crate::editor::audio_event_editor::editor_bounds;
 use crate::{
     editor::{musical_time::SnapGrid, viewport::Viewport},
     theme,
@@ -60,7 +61,7 @@ impl EditorView {
         }
         if (x - g.down_x).abs() >= 3.0 {
             let tempo = state.project.tempo_map();
-            let first = g.root.root_frame_at(g.root.view_start, tempo).ok();
+            let first = g.root.root_frame_at(editor_bounds(&g.root).0, tempo).ok();
             let horizon = g
                 .root
                 .root_frame_at(g.root.domain.clock.length(), tempo)
@@ -156,7 +157,7 @@ impl EditorView {
         .map(|e| e.to_string());
         let editable = refusal.is_none();
         let first = root
-            .root_frame_at(root.view_start, state.project.tempo_map())
+            .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
             .ok();
         let position = |value| {
             root.root_frame_at(value, state.project.tempo_map())
