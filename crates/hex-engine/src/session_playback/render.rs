@@ -761,6 +761,7 @@ impl SessionPlayback {
         self.performance_frame = performance_frame;
         self.arrangement_frame = arrangement_frame;
         self.arrangement_loop_pass = arrangement_loop_pass;
+        self.interactive_start_frame = None;
         if route_changed {
             self.advance_route_state_generation();
         }
@@ -1083,6 +1084,7 @@ impl SessionPlayback {
                             performance_frame,
                             arrangement_frame,
                             arrangement_loop_pass,
+                            chase_at_start: self.interactive_start_frame == Some(performance_frame),
                             loop_region: if self.linear_arrangement_export {
                                 None
                             } else {
@@ -1910,6 +1912,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
+    chase_at_start: bool,
     loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
 }
@@ -1932,6 +1935,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        chase_at_start,
         loop_region,
         timing,
     } = context;
@@ -1972,7 +1976,10 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                                     && span.start < region.start()
                                     && span.gate_end > region.start()
                             });
-                        let source_start = if is_wrap_chase {
+                        let is_start_chase = chase_at_start
+                            && span.start < arrangement_frame
+                            && span.gate_end > arrangement_frame;
+                        let source_start = if is_wrap_chase || is_start_chase {
                             arrangement_frame
                         } else {
                             span.start
