@@ -22,6 +22,7 @@ mod header_actions_tests;
 mod header_drop_tests;
 mod header_style_tests;
 mod keyboard_delete_tests;
+mod limiter_ui_tests;
 mod navigation_ui_tests;
 mod operator_algorithm_ui_tests;
 mod operator_enable_ui_tests;

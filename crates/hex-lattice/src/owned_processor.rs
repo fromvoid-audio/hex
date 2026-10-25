@@ -104,6 +104,11 @@ pub trait OwnedProcessorRuntime: Any + Send {
         None
     }
     fn as_any(&self) -> &dyn Any;
+    /// Drain committed provider telemetry only; never expose speculative work.
+    /// This callback-side operation is bounded, allocation-free and infallible.
+    fn take_dynamics_meter(&mut self) -> Option<crate::DynamicsMeter> {
+        None
+    }
 }
 
 /// Exactly one prepared processing capability. Legacy byte declarations remain
