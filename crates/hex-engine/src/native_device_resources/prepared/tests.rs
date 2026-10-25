@@ -356,6 +356,34 @@ fn registered_sampler_fixture(streamed: bool) {
                 "original-rate sampler, vector and converted clip share the ordinary render kernel"
             );
         }
+        // Interactive held-note starts use the same original-rate sampler
+        // resources and page admission. No private scope or prefix replay.
+        for destination in [3, 8_000] {
+            let action =
+                crate::PlaybackAction::Transport(crate::PlaybackCommand::PlayFrom(destination));
+            let plan = actual
+                .stream_playback(context)
+                .prepare_stream_action(action)
+                .unwrap();
+            actual
+                .stream_playback(context)
+                .visit_prepared_stream_action(&plan, 8, &mut |_| Ok(()))
+                .unwrap();
+            actual
+                .stream_playback(context)
+                .commit_stream_action(plan)
+                .unwrap();
+            expected.try_apply_action(action).unwrap();
+            let mut resident = [[0.0; 2]; 8];
+            let mut streamed = resident;
+            expected.render(&mut resident).unwrap();
+            actual
+                .stream_playback(context)
+                .render_with_pages_and_signal_observers(&mut streamed, &mut pages, None, None)
+                .unwrap();
+            assert_eq!(streamed, resident);
+            assert_eq!(actual.position(), destination + 8);
+        }
         // Resource custody is independent of page readiness. The ordinary book must
         // admit/retire the scoped graph without treating file extent as resident PCM.
         let mut book = DeviceResourcePublication::reserve_on_control(limits, 8, 8).unwrap();

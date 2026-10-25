@@ -19,6 +19,13 @@ build; it does not mean every workflow or device has completed native testing.
 shortcuts apply when the relevant workspace has focus. a text field, browser
 search, dialog or device editor can handle the same key differently.
 
+space starts from the beginning of the time selection, or from the arrange edit
+cursor when there is no time selection. effects start with fresh tails. native
+mutable instruments retrigger notes whose gates cross the cursor and keep their
+original note-off times; earlier voice history is reset. starting does not replay
+the song before the cursor. section launches and exact-history seeks have their
+own preparation behavior.
+
 # install and update
 
 the macos package includes `hex.app`, this manual in pdf and offline html,
