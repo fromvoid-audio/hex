@@ -13,7 +13,10 @@ use metronome::Metronome;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
-    /// Seek and start at this absolute frame, resetting the same state as Seek.
+    /// Start at this absolute frame with fresh effect/voice history. Mutable
+    /// Arrangement notes crossing the cursor retrigger with their remaining
+    /// authored gate; analytic notes retain their direct authored-age law.
+    /// This interactive action never replays audio before the cursor.
     /// A cursor at/after the enabled loop end continues linearly beyond it;
     /// a cursor before the end enters/wraps the loop without changing its bounds.
     PlayFrom(u64),
@@ -1384,13 +1387,9 @@ impl Playback {
                     let command = match command {
                         PlaybackCommand::Play => crate::SessionPlaybackCommand::Play,
                         PlaybackCommand::PlayFrom(frame) => {
-                            runtime
-                                .apply(crate::SessionPlaybackCommand::Seek(frame))
-                                .map_err(PlaybackActionError::Session)?;
-                            runtime
-                                .apply(crate::SessionPlaybackCommand::Play)
-                                .map_err(PlaybackActionError::Session)?;
-                            return Ok(());
+                            return runtime
+                                .play_from(frame)
+                                .map_err(PlaybackActionError::Session);
                         }
                         PlaybackCommand::Pause => crate::SessionPlaybackCommand::Pause,
                         PlaybackCommand::Stop => crate::SessionPlaybackCommand::Stop,

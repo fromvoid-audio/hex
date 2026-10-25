@@ -398,10 +398,11 @@ impl Render for EditorView {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
         }
-        if let Some(state) = self.state.as_ref() {
-            if let Some(track) = self.selected_track {
-                self.gain_lane.change_owner(track, &state.project);
-            }
+        if !self.automation_view.enabled
+            && let Some(state) = self.state.as_ref()
+            && let Some(track) = self.selected_track
+        {
+            self.gain_lane.change_owner(track, &state.project);
         }
         self.clip_content_cache
             .reconcile(self.project_generation, self.state.as_ref(), cx);
