@@ -1992,13 +1992,13 @@ impl EditorView {
         scale: f32,
     ) -> Option<super::waveform::WaveformGrid> {
         let lane = self.drag_lanes.get(&track)?;
-        Some(super::waveform::WaveformGrid {
-            start: viewport.start,
-            end: viewport.end()?,
-            left: lane.left,
-            width: lane.width,
-            columns: super::waveform::waveform_column_count(lane.width, scale),
-        })
+        super::waveform::WaveformGrid::arrangement(
+            viewport,
+            lane.left,
+            lane.width,
+            scale,
+            self.state.as_ref()?.project.sample_rate(),
+        )
     }
 
     fn clip_view(
