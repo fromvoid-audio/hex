@@ -2331,7 +2331,7 @@ impl EditorView {
         }
         self.observe_midi_take_completion(event.midi_take_complete);
         if loop_complete {
-            self.pending_loop = None;
+            self.loop_state_installed(event.error.is_none());
         }
         if event.project_replaced {
             self.loop_rail_gesture = None;
