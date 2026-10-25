@@ -1,8 +1,9 @@
 //! Native reference-workflow composition. Every control uses canonical bindings;
 //! graphs are cached provider queries, never audio processing in paint.
 use super::{
-    ControlPresentation as P, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, parameter_control_with_presentation,
+    ControlPresentation as P, ControlText, DeviceControlIdentity, EditorView, ParameterControl,
+    ParameterKey, effective_parameter_value, numeric_display::NumericDisplayCodec,
+    parameter_control_with_presentation,
 };
 use crate::{device_composition, theme};
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px};
@@ -99,7 +100,7 @@ fn control(
         .iter()
         .find(|p| p.descriptor.id.value() == id)
         .map(|parameter| {
-            parameter_control_with_presentation(
+            let rendered = parameter_control_with_presentation(
                 view,
                 cx,
                 device,
@@ -111,9 +112,33 @@ fn control(
                 presentation,
                 ControlText {
                     label: Some(label),
-                    ..Default::default()
+                    codec: match id {
+                        4 | 6 | 13 | 16 => Some(NumericDisplayCodec::Hertz),
+                        11 | 14 | 17 | 32 | 33 => Some(NumericDisplayCodec::Number),
+                        _ => None,
+                    },
                 },
-            )
+            );
+            if presentation == P::InlineValue {
+                let width = if matches!(id, 4 | 6 | 13 | 16) {
+                    70.0
+                } else {
+                    34.0
+                };
+                if let Some(ParameterControl::Float { entity, .. }) =
+                    view.device_panel.controls.get(&ParameterKey {
+                        device,
+                        parameter: parameter.descriptor.id,
+                    })
+                {
+                    entity.update(cx, |control, cx| {
+                        let _ = control.set_inline_value_width(width, cx);
+                    });
+                }
+                rendered.w(px(width)).flex_shrink_0()
+            } else {
+                rendered.flex_shrink_0()
+            }
         })
         .unwrap_or_else(|| div().child(theme::text("unsupported")))
 }
@@ -122,25 +147,44 @@ fn row() -> Div {
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(3.0))
+        .gap(px(2.0))
+        .min_w_0()
+        .flex_shrink_0()
         .w_full()
 }
-fn title(label: &'static str) -> Div {
-    div().h(px(12.0)).flex_shrink_0().child(theme::text(label))
+fn title(device: DeviceId, label: &'static str) -> Div {
+    div()
+        .debug_selector(move || format!("reverb-{}-title-slot-{label}", device.value()))
+        .h(px(12.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .debug_selector(move || format!("reverb-{}-title-{label}", device.value()))
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(theme::text(label)),
+        )
 }
-fn graph(points: Option<[[f32; 2]; 65]>, height: f32) -> Div {
-    let mut graph = div().w_full().h(px(height)).flex_shrink_0();
+fn graph(device: DeviceId, kind: &'static str, points: Option<[[f32; 2]; 65]>, height: f32) -> Div {
+    let mut graph = div().w_full().flex_1().min_h_0();
     if let Some(points) = points {
         if let Some(plot) = hex_widgets::curve_plot(
             points,
             theme::device_style(theme::DeviceStyleRole::Display),
             hex_widgets::CurvePlotGrid::Horizontal,
         ) {
+            let plot =
+                plot.debug_selector(move || format!("reverb-{}-{kind}-curve", device.value()));
             graph = graph.child(plot);
         }
     }
+    // Shared plots fill remaining space with a zero flex basis. This panel
+    // allocates fixed plot rows; flex_none alone does not clear that basis.
     device_composition::plot(graph)
-        .h(px(height + 2.0))
+        .h(px(height))
+        .flex_basis(px(height))
         .flex_none()
 }
 fn section(controls: Div) -> Div {
@@ -156,26 +200,33 @@ pub(super) fn render_body(
     let mut field =
         |id, label, presentation| control(view, cx, device, metadata, id, label, presentation);
     let input_controls = device_composition::rail_column()
-        .child(title("input filter"))
+        .child(title(device, "input filter"))
         .child(
             row()
                 .child(field(3, "lo cut", P::CompactButton))
                 .child(field(5, "hi cut", P::CompactButton)),
         )
-        .child(graph(preview.as_ref().map(|p| p.input), 28.0))
-        .child(row().child(field(4, "lo hz", P::InlineValue)).child(field(
-            6,
-            "hi hz",
-            P::InlineValue,
-        )))
-        .child(row().child(field(32, "lo q", P::InlineValue)).child(field(
-            33,
-            "hi q",
-            P::InlineValue,
-        )));
-    let input = section(input_controls).w(px(192.0)).flex_shrink_0();
+        .child(graph(
+            device,
+            "input",
+            preview.as_ref().map(|p| p.input),
+            34.0,
+        ))
+        .child(
+            row()
+                .child(theme::text("lo"))
+                .child(field(4, "lo hz", P::InlineValue))
+                .child(field(32, "lo q", P::InlineValue)),
+        )
+        .child(
+            row()
+                .child(theme::text("hi"))
+                .child(field(6, "hi hz", P::InlineValue))
+                .child(field(33, "hi q", P::InlineValue)),
+        );
+    let input = section(input_controls).w(px(128.0)).flex_shrink_0();
     let early_controls = device_composition::rail_column()
-        .child(title("early reflections"))
+        .child(title(device, "early reflections"))
         .child(field(8, "spin", P::CompactButton))
         .child(
             row()
@@ -187,7 +238,7 @@ pub(super) fn render_body(
                 .child(theme::text("shape"))
                 .child(field(11, "shape", P::InlineValue)),
         );
-    let early = section(early_controls).w(px(170.0)).flex_shrink_0();
+    let early = section(early_controls).w(px(124.0)).flex_shrink_0();
     let high = row()
         .child(field(12, "high", P::CompactButton))
         .child(field(13, "freq", P::InlineValue))
@@ -200,13 +251,15 @@ pub(super) fn render_body(
         .flex_1()
         .min_w_0()
         .child(high)
-        .child(graph(preview.map(|p| p.decay), 44.0))
+        .child(graph(device, "decay", preview.map(|p| p.decay), 48.0))
         .child(low);
     let contour = device_composition::rail_column()
+        .w(px(hex_widgets::MICRO_DIAL_WIDTH))
+        .flex_shrink_0()
         .child(field(18, "diffusion", P::MicroDial))
         .child(field(19, "scale", P::MicroDial));
     let diffusion_controls = device_composition::rail_column()
-        .child(title("diffusion network"))
+        .child(title(device, "diffusion network"))
         .child(row().items_start().child(graph_column).child(contour));
     let diffusion = section(diffusion_controls).flex_1().min_w_0();
     let chorus_controls = device_composition::rail_column()
@@ -214,7 +267,7 @@ pub(super) fn render_body(
         .child(field(21, "chorus", P::CompactButton))
         .child(field(22, "amount", P::MicroDial))
         .child(field(23, "rate", P::MicroDial));
-    let chorus = section(chorus_controls).w(px(84.0)).flex_shrink_0();
+    let chorus = section(chorus_controls).w(px(64.0)).flex_shrink_0();
     let top = row()
         .items_start()
         .h(px(106.0))
@@ -224,12 +277,18 @@ pub(super) fn render_body(
         .child(diffusion)
         .child(chorus);
     let smooth = device_composition::rail_column()
-        .child(title("smooth"))
+        .w(px(64.0))
+        .flex_shrink_0()
+        .child(title(device, "smooth"))
         .child(field(24, "smooth", P::CompactSelector));
     let density = device_composition::rail_column()
-        .child(title("density"))
+        .w(px(64.0))
+        .flex_shrink_0()
+        .child(title(device, "density"))
         .child(field(25, "density", P::CompactSelector));
     let freeze = device_composition::rail_column()
+        .w(px(82.0))
+        .flex_shrink_0()
         .items_center()
         .child(field(26, "freeze", P::CompactButton))
         .child(
@@ -256,9 +315,12 @@ pub(super) fn render_body(
         .child(field(30, "reflect", P::CompactDial))
         .child(field(31, "diffuse", P::CompactDial))
         .child(field(2, "dry/wet", P::CompactDial));
-    let output = section(output_controls).w(px(70.0)).flex_shrink_0();
+    let output = section(output_controls).w(px(66.0)).flex_shrink_0();
     device_composition::body()
-        .gap(px(4.0))
+        .gap(px(2.0))
+        .text_size(px(8.0))
+        .line_height(px(10.0))
+        .whitespace_nowrap()
         .child(main)
         .child(output)
         .id(ElementId::Name(
