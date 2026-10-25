@@ -315,8 +315,10 @@ Window tracks pressed-pointer motion across the shared two-pixel drag threshold
 before mouse dispatch. This input state survives consumed move events and cached
 view replay, and ends on matching release, button loss, escape or window
 inactivation. Drag-state transitions invalidate only views with hover/tooltip paint
-dependencies. Their insertion ranges replay with cached/deferred paint; unrelated
-clip scenes and ordinary clicks retain their caches. Div suppresses ordinary/group hover styles and tooltip eligibility
+dependencies whose painted/current hover can change. Their insertion ranges
+replay with cached/deferred paint; group dependencies retain clipped bounds rather
+than an external parent's transient hitbox ID. Unrelated clip scenes and ordinary
+clicks retain their caches. Div suppresses ordinary/group hover styles and tooltip eligibility
 while this state is active. Stored hover callbacks run before mouse dispatch,
 independently of propagation, and reconcile at drag termination. They never
 mutate view state during paint. Already visible hoverable

@@ -787,45 +787,92 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +                        );
 +                    }
 +                }
-@@ -1789,0 +1818,7 @@
+@@ -1789,0 +1818,20 @@
 +        if self.hover_style.is_some()
 +            || self.group_hover_style.is_some()
 +            || self.hover_listener.is_some()
 +            || self.tooltip_builder.is_some()
 +        {
-+            window.observe_pointer_hover();
++            let group = self
++                .group_hover_style
++                .as_ref()
++                .and_then(|style| GroupHitboxes::dependency(&style.group, cx));
++            let group_hitbox = group.map(|(id, _)| id);
++            let painted_hover = !cx.has_active_drag()
++                && !window.is_pointer_dragging()
++                && (hitbox.is_some_and(|hitbox| hitbox.is_hovered(window))
++                    || group_hitbox.is_some_and(|id| id.is_hovered(window)));
++            window.observe_pointer_hover(
++                hitbox.map(|hitbox| hitbox.id),
++                group.map(|(_, bounds)| bounds),
++                painted_hover,
++            );
 +        }
-@@ -2159 +2194 @@
+@@ -1845 +1893 @@
+-                                                GroupHitboxes::push(group, hitbox.id, cx);
++                                                GroupHitboxes::push(group, hitbox, cx);
+@@ -2159 +2207 @@
 -                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
 +                            && (event.position - mouse_down.position).magnitude() > POINTER_DRAG_THRESHOLD
-@@ -2261,4 +2296 @@
+@@ -2261,4 +2309 @@
 -                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
 -                    if phase != DispatchPhase::Bubble {
 -                        return;
 -                    }
 +                window.on_pointer_hover_change(move |window, cx| {
-@@ -2266,0 +2299 @@
+@@ -2266,0 +2312 @@
 +                        && !window.is_pointer_dragging()
-@@ -2298 +2331,2 @@
+@@ -2274,0 +2321,3 @@
++                        true
++                    } else {
++                        false
+@@ -2298 +2347,2 @@
 -                        pending_mouse_down.borrow().is_none()
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
-@@ -2305 +2339,3 @@
+@@ -2305 +2355,3 @@
 -                        pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
 +                            && hitbox.is_hovered(window)
-@@ -2498 +2534 @@
+@@ -2498 +2550 @@
 -            if !cx.has_active_drag() {
 +            if !cx.has_active_drag() && !window.is_pointer_dragging() {
-@@ -2758,0 +2795,6 @@
+@@ -2758,0 +2811,6 @@
 +                        // A capture listener can consume movement before this
 +                        // pending tooltip receives its cancellation event.
 +                        if window.is_pointer_dragging() {
 +                            active_tooltip.borrow_mut().take();
 +                            return;
 +                        }
-@@ -2906,0 +2949,12 @@
+@@ -2874,0 +2933,4 @@
++// Bounds are conservative invalidation metadata only. Style calculation still
++// uses the current group's actual hitbox and ordinary occlusion rules.
++type GroupHitboxDependency = (HitboxId, Bounds<Pixels>);
++
+@@ -2876 +2938 @@
+-pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[HitboxId; 1]>>);
++pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[GroupHitboxDependency; 1]>>);
+@@ -2881,0 +2944,4 @@
++        Self::dependency(name, cx).map(|(id, _)| id)
++    }
++
++    fn dependency(name: &SharedString, cx: &mut App) -> Option<GroupHitboxDependency> {
+@@ -2886,4 +2952,4 @@
+-            .cloned()
+-    }
+-
+-    pub fn push(name: SharedString, hitbox_id: HitboxId, cx: &mut App) {
++            .copied()
++    }
++
++    pub fn push(name: SharedString, hitbox: &Hitbox, cx: &mut App) {
+@@ -2894 +2960 @@
+-            .push(hitbox_id);
++            .push((hitbox.id, hitbox.bounds.intersect(&hitbox.content_mask.bounds)));
+@@ -2904,0 +2971,12 @@
++}
++
 +impl Stateful<Div> {
 +    /// Attach native semantics to this stateful control without changing its layout.
 +    pub fn accessibility(
@@ -836,8 +883,6 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +        self.element = self.element.accessibility(descriptor, action);
 +        self
 +    }
-+}
-+
 diff --git a/src/gpui.rs b/src/gpui.rs
 --- a/src/gpui.rs
 +++ b/src/gpui.rs
@@ -4513,21 +4558,24 @@ diff --git a/src/window.rs b/src/window.rs
  mod prompts;
  
  use crate::util::atomic_incr_if_not_zero;
-@@ -462,6 +465,13 @@
+@@ -462,6 +465,16 @@
  pub(crate) type AnyMouseListener =
      Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
  
-+type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App)>;
++type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App) -> bool>;
 +
 +struct PointerHoverObserver {
 +    view: EntityId,
 +    listener: Option<PointerHoverListener>,
++    hitbox: Option<HitboxId>,
++    group_bounds: Option<Bounds<Pixels>>,
++    painted_hover: bool,
 +}
 +
  #[derive(Clone)]
  pub(crate) struct CursorStyleRequest {
      pub(crate) hitbox_id: Option<HitboxId>,
-@@ -656,7 +666,7 @@
+@@ -656,7 +669,7 @@
      current_view: EntityId,
      priority: usize,
      parent_node: DispatchNodeId,
@@ -4536,7 +4584,7 @@ diff --git a/src/window.rs b/src/window.rs
      text_style_stack: Vec<TextStyleRefinement>,
      element: Option<AnyElement>,
      absolute_offset: Point<Pixels>,
-@@ -665,6 +675,7 @@
+@@ -665,6 +678,7 @@
  }
  
  pub(crate) struct Frame {
@@ -4544,7 +4592,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) focus: Option<FocusId>,
      pub(crate) window_active: bool,
      pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
-@@ -678,8 +689,9 @@
+@@ -678,8 +692,9 @@
      pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
      pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
      pub(crate) cursor_styles: Vec<CursorStyleRequest>,
@@ -4555,7 +4603,7 @@ diff --git a/src/window.rs b/src/window.rs
      #[cfg(any(feature = "inspector", debug_assertions))]
      pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
      #[cfg(any(feature = "inspector", debug_assertions))]
-@@ -687,8 +699,42 @@
+@@ -687,8 +702,42 @@
      pub(crate) tab_stops: TabStopMap,
  }
  
@@ -4598,7 +4646,7 @@ diff --git a/src/window.rs b/src/window.rs
      hitboxes_index: usize,
      tooltips_index: usize,
      deferred_draws_index: usize,
-@@ -703,14 +749,18 @@
+@@ -703,14 +752,18 @@
      mouse_listeners_index: usize,
      input_handlers_index: usize,
      cursor_styles_index: usize,
@@ -4617,7 +4665,7 @@ diff --git a/src/window.rs b/src/window.rs
              focus: None,
              window_active: false,
              element_states: FxHashMap::default(),
-@@ -724,9 +774,10 @@
+@@ -724,9 +777,10 @@
              input_handlers: Vec::new(),
              tooltip_requests: Vec::new(),
              cursor_styles: Vec::new(),
@@ -4629,7 +4677,7 @@ diff --git a/src/window.rs b/src/window.rs
  
              #[cfg(any(feature = "inspector", debug_assertions))]
              next_inspector_instance_ids: FxHashMap::default(),
-@@ -738,6 +789,7 @@
+@@ -738,6 +792,7 @@
      }
  
      pub(crate) fn clear(&mut self) {
@@ -4637,7 +4685,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.element_states.clear();
          self.accessed_element_states.clear();
          self.mouse_listeners.clear();
-@@ -746,11 +798,15 @@
+@@ -746,11 +801,15 @@
          self.input_handlers.clear();
          self.tooltip_requests.clear();
          self.cursor_styles.clear();
@@ -4653,7 +4701,7 @@ diff --git a/src/window.rs b/src/window.rs
  
          #[cfg(any(feature = "inspector", debug_assertions))]
          {
-@@ -815,11 +871,21 @@
+@@ -815,11 +874,21 @@
      }
  }
  
@@ -4675,7 +4723,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) platform_window: Box<dyn PlatformWindow>,
      display_id: Option<DisplayId>,
      sprite_atlas: Arc<dyn PlatformAtlas>,
-@@ -833,7 +899,7 @@
+@@ -833,7 +902,7 @@
      pub(crate) viewport_size: Size<Pixels>,
      layout_engine: Option<TaffyLayoutEngine>,
      pub(crate) root: Option<AnyView>,
@@ -4684,7 +4732,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) text_style_stack: Vec<TextStyleRefinement>,
      pub(crate) rendered_entity_stack: Vec<EntityId>,
      pub(crate) element_offset_stack: Vec<Point<Pixels>>,
-@@ -853,6 +919,8 @@
+@@ -853,6 +922,8 @@
      default_prevented: bool,
      mouse_position: Point<Pixels>,
      mouse_hit_test: HitTest,
@@ -4693,7 +4741,7 @@ diff --git a/src/window.rs b/src/window.rs
      modifiers: Modifiers,
      capslock: Capslock,
      scale_factor: f32,
-@@ -1095,6 +1163,11 @@
+@@ -1095,6 +1166,11 @@
                  handle
                      .update(&mut cx, |_, window, cx| {
                          window.active.set(active);
@@ -4705,7 +4753,7 @@ diff --git a/src/window.rs b/src/window.rs
                          window.modifiers = window.platform_window.modifiers();
                          window.capslock = window.platform_window.capslock();
                          window
-@@ -1102,6 +1175,7 @@
+@@ -1102,6 +1178,7 @@
                              .clone()
                              .retain(&(), |callback| callback(window, cx));
  
@@ -4713,7 +4761,7 @@ diff --git a/src/window.rs b/src/window.rs
                          window.bounds_changed(cx);
                          window.refresh();
  
-@@ -1121,6 +1195,16 @@
+@@ -1121,6 +1198,16 @@
                      .log_err();
              }
          }));
@@ -4730,7 +4778,7 @@ diff --git a/src/window.rs b/src/window.rs
          platform_window.on_input({
              let mut cx = cx.to_async();
              Box::new(move |event| {
-@@ -1208,6 +1292,7 @@
+@@ -1208,6 +1295,7 @@
              handle,
              invalidator,
              removed: false,
@@ -4738,7 +4786,7 @@ diff --git a/src/window.rs b/src/window.rs
              platform_window,
              display_id,
              sprite_atlas,
-@@ -1236,6 +1321,8 @@
+@@ -1236,6 +1324,8 @@
              default_prevented: true,
              mouse_position,
              mouse_hit_test: HitTest::default(),
@@ -4747,7 +4795,7 @@ diff --git a/src/window.rs b/src/window.rs
              modifiers,
              capslock,
              scale_factor,
-@@ -1371,8 +1458,17 @@
+@@ -1371,8 +1461,17 @@
          }
      }
  
@@ -4765,7 +4813,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.removed = true;
      }
  
-@@ -1908,6 +2004,61 @@
+@@ -1908,6 +2007,61 @@
          self.platform_window.completed_frame();
      }
  
@@ -4827,7 +4875,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Produces a new frame and assigns it to `rendered_frame`. To actually show
      /// the contents of the new [`Scene`], use [`Self::present`].
      #[profiling::function]
-@@ -1941,6 +2092,10 @@
+@@ -1941,6 +2095,10 @@
          let previous_window_active = self.rendered_frame.window_active;
          mem::swap(&mut self.rendered_frame, &mut self.next_frame);
          self.next_frame.clear();
@@ -4838,7 +4886,7 @@ diff --git a/src/window.rs b/src/window.rs
          let current_focus_path = self.rendered_frame.focus_path();
          let current_window_active = self.rendered_frame.window_active;
  
-@@ -2086,6 +2241,11 @@
+@@ -2086,6 +2244,11 @@
      }
  
      fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
@@ -4850,7 +4898,7 @@ diff --git a/src/window.rs b/src/window.rs
          // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
          for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
              let Some(Some(tooltip_request)) = self
-@@ -2220,6 +2380,7 @@
+@@ -2220,6 +2383,7 @@
  
      pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
          PrepaintStateIndex {
@@ -4858,7 +4906,7 @@ diff --git a/src/window.rs b/src/window.rs
              hitboxes_index: self.next_frame.hitboxes.len(),
              tooltips_index: self.next_frame.tooltip_requests.len(),
              deferred_draws_index: self.next_frame.deferred_draws.len(),
-@@ -2230,6 +2391,14 @@
+@@ -2230,6 +2394,14 @@
      }
  
      pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
@@ -4873,7 +4921,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.hitboxes.extend(
              self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                  .iter()
-@@ -2284,13 +2453,30 @@
+@@ -2284,13 +2456,33 @@
              mouse_listeners_index: self.next_frame.mouse_listeners.len(),
              input_handlers_index: self.next_frame.input_handlers.len(),
              cursor_styles_index: self.next_frame.cursor_styles.len(),
@@ -4899,12 +4947,15 @@ diff --git a/src/window.rs b/src/window.rs
 +                .map(|observer| PointerHoverObserver {
 +                    view: observer.view,
 +                    listener: observer.listener.take(),
++                    hitbox: observer.hitbox,
++                    group_bounds: observer.group_bounds,
++                    painted_hover: observer.painted_hover,
 +                }),
 +        );
          self.next_frame.cursor_styles.extend(
              self.rendered_frame.cursor_styles
                  [range.start.cursor_styles_index..range.end.cursor_styles_index]
-@@ -3524,14 +3710,28 @@
+@@ -3524,14 +3716,28 @@
          subscription
      }
  
@@ -4940,25 +4991,35 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3776,79 @@
+@@ -3576,6 +3782,98 @@
              .unwrap_or_else(|| action.name().to_string())
      }
  
 +    /// Record a paint dependency on pressed-pointer hover state. Entries retain
 +    /// their insertion ranges through cached/deferred paint replay.
-+    pub(crate) fn observe_pointer_hover(&mut self) {
++    pub(crate) fn observe_pointer_hover(
++        &mut self,
++        hitbox: Option<HitboxId>,
++        group_bounds: Option<Bounds<Pixels>>,
++        painted_hover: bool,
++    ) {
 +        self.invalidator.debug_assert_paint();
 +        let view = self.current_view();
-+        self.next_frame
-+            .pointer_hover_observers
-+            .push(PointerHoverObserver { view, listener: None });
++        self.next_frame.pointer_hover_observers.push(PointerHoverObserver {
++            view,
++            listener: None,
++            hitbox,
++            group_bounds,
++            painted_hover,
++        });
 +    }
 +
 +    /// Register a hover notification independent of mouse-event propagation.
 +    /// Notifications run during input, never while painting a view's model.
++    /// Returning true marks the registering view dirty for callback-derived paint.
 +    pub(crate) fn on_pointer_hover_change(
 +        &mut self,
-+        listener: impl Fn(&mut Window, &mut App) + 'static,
++        listener: impl Fn(&mut Window, &mut App) -> bool + 'static,
 +    ) {
 +        self.invalidator.debug_assert_paint();
 +        let view = self.current_view();
@@ -4967,6 +5028,9 @@ diff --git a/src/window.rs b/src/window.rs
 +            .push(PointerHoverObserver {
 +                view,
 +                listener: Some(Box::new(listener)),
++                hitbox: None,
++                group_bounds: None,
++                painted_hover: false,
 +            });
 +    }
 +
@@ -4975,8 +5039,12 @@ diff --git a/src/window.rs b/src/window.rs
 +        let propagate = cx.propagate_event;
 +        let default_prevented = self.default_prevented;
 +        for observer in &observers {
-+            if let Some(listener) = &observer.listener {
-+                listener(self, cx);
++            if let Some(listener) = &observer.listener
++                && listener(self, cx)
++            {
++                let mut invalidation = self.invalidator.inner.borrow_mut();
++                invalidation.dirty_views.insert(observer.view);
++                invalidation.dirty = true;
 +            }
 +        }
 +        // Hover notifications do not consume the active gesture's mouse event.
@@ -4990,14 +5058,16 @@ diff --git a/src/window.rs b/src/window.rs
 +        // existing view-path invalidation without notifying model observers or
 +        // forcing unrelated cached clip scenes to render again.
 +        let mut invalidation = self.invalidator.inner.borrow_mut();
-+        invalidation
-+            .dirty_views
-+            .extend(
-+                self.rendered_frame
-+                    .pointer_hover_observers
-+                    .iter()
-+                    .map(|observer| observer.view),
-+            );
++        for observer in &self.rendered_frame.pointer_hover_observers {
++            if observer.painted_hover
++                || observer.hitbox.is_some_and(|id| id.is_hovered(self))
++                || observer
++                    .group_bounds
++                    .is_some_and(|bounds| bounds.contains(&self.mouse_position()))
++            {
++                invalidation.dirty_views.insert(observer.view);
++            }
++        }
 +        invalidation.dirty = true;
 +    }
 +
@@ -5020,11 +5090,10 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3584,6 +3857,35 @@
-         cx.propagate_event = true;
+@@ -3585,6 +3883,28 @@
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
-+
+ 
 +        let was_dragging = self.pointer_dragging;
 +        match &event {
 +            PlatformInput::MouseDown(down) if self.pointer_press.is_none() => {
@@ -5047,26 +5116,23 @@ diff --git a/src/window.rs b/src/window.rs
 +            }
 +            _ => {}
 +        }
-+        if was_dragging != self.pointer_dragging {
-+            // Capture listeners may consume the movement before any hover
-+            // notifier sees it. Invalidate only the dependent views, including
-+            // those represented by cached paint records.
-+            self.invalidate_pointer_hover();
-+        }
- 
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
-@@ -3662,10 +3964,31 @@
+             // API for the mouse position can only occur on the main thread.
+@@ -3662,10 +3982,33 @@
              PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
          };
  
++        let pointer_hover_transition = was_dragging != self.pointer_dragging;
 +        let keyboard_hover_transition = event.keyboard_event().is_some()
-+            && was_dragging != self.pointer_dragging;
++            && pointer_hover_transition;
 +        if keyboard_hover_transition {
++            self.invalidate_pointer_hover();
 +            self.dispatch_pointer_hover(cx);
 +        }
          if let Some(any_mouse_event) = event.mouse_event() {
-             self.dispatch_mouse_event(any_mouse_event, cx);
+-            self.dispatch_mouse_event(any_mouse_event, cx);
++            self.dispatch_mouse_event(any_mouse_event, pointer_hover_transition, cx);
          } else if let Some(any_key_event) = event.keyboard_event() {
              self.dispatch_key_event(any_key_event, cx);
 +        }
@@ -5088,7 +5154,26 @@ diff --git a/src/window.rs b/src/window.rs
          }
  
          DispatchEventResult {
-@@ -3686,6 +4009,10 @@
+@@ -3674,11 +4017,17 @@
+         }
+     }
+ 
+-    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
++    fn dispatch_mouse_event(&mut self, event: &dyn Any, hover_transition: bool, cx: &mut App) {
+         let hit_test = self.rendered_frame.hit_test(self.mouse_position());
+         if hit_test != self.mouse_hit_test {
+             self.mouse_hit_test = hit_test;
+             self.reset_cursor_style(cx);
++        }
++
++        if hover_transition {
++            // Use the updated hit test: both painted hover and newly eligible
++            // hover must retire/restore even if capture consumes this event.
++            self.invalidate_pointer_hover();
+         }
+ 
+         #[cfg(any(feature = "inspector", debug_assertions))]
+@@ -3686,6 +4035,10 @@
              self.handle_inspector_mouse_event(event, cx);
              // When inspector is picking, all other mouse handling is skipped.
              return;

@@ -1820,7 +1820,20 @@ impl Interactivity {
             || self.hover_listener.is_some()
             || self.tooltip_builder.is_some()
         {
-            window.observe_pointer_hover();
+            let group = self
+                .group_hover_style
+                .as_ref()
+                .and_then(|style| GroupHitboxes::dependency(&style.group, cx));
+            let group_hitbox = group.map(|(id, _)| id);
+            let painted_hover = !cx.has_active_drag()
+                && !window.is_pointer_dragging()
+                && (hitbox.is_some_and(|hitbox| hitbox.is_hovered(window))
+                    || group_hitbox.is_some_and(|id| id.is_hovered(window)));
+            window.observe_pointer_hover(
+                hitbox.map(|hitbox| hitbox.id),
+                group.map(|(_, bounds)| bounds),
+                painted_hover,
+            );
         }
         self.hovered = hitbox.map(|hitbox| hitbox.is_hovered(window));
         window.with_optional_element_state::<InteractiveElementState, _>(
@@ -1877,7 +1890,7 @@ impl Interactivity {
                                             }
 
                                             if let Some(group) = self.group.clone() {
-                                                GroupHitboxes::push(group, hitbox.id, cx);
+                                                GroupHitboxes::push(group, hitbox, cx);
                                             }
 
                                             if let Some(area) = self.window_control {
@@ -2305,6 +2318,9 @@ impl Interactivity {
                         drop(was_hovered);
 
                         hover_listener(&is_hovered, window, cx);
+                        true
+                    } else {
+                        false
                     }
                 });
             }
@@ -2914,26 +2930,34 @@ fn handle_tooltip_check_visible_and_update(
     active_tooltip.borrow().is_some()
 }
 
+// Bounds are conservative invalidation metadata only. Style calculation still
+// uses the current group's actual hitbox and ordinary occlusion rules.
+type GroupHitboxDependency = (HitboxId, Bounds<Pixels>);
+
 #[derive(Default)]
-pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[HitboxId; 1]>>);
+pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[GroupHitboxDependency; 1]>>);
 
 impl Global for GroupHitboxes {}
 
 impl GroupHitboxes {
     pub fn get(name: &SharedString, cx: &mut App) -> Option<HitboxId> {
+        Self::dependency(name, cx).map(|(id, _)| id)
+    }
+
+    fn dependency(name: &SharedString, cx: &mut App) -> Option<GroupHitboxDependency> {
         cx.default_global::<Self>()
             .0
             .get(name)
             .and_then(|bounds_stack| bounds_stack.last())
-            .cloned()
+            .copied()
     }
 
-    pub fn push(name: SharedString, hitbox_id: HitboxId, cx: &mut App) {
+    pub fn push(name: SharedString, hitbox: &Hitbox, cx: &mut App) {
         cx.default_global::<Self>()
             .0
             .entry(name)
             .or_default()
-            .push(hitbox_id);
+            .push((hitbox.id, hitbox.bounds.intersect(&hitbox.content_mask.bounds)));
     }
 
     pub fn pop(name: &SharedString, cx: &mut App) {

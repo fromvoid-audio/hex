@@ -340,3 +340,89 @@ impl Render for CachedHoverRoot {
             .child(gpui::AnyView::from(self.0.clone()).cached(layout.style().clone()))
     }
 }
+
+struct GroupContent;
+impl Render for GroupContent {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("group-target")
+            .debug_selector(|| "cached-group-target".into())
+            .size_full()
+            .bg(rgb(0x111111))
+            .group_hover("hover-parent", |style| style.bg(rgb(0xff0000)))
+    }
+}
+struct GroupRoot(gpui::Entity<GroupContent>);
+impl Render for GroupRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let mut layout = div().w(px(60.)).h(px(60.));
+        div()
+            .size_full()
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    |_, _, window, _| {
+                        window.on_mouse_event(|event: &MouseMoveEvent, phase, _, cx| {
+                            if phase.capture() && event.pressed_button.is_some() {
+                                cx.stop_propagation();
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                div()
+                    .id("hover-parent")
+                    .group("hover-parent")
+                    .absolute()
+                    .left(px(10.))
+                    .top(px(20.))
+                    .w(px(200.))
+                    .h(px(60.))
+                    .child(gpui::AnyView::from(self.0.clone()).cached(layout.style().clone())),
+            )
+    }
+}
+
+#[gpui::test]
+fn cached_group_hover_recovers_after_parent_only_repaint_during_drag(cx: &mut TestAppContext) {
+    use gpui::AppContext;
+    let content = cx.new(|_| GroupContent);
+    let handle = cx.add_window(|_, _| GroupRoot(content));
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.simulate_resize(size(px(320.), px(120.)));
+    let at = point(px(180.), px(40.)); // In the group, outside its cached child.
+    visual.simulate_mouse_move(at, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("cached-group-target"),
+        Some(rgb(0xff0000).into())
+    );
+    visual.simulate_mouse_down(
+        point(px(300.), px(40.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("cached-group-target"),
+        Some(rgb(0x111111).into())
+    );
+    visual.update(|window, cx| {
+        let root = window.root::<GroupRoot>().unwrap().unwrap();
+        root.update(cx, |_, cx| cx.notify());
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("cached-group-target"),
+        Some(rgb(0xff0000).into())
+    );
+}
+
+#[path = "pointer_hover_profile.rs"]
+mod profile;

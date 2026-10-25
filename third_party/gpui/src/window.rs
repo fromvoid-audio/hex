@@ -465,11 +465,14 @@ type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
 pub(crate) type AnyMouseListener =
     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
 
-type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App)>;
+type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App) -> bool>;
 
 struct PointerHoverObserver {
     view: EntityId,
     listener: Option<PointerHoverListener>,
+    hitbox: Option<HitboxId>,
+    group_bounds: Option<Bounds<Pixels>>,
+    painted_hover: bool,
 }
 
 #[derive(Clone)]
@@ -2475,6 +2478,9 @@ impl Window {
                 .map(|observer| PointerHoverObserver {
                     view: observer.view,
                     listener: observer.listener.take(),
+                    hitbox: observer.hitbox,
+                    group_bounds: observer.group_bounds,
+                    painted_hover: observer.painted_hover,
                 }),
         );
         self.next_frame.cursor_styles.extend(
@@ -3778,19 +3784,29 @@ impl Window {
 
     /// Record a paint dependency on pressed-pointer hover state. Entries retain
     /// their insertion ranges through cached/deferred paint replay.
-    pub(crate) fn observe_pointer_hover(&mut self) {
+    pub(crate) fn observe_pointer_hover(
+        &mut self,
+        hitbox: Option<HitboxId>,
+        group_bounds: Option<Bounds<Pixels>>,
+        painted_hover: bool,
+    ) {
         self.invalidator.debug_assert_paint();
         let view = self.current_view();
-        self.next_frame
-            .pointer_hover_observers
-            .push(PointerHoverObserver { view, listener: None });
+        self.next_frame.pointer_hover_observers.push(PointerHoverObserver {
+            view,
+            listener: None,
+            hitbox,
+            group_bounds,
+            painted_hover,
+        });
     }
 
     /// Register a hover notification independent of mouse-event propagation.
     /// Notifications run during input, never while painting a view's model.
+    /// Returning true marks the registering view dirty for callback-derived paint.
     pub(crate) fn on_pointer_hover_change(
         &mut self,
-        listener: impl Fn(&mut Window, &mut App) + 'static,
+        listener: impl Fn(&mut Window, &mut App) -> bool + 'static,
     ) {
         self.invalidator.debug_assert_paint();
         let view = self.current_view();
@@ -3799,6 +3815,9 @@ impl Window {
             .push(PointerHoverObserver {
                 view,
                 listener: Some(Box::new(listener)),
+                hitbox: None,
+                group_bounds: None,
+                painted_hover: false,
             });
     }
 
@@ -3807,8 +3826,12 @@ impl Window {
         let propagate = cx.propagate_event;
         let default_prevented = self.default_prevented;
         for observer in &observers {
-            if let Some(listener) = &observer.listener {
-                listener(self, cx);
+            if let Some(listener) = &observer.listener
+                && listener(self, cx)
+            {
+                let mut invalidation = self.invalidator.inner.borrow_mut();
+                invalidation.dirty_views.insert(observer.view);
+                invalidation.dirty = true;
             }
         }
         // Hover notifications do not consume the active gesture's mouse event.
@@ -3822,14 +3845,16 @@ impl Window {
         // existing view-path invalidation without notifying model observers or
         // forcing unrelated cached clip scenes to render again.
         let mut invalidation = self.invalidator.inner.borrow_mut();
-        invalidation
-            .dirty_views
-            .extend(
-                self.rendered_frame
-                    .pointer_hover_observers
-                    .iter()
-                    .map(|observer| observer.view),
-            );
+        for observer in &self.rendered_frame.pointer_hover_observers {
+            if observer.painted_hover
+                || observer.hitbox.is_some_and(|id| id.is_hovered(self))
+                || observer
+                    .group_bounds
+                    .is_some_and(|bounds| bounds.contains(&self.mouse_position()))
+            {
+                invalidation.dirty_views.insert(observer.view);
+            }
+        }
         invalidation.dirty = true;
     }
 
@@ -3880,13 +3905,6 @@ impl Window {
             }
             _ => {}
         }
-        if was_dragging != self.pointer_dragging {
-            // Capture listeners may consume the movement before any hover
-            // notifier sees it. Invalidate only the dependent views, including
-            // those represented by cached paint records.
-            self.invalidate_pointer_hover();
-        }
-
         let event = match event {
             // Track the mouse position with our own state, since accessing the platform
             // API for the mouse position can only occur on the main thread.
@@ -3964,13 +3982,15 @@ impl Window {
             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
         };
 
+        let pointer_hover_transition = was_dragging != self.pointer_dragging;
         let keyboard_hover_transition = event.keyboard_event().is_some()
-            && was_dragging != self.pointer_dragging;
+            && pointer_hover_transition;
         if keyboard_hover_transition {
+            self.invalidate_pointer_hover();
             self.dispatch_pointer_hover(cx);
         }
         if let Some(any_mouse_event) = event.mouse_event() {
-            self.dispatch_mouse_event(any_mouse_event, cx);
+            self.dispatch_mouse_event(any_mouse_event, pointer_hover_transition, cx);
         } else if let Some(any_key_event) = event.keyboard_event() {
             self.dispatch_key_event(any_key_event, cx);
         }
@@ -3997,11 +4017,17 @@ impl Window {
         }
     }
 
-    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
+    fn dispatch_mouse_event(&mut self, event: &dyn Any, hover_transition: bool, cx: &mut App) {
         let hit_test = self.rendered_frame.hit_test(self.mouse_position());
         if hit_test != self.mouse_hit_test {
             self.mouse_hit_test = hit_test;
             self.reset_cursor_style(cx);
+        }
+
+        if hover_transition {
+            // Use the updated hit test: both painted hover and newly eligible
+            // hover must retire/restore even if capture consumes this event.
+            self.invalidate_pointer_hover();
         }
 
         #[cfg(any(feature = "inspector", debug_assertions))]
