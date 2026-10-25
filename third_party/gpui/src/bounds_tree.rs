@@ -57,13 +57,6 @@ where
         };
 
         // Search for the best place to add the new leaf based on heuristics.
-        // Resolve against the unmodified tree, visiting higher orders first.
-        // Placement then only maintains bounds and the existing best-fit topology.
-        let max_intersecting_ordering = if reserved.is_none() {
-            self.find_max_ordering(root, &new_bounds, 0)
-        } else {
-            0
-        };
         let mut index = root;
         while let Node::Internal {
             left,
@@ -79,7 +72,7 @@ where
 
             // Descend to the best-fit child, based on which one would increase
             // the surface area the least. This attempts to keep the tree balanced
-            // in terms of surface area. Draw order was resolved before placement.
+            // in terms of surface area. Draw order is resolved after descent.
             let left_cost = new_bounds.union(self.nodes[left].bounds()).half_perimeter();
             let right_cost = new_bounds
                 .union(self.nodes[right].bounds())
@@ -94,6 +87,24 @@ where
         // We've found a leaf ('index' now refers to a leaf node).
         // We'll insert a new parent node above the leaf and attach our new leaf to it.
         let sibling = index;
+
+        // Resolve the nearby leaf first, then the same sibling subtrees as the
+        // original descent, from nearest to farthest. A useful high order can
+        // prune older branches sooner. Do not test placement-path bounds: their
+        // origin + size representation may round a union edge inward.
+        let mut max_intersecting_ordering = 0;
+        if reserved.is_none() {
+            max_intersecting_ordering = self.find_max_ordering(sibling, &new_bounds, 0);
+            let mut child = sibling;
+            for &parent in self.stack.iter().rev() {
+                if let Node::Internal { left, right, .. } = &self.nodes[parent] {
+                    let other = if *left == child { *right } else { *left };
+                    max_intersecting_ordering =
+                        self.find_max_ordering(other, &new_bounds, max_intersecting_ordering);
+                }
+                child = parent;
+            }
+        }
 
         let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
         let new_node = self.push_leaf(new_bounds, ordering);
@@ -318,6 +329,21 @@ mod ordering_verification {
                 }
             }
         }
+        // A union represented as origin + size may round its far edge inward.
+        // Placement-path bounds must not introduce a new overlap-pruning test.
+        let mut rounded = BoundsTree::default();
+        require(
+            rounded.insert(rect(0.1, 0.0, 0.18, 1.0)) == 1,
+            "near leaf order",
+        )?;
+        require(
+            rounded.insert(rect(-1_000_000.0, 0.0, 1.0, 1.0)) == 1,
+            "far leaf order",
+        )?;
+        require(
+            rounded.insert(rect(0.26, 0.0, 0.005, 1.0)) == 2,
+            "rounded ancestor bounds hid an intersecting leaf",
+        )?;
         let mut edge = BoundsTree::default();
         let bounds = rect(-2.0, 0.25, 8.0, 4.0);
         require(
