@@ -203,7 +203,7 @@ impl EditorView {
         let local = self.event_viewport(root);
         let tempo = self.state.as_ref()?.project.tempo_map();
         let first = root
-            .root_frame_at(root.view_start, tempo)
+            .root_frame_at(editor_bounds(root).0, tempo)
             .ok()?
             .checked_add(local.start)?;
         let frame = first as f64
@@ -277,8 +277,10 @@ impl EditorView {
                 };
                 let at = (i128::from(fade.event.start) + i128::from(raw)
                     - i128::from(fade.event.source_start))
-                .clamp(i128::from(root.view_start), i128::from(root.view_end))
-                    as u64;
+                .clamp(
+                    i128::from(editor_bounds(&root).0),
+                    i128::from(editor_bounds(&root).1),
+                ) as u64;
                 let at = if platform {
                     self.event_snap_position(at, self.audio_event_editor.grid == SnapGrid::Off)
                         .unwrap_or(at)
