@@ -204,6 +204,24 @@ impl PublicationControl {
         self.candidate_root
             .quiesce_native_source_preparation(previous, graph)
     }
+    /// Capture the original quiescent owner after actual graph/endpoint return.
+    /// `binding` names Root's renewed reservation; the helper still acknowledges
+    /// its old physical binding until the normal completion/resume transaction.
+    /// Some is fresh bounded data only; None means native failure/close retained
+    /// for normal progress/error/disposal recovery. Err is synchronous refusal.
+    /// Keep last confirmed state on either refusal. Caller owns/accounting for
+    /// the copied envelope; this does not install it or grant publication.
+    pub fn capture_native_source_state_on_control(
+        &mut self,
+        binding: Binding,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<NativeDeviceState>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .capture_native_source_state(binding, is_cancelled)
+    }
     /// Reserve fixed cells and per-cell variable DATA allowances before exposing
     /// the output. The whole pool's allowances remain charged, including vacant
     /// cells, so other admissions cannot spend that capacity. This is not actual

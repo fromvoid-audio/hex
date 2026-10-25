@@ -190,6 +190,40 @@ fn actual_current_capture_held_sdk_cancel_and_timeout_retain_original_lease() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_current_capture_held_sdk_observes_caller_intent_cancellation() {
+    use std::sync::atomic::AtomicBool;
+
+    let case = Case::new();
+    let context = PreparationCancellation::new_on_control().unwrap();
+    let mut instance =
+        Prepared::prepare(&build(), source(), options(), context, case.setup(71)).unwrap();
+    let initial = instance.ready().initial_state.clone();
+    let probe = epoch_probe(&mut instance);
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+    let capture_cancelled = std::sync::Arc::clone(&cancelled);
+    let result = case.after_stage(
+        22,
+        move || {
+            stopped
+                .capture_state_retained_while_on_control(|| {
+                    capture_cancelled.load(AtomicOrdering::Acquire)
+                })
+                .map(|_| ())
+        },
+        || cancelled.store(true, AtomicOrdering::Release),
+    );
+    let failure = retained_epoch_failure(result, &probe);
+    assert!(matches!(failure.cause(), Error::Cancelled));
+    assert_eq!(
+        dispose_epoch_failure(failure, &probe).status.code(),
+        Some(9)
+    );
+    assert!(hex_plugin_state::decode(&initial).is_ok());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_same_child_quiescence_preserves_dsp_controller_capture_and_cumulative_pcm() {
     let case = Case::new();
     let selected = source();

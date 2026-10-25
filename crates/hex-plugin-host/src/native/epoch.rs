@@ -87,7 +87,17 @@ impl Quiescent {
     /// retains the cancelled original lease for independent disposal, so callers
     /// must keep their last confirmed state and never substitute defaults.
     pub fn capture_state_retained_on_control(
+        self,
+    ) -> std::result::Result<(Self, NativeDeviceState), PreparationFailure> {
+        self.capture_state_retained_while_on_control(|| false)
+    }
+
+    /// Same exact capture with caller intent cancellation checked in the
+    /// existing bounded socket loop. Cancellation retires this original lease;
+    /// the predicate owns no helper/endpoint and starts no second waiter.
+    pub fn capture_state_retained_while_on_control(
         mut self,
+        mut is_cancelled: impl FnMut() -> bool,
     ) -> std::result::Result<(Self, NativeDeviceState), PreparationFailure> {
         let result = (|| {
             self.instance.require_live_epoch()?;
@@ -102,14 +112,22 @@ impl Quiescent {
             )?;
             let until = end_after(self.instance.limits.startup)?;
             let token = self.instance.lease.cancellation.clone();
+            let mut check = || {
+                token.check()?;
+                if is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            };
             self.instance
                 .lease
                 .channel
-                .send(&request, until, &mut || token.check())?;
+                .send(&request, until, &mut check)?;
             self.instance
                 .lease
                 .channel
-                .read(&mut self.instance.packet, until, &mut || token.check())?;
+                .read(&mut self.instance.packet, until, &mut check)?;
             if self.instance.packet.magic() == b"HXVIER01" {
                 return Err(Error::Worker(protocol::error(
                     self.instance.packet.body()?,
@@ -126,6 +144,7 @@ impl Quiescent {
                 operation,
             )?;
             self.instance.require_live_epoch()?;
+            check()?;
             self.capture_sequence = operation;
             Ok(state)
         })();
