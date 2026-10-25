@@ -426,6 +426,7 @@ fn arrangement_and_session_audio_share_the_global_clip_limit() {
     audio_clips.resize(hex_project::MAX_CLIPS, template);
     for (offset, clip) in audio_clips.iter_mut().enumerate() {
         clip.id = first_id + offset as u64;
+        clip.start = offset as u64;
     }
     snapshot.next_id = first_id + hex_project::MAX_CLIPS as u64;
     let project = Project::from_snapshot(snapshot).expect("valid max-size arrangement");

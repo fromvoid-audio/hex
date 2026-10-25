@@ -13,12 +13,17 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            current_sampler_keyboards,
+            current_sampler_keyboard_epoch: _,
+            current_sampler_keyboard_revoked: _,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
             compensation,
             device_metering: _,
             revision,
+            transient_loop: _,
+            midi_admission,
             periodic_tempo: _,
             anchor: _,
             historical_floor: _,
@@ -33,6 +38,7 @@ impl SessionPlayback {
             mutable_instruments,
             mutable_onsets,
             mutable_events,
+            current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
             tail_mutable_instruments,
@@ -59,15 +65,19 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             linear_arrangement_export,
+            current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
         } = self;
-        if live_expression.is_some()
+        if midi_admission.is_some()
+            || live_expression.is_some()
             || computer_keyboard.is_some()
-            || compensation.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
-            || mutable_instruments.iter().any(Option::is_some)
+            || mutable_instruments
+                .iter()
+                .flatten()
+                .any(|r| revision.resource_scope.is_none() || !r.is_concrete_current_sampler())
             || tail_groups.iter().any(Option::is_some)
             || tail_mutable_instruments.iter().any(Option::is_some)
             || retained_contexts.iter().any(Option::is_some)
@@ -96,7 +106,31 @@ impl SessionPlayback {
         l.vec(return_scratch)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
+        for (index, runtime) in mutable_instruments.iter().enumerate() {
+            if let Some(runtime) = runtime {
+                if revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .is_none_or(|t| t.instrument_id != runtime.expression_identity)
+                {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+                runtime.visit_current_sampler_storage(l)?;
+            }
+        }
+        l.vec(current_sampler_keyboards)?;
+        if !current_sampler_keyboards.is_empty() && revision.resource_scope.is_none() {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        for keyboard in current_sampler_keyboards {
+            keyboard.visit_current_sampler_storage(l)?;
+        }
         l.vec(mutable_events)?;
+        l.vec(current_route_cut_scratch)?;
+        if current_route_cut_scratch.iter().any(Option::is_some) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         l.vec(tail_groups)?;
         l.vec(tail_mutable_instruments)?;
         l.vec(tail_mixes)?;
@@ -118,9 +152,22 @@ impl SessionPlayback {
         for (chain, track) in device_chains.iter().zip(tracks) {
             chain_storage(chain, &track.device_chain, l)?;
         }
-        // Returns stay memoryless/empty in the selected constructor class.
-        for chain in return_chains {
-            chain_storage(chain, &[], l)?;
+        if return_chains.len() != revision.arrangement().return_buses.len() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        for (chain, bus) in return_chains
+            .iter()
+            .zip(&revision.arrangement().return_buses)
+        {
+            chain_storage(chain, &bus.device_chain, l)?;
+        }
+        if let Some(compensation) = compensation {
+            let graph = revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            compensation.visit_fresh_candidate_storage(graph, l)?;
         }
         chain_storage(main_chain, &revision.arrangement().main_device_chain, l)?;
         Ok(())
@@ -142,14 +189,20 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
-        if prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID
+        let foreign = match &prepared.definition {
+            Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
+            _ => None,
+        };
+        if (foreign.is_none() && prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID)
+            || entry.foreign_processor() != foreign
             || !entry.matches_prepared_runtime_storage(prepared)
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         let (primary, scratch) = (entry.primary_payload_bytes(), entry.scratch_payload_bytes());
         match (primary, scratch, prepared.definition.is_some()) {
-            (Some(primary), Some(scratch), true) => {
+            (None, None, true) if foreign.is_some() => {}
+            (Some(primary), Some(scratch), true) if foreign.is_none() => {
                 if !entry
                     .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>()
                 {

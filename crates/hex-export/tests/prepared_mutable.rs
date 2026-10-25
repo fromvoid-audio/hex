@@ -51,8 +51,12 @@ impl Drop for TestDir {
 }
 
 struct FixtureDefinition;
-struct FixturePrepared;
-struct FixtureFactory;
+struct FixturePrepared {
+    stuck: bool,
+}
+struct FixtureFactory {
+    stuck: bool,
+}
 
 #[derive(Clone, Copy, Default)]
 struct Voice {
@@ -63,6 +67,7 @@ struct Voice {
 }
 
 struct Runtime {
+    stuck: bool,
     voices: [Voice; 64],
 }
 
@@ -86,7 +91,10 @@ impl NativeDeviceMetadata for FixtureDefinition {
         &self,
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        if state.type_id() == FIXTURE_TYPE && state.state_version() == 1 && state.payload() == [1] {
+        if state.type_id() == FIXTURE_TYPE
+            && state.state_version() == 1
+            && (state.payload() == [1] || state.payload() == [2])
+        {
             Ok(state.clone())
         } else {
             Err(DeviceContractError::MalformedState)
@@ -122,7 +130,9 @@ impl NativeInstrumentDefinition for FixtureDefinition {
         if !(8_000..=192_000).contains(&sample_rate) || self.migrate_state(state).is_err() {
             return Err(DeviceContractError::MalformedState);
         }
-        Ok(Box::new(FixturePrepared))
+        Ok(Box::new(FixturePrepared {
+            stuck: state.payload() == [2],
+        }))
     }
 }
 
@@ -136,7 +146,7 @@ impl PreparedNativeInstrument for FixturePrepared {
     fn prepare_mutable_runtime(
         &self,
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
-        Ok(Some(Box::new(FixtureFactory)))
+        Ok(Some(Box::new(FixtureFactory { stuck: self.stuck })))
     }
 }
 
@@ -161,6 +171,7 @@ impl PreparedMutableInstrumentRuntime for FixtureFactory {
     }
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
         Box::new(Runtime {
+            stuck: self.stuck,
             voices: [Voice::default(); 64],
         })
     }
@@ -244,7 +255,7 @@ impl MutableInstrumentRuntime for Runtime {
                     voice.active = false;
                     return sum;
                 };
-                if !voice.gated {
+                if !voice.gated && !self.stuck {
                     voice.release_left -= 1;
                 }
                 sum + level
@@ -305,6 +316,14 @@ fn prepared_hybrid(
     session_loop: bool,
     arrangement_loop: bool,
 ) -> (Arc<PreparedRevision>, AssetId) {
+    prepared_hybrid_using(transport_loop, session_loop, arrangement_loop, false)
+}
+fn prepared_hybrid_using(
+    transport_loop: bool,
+    session_loop: bool,
+    arrangement_loop: bool,
+    stuck: bool,
+) -> (Arc<PreparedRevision>, AssetId) {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
@@ -327,12 +346,32 @@ fn prepared_hybrid(
     editor
         .execute(Command::ReplaceDeviceState {
             device: instrument,
-            state: mutable_state(),
+            state: if stuck {
+                NativeDeviceState::new(FIXTURE_TYPE, 1, vec![2]).unwrap()
+            } else {
+                mutable_state()
+            },
         })
         .expect("mutable instrument");
+    // Keep the authored MIDI on a silent input track. The hybrid owner retains
+    // its audio prefix, mutable instrument gap and suffix without stacked clips.
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack {
+            name: "silent midi source".into(),
+        })
+        .expect("midi source")
+    else {
+        panic!("source track")
+    };
+    editor
+        .execute(Command::SetMidiSource {
+            destination: track,
+            source: Some(source),
+        })
+        .expect("route authored midi to hybrid owner");
     let clip = match editor
         .execute(Command::PlaceMidiClip {
-            track,
+            track: source,
             start: BeatTime::ZERO,
             length: BeatTime::ONE,
         })
@@ -428,7 +467,7 @@ fn prepared_hybrid(
         };
         let session_clip = match editor
             .execute(Command::CreateSessionMidiClip {
-                track,
+                track: source,
                 scene,
                 name: "unused loop".into(),
                 source_length: BeatTime::ONE,
@@ -680,4 +719,43 @@ fn linear_export_owner_rejects_session_routes_and_state_inheritance_both_ways() 
     ));
     assert_eq!(interactive.performance_frame(), interactive_frame);
     assert_eq!(fresh_export.performance_frame(), export_frame);
+}
+
+#[test]
+fn arrangement_bounce_refuses_actual_nonquiescent_tail_and_preserves_destinations() {
+    let dir = TestDir::new();
+    let path = dir.0.join("never-publish.wav");
+    let (revision, _) = prepared_hybrid_using(false, false, false, true);
+    let error = hex_export::render_arrangement_bounce_new(
+        &path,
+        revision,
+        None,
+        0,
+        320,
+        true,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("quiescent"), "{error}");
+    assert!(!path.exists());
+    assert_eq!(
+        fs::read_dir(&dir.0).unwrap().count(),
+        0,
+        "failed render leaves no published or temporary output"
+    );
+    let (revision, _) = prepared_hybrid(false, false, false);
+    fs::write(&path, b"existing user media").unwrap();
+    assert!(
+        hex_export::render_arrangement_bounce_new(
+            &path,
+            revision,
+            None,
+            0,
+            320,
+            false,
+            &hex_export::ExportControl::default()
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(path).unwrap(), b"existing user media");
 }

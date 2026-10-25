@@ -12,8 +12,10 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
+import shlex
 import shutil
 from pathlib import Path
 import signal
@@ -37,6 +39,11 @@ if _INPUT_SPEC is None or _INPUT_SPEC.loader is None:
     raise RuntimeError("Cargo input identity helper unavailable")
 build_inputs = importlib.util.module_from_spec(_INPUT_SPEC)
 _INPUT_SPEC.loader.exec_module(build_inputs)
+_CHECKPOINT_SPEC = importlib.util.spec_from_file_location("hex_ci_checkpoint", Path(__file__).with_name("ci_checkpoint.py"))
+if _CHECKPOINT_SPEC is None or _CHECKPOINT_SPEC.loader is None:
+    raise RuntimeError("CI checkpoint helper unavailable")
+ci_checkpoint = importlib.util.module_from_spec(_CHECKPOINT_SPEC)
+_CHECKPOINT_SPEC.loader.exec_module(ci_checkpoint)
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
@@ -94,6 +101,13 @@ def terminal_progress(label: str, *, announce: bool = True):
 
 @dataclass(frozen=True)
 class Step:
+    """A check with a 1–100 character ASCII ID starting with a letter or digit.
+
+    Remaining characters may be letters, digits, underscores or hyphens.
+    The runner validates the entire plan before executing any command. IDs are
+    used verbatim in numbered log basenames; the index keeps repeated IDs distinct.
+    """
+
     step_id: str
     argv: tuple[str, ...]
     uses_cargo_target: bool = False
@@ -110,27 +124,151 @@ QUICK_STEPS = (
     Step("format", ("cargo", "fmt", "--all", "--check")),
 )
 
+# Cheap failures should stop before self-tests; keep every configuration once.
 FULL_STEPS = (
+    *QUICK_STEPS,
     Step(
         "runner-tests",
         ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"),
         uses_cargo_target=True,
     ),
-    *QUICK_STEPS,
     Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
     Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
-    Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-desktop", "--features", "allocation-probe", "--locked")),
+    Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
     Step("stream-allocation-probe", ("cargo", "test", "-p", "hex-stream", "--features", "allocation-probe", "--locked")),
     Step("workspace-clippy", ("cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings")),
     Step("prepared-export-instrument-clippy", ("cargo", "clippy", "-p", "hex-export", "--all-targets", "--features", "instrument-test-support", "--locked", "--", "-D", "warnings")),
     Step("ui-feature-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-test-support", "--locked", "--", "-D", "warnings")),
-    Step("audio-feature-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-desktop", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
+    Step("audio-feature-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("stream-feature-clippy", ("cargo", "clippy", "-p", "hex-stream", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("desktop-build", ("cargo", "build", "-p", "hex-desktop", "--locked")),
 )
+
+
+def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
+    """Diagnostic wall estimates from Cargo/harness logs, never qualification evidence.
+
+    Cargo's Finished duration includes its build phase, not just compiler CPU.
+    Rounded or nested harness output can overlap; do not invent a negative residual.
+    """
+    build = [3600 * float(h or 0) + 60 * float(m or 0) + float(s)
+             for h, m, s in re.findall(
+                 r"^\s*Finished [^\n]* in (?:(\d+)h )?(?:(\d+)m )?(\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    rust = [float(s) for s in re.findall(r"^test result: [^\n]*finished in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    python = [float(s) for s in re.findall(r"^Ran \d+ tests? in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    result = {name: sum(values) if values and math.isfinite(sum(values)) else None
+              for name, values in (("cargo_build_phase_seconds", build),
+                                   ("rust_harness_seconds", rust), ("python_harness_seconds", python))}
+    known = sum(value for value in result.values() if value is not None)
+    result["unclassified_seconds"] = round(duration - known, 6) if known <= duration else None
+    return result
+
+
+def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
+                   features: str = "", lib: bool = False, test: str | None = None) -> dict:
+    """Validate an explicit edit target; omissions keep Cargo's package-wide behavior."""
+    packages = [item for item in inventory if item["name"] == package]
+    if len(packages) != 1 or not test_filter.strip():
+        raise ValueError("edit feedback requires one known workspace package and a nonempty test filter")
+    owner = packages[0]
+    requested_features = {name for name in features.split(",") if name}
+    if requested_features - owner["features"].keys():
+        raise ValueError("unknown workspace package feature")
+    selection = {"package": package, "filter": test_filter, "features": features}
+    if lib or test is not None:
+        if lib and test is not None:
+            raise ValueError("select either a library or a named integration test")
+        library_kinds = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+        targets = [target for target in owner["targets"]
+                   if (bool(library_kinds.intersection(target["kind"])) if lib else
+                       "test" in target["kind"] and target["name"] == test)]
+        if len(targets) != 1:
+            raise ValueError("unknown or ambiguous edit test target")
+        enabled = requested_features | ({"default"} if "default" in owner["features"] else set())
+        pending = list(enabled)
+        while pending:
+            for feature in owner["features"].get(pending.pop(), []):
+                if feature not in enabled:
+                    enabled.add(feature)
+                    pending.append(feature)
+        if set(targets[0].get("required-features", [])) - enabled:
+            raise ValueError("edit test target requires features that are not enabled")
+        selection["target"] = {"kind": "lib" if lib else "test", "name": targets[0]["name"]}
+    return selection
+
+
+def boundary_steps(plan: dict) -> tuple[Step, ...]:
+    """Compile consumers even when reviewed device behavior tests are narrower."""
+    boundary = plan["boundary"]
+    inventory = plan["cargo_inventory"]
+    names = {p["name"] for p in inventory}
+    affected = boundary["lint_packages"]
+    if not affected or len(set(affected)) != len(affected) or set(affected) - names:
+        raise ValueError("boundary plan requires nonempty known affected packages")
+    if sorted(affected) != sorted(plan["affected_packages"]):
+        raise ValueError("boundary consumers do not match resolved Cargo closure")
+    packages = tuple(arg for p in affected for arg in ("-p", p))
+    steps = [*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests")]
+    if any(path.endswith(("Cargo.toml", "/build.rs")) for path in plan.get("paths", [])):
+        steps.append(next(s for s in FULL_STEPS if s.step_id == "dependency-future-lints"))
+    tests = boundary["tests"]
+    if boundary["kind"] == "packages":
+        if sorted(boundary["test_packages"]) != sorted(affected) or tests:
+            raise ValueError("package boundary must test every affected consumer")
+        steps.append(Step("affected-tests", ("cargo", "test", *packages, "--locked")))
+    elif boundary["kind"] == "compressor":
+        if not tests:
+            raise ValueError("device boundary has no contract targets")
+        for index, test in enumerate(tests):
+            # Reuse the edit target validator, not a second Cargo selector.
+            selected = edit_selection(inventory, package=test["package"],
+                                      test_filter=test["filter"] or "target-validation",
+                                      features=test.get("features", ""), lib=test.get("lib", False),
+                                      test=test.get("test"))
+            target = selected["target"]
+            feature = ("--features", selected["features"]) if selected["features"] else ()
+            selector = ("--lib",) if target["kind"] == "lib" else ("--test", target["name"])
+            steps.append(Step(f"contract-{index}-{selected['package']}",
+                              ("cargo", "test", "-p", selected["package"], *feature, *selector,
+                               "--locked", *([test["filter"]] if test["filter"] else []))))
+    else:
+        raise ValueError("unknown ownership boundary")
+    steps.append(Step("affected-clippy", ("cargo", "clippy", *packages, "--all-targets", "--locked", "--", "-D", "warnings")))
+    # Keep separate default/feature configurations, including feature-gated
+    # examples and allocation probes. Do not deduplicate by overlapping names.
+    covered_features = {"hex-plugin-host": {"allocation-probe"}, "hex-ui": {"ui-test-support"}, "hex-export": {"instrument-test-support"},
+                        "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
+                        "hex-desktop": {"allocation-probe"}}
+    for step in FULL_STEPS:
+        if "--features" not in step.argv:
+            continue
+        owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
+        selected = [p for p in owners if p in affected]
+        if not selected or boundary["kind"] == "compressor" and step.argv[1] == "test":
+            continue
+        argv = list(step.argv)
+        for owner in set(owners) - set(selected):
+            index = argv.index(owner)
+            del argv[index - 1:index + 1]
+        steps.append(Step(step.step_id, tuple(argv)))
+    for package in inventory:
+        if package["name"] not in affected or boundary["kind"] == "compressor":
+            continue
+        extra = set(package["features"]) - {"default"} - covered_features.get(package["name"], set())
+        # Preserve each declared configuration; all-features alone can mask
+        # mutually exclusive cfg branches. Feature interaction contracts still
+        # need reviewed configuration rules rather than a guessed power set.
+        for index, feature in enumerate(sorted(extra)):
+            for command in ("test", "clippy"):
+                steps.append(Step(f"feature-{command}-{package['name']}-{index}",
+                                  ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
+                                   *(("--", "-D", "warnings") if command == "clippy" else ()))))
+    if "hex-desktop" in affected:
+        steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
+    return tuple(steps)
 
 
 def planned_steps(plan: dict) -> tuple[Step, ...]:
@@ -139,23 +277,27 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
     if plan.get("edit"):
         edit = plan["edit"]
         feature = ("--features", edit["features"]) if edit["features"] else ()
-        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, "--locked", edit["filter"], "--", "--nocapture"),
+        selected = edit.get("target")
+        target = () if selected is None else (("--lib",) if selected["kind"] == "lib" else ("--test", selected["name"]))
+        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, *target, "--locked", edit["filter"], "--", "--nocapture"),
                      requires_tests=True),
                 Step("edit-clippy", ("cargo", "clippy", "-p", edit["package"], *feature, "--all-targets", "--locked", "--", "-D", "warnings")),
-                QUICK_STEPS[-1])
+                next(s for s in QUICK_STEPS if s.step_id == "format"))
     if plan.get("reuse"):
         return (Step("metadata-continuation", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                              "--base", plan["reuse"]["source"], "--source", plan["source"]),
                      uses_cargo_target=True),)
     if scope == "full":
         steps = FULL_STEPS
+    elif scope == "rust":
+        steps = boundary_steps(plan)
     elif scope == "metadata":
         return (Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                   "--base", plan["base"], "--source", plan["source"])),)
     elif scope == "tooling":
-        steps = (FULL_STEPS[0], *QUICK_STEPS)
+        steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"))
     elif scope == "ui":
-        steps = (FULL_STEPS[0], *QUICK_STEPS,
+        steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"),
                  Step("ui-default-tests", ("cargo", "test", "-p", "hex-ui", "-p", "hex-widgets", "--locked")),
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "device-gallery-tests"),
@@ -319,6 +461,7 @@ class LocalCiRunner:
         adopt_target: bool = False,
         target_state_dir: Path | None = None,
         plan: dict | None = None,
+        resume_report: Path | None = None,
     ) -> None:
         self.root = root.resolve()
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
@@ -331,6 +474,10 @@ class LocalCiRunner:
             raise ValueError("minimum free space must be a bounded nonnegative integer byte count")
         self.mode = mode
         self.plan = plan
+        self.resume_report = resume_report
+        self._resume_evidence = None
+        self._checkpoint_inputs = None
+        self._checkpoint_target = None
         self.adopt_target = adopt_target
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
@@ -345,6 +492,9 @@ class LocalCiRunner:
             "run_id": self.run_id,
             "mode": self.mode,
             "platform": sys.platform,
+            # Paths alone cannot bind mutable external native fixtures/receipts
+            # or Keychain state. Historical absence is unknown for reuse.
+            "native_acceptance_opt_in": bool(ci_plan.python_tests.native_acceptance_inputs(self.env)),
             "python_version": sys.version,
             "status": "incomplete",
             "repo_root": str(self.root),
@@ -357,6 +507,8 @@ class LocalCiRunner:
             "invocation_argv": list(sys.argv),
             "steps": [],
             "plan": plan,
+            "minimum_free_bytes": self.min_free_bytes,
+            "time_to_first_result_seconds": None,
         }
         self.git_identity: dict[str, object] | None = None
         self.cargo_identity: dict[str, object] | None = None
@@ -707,6 +859,17 @@ class LocalCiRunner:
             self._path_inputs = dependency_inputs["packages"]
             self._workspace_inputs = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
             self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = dependency_inputs["sha256"]
+            if self._resume_evidence is not None:
+                expected = self._resume_evidence["checkpoint"]["target"]
+                actual = {"owner_sha256": ci_checkpoint.owner_digest(owner_path),
+                          "target_identity": target_identity, "cargo_identity": self.cargo_identity,
+                          "dependency_inputs": dependency_inputs}
+                if self.adopt_target or actual != expected or owner_record["workspace_owner"] != current_workspace:
+                    raise TargetCacheError("checkpoint target ownership or guarded inputs changed; start a fresh run")
+                ci_checkpoint.require_no_jobs()
+                if (not self._capture_repository_state("resume_locked_tree")
+                        or self.summary["resume_locked_tree"] != self.summary["start_tree"]):
+                    raise TargetCacheError("checkpoint source changed before target lock")
             ownership_action = "reuse"
             cleanup_argv: list[str] | None = None
             previous_workspace = None
@@ -765,8 +928,9 @@ class LocalCiRunner:
                 if cleanup_argv is None:
                     cleanup_argv = self._workspace_clean_argv(target)[:8]
                 for spec in invalidated:
-                    if spec not in cleanup_argv:
-                        cleanup_argv.extend(("--package", spec))
+                    name = self._clean_package_name(spec)
+                    if name not in cleanup_argv:
+                        cleanup_argv.extend(("--package", name))
             if cleanup_argv is not None:
                 current = {p["name"]: p for p in dependency_inputs["packages"]}
                 previous = owner_record.get("dependency_inputs", {}) if owner_record else {}
@@ -776,7 +940,7 @@ class LocalCiRunner:
                 old_by_name = {p["name"]: p for p in (previous or {}).get("packages", [])}
                 for package in dependency_inputs["packages"]:
                     if not self._invalidate_dependency_profile and old_by_name.get(package["name"]) != package:
-                        cleanup_argv.extend(("--package", package["spec"]))
+                        cleanup_argv.extend(("--package", self._clean_package_name(package["spec"])))
 
             self.summary["target_cache"] = {
                 "action": ownership_action,
@@ -801,7 +965,7 @@ class LocalCiRunner:
             self._write_target_owner(owner_path, current_workspace)
             self.target_owner_claimed = True
             return True
-        except (TargetCacheError, OSError) as error:
+        except (TargetCacheError, OSError, ValueError) as error:
             self.summary["target_cache_error"] = str(error)
             release_error = lock.release()
             if release_error is not None:
@@ -832,8 +996,28 @@ class LocalCiRunner:
         for package in packages:
             if not isinstance(package, dict) or not isinstance(package.get("spec"), str):
                 raise TargetCacheError("workspace package metadata is malformed")
-            argv.extend(("--package", package["spec"]))
+            argv.extend(("--package", self._clean_package_name(package["spec"])))
         return argv
+
+    def _clean_package_name(self, spec: str) -> str:
+        """Cargo 1.94 clean matches names, ignoring ID URL/version qualifiers.
+
+        Keep full IDs in provenance, but only clean a name when current complete
+        metadata proves it identifies exactly one workspace or path package.
+        Never use a qualifier to imply a narrower cleanup than Cargo performs.
+        """
+        if not isinstance(self._release_metadata, dict):
+            raise TargetCacheError("complete cleanup package metadata is unavailable")
+        packages = self._release_metadata["packages"]
+        matches = [p for p in packages if p["id"] == spec]
+        if len(matches) != 1:
+            raise TargetCacheError("cleanup package is absent or ambiguous in current metadata")
+        name = matches[0]["name"]
+        if (not isinstance(name, str) or not name
+                or sum(p["name"] == name for p in packages) != 1
+                or matches[0].get("source") is not None):
+            raise TargetCacheError("cleanup requires a unique workspace/path package name")
+        return name
 
     def _release_scope(self) -> list[dict[str, str]]:
         """Cargo clean ignores URL/version qualifiers: reject external name collisions."""
@@ -1246,8 +1430,9 @@ class LocalCiRunner:
                 argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
                 argv[3] = "release"
                 for spec in invalidated:
-                    if spec not in argv:
-                        argv.extend(("--package", spec))
+                    name = self._clean_package_name(spec)
+                    if name not in argv:
+                        argv.extend(("--package", name))
                 report["cleanup_argv"] = argv
                 report["cleanup_status"] = "pending"
                 # Keep release and dev cleanup evidence independent.
@@ -1359,6 +1544,7 @@ class LocalCiRunner:
             "target_source": "CARGO_TARGET_DIR" if configured else "workspace default",
             "probes": probes,
         }
+        self.summary.setdefault("disk_history", []).append(self.summary["disk_headroom"])
         for label, requested in (("workspace", self.root), ("target", target)):
             probe = requested.absolute()
             while not probe.exists() and probe != probe.parent:
@@ -1383,6 +1569,9 @@ class LocalCiRunner:
         return True
 
     def _run_step(self, step: Step, index: int) -> dict[str, object]:
+        started = time.monotonic()
+        text = None
+        phase = "opening step log"
         log_path = self.output_dir / f"{index:02d}-{step.step_id}.log"
         entry: dict[str, object] = {
             "step_id": step.step_id,
@@ -1390,9 +1579,13 @@ class LocalCiRunner:
             "status": "running",
             "started_at": utc_now(),
             "ended_at": None,
+            "start_offset_seconds": round(started - self.started_monotonic, 6),
+            "duration_seconds": None,
+            "timing_estimates": None,
             "exit_code": None,
             "log": str(log_path.relative_to(self.root)),
             "error": None,
+            "execution": "executed",
         }
         steps = self.summary["steps"]
         assert isinstance(steps, list)
@@ -1405,6 +1598,7 @@ class LocalCiRunner:
         try:
             with log_path.open("w", encoding="utf-8") as log, \
                     terminal_progress(f"checking {step.step_id}", announce=False):
+                phase = "running command"
                 result = subprocess.run(
                     list(step.argv),
                     cwd=self.root,
@@ -1415,6 +1609,7 @@ class LocalCiRunner:
                 )
             entry["exit_code"] = result.returncode
             entry["status"] = "passed" if result.returncode == 0 else "failed"
+            phase = "reading step log"
             text = log_path.read_text(errors="replace")
             rust_counts = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", text)]
             python_counts = [int(n) for n in re.findall(r"^Ran (\d+) tests? in ", text, re.MULTILINE)]
@@ -1426,26 +1621,126 @@ class LocalCiRunner:
                 entry["error"] = "requested test scope executed no passing tests; zero-match/all-skipped is not qualification"
         except FileNotFoundError as error:
             entry["status"] = "failed"
-            entry["error"] = f"required executable not found: {error.filename}"
-            log_path.write_text(entry["error"] + "\n", encoding="utf-8")
+            entry["error"] = (f"required executable not found: {error.filename}"
+                              if phase == "running command" else f"log I/O failure while {phase}: {error}")
+            self._retain_step_error(log_path, entry)
         except InterruptedRun:
             entry["status"] = "interrupted"
             entry["error"] = "pipeline interrupted"
             entry["exit_code"] = 130
             entry["ended_at"] = utc_now()
-            with log_path.open("a", encoding="utf-8") as log:
-                log.write("\npipeline interrupted\n")
+            self._retain_step_error(log_path, entry)
             raise
         except OSError as error:
             entry["status"] = "failed"
-            entry["error"] = str(error)
-            log_path.write_text(f"command could not run: {error}\n", encoding="utf-8")
-        entry["ended_at"] = utc_now()
+            entry["error"] = (f"command could not run: {error}" if phase == "running command"
+                              else f"log I/O failure while {phase}: {error}")
+            self._retain_step_error(log_path, entry)
+        finally:
+            ended = time.monotonic()
+            duration = ended - started
+            entry["ended_at"] = utc_now()
+            entry["duration_seconds"] = round(duration, 6)
+            if self.summary["time_to_first_result_seconds"] is None:
+                self.summary["time_to_first_result_seconds"] = round(ended - self.started_monotonic, 6)
+            if text is None:
+                try:
+                    text = log_path.read_text(errors="replace")
+                except OSError:
+                    pass  # Missing diagnostics do not change the step's result.
+            if text is not None:
+                entry["timing_estimates"] = log_timing_estimates(text, duration)
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: {entry['status']}", flush=True)
         return entry
 
+    @staticmethod
+    def _retain_step_error(log_path: Path, entry: dict[str, object]) -> None:
+        # Never replace captured output or let a second log error hide the actual failure.
+        try:
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"\n{entry['error']}\n")
+        except OSError as error:
+            entry["log_error"] = str(error)
+
+    def _diagnostic_text(self, text: str) -> str:
+        # Console excerpts are not raw logs. Remove terminal controls and known sensitive
+        # environment values without printing the environment or altering retained evidence.
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+        sensitive = r"token|password|passwd|secret|credential|authorization|(?:api|access|private)[_-]?key"
+        for key, value in sorted(self.env.items(), key=lambda item: len(item[1]), reverse=True):
+            if value and re.search(sensitive, key, re.IGNORECASE):
+                text = text.replace(value, "[redacted]")
+        text = re.sub(r"(?im)(\b[\w-]*(?:" + sensitive + r")[\w-]*\s*[:=]\s*)[^\n]+",
+                      r"\1[redacted]", text)
+        text = re.sub(r"(?i)(--[\w-]*(?:" + sensitive + r")[\w-]*\s+)(?:'[^']*'|\"[^\"]*\"|\S+)",
+                      r"\1[redacted]", text)
+        return text
+
+    def _print_failure_details(self) -> None:
+        """Present the settled result; diagnostics never confer qualification or execute retries."""
+        status = self.summary.get("status")
+        if status not in {"failed", "interrupted", "stale", "incomplete"}:
+            return
+        executed = [s for s in self.summary["steps"] if s["status"] != "not_run"]
+        step = next((s for s in executed if s["status"] in {"failed", "interrupted"}),
+                    executed[-1] if executed else None)
+        category = "preflight refusal"
+        excerpt = ""
+        log_note = "log unavailable; see summary"
+        if step:
+            if step["log"]:
+                path = self.root / step["log"]
+                log_note = str(path)
+                try:
+                    with path.open("rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        log.seek(max(0, log.tell() - 65536))
+                        tail = log.read(65536).decode("utf-8", errors="replace")
+                    lines = self._diagnostic_text(tail).splitlines()
+                    marker = r"^\s*(?:error(?:\[|:)|thread .*panicked at|---- .* stdout ----|FAIL:|ERROR:|Traceback \()"
+                    start = next((i for i, line in enumerate(lines) if re.search(marker, line)), None)
+                    if start is not None:
+                        excerpt = "\n".join(line[:240] for line in lines[start:start + 20])[:4000]
+                except OSError:
+                    log_note += " (unreadable; failure retained in summary)"
+            error = str(step.get("error") or "")
+            category = ("interrupted" if step["status"] == "interrupted" else
+                        "no passing tests" if "no passing tests" in error else
+                        "missing executable" if "required executable not found" in error else
+                        "log I/O failure" if "log I/O failure" in error else
+                        "compiler failure" if re.search(r"error\[E\d+\]|error:.*could not compile|--> .*:\d+:\d+", excerpt) else
+                        "test failure" if re.search(r"panicked at|stdout ----|FAIL:|ERROR:|Traceback", excerpt) else
+                        "command failure")
+        result = "stale (source changed; prior results do not qualify)" if status == "stale" else status
+        details = [f"local ci diagnostic: {result}", f"profile: {self.mode}",
+                   f"step: {step['step_id'] if step else 'not started'} ({category})",
+                   f"summary: {self.summary_path}", f"log: {log_note}"]
+        if step:
+            command = self._diagnostic_text(shlex.join(step["argv"]))
+            truncated = len(command) > 2000
+            if truncated:
+                command = command[:2000] + " ... [truncated; exact argv retained in summary]"
+            details.extend((f"command: {command}", f"cwd: {self.root}"))
+            if step.get("error"):
+                details.append(self._diagnostic_text(str(step["error"]))[:2000])
+            if excerpt:
+                details.extend(("failure excerpt (at most 20 lines / 4000 characters from last 64 KiB):", excerpt))
+            else:
+                details.append("no recognized compiler/test excerpt; inspect the retained log")
+            rerun = "use the exact argv retained in the summary" if truncated else command
+            details.append(f"rerun (diagnostic only; partial, not merge qualification): {rerun}")
+        else:
+            details.extend(self._diagnostic_text(str(value))[:2000]
+                           for key, value in self.summary.items() if key.endswith("_error"))
+        if status == "stale":
+            details.append("freeze the intended candidate and rerun its required plan before qualification")
+        print(self._diagnostic_text("\n".join(details)), flush=True)
+
     def run(self) -> int:
+        self.summary["native_acceptance_opt_in"] = bool(
+            ci_plan.python_tests.native_acceptance_inputs(self.env))
         self.output_dir.mkdir(parents=True, exist_ok=False)
         self._write_summary()
         previous_handlers: dict[int, object] = {}
@@ -1458,10 +1753,24 @@ class LocalCiRunner:
 
         failed = False
         try:
-            if not self._capture_repository_state("start_tree"):
+            invalid_ids = [step.step_id for step in self.steps
+                           if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", step.step_id) is None]
+            if invalid_ids:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
+                                                  "alphanumeric first, then alphanumeric, underscore or hyphen")
+                print(self.summary["step_id_error"], file=sys.stderr, flush=True)
+            elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
+            elif self.plan and self.plan.get("reuse") and (
+                    self.summary["native_acceptance_opt_in"]
+                    or self.plan["reuse"].get("native_acceptance_opt_in") is not False):
+                # Recheck the actual runner environment, not only the earlier
+                # resolver process, before Cargo identity/target preparation.
+                self.summary.update(status="failed", exit_code=2,
+                                    reuse_error="native/external acceptance opt-in is present or unknown; fresh checks required")
             elif self.plan and self.plan["qualifies_merge"] and (
                     self.summary["start_tree"]["dirty"]
                     or self.summary["start_tree"]["commit"] != self.plan["source"]
@@ -1478,10 +1787,36 @@ class LocalCiRunner:
                 self.summary["exit_code"] = 2
                 print(self.summary["disk_error"], file=sys.stderr, flush=True)
             else:
+                if self.mode in {"full", "merge", "release"}:
+                    try:
+                        self._checkpoint_inputs = ci_checkpoint.execution_inputs(self.root, self.env, self.steps)
+                    except (ValueError, OSError) as error:
+                        # Ordinary validation remains available when a checkpoint
+                        # cannot identify every command. No inheritance is allowed.
+                        self.summary["checkpoint_unavailable"] = str(error)
+                if self.resume_report is not None:
+                    try:
+                        if self._checkpoint_inputs is None:
+                            raise ValueError("continuation executable inputs are unavailable")
+                        self._resume_evidence, lineage = ci_checkpoint.load(
+                            self.root, self.resume_report, self.summary, self.steps, self._checkpoint_inputs)
+                        if not self._prepare_target_cache():
+                            raise ValueError(self.summary.get("target_cache_error", "target guard refused"))
+                        self.summary["resume"] = lineage
+                        self.summary["steps"] = ci_checkpoint.inherited_steps(self._resume_evidence, lineage)
+                    except (ValueError, OSError, KeyError, TypeError) as error:
+                        self.summary["resume_error"] = str(error)
+                        failed = True
                 self._write_summary()
                 for index, step in enumerate(self.steps, start=1):
+                    if failed:
+                        break
+                    if index <= len(self.summary["steps"]):
+                        continue
                     if self.mode in {"full", "merge", "release"} and self._uses_cargo_target(step) and not self._check_disk_headroom():
                         print(self.summary["disk_error"], file=sys.stderr, flush=True)
+                        if all("free_bytes" in p for p in self.summary["disk_headroom"]["probes"]):
+                            self.summary["disk_refusal"] = {"before_step": index - 1}
                         failed = True
                         break
                     if self._uses_cargo_target(step) and self.target_lock is None:
@@ -1501,6 +1836,14 @@ class LocalCiRunner:
                     if result["status"] != "passed":
                         failed = True
                         break
+                if self.summary.get("resume") and not failed:
+                    try:
+                        ci_checkpoint.validate_inheritance(self.root, self.summary)
+                        if self._checkpoint_inputs != ci_checkpoint.execution_inputs(self.root, self.env, self.steps):
+                            raise ValueError("continuation execution inputs changed during checks")
+                    except (ValueError, OSError, KeyError, TypeError) as error:
+                        self.summary["resume_error"] = str(error)
+                        failed = True
                 partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
@@ -1525,6 +1868,13 @@ class LocalCiRunner:
                                     raise TargetCacheError("dependency inputs changed during guarded checks")
                                 self._completed_workspace_inputs()
                                 self._write_target_owner(self.target_owner_path, self.git_identity, checked=self.summary.get("exit_code") == 0)
+                                if self.summary.get("disk_refusal"):
+                                    self._checkpoint_target = {
+                                        "owner_sha256": ci_checkpoint.owner_digest(self.target_owner_path),
+                                        "target_identity": self._directory_identity(Path(self.cargo_identity["target_directory"])),
+                                        "cargo_identity": self.cargo_identity,
+                                        "dependency_inputs": self._dependency_inputs,
+                                    }
                             except InterruptedRun:
                                 self.summary.update(status="interrupted", exit_code=130,
                                                     target_owner_update_error="dependency identity interrupted; owner not advanced")
@@ -1547,7 +1897,6 @@ class LocalCiRunner:
                         finally:
                             self.target_lock = None
                 self.summary["ended_at"] = utc_now()
-                self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 3)
                 if self.summary.get("start_tree") is not None:
                     if self._capture_repository_state("end_tree"):
                         start_tree = self.summary["start_tree"]
@@ -1573,17 +1922,34 @@ class LocalCiRunner:
                                 "status": "not_run",
                                 "started_at": None,
                                 "ended_at": None,
+                                "start_offset_seconds": None,
+                                "duration_seconds": None,
+                                "timing_estimates": None,
                                 "exit_code": None,
                                 "log": None,
                                 "error": "pipeline stopped before this step",
                             }
                         )
+                self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 6)
+                if self._checkpoint_inputs is not None and self.summary.get("disk_refusal"):
+                    try:
+                        if self._checkpoint_inputs != ci_checkpoint.execution_inputs(self.root, self.env, self.steps):
+                            raise ValueError("execution inputs changed during original checks")
+                        self.summary["checkpoint"] = ci_checkpoint.seal(
+                            self.root, self.summary, self.steps, self._checkpoint_inputs, self._checkpoint_target)
+                    except (ValueError, OSError, KeyError, TypeError) as error:
+                        if self.summary.get("disk_refusal"):
+                            self.summary["checkpoint_unavailable"] = str(error)
                 self._write_summary()
             finally:
                 # Even an end-snapshot or summary-write exception must restore
                 # the caller's process-wide signal handlers.
                 for signum, handler in previous_handlers.items():
                     signal.signal(signum, handler)
+        try:
+            self._print_failure_details()
+        except (OSError, ValueError):
+            pass  # Console failure must not replace the recorded result or cleanup.
         return int(self.summary["exit_code"] if self.summary["exit_code"] is not None else 2)
 
 
@@ -1600,9 +1966,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", help="exact current candidate commit for scoped checks")
     parser.add_argument("--reuse-report", type=Path,
                         help="explicit prior runtime certificate for a prose-only continuation")
+    parser.add_argument("--resume-report", type=Path,
+                        help="continue an exact-source plan stopped solely by a pre-step disk refusal")
     parser.add_argument("--package", help="explicit workspace package for partial edit feedback")
     parser.add_argument("--test-filter", help="explicit nonempty Rust test filter for partial edit feedback")
     parser.add_argument("--features", default="", help="explicit package features for partial edit feedback")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--lib", action="store_true", help="test only the package library in an explicit edit plan")
+    target.add_argument("--test", metavar="NAME", help="test only this named integration target in an explicit edit plan")
     parser.add_argument(
         "--min-free-gib", type=int,
         help="read-only free-space floor in GiB; default 2 for full and 0 for quick; never deletes files",
@@ -1617,6 +1988,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--changelog-base", help="explicit first-generation Git baseline")
     parser.add_argument("--changelog-through", default="HEAD", help="immutable generation range end")
     arguments = parser.parse_args(argv)
+    if arguments.resume_report and (arguments.reuse_report or arguments.adopt_target
+                                    or arguments.quick or arguments.profile == "edit"
+                                    or arguments.prepare_changelog):
+        parser.error("--resume-report cannot combine reuse/adoption/quick/edit/changelog preparation")
     if arguments.prepare_changelog:
         command = [sys.executable, str(ROOT / "scripts/changelog.py"), "prepare",
                    "--source", arguments.changelog_through]
@@ -1638,13 +2013,12 @@ def main(argv: list[str] | None = None) -> int:
                                    source=arguments.source, metadata=metadata)
             if arguments.reuse_report:
                 plan = reusable_plan(ROOT, plan, arguments.reuse_report)
-            if arguments.package or arguments.test_filter or arguments.features:
+            if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
                 if arguments.profile != "edit" or not arguments.package or not arguments.test_filter:
                     raise ValueError("package/filter/features require --profile edit with a nonempty package and test filter")
-                package = next((p for p in plan["cargo_inventory"] if p["name"] == arguments.package), None)
-                if package is None or any(f not in package["features"] for f in arguments.features.split(",") if f):
-                    raise ValueError("unknown workspace package or feature")
-                plan["edit"] = {"package": arguments.package, "filter": arguments.test_filter, "features": arguments.features}
+                plan["edit"] = edit_selection(plan["cargo_inventory"], package=arguments.package,
+                                              test_filter=arguments.test_filter, features=arguments.features,
+                                              lib=arguments.lib, test=arguments.test)
                 plan.pop("plan_sha256")
                 plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
         except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
@@ -1654,13 +2028,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--profile cannot be combined with --quick")
     elif arguments.reuse_report:
         parser.error("--reuse-report requires an explicit merge plan")
-    elif arguments.package or arguments.test_filter or arguments.features:
+    elif arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
         parser.error("package/filter/features require an explicit edit plan")
     runner = LocalCiRunner(
         mode=mode,
         min_free_bytes=None if arguments.min_free_gib is None else arguments.min_free_gib * GIB,
         adopt_target=arguments.adopt_target,
         plan=plan,
+        resume_report=arguments.resume_report,
     )
     try:
         exit_code = runner.run()

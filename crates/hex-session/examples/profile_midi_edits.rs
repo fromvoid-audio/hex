@@ -29,6 +29,8 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -43,6 +45,11 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
+                active: true,
+                playback_offset_raw: 0,
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
@@ -59,6 +66,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         });
     }
     Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         audio_feeds: Vec::new(),

@@ -199,7 +199,7 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
         assert_eq!(v.mode, EditorMode::Arrangement);
         // The existing text handler receives literal Tab. Preserve that local
         // behavior; workspace navigation must not consume the input instead.
-        assert_eq!(v.browser.search.read(cx).content, "piano\t");
+        assert_eq!(v.browser.search.read(cx).text(), "piano\t");
     });
     let track = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[0].id()

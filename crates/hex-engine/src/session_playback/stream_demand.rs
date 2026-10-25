@@ -4,6 +4,7 @@ use super::*;
 use crate::{Invalid, StreamChunkWindow, StreamPageExtent, compile::PreparedAudioSource};
 
 pub(super) struct HandoffDemand<'a> {
+    pub ordinary: bool,
     pub maximum_frames: usize,
     pub playing: Option<bool>,
     pub visit: &'a mut dyn FnMut(StreamPageExtent) -> Result<(), Invalid>,
@@ -21,17 +22,29 @@ impl SessionPlayback {
         playing: Option<bool>,
         visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, SessionPlaybackError> {
+        self.preview_stream_handoff_with_scope(previous, maximum_frames, playing, visit, false)
+    }
+    pub(crate) fn preview_stream_handoff_with_scope(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        ordinary: bool,
+    ) -> Result<StreamChunkWindow, SessionPlaybackError> {
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
-            || self.compensation.is_some()
-            || previous.compensation.is_some()
-            || self.computer_keyboard.is_some()
-            || previous.computer_keyboard.is_some()
+            || (!ordinary
+                && (self.compensation.is_some()
+                    || previous.compensation.is_some()
+                    || self.computer_keyboard.is_some()
+                    || previous.computer_keyboard.is_some()))
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
         let mut demand = HandoffDemand {
+            ordinary,
             maximum_frames,
             playing,
             visit,
@@ -77,22 +90,93 @@ impl SessionPlayback {
         maximum_frames: usize,
         visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
-        if self.compensation.is_some() || self.computer_keyboard.is_some() {
+        self.visit_stream_chunk_in_scope(
+            false,
+            routes,
+            performance_frame,
+            arrangement_frame,
+            route_generation,
+            loop_pass,
+            playing,
+            maximum_frames,
+            visit,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn visit_stream_chunk_in_scope(
+        &self,
+        ordinary: bool,
+        routes: &[TrackRoute],
+        performance_frame: u64,
+        arrangement_frame: u64,
+        route_generation: u64,
+        loop_pass: u64,
+        playing: bool,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, Invalid> {
+        if !ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()) {
             return Err(Invalid("stream demand requires a closed audio runtime"));
         }
+        self.visit_stream_chunk_sources_at(
+            routes,
+            performance_frame,
+            arrangement_frame,
+            route_generation,
+            loop_pass,
+            playing,
+            maximum_frames,
+            visit,
+        )
+    }
+    /// Ordinary prepared playback retains its existing keyboard and compensated
+    /// render owners. Paused monitoring reads no clip pages; running compensated
+    /// playback uses the same one-frame source quantum as the actual renderer.
+    /// Control consumers may inspect the same exact ordinary source quantum.
+    /// This pure metadata visit establishes no native page/readiness authority.
+    pub fn visit_ordinary_stream_chunk(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, Invalid> {
+        self.visit_stream_chunk_sources_at(
+            &self.routes,
+            self.performance_frame,
+            self.arrangement_frame,
+            self.route_state_generation,
+            self.arrangement_loop_pass,
+            playing.unwrap_or(self.playing),
+            maximum_frames,
+            visit,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn visit_stream_chunk_sources_at(
+        &self,
+        routes: &[TrackRoute],
+        performance_frame: u64,
+        arrangement_frame: u64,
+        route_generation: u64,
+        loop_pass: u64,
+        playing: bool,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, Invalid> {
         let mut window = StreamChunkWindow {
             performance_frame,
             arrangement_frame,
             route_generation,
-            frames: if playing { maximum_frames.min(256) } else { 0 },
+            frames: if playing {
+                maximum_frames.min(if self.compensation.is_some() { 1 } else { 256 })
+            } else {
+                0
+            },
         };
         if window.frames == 0 {
             return Ok(window);
         }
-        let region = (!self.linear_arrangement_export)
-            .then(|| self.revision.arrangement().loop_region())
-            .flatten()
-            .filter(|region| region.enabled());
+        let region = self.active_loop_region_at(arrangement_frame, loop_pass);
         if let Some(region) = region {
             window.arrangement_frame =
                 render::normalize_loop_cursor(window.arrangement_frame, region, loop_pass)
@@ -173,6 +257,9 @@ impl SessionPlayback {
                         .session()
                         .audio_clip(clip)
                         .ok_or(Invalid("stream demand clip missing"))?;
+                    if !clip.active {
+                        continue;
+                    }
                     if let PreparedAudioSource::Streamed(source) = clip.source() {
                         if let Some(elapsed) = performance_frame.checked_sub(launch_frame) {
                             if let Some(start) = clip

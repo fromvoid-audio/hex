@@ -145,6 +145,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
     assert_eq!(looping.project().clip(right).unwrap().source_phase(), 4);
 
     let full_project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -154,6 +155,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: "Samples/One.WAV".into(),
             source_sample_rate: 48_000,
@@ -162,6 +164,8 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -178,13 +182,14 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             content: TrackContentSnapshot::Audio(
                 (0..MAX_CLIPS)
                     .map(|index| ClipSnapshot {
+                        active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: 3 + index as u64,
                         asset: 1,
-                        start: 0,
+                        start: 2 * index as u64,
                         duration: 2,
                         source_offset: 0,
                         source_length: 2,
@@ -241,6 +246,7 @@ fn missing_clip_split_is_transactional() {
 #[test]
 fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
     let project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -250,6 +256,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
         sample_rate: 48_000,
         next_id: u64::MAX,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: "Samples/One.WAV".into(),
             source_sample_rate: 48_000,
@@ -258,6 +265,8 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -272,6 +281,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 edit: None,

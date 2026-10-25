@@ -7,6 +7,10 @@
 //! containing this owned map must be retired away from the callback so its
 //! backing point and prefix vectors are never freed there.
 use hex_project::{BeatTime, LoopRegion, MAX_TEMPO_POINTS, TempoMap};
+mod borrowed;
+pub(crate) use borrowed::CanonicalMidiTiming;
+mod breaks;
+pub(crate) use breaks::{MidiTempoBreaks, TempoBreaks};
 mod persistent;
 
 /// Maximum canonical tempo segments admitted into a prepared graph.
@@ -73,6 +77,28 @@ pub struct PreparedTempoMap {
 }
 
 impl PreparedTempoMap {
+    pub(crate) fn observation_copy(&self) -> Result<Self, crate::Invalid> {
+        let mut copy = hex_project::TempoMapCopyCustody::new();
+        copy.prepare_from(&self.canonical)
+            .map_err(|_| crate::Invalid("could not copy activity timing"))?;
+        let mut map = None;
+        copy.transfer_into(&mut map)
+            .map_err(|_| crate::Invalid("could not retain activity timing"))?;
+        Ok(Self {
+            canonical: map.ok_or(crate::Invalid("activity timing is unavailable"))?,
+            max_micro_bpm: self.max_micro_bpm,
+        })
+    }
+    pub(crate) fn observation_heap_bytes(&self) -> Option<usize> {
+        self.canonical
+            .owned_allocation_layout()
+            .checked_backing_bytes()
+    }
+    pub(crate) fn observation_copy_quote(&self) -> Option<usize> {
+        self.canonical.points().len().checked_mul(
+            std::mem::size_of::<hex_project::TempoPoint>() + std::mem::size_of::<u128>(),
+        )
+    }
     /// Move a validated canonical map into playback-owned prepared state.
     pub fn prepare(
         canonical: TempoMap,
@@ -130,19 +156,7 @@ impl PreparedTempoMap {
     }
 
     pub(crate) fn same_map(&self, other: &Self) -> bool {
-        self.canonical == other.canonical
-    }
-
-    fn max_micro_bpm_in_range(&self, start: BeatTime, end: BeatTime) -> u32 {
-        let active = self.canonical.tempo_at(start).micro_bpm();
-        self.canonical
-            .points()
-            .iter()
-            .filter(|point| point.beat() >= start && point.beat() < end)
-            .map(|point| point.tempo().micro_bpm())
-            .max()
-            .unwrap_or(active)
-            .max(active)
+        self.canonical.proves_same_clock(&other.canonical)
     }
 
     /// Convert a Q32.32 quarter-note beat to its canonical nearest frame.
@@ -248,8 +262,10 @@ impl PreparedPeriodicSessionTempo {
                 ))?;
         let denominator = u128::from(frame_period) << 32;
         let rate = numerator / denominator + u128::from(numerator % denominator != 0);
-        let loop_max = map.max_micro_bpm_in_range(start_beat, end_beat);
-        let admitted_max_micro_bpm = u64::try_from(rate.max(u128::from(loop_max)))
+        // The same published source can also play a canonical first pass from
+        // a cursor beyond the loop. Admit both reachable clocks on control;
+        // this upper bound does not change the periodic mapping itself.
+        let admitted_max_micro_bpm = u64::try_from(rate.max(u128::from(map.max_micro_bpm())))
             .map_err(|_| PreparedTempoError::InvalidLoop("session tempo loop rate overflow"))?;
         Ok(Self {
             start_frame,
@@ -298,10 +314,25 @@ pub(crate) struct PeriodicSessionTempoView<'a> {
 /// the new base clock translated so both revisions identify the cut as the
 /// same musical position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SessionClockAnchor {
-    pub(crate) cut_frame: u64,
-    pub(crate) old_beat: BeatTime,
-    pub(crate) new_beat: BeatTime,
+pub struct SessionClockAnchor {
+    /// Performance frame at which this prepared-revision translation was established.
+    pub cut_frame: u64,
+    /// Global performance beat preserved from the preceding clock.
+    pub old_beat: BeatTime,
+    /// Same frame expressed in the current canonical/periodic base clock.
+    pub new_beat: BeatTime,
+}
+
+impl SessionClockAnchor {
+    /// Decode the existing scalar clock translation at a telemetry boundary.
+    /// Every u64 beat value is a representable Q32.32 coordinate.
+    pub const fn from_raw(cut_frame: u64, old_beat_raw: u64, new_beat_raw: u64) -> Self {
+        Self {
+            cut_frame,
+            old_beat: BeatTime::from_raw(old_beat_raw),
+            new_beat: BeatTime::from_raw(new_beat_raw),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -929,7 +960,9 @@ mod tests {
         let loop_region = LoopRegion::new(1_237, 91_111, true).unwrap();
         let cycle = PreparedPeriodicSessionTempo::prepare(&prepared, loop_region).unwrap();
         let view = cycle.view(&prepared);
-        assert_eq!(view.max_micro_bpm(), 150_000_000);
+        // Admission covers a later absolute cursor too; the coordinate checks
+        // below still prove that the 600 BPM marker never enters loop cycles.
+        assert_eq!(view.max_micro_bpm(), 600_000_000);
 
         assert_eq!(view.beat_to_frame(cycle.start_beat()).unwrap(), 1_237);
         assert_eq!(view.beat_to_frame(cycle.end_beat()).unwrap(), 91_111);

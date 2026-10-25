@@ -93,7 +93,7 @@ fn chain(entries: usize, bounds: &[u64]) -> NativeRuntimeChain {
     )
     .unwrap();
     chain.begin_block();
-    chain.process_block(&mut [[0.001, -0.001]]);
+    chain.process_block(&mut [[0.001, -0.001]]).unwrap();
     chain.commit_block();
     chain
 }

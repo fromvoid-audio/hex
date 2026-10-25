@@ -27,13 +27,21 @@ impl RoutedMidiPlan {
                     .ok_or(crate::Invalid("Session MIDI template count overflow"))?;
                 count.1 = count
                     .1
-                    .checked_add(clip.source().notes().len())
+                    .checked_add(if clip.active() {
+                        clip.source().notes().len()
+                    } else {
+                        0
+                    })
                     .ok_or(crate::Invalid("Session MIDI note key count overflow"))?;
                 templates = templates
                     .checked_add(1)
                     .ok_or(crate::Invalid("Session MIDI template count overflow"))?;
                 notes = notes
-                    .checked_add(clip.source().notes().len())
+                    .checked_add(if clip.active() {
+                        clip.source().notes().len()
+                    } else {
+                        0
+                    })
                     .ok_or(crate::Invalid("Session MIDI note key count overflow"))?;
             }
         }
@@ -107,7 +115,15 @@ pub(super) fn prepare_clip(
         .as_deref()
         .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
         .transpose()?;
-    if mutable_limits.is_some()
+    if !clip.volume().points().is_empty()
+        && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume)
+    {
+        return Err(crate::Invalid(
+            "clip volume is unsupported by this mutable instrument mode",
+        ));
+    }
+    if clip.active()
+        && mutable_limits.is_some()
         && let Some(instrument) = config.config.as_deref()
     {
         for note in clip.source().notes() {
@@ -118,10 +134,12 @@ pub(super) fn prepare_clip(
     }
     let instrument_id = config.device_id;
     let instrument_state = config.state.clone();
-    let instrument_enabled = config.config.is_some() && !config.bypassed;
+    let instrument_enabled = clip.active() && config.config.is_some() && !config.bypassed;
     let cached = cached.filter(|old| {
         old.track == destination
             && old.source_identity == source_identity
+            && old.active == clip.active()
+            && old.playback_offset == clip.playback_offset()
             && old.instrument_id == instrument_id
             && old.instrument_state == instrument_state
             && old.tuning_identity == config.tuning_identity
@@ -131,15 +149,23 @@ pub(super) fn prepare_clip(
         Arc::clone(&old.source)
     } else {
         Arc::new(
-            PreparedMidiSourceTemplate::prepare_source(
+            PreparedMidiSourceTemplate::prepare_source_window_active(
                 destination,
                 clip.id(),
                 clip.source(),
+                clip.playback_offset(),
+                clip.active(),
                 source_timing,
             )
             .map_err(template_error)?,
         )
     };
+    // Source/instrument reuse above and below intentionally excludes volume:
+    // changing only this clip's curve must not manufacture new note custody.
+    // Revalidate volume admission on every preparation: effective tempo loops
+    // can change break density without changing the canonical map/max BPM.
+    let volume =
+        crate::midi_clip_volume::PreparedMidiClipVolume::prepare_session(clip, source_timing)?;
     let bank = config
         .note_bank
         .as_ref()
@@ -172,12 +198,15 @@ pub(super) fn prepare_clip(
         work_for(&source, &instrument)?
     };
     Ok(PreparedSessionMidiClip {
+        active: clip.active(),
+        playback_offset: clip.playback_offset(),
         id: clip.id(),
         track: destination,
         scene: cell.scene(),
         name: clone_string(clip.name())?,
         source_identity,
         source,
+        volume,
         instrument,
         instrument_id,
         instrument_state,
@@ -208,6 +237,18 @@ pub(super) fn account_template(
         >())
         .ok_or(crate::Invalid(
             "Session MIDI bank handle byte count overflow",
+        ))?;
+    // This is conservative control metadata accounting, once per prepared
+    // row even when routed owners share the immutable curve's Arc. It is not
+    // an allocation identity or a CURRENT closed-storage custody declaration.
+    *bytes = bytes
+        .checked_add(
+            clip.volume
+                .as_ref()
+                .map_or(0, |program| program.retained_control_metadata_bytes()),
+        )
+        .ok_or(crate::Invalid(
+            "session midi clip volume byte count overflow",
         ))?;
     crate::midi_note_bank::PreparedMidiNoteBank::validate_project_budget(
         *bytes,

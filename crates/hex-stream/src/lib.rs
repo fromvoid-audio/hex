@@ -1,4 +1,13 @@
-//! Bounded verified WAV worker and borrowed project-rate page cache.
+//! # Purpose
+//! Own verified WAV source workers, fixed page pools and borrowed project-rate page-cache
+//! endpoints.
+//!
+//! # Dependencies
+//! Uses hex-engine/hex-project contracts, hex-media readers/conversion and rtrb ownership queues.
+//!
+//! # Does not own
+//! Does not edit projects, own CPAL or decode/hash on callback. Only the joining control owner
+//! wakes/joins workers; page endpoints are destroyed on control after callback quiescence.
 // Boxed entries keep the 4096-frame payload at a stable address while ownership
 // moves through the bounded worker, ready and return queues.
 #![allow(clippy::vec_box)]
@@ -17,8 +26,8 @@ pub use runtime::{
     AudioStreamStorageSummary, CatalogLease, ConstructorPageLoan, ConstructorStreamDomain,
     OpaqueStreamCost, OpaqueStreamHandleGroup, PagePoolReport, PendingStreamDomain,
     PreparedRolePromotion, PreparedStreamDisposal, ProtectedStreamPages, ProtectionRole,
-    ReadinessProgress, ReadinessRefusal, ReadinessStamp, ShutdownError, StreamBusy,
-    StreamCallbackPages, StreamControl, StreamDisposalError, StreamDisposalPhase,
+    ReadinessArtifact, ReadinessProgress, ReadinessRefusal, ReadinessStamp, ShutdownError,
+    StreamBusy, StreamCallbackPages, StreamControl, StreamDisposalError, StreamDisposalPhase,
     StreamDomainConstructorSummary, StreamDomainSealRefusal, StreamHandleLocation,
     StreamOwningHandleObligation, StreamPairMismatch, StreamPreparationAllowance,
     StreamPreparationBound, StreamReadinessReservation, StreamRuntime,

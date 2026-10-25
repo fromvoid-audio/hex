@@ -23,13 +23,13 @@ fn refuses(value: &Value) {
 }
 
 #[test]
-fn required_schema33_tuning_roundtrips_every_waveform_enabled_and_disabled() {
+fn required_current_tuning_roundtrips_every_waveform_enabled_and_disabled() {
     for enabled in [false, true] {
         for waveform in [Waveform::Triangle, Waveform::Square, Waveform::Saw] {
             let project = tuned(enabled, waveform);
             let bytes = encode(&project).unwrap();
             let doc: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(doc["version"], 33);
+            assert_eq!(doc["version"], hex_storage::CURRENT_SCHEMA_VERSION);
             assert_eq!(
                 doc["tuning"]["scale"]["cents"].as_array().unwrap().len(),
                 48
@@ -46,21 +46,12 @@ fn required_schema33_tuning_roundtrips_every_waveform_enabled_and_disabled() {
 }
 
 #[test]
-fn schema29_migrates_explicit_disabled_equal_temperament_and_refuses_tuning() {
-    let mut value = document();
-    value["version"] = json!(29);
-    value.as_object_mut().unwrap().remove("main_devices");
-    refuses(&value);
-    value.as_object_mut().unwrap().remove("tuning");
-    value.as_object_mut().unwrap().remove("device_assets");
-    value.as_object_mut().unwrap().remove("main_devices");
-    let migrated = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
-    assert_eq!(migrated.tuning(), ProjectTuning::default());
-    assert_eq!(
-        migrated.tuning().frequencies(),
-        ProjectTuning::default().frequencies()
-    );
-    assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
+fn older_alpha_tuning_documents_are_explicitly_unsupported() {
+    for version in 1..34 {
+        let mut value = document();
+        value["version"] = json!(version);
+        refuses(&value);
+    }
 }
 
 #[test]

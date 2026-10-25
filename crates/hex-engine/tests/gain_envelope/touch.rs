@@ -5,6 +5,7 @@ use hex_project::{GainTouchContext, GainTouchSpan, GainTouchStep};
 
 fn span(start: BeatTime, end: BeatTime, epoch: u64, values: &[(BeatTime, f32)]) -> GainTouchSpan {
     GainTouchSpan {
+        source_start: start,
         start,
         end,
         context: GainTouchContext {
@@ -621,4 +622,118 @@ fn detached_effect_tail_freezes_live_override_instead_of_static_zero() {
     next.render(&mut actual).unwrap();
     assert_eq!(actual, expected);
     assert!(!next.gain_recording_ready(f.track.value()));
+}
+
+#[test]
+fn section_splices_preserve_linear_left_limits_and_relocated_touch_provenance() {
+    use hex_project::ElementColor;
+    let mut f = fixture(300_000);
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    lane(
+        &mut f,
+        vec![
+            point(beat(0), 0.2, GainInterpolation::Linear),
+            point(beat(5), 1.6, GainInterpolation::Linear),
+            point(beat(12), 0.8, GainInterpolation::Step),
+        ],
+    );
+    splice(
+        &mut f,
+        0,
+        span(
+            beat(1),
+            beat(9),
+            1,
+            &[(beat(1), 0.7), (beat(3), 0.4), (beat(8), 0.9)],
+        ),
+    );
+    let mut add = |name: &str, start, end| {
+        let hex_project::Created::ArrangementSection(id) = f
+            .editor
+            .execute(Command::AddArrangementSection {
+                name: name.into(),
+                color: ElementColor::Amber,
+                start: beat(start),
+                end: beat(end),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    let a = add("intro", 2, 4);
+    let c = add("chorus", 7, 10);
+    let old = f.editor.project().clone();
+    let old_preview = GainAutomationPreview::prepare(&old).unwrap();
+    let permutation = old.preview_section_reorder(c, a).unwrap();
+    f.editor
+        .execute(Command::ReorderSectionBefore {
+            section: c,
+            before: a,
+        })
+        .unwrap();
+    let new = f.editor.project();
+    let preview = GainAutomationPreview::prepare(new).unwrap();
+    for numerator in 0..48 {
+        let at = quarter(numerator, 4);
+        let mapped = permutation.map_beat(at).unwrap();
+        let before = old_preview
+            .value_at(f.track, old.tempo_map().beat_to_frame(at).unwrap())
+            .unwrap();
+        let after = preview
+            .value_at(f.track, new.tempo_map().beat_to_frame(mapped).unwrap())
+            .unwrap();
+        assert!(
+            (after - before).abs() < 1e-6,
+            "beat {numerator}/4: {before} vs {after}"
+        );
+    }
+    let pcm = arrangement(&f);
+    let compiled = revision(&f);
+    // Probe the immediately adjacent samples at every cut, touch boundary and
+    // ramp knot. These check actual gain rendering and half-open seam ownership.
+    for source_beat in [1, 2, 3, 5, 7, 8, 9, 10, 12] {
+        let boundary = old.tempo_map().beat_to_frame(beat(source_beat)).unwrap();
+        for offset in [-2_i64, -1, 0, 1, 2] {
+            let frame = boundary.checked_add_signed(offset).unwrap();
+            let destination = if (168_000..240_000).contains(&frame) {
+                48_000 + frame - 168_000
+            } else if (48_000..168_000).contains(&frame) {
+                frame + 72_000
+            } else {
+                frame
+            };
+            let expected = old_preview.value_at(f.track, frame).unwrap();
+            let actual = compiled.arrangement().tracks()[0]
+                .prepared_gain_at(destination)
+                .unwrap();
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "source frame {frame} mapped to {destination}"
+            );
+            assert!((pcm[destination as usize][0] - 0.25 * expected).abs() < 1e-6);
+            assert!((pcm[destination as usize][1] + 0.5 * expected).abs() < 1e-6);
+        }
+    }
+    let owner = new.track(f.track).unwrap();
+    owner.gain_lane().validate().unwrap();
+    assert!(
+        owner
+            .gain_lane()
+            .spans()
+            .windows(2)
+            .any(|pair| pair[0].source_start > pair[1].source_start),
+        "recording event chronology must remain original after placement changes"
+    );
+    assert!(
+        owner.gain_envelope().iter().any(|p| p
+            .incoming_gain
+            .is_some_and(|left| (left - p.gain).abs() > 0.1)),
+        "linear curve splice must retain an explicit jump"
+    );
+    assert_eq!(
+        Project::from_snapshot(new.snapshot()).unwrap().snapshot(),
+        new.snapshot()
+    );
 }

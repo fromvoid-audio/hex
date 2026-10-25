@@ -194,10 +194,15 @@ fn invalid_boundary_splits_preserve_project_and_redo() {
 fn split_refuses_project_clip_limit_and_note_duplication_limit() {
     let clips: Vec<_> = (0..MAX_CLIPS)
         .map(|index| MidiClipSnapshot {
+            content_view: None,
+            active: true,
+            playback_offset_raw: 0,
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id: 2 + index as u64,
-            start_raw: 0,
+            start_raw: beat(2 * index as u64).raw(),
             length_raw: beat(2).raw(),
             source_length_raw: beat(2).raw(),
             source_start_raw: 0,
@@ -208,6 +213,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         })
         .collect();
     let full_project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -218,6 +224,8 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         next_id: 2 + MAX_CLIPS as u64,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),

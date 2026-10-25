@@ -366,7 +366,14 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
             .import(prepare(&directory, "split.wav", 48_000, &source))
             .expect("import source"),
     );
-    let track = session.project().tracks()[0].id();
+    let Created::Track(other_track) = session
+        .command(Command::AddTrack {
+            name: "independent audio".into(),
+        })
+        .expect("other track")
+    else {
+        panic!("other track")
+    };
     session
         .command(Command::TrimClip {
             clip: original,
@@ -378,7 +385,7 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
         .expect("trim one-shot");
     session
         .command(Command::PlaceClip {
-            track,
+            track: other_track,
             asset,
             start: 5,
             duration: 8,
@@ -386,7 +393,7 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
             source_length: 8,
             looping: false,
         })
-        .expect("place overlapping clip");
+        .expect("place independent concurrent clip");
     let before = session.project().clone();
     let baseline = session.compile().expect("compile baseline");
 
@@ -908,4 +915,231 @@ fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
         .expect("ordered redo prepares")
         .expect("ordered redo exists");
     assert_eq!(session.project().snapshot(), moved);
+}
+
+#[test]
+fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_history() {
+    use hex_project::{AudioViewResizeOperation as Resize, TrimEdge};
+    let directory = TempDir::new();
+    let samples = [
+        [1000, -1000],
+        [2000, -2000],
+        [3000, -3000],
+        [4000, -4000],
+        [5000, -5000],
+        [6000, -6000],
+        [7000, -7000],
+        [8000, -8000],
+    ];
+    let mut session = Session::new(48_000, 16, 64).unwrap();
+    let (_, asset, clip) = imported_ids(
+        session
+            .import(prepare(&directory, "cycle.wav", 48_000, &samples))
+            .unwrap(),
+    );
+    session
+        .command(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 2,
+        })
+        .unwrap();
+    let before = session.project().clone();
+    let baseline = session.compile().unwrap();
+    let mut renderer = hex_engine::Renderer::new(&baseline);
+    renderer.play();
+    let original = render_blocks(&mut renderer, 8, 3);
+    session
+        .command(Command::ResizeAudioClipView {
+            clip,
+            operation: Resize::RepeatOuterEnd { project_frame: 26 },
+        })
+        .unwrap();
+    let repeated = session.project().clone();
+    session
+        .command(Command::ResizeAudioClipView {
+            clip,
+            operation: Resize::CycleEnd { project_frame: 6 },
+        })
+        .unwrap();
+    let resized = session.project().clone();
+    let graph = session.compile().unwrap();
+    let summaries = session.audio_clip_waveforms().unwrap();
+    let accepted = &summaries[&clip];
+    assert_eq!(
+        accepted.waveform.source_frames, 24,
+        "playback peaks cover the outer placement"
+    );
+    let root = accepted
+        .preview_root
+        .as_ref()
+        .expect("retained preview root");
+    assert_eq!(
+        root.waveform.source_frames, 6,
+        "cycle resizing keeps the full captured root"
+    );
+    let hidden = root.waveform.peaks_for_frames(4, 6).unwrap();
+    assert_eq!(
+        hidden[0].max,
+        8000.0 / 32768.0,
+        "hidden root samples survive a shorter cycle"
+    );
+    let expected: Vec<_> = (0..26)
+        .map(|frame| {
+            if frame < 2 {
+                [0.0; 2]
+            } else {
+                original[2 + (frame - 2) % 4]
+            }
+        })
+        .collect();
+    for block in [1, 3, 7, 32] {
+        let mut renderer = hex_engine::Renderer::new(&graph);
+        renderer.play();
+        assert_eq!(
+            render_blocks(&mut renderer, 26, block),
+            expected,
+            "block={block}"
+        );
+    }
+    let path = directory.path().join("loop.hex");
+    hex_storage::save_new(&path, session.project()).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(loaded, resized);
+    let pcm = decode_wav_file(directory.path().join("cycle.wav"), Limits::new(4096, 64)).unwrap();
+    let reopened = Session::from_loaded(loaded, 8, 64, vec![(asset, pcm)]).unwrap();
+    let reopened_graph = reopened.compile().unwrap();
+    let mut renderer = hex_engine::Renderer::new(&reopened_graph);
+    renderer.play();
+    assert_eq!(render_blocks(&mut renderer, 26, 5), expected);
+    let export = directory.path().join("loop.wav");
+    hex_export::render_new(&export, &graph, 0, 26).unwrap();
+    let decoded = decode_wav_file(&export, Limits::new(4096, 64)).unwrap();
+    for (actual, expected) in decoded.audio().frames().iter().zip(&expected) {
+        for channel in 0..2 {
+            assert!((actual[channel] - expected[channel]).abs() < 0.00004);
+        }
+    }
+    assert!(session.undo());
+    assert_eq!(session.project(), &repeated);
+    assert!(session.undo());
+    assert_eq!(session.project(), &before);
+    assert!(session.redo());
+    assert!(session.redo());
+    assert_eq!(session.project(), &resized);
+}
+
+#[test]
+fn clip_loop_resize_midi_trimmed_window_reopens_and_exports_the_same_prepared_notes() {
+    use hex_project::{MidiViewResizeOperation as Resize, TrimEdge};
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    let directory = TempDir::new();
+    let mut session = Session::new(48_000, 16, 0).unwrap();
+    let Created::Track(track) = session
+        .command(Command::InsertTrackWithDevice {
+            name: "loop keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = session
+        .command(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: beat(3),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    session
+        .command(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(8),
+            source_start: beat(1),
+            loop_start: beat(1),
+            loop_end: beat(4),
+            looping: false,
+            length: beat(3),
+        })
+        .unwrap();
+    session
+        .command(Command::AddMidiNote {
+            clip,
+            start: BeatTime::from_ratio(5, 2).unwrap(),
+            duration: BeatTime::from_ratio(1, 4).unwrap(),
+            pitch: 62,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    session
+        .command(Command::TrimMidiClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            beat: beat(1),
+        })
+        .unwrap();
+    let before = session.project().clone();
+    session
+        .command(Command::ResizeMidiClipView {
+            clip,
+            operation: Resize::RepeatOuterEnd { beat: beat(6) },
+        })
+        .unwrap();
+    let repeated = session.project().clone();
+    session
+        .command(Command::ResizeMidiClipView {
+            clip,
+            operation: Resize::CycleEnd { beat: beat(2) },
+        })
+        .unwrap();
+    let resized = session.project().clone();
+    let c = resized.midi_clip(clip).unwrap();
+    assert_eq!(c.playback_offset(), beat(1));
+    assert_eq!(c.length(), beat(5));
+    let graph = session.compile().unwrap();
+    let frames = 144_000;
+    let mut renderer = hex_engine::Renderer::new(&graph);
+    renderer.play();
+    let expected = render_blocks(&mut renderer, frames, 127);
+    // Source note at 2.5 repeats each beat after the captured source cursor 2.
+    for start in [36_000, 60_000, 84_000, 108_000, 132_000] {
+        assert!(
+            expected[start..start + 6000]
+                .iter()
+                .any(|f| f[0].abs() + f[1].abs() > 0.001),
+            "note at frame {start}"
+        );
+    }
+    assert!(expected[..36_000].iter().all(|f| *f == [0.0; 2]));
+    let path = directory.path().join("midi-loop.hex");
+    hex_storage::save_new(&path, &resized).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(loaded, resized);
+    let reopened = Session::from_loaded(loaded, 8, 0, vec![]).unwrap();
+    let reopened_graph = reopened.compile().unwrap();
+    let mut renderer = hex_engine::Renderer::new(&reopened_graph);
+    renderer.play();
+    assert_eq!(render_blocks(&mut renderer, frames, 257), expected);
+    let export = directory.path().join("midi-loop.wav");
+    hex_export::render_new(&export, &graph, 0, frames as u64).unwrap();
+    let decoded = decode_wav_file(&export, Limits::new(2_000_000, frames)).unwrap();
+    assert_eq!(decoded.frames(), frames);
+    for (actual, expected) in decoded.audio().frames().iter().zip(&expected) {
+        for channel in 0..2 {
+            assert!((actual[channel] - expected[channel]).abs() < 0.00004);
+        }
+    }
+    assert!(session.undo());
+    assert_eq!(session.project(), &repeated);
+    assert!(session.undo());
+    assert_eq!(session.project(), &before);
+    assert!(session.redo());
+    assert!(session.redo());
+    assert_eq!(session.project(), &resized);
 }

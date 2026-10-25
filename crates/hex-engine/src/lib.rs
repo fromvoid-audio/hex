@@ -1,5 +1,15 @@
-//! Deterministic, sample-rate-locked stereo arrangement rendering.
-//! This is an original prototype, not a verified Live-compatible engine.
+//! # Purpose
+//! Compile canonical projects into immutable playback revisions and render deterministic stereo
+//! audio with bounded runtime state.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-devices, hex-lattice/hex-lattice-contract, hex-warp and control-side sha2
+//! resource verification; no UI or device-I/O dependency.
+//!
+//! # Does not own
+//! Does not edit canonical projects, open media files/devices, own page-worker queues or infer
+//! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
+//! control owns preparation and final destruction.
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -18,6 +28,7 @@ pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
+pub mod midi_capture;
 
 // Historical analytic/import proofs opt into the shared pre-global kernel.
 #[cfg(test)]
@@ -31,9 +42,10 @@ mod audio_storage;
 pub use audio_candidate::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
     AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateDraft,
-    AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation, AudioCandidateRefusal,
-    AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed, AudioCandidateRuntimeStatus,
-    AudioCandidateSplitRefusal, AudioCandidateTransfer, ClaimedAudioCandidateRuntime,
+    AudioCandidateEffects, AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation,
+    AudioCandidateRefusal, AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed,
+    AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
+    ClaimedAudioCandidateRuntime, StreamPlayback,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
@@ -77,9 +89,13 @@ mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
-    native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
+    SamplerParameter, is_empty_sampler_state_on_control,
+    is_sampler_configuration_history_on_control, native_device_catalog,
+    native_device_catalog_for_class, native_device_descriptors_for_class,
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response,
+    native_effect_frequency_response, patch_sampler_parameter_on_control,
+    sampler_parameter_active_on_control, sampler_parameter_value_on_control,
+    sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
 
 mod gain_envelope;
@@ -365,6 +381,10 @@ fn map_device_contract_error(error: hex_lattice_contract::DeviceContractError) -
         Error::RuntimeAllocation => "native device runtime allocation failed",
         Error::UnsupportedProcessingClass => "native device processing class is not admitted",
         Error::AssetResourcesUnavailable => "native device asset resources are unavailable",
+        Error::ForeignProcessingUnavailable => {
+            "foreign processing resources are unavailable for this graph"
+        }
+        Error::ForeignProcessingFailed => "foreign processor exchange failed",
     })
 }
 
@@ -463,6 +483,7 @@ impl Audio {
 
 #[derive(Debug, Clone)]
 pub struct Clip {
+    active: bool,
     audio: Option<Audio>,
     start: u64,
     end: u64,
@@ -556,6 +577,7 @@ impl Clip {
             }))
         };
         Ok(Self {
+            active: true,
             audio: Some(audio),
             start,
             end,
@@ -615,7 +637,7 @@ impl Clip {
     }
 
     fn at(&self, position: u64, source_phase: u64) -> Frame {
-        if position < self.start || position >= self.end {
+        if !self.active || position < self.start || position >= self.end {
             return [0.0; 2];
         }
         let offset = position - self.start;
@@ -641,6 +663,65 @@ impl Clip {
         self.audio.as_ref().map_or([0.0; 2], |audio| {
             audio.frames[self.source_offset + source_offset as usize]
         })
+    }
+
+    // Track supplies an intersected, neutral, uncaptured interval. Admit the
+    // source view before writing, then visit each contiguous piece in order.
+    // No PCM owner is cloned or reclaimed, and no position modulo is needed
+    // inside the per-frame mix loop.
+    fn render_neutral_additive(
+        &self,
+        position: u64,
+        phase: u64,
+        mut output: &mut [Frame],
+        mix: PreparedTrackMix,
+    ) -> bool {
+        let Some(source) = self.audio.as_ref().and_then(|audio| {
+            self.source_offset
+                .checked_add(self.source_length)
+                .and_then(|end| audio.frames().get(self.source_offset..end))
+        }) else {
+            return false;
+        };
+        let Ok(length) = u64::try_from(source.len()) else {
+            return false;
+        };
+        if length == 0 || phase >= length {
+            return false;
+        }
+        let Some(relative) = position.checked_sub(self.start) else {
+            return false;
+        };
+        let offset = if self.looping {
+            let relative = relative % length;
+            let until_wrap = length - phase;
+            if relative >= until_wrap {
+                relative - until_wrap
+            } else {
+                relative + phase
+            }
+        } else {
+            relative
+        };
+        let Ok(mut index) = usize::try_from(offset) else {
+            return false;
+        };
+        if index >= source.len() || (!self.looping && output.len() > source.len() - index) {
+            return false;
+        }
+        // All refusal paths precede mixing, so the caller can retain its
+        // established scalar fallback without adding any frame twice.
+        while !output.is_empty() {
+            let available = &source[index..];
+            let count = output.len().min(available.len());
+            let (chunk, tail) = output.split_at_mut(count);
+            for (destination, sample) in chunk.iter_mut().zip(available) {
+                mix.add_frame(destination, *sample);
+            }
+            output = tail;
+            index = 0;
+        }
+        true
     }
 
     /// Build a clip backed by a validated generation-scoped streamed source.
@@ -689,6 +770,7 @@ impl Clip {
         fade.validate_segment(duration)
             .map_err(|error| Invalid(error.0))?;
         Ok(Self {
+            active: true,
             audio: None,
             start,
             end,
@@ -1214,13 +1296,29 @@ impl Track {
     /// `start_frame` anchors output[0]; transport is not changed. The range end is
     /// checked before any samples are added, so overflow leaves output untouched.
     pub fn render_additive(&self, start_frame: u64, output: &mut [Frame]) -> Result<(), Invalid> {
+        self.require_volume_timing(None)?;
         if self.has_gain_automation() {
             return Err(Invalid("automated track requires project rendering"));
         }
         if self.clips.iter().any(Clip::is_streamed) {
             return Err(Invalid("streamed clips require a media page provider"));
         }
-        self.render_additive_with_midi_floor(start_frame, output, None)
+        self.render_additive_with_midi_floor(start_frame, output, None, None)
+    }
+
+    fn require_volume_timing(
+        &self,
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+    ) -> Result<(), Invalid> {
+        if timing.is_none()
+            && self
+                .instrument
+                .as_ref()
+                .is_some_and(|i| i.volumes.is_some())
+        {
+            return Err(Invalid("clip volume requires project rendering timing"));
+        }
+        Ok(())
     }
 
     pub(crate) fn render_additive_with_midi_floor(
@@ -1228,13 +1326,21 @@ impl Track {
         start_frame: u64,
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
     ) -> Result<(), Invalid> {
+        self.require_volume_timing(timing)?;
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
             .checked_add(length)
             .ok_or(Invalid("render range overflow"))?;
         if !self.source_mix.muted {
-            self.render_unmuted_range(start_frame, end_frame, output, midi_onset_floor_exclusive);
+            self.render_unmuted_range(
+                start_frame,
+                end_frame,
+                output,
+                midi_onset_floor_exclusive,
+                timing,
+            )?;
         }
         Ok(())
     }
@@ -1248,7 +1354,9 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         pages: Option<&mut (impl MediaPages + ?Sized)>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
     ) -> Result<(), Invalid> {
+        self.require_volume_timing(timing)?;
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
             .checked_add(length)
@@ -1267,6 +1375,7 @@ impl Track {
                 suppressions,
                 None,
                 continuations,
+                timing,
             )?;
         }
         Ok(())
@@ -1277,13 +1386,22 @@ impl Track {
         start_frame: u64,
         output: &mut [Frame],
         pages: &mut (impl MediaPages + ?Sized),
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
     ) -> Result<(), Invalid> {
+        self.require_volume_timing(timing)?;
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
             .checked_add(length)
             .ok_or(Invalid("render range overflow"))?;
         if !self.source_mix.muted {
-            self.render_unmuted_range_with_pages(start_frame, end_frame, output, None, pages);
+            self.render_unmuted_range_with_pages(
+                start_frame,
+                end_frame,
+                output,
+                None,
+                pages,
+                timing,
+            )?;
         }
         Ok(())
     }
@@ -1313,7 +1431,9 @@ impl Track {
         pages: Option<&mut P>,
         capture: &mut [Frame],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
     ) -> Result<(), Invalid> {
+        self.require_volume_timing(timing)?;
         let end_frame = start_frame
             .checked_add(
                 u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?,
@@ -1332,6 +1452,7 @@ impl Track {
                 suppressions,
                 Some(capture),
                 continuations,
+                timing,
             )?;
         }
         Ok(())
@@ -1359,6 +1480,7 @@ impl Track {
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
@@ -1372,6 +1494,7 @@ impl Track {
             suppressions,
             None,
             continuations,
+            timing,
         )
     }
 
@@ -1401,6 +1524,7 @@ impl Track {
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
     ) -> Result<(), Invalid> {
         let end = start
             .checked_add(output.len() as u64)
@@ -1414,6 +1538,7 @@ impl Track {
             None,
             continuations,
             PreparedTrackMix::identity(),
+            timing,
         )
     }
     pub(crate) fn for_each_active_midi_span(
@@ -1459,9 +1584,17 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
-    ) {
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+    ) -> Result<(), Invalid> {
+        self.require_volume_timing(timing)?;
         self.render_audio_range(start_frame, end_frame, output);
-        self.render_instrument_range(start_frame, end_frame, output, midi_onset_floor_exclusive);
+        self.render_instrument_range(
+            start_frame,
+            end_frame,
+            output,
+            midi_onset_floor_exclusive,
+            timing,
+        )
     }
 
     fn render_audio_range(&self, start_frame: u64, end_frame: u64, output: &mut [Frame]) {
@@ -1533,9 +1666,17 @@ impl Track {
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
         pages: &mut (impl MediaPages + ?Sized),
-    ) {
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+    ) -> Result<(), Invalid> {
+        self.require_volume_timing(timing)?;
         self.render_audio_range_with_pages(start_frame, end_frame, output, pages);
-        self.render_instrument_range(start_frame, end_frame, output, midi_onset_floor_exclusive);
+        self.render_instrument_range(
+            start_frame,
+            end_frame,
+            output,
+            midi_onset_floor_exclusive,
+            timing,
+        )
     }
 
     fn render_audio_range_with_pages(
@@ -1609,6 +1750,9 @@ impl Track {
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
     ) {
+        if !clip.active {
+            return;
+        }
         let mut span_end = end_frame.min(clip.end);
         if !clip.looping {
             span_end = span_end.min(clip.start.saturating_add(clip.source_length as u64));
@@ -1623,6 +1767,18 @@ impl Track {
         let source_phase = metadata.map_or(0, |metadata| metadata.source_phase);
         let clip_gain = metadata.map_or(1.0, |metadata| metadata.gain);
         let fade = metadata.and_then(|metadata| metadata.fade.as_ref());
+        if fade.is_none()
+            && clip_gain == 1.0
+            && capture.is_none()
+            && clip.render_neutral_additive(
+                span_start,
+                source_phase,
+                &mut output[output_start..output_end],
+                source_mix,
+            )
+        {
+            return;
+        }
         if fade.is_some() || clip_gain != 1.0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
                 let position = span_start + offset as u64;
@@ -1673,8 +1829,9 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
-    ) {
-        let _ = self.render_instrument_range_with_suppressions(
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+    ) -> Result<(), Invalid> {
+        self.render_instrument_range_with_suppressions(
             (start_frame, end_frame),
             output,
             midi_onset_floor_exclusive,
@@ -1682,7 +1839,8 @@ impl Track {
             &[],
             None,
             &[],
-        );
+            timing,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1695,6 +1853,7 @@ impl Track {
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         capture: Option<&mut [Frame]>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
     ) -> Result<(), Invalid> {
         self.render_instrument_range_with_mix(
             (start_frame, end_frame),
@@ -1705,6 +1864,7 @@ impl Track {
             capture,
             continuations,
             self.source_mix,
+            timing,
         )
     }
 
@@ -1719,7 +1879,9 @@ impl Track {
         mut capture: Option<&mut [Frame]>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         source_mix: PreparedTrackMix,
+        timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
     ) -> Result<(), Invalid> {
+        self.require_volume_timing(timing)?;
         if let Some(instrument) = &self.instrument {
             if instrument.mutable {
                 return Ok(());
@@ -1759,7 +1921,46 @@ impl Track {
                         let Some(voice) = instrument.bank.sampler(span.sampler_index) else {
                             return;
                         };
+                        let volume = instrument.volumes.as_ref().and_then(|v| v.clip(span.clip));
+                        let mut volume_ramp: Option<midi_clip_volume::VolumeRamp> = None;
                         for frame_position in start..end {
+                            let gain = if let Some(volume) = volume {
+                                if volume_ramp.is_none_or(|ramp| {
+                                    ramp.next_boundary
+                                        .is_some_and(|next| frame_position >= next)
+                                }) {
+                                    let Some(timing) = timing else {
+                                        failure = Some(Invalid(
+                                            "clip volume requires project rendering timing",
+                                        ));
+                                        return;
+                                    };
+                                    match volume.segment_or_hold(
+                                        timing,
+                                        frame_position,
+                                        (end - frame_position) as usize,
+                                    ) {
+                                        Ok(ramp) => volume_ramp = Some(ramp),
+                                        Err(error) => {
+                                            failure = Some(error);
+                                            return;
+                                        }
+                                    }
+                                }
+                                match volume_ramp.map(|ramp| ramp.gain_at(frame_position)) {
+                                    Some(Ok(gain)) => gain,
+                                    Some(Err(error)) => {
+                                        failure = Some(error);
+                                        return;
+                                    }
+                                    None => {
+                                        failure = Some(Invalid("clip volume ramp is unavailable"));
+                                        return;
+                                    }
+                                }
+                            } else {
+                                1.0
+                            };
                             let relative = frame_position - span.start;
                             let Some(absolute) =
                                 chunk_performance_frame.checked_add(frame_position - chunk_start)
@@ -1775,7 +1976,11 @@ impl Track {
                                 relative,
                                 span.gate_end - span.start,
                             ) {
-                                Ok(sample) => {
+                                Ok(mut sample) => {
+                                    if gain != 1.0 {
+                                        sample[0] = (f64::from(sample[0]) * gain) as f32;
+                                        sample[1] = (f64::from(sample[1]) * gain) as f32;
+                                    }
                                     source_mix.add_captured(
                                         &mut target[(frame_position - chunk_start) as usize],
                                         sample,
@@ -1818,6 +2023,7 @@ pub(crate) struct InstrumentTrack {
     pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
     pub(crate) shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
     pub(crate) mutable: bool,
+    pub(crate) volumes: Option<midi_clip_volume::arrangement::PreparedArrangementVolumes>,
 }
 
 /// Immutable control-side root/crop view for worker waveform preparation.
@@ -1840,6 +2046,9 @@ pub struct Project {
     return_feed_plan: return_feed_plan::ReturnFeedPlan,
     signal_graph: Option<Arc<signal_graph::SignalGraph>>,
     tempo_map: Option<hex_project::TempoMap>,
+    // Validated with the immutable ordinary map; native roots borrow their
+    // prepared Session inventory clock instead of retaining a second map.
+    tempo_max_micro_bpm: u32,
     midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
@@ -1851,6 +2060,11 @@ pub struct Project {
     shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
+    fn midi_volume_timing(&self) -> Option<prepared_tempo::CanonicalMidiTiming<'_>> {
+        self.tempo_map.as_ref().map(|map| {
+            prepared_tempo::CanonicalMidiTiming::for_validated(map, self.tempo_max_micro_bpm)
+        })
+    }
     pub(crate) fn new_main_device_runtime(
         &self,
     ) -> Result<hex_lattice::NativeRuntimeChain, hex_lattice_contract::DeviceContractError> {
@@ -1868,14 +2082,15 @@ impl Project {
     }
 
     /// Accounted Arrangement note-bank bytes, including each bank's entry
-    /// allocation and fixed bank/Arc owner overhead.
+    /// allocation and fixed bank/Arc owner overhead, plus separately retained
+    /// clip-volume rows/control metadata charged to the same prepared MIDI budget.
     pub fn midi_note_bank_storage_bytes(&self) -> Result<usize, Invalid> {
         self.tracks
             .iter()
             .filter_map(|track| track.instrument.as_ref())
             .try_fold(0_usize, |total, instrument| {
                 total
-                    .checked_add(instrument.bank.storage_bytes()?)
+                    .checked_add(instrument.prepared_storage_bytes()?)
                     .ok_or(Invalid("midi note bank byte count overflow"))
             })
     }
@@ -1952,6 +2167,7 @@ impl Project {
             return_feed_plan: return_feed_plan::ReturnFeedPlan::default(),
             signal_graph: None,
             tempo_map: None,
+            tempo_max_micro_bpm: 0,
             midi_routing: Vec::new(),
             loop_region,
             master_gain,
@@ -2103,6 +2319,12 @@ impl Project {
         &self.return_buses
     }
 
+    pub(crate) fn streamed_sources(&self) -> impl Iterator<Item = &StreamedSourceMetadata> {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter_map(|clip| clip.metadata.as_ref().and_then(|m| m.streamed.as_deref()))
+    }
     /// Whether any clip needs streamed pages to produce audio.
     pub fn contains_streamed_sources(&self) -> bool {
         self.has_streamed_sources
@@ -2533,6 +2755,10 @@ impl RendererRuntime {
         mut pages: Option<&mut P>,
         began: &mut bool,
     ) -> Result<(), Invalid> {
+        let volume_clock = project.midi_volume_timing();
+        let volume_timing = volume_clock
+            .as_ref()
+            .map(|clock| clock as &dyn prepared_tempo::MidiTempoBreaks);
         if let Some(message) = self.runtime_error {
             return Err(Invalid(message));
         }
@@ -2641,13 +2867,14 @@ impl RendererRuntime {
                                 target,
                                 None,
                                 page_provider,
-                            );
+                                volume_timing,
+                            )?;
                         }
                     } else {
                         if track.requires_ordered_processing() {
                             track.render_audio_range(start, end, target);
                         } else {
-                            track.render_unmuted_range(start, end, target, None);
+                            track.render_unmuted_range(start, end, target, None, volume_timing)?;
                         }
                     }
                     if track.requires_ordered_processing() {
@@ -2663,7 +2890,7 @@ impl RendererRuntime {
                             track.apply_ordered_prefix(target);
                         }
                         track.apply_instrument_input_gain(target);
-                        track.render_instrument_range(start, end, target, None);
+                        track.render_instrument_range(start, end, target, None, volume_timing)?;
                         track.apply_instrument_output_gain(target);
                         if let Some(chain) = chain.as_deref_mut() {
                             let effect_count = chain.len();
@@ -2710,9 +2937,10 @@ impl RendererRuntime {
                         output,
                         None,
                         page_provider,
-                    );
+                        volume_timing,
+                    )?;
                 } else {
-                    track.render_unmuted_range(block_start, next, output, None);
+                    track.render_unmuted_range(block_start, next, output, None, volume_timing)?;
                 }
             }
         }
@@ -2745,6 +2973,10 @@ impl RendererRuntime {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
+        let volume_clock = project.midi_volume_timing();
+        let volume_timing = volume_clock
+            .as_ref()
+            .map(|clock| clock as &dyn prepared_tempo::MidiTempoBreaks);
         for offset in (0..output.len()).step_by(256) {
             let count = (output.len() - offset).min(256);
             let start = block_start
@@ -2772,9 +3004,16 @@ impl RendererRuntime {
                             output_chunk,
                             None,
                             provider,
-                        );
+                            volume_timing,
+                        )?;
                     } else {
-                        track.render_unmuted_range(start, end, output_chunk, None);
+                        track.render_unmuted_range(
+                            start,
+                            end,
+                            output_chunk,
+                            None,
+                            volume_timing,
+                        )?;
                     }
                     continue;
                 }
@@ -2785,12 +3024,19 @@ impl RendererRuntime {
                     if ordered {
                         track.render_audio_range_with_pages(start, end, rendered, provider);
                     } else {
-                        track.render_unmuted_range_with_pages(start, end, rendered, None, provider);
+                        track.render_unmuted_range_with_pages(
+                            start,
+                            end,
+                            rendered,
+                            None,
+                            provider,
+                            volume_timing,
+                        )?;
                     }
                 } else if ordered {
                     track.render_audio_range(start, end, rendered);
                 } else {
-                    track.render_unmuted_range(start, end, rendered, None);
+                    track.render_unmuted_range(start, end, rendered, None, volume_timing)?;
                 }
                 if ordered {
                     if stateful {
@@ -2807,7 +3053,7 @@ impl RendererRuntime {
                         track.apply_ordered_prefix(rendered);
                     }
                     track.apply_instrument_input_gain(rendered);
-                    track.render_instrument_range(start, end, rendered, None);
+                    track.render_instrument_range(start, end, rendered, None, volume_timing)?;
                     track.apply_instrument_output_gain(rendered);
                     if stateful {
                         let chain = self
@@ -3020,52 +3266,32 @@ impl<'a> Renderer<'a> {
 }
 
 impl InstrumentTrack {
+    pub(crate) fn prepared_storage_bytes(&self) -> Result<usize, Invalid> {
+        let mut bytes = self.bank.storage_bytes()?;
+        if let Some(volumes) = &self.volumes {
+            bytes = bytes
+                .checked_add(volumes.allocated_row_bytes()?)
+                .and_then(|n| n.checked_add(volumes.retained_control_metadata_bytes()))
+                .ok_or(Invalid("prepared midi volume byte count overflow"))?;
+        }
+        Ok(bytes)
+    }
     fn for_each_intersecting(
         &self,
         start: u64,
         end: u64,
         minimum_start_exclusive: Option<u64>,
-        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan),
+        visit: impl FnMut(&midi_compile::CompiledNoteSpan),
     ) {
-        let Some(root) = self.root else { return };
-        let mut stack = [(0_usize, false); 64];
-        let mut size = 1;
-        stack[0] = (root, false);
-        while size > 0 {
-            size -= 1;
-            let (index, emit) = stack[size];
-            let node = &self.nodes[index];
-            if emit {
-                let span = &self.spans[node.span_index];
-                if span.start < end
-                    && span.end > start
-                    && minimum_start_exclusive.is_none_or(|floor| span.start > floor)
-                {
-                    visit(span);
-                }
-                continue;
-            }
-            // A median onset beyond the query end only rules out this node and
-            // its right subtree. Earlier left-subtree spans may still be active.
-            if node.max_end > start {
-                if let Some(right) = node.right {
-                    if node.span_start < end && self.nodes[right].max_end > start {
-                        stack[size] = (right, false);
-                        size += 1;
-                    }
-                }
-                if node.span_start < end && self.spans[node.span_index].end > start {
-                    stack[size] = (index, true);
-                    size += 1;
-                }
-                if let Some(left) = node.left {
-                    if self.nodes[left].max_end > start {
-                        stack[size] = (left, false);
-                        size += 1;
-                    }
-                }
-            }
-        }
+        midi_activity::visit_arrangement_spans(
+            &self.spans,
+            &self.nodes,
+            self.root,
+            start,
+            end,
+            minimum_start_exclusive,
+            visit,
+        );
     }
 }
 
@@ -3198,6 +3424,10 @@ pub mod computer_keyboard;
 pub mod live;
 pub mod live_expression;
 mod midi_activity;
+mod playback_observation;
+pub use playback_observation::{PreparedMidiActivity, PreparedPlaybackObservation};
+mod launch_quantization;
+mod midi_clip_volume;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
@@ -3221,6 +3451,7 @@ pub use midi_template::{
     MIDI_SPAN_BUFFER_CAPACITY, MIDI_TEMPLATE_MAX_EDGES, MIDI_TEMPLATE_MAX_ONSETS,
     MIDI_TEMPLATE_QUERY_FRAMES, MidiEdgeBuffer, MidiInstrumentRenderContext, MidiRenderSpan,
     MidiSpanBuffer, MidiTemplateError, PreparedMidiInstrumentTemplate, PreparedMidiSourceTemplate,
+    SessionMidiOrigin,
 };
 pub use playback::{
     PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
@@ -3229,7 +3460,7 @@ pub use playback::{
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
 pub use prepared_tempo::{
-    MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap,
+    MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap, SessionClockAnchor,
 };
 pub use session_inventory::{
     PreparedSessionAudioClip, PreparedSessionCell, PreparedSessionCellContent,
@@ -3239,11 +3470,15 @@ pub use session_inventory::{
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
-    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedStreamAction,
-    ProjectOutputTap, ProjectSignal, ProjectSignalObserver, SessionHandoffReport,
-    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
-    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedPrerollPages,
+    PreparedStreamAction, ProjectOutputTap, ProjectSignal, ProjectSignalObserver,
+    SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand,
+    SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };
 
 #[cfg(test)]
 mod main_chain_review_tests;
+
+#[cfg(test)]
+#[path = "../tests/support/routed_midi_fixture.rs"]
+mod routed_midi_fixture;

@@ -12,6 +12,8 @@ pub enum GainInterpolation {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GainPoint {
+    /// Explicit left limit at a splice; None uses this point's ordinary gain.
+    pub incoming_gain: Option<f32>,
     pub beat: BeatTime,
     pub gain: f32,
     pub outgoing: GainInterpolation,
@@ -22,7 +24,12 @@ pub fn validate_gain_envelope(points: &[GainPoint]) -> Result<(), Invalid> {
         return Err(Invalid("track gain envelope point limit reached"));
     }
     for (index, point) in points.iter().enumerate() {
-        if !point.gain.is_finite() || !(0.0..=2.0).contains(&point.gain) {
+        if !point.gain.is_finite()
+            || !(0.0..=2.0).contains(&point.gain)
+            || point
+                .incoming_gain
+                .is_some_and(|gain| !gain.is_finite() || !(0.0..=2.0).contains(&gain))
+        {
             return Err(Invalid("automation gain must be finite and within 0..2"));
         }
         if index > 0 && points[index - 1].beat >= point.beat {

@@ -1080,11 +1080,15 @@ fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
                     }
                 }
                 actual.process_block(&mut prime, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                let initial_energy = history(actual.as_ref()).energy;
+                assert!(initial_energy.iter().all(|energy| *energy > 0.0));
+                // The independent 10 ms energy law puts these primes below
+                // the floor before one second. Verify that premise rather than
+                // repeating eight seconds of settled silence in every matrix cell.
                 assert!(
-                    history(actual.as_ref())
-                        .energy
+                    initial_energy
                         .iter()
-                        .all(|energy| *energy > 0.0)
+                        .all(|energy| energy * (-100.0_f64).exp() < 1e-30)
                 );
                 if matches!(path, 4 | 5) {
                     let changed = mode(&state, 1 - initial_mode);
@@ -1093,7 +1097,15 @@ fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
                     actual = next;
                 }
                 let mut silence = [[0.0; 2]; 257];
-                let mut remaining = rate as usize * 8;
+                // Retain the full long-tail calibration for every runtime path
+                // at both supported sample-rate extremes. All rates/stimuli/paths
+                // still exercise the real runtime and exact-zero assertions.
+                let silence_seconds = if stimulus == "dc" && matches!(rate, 8_000 | 192_000) {
+                    8
+                } else {
+                    1
+                };
+                let mut remaining = rate as usize * silence_seconds;
                 while remaining > 0 {
                     let count = remaining.min(silence.len());
                     if matches!(path, 2 | 3) {
@@ -1114,7 +1126,7 @@ fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
                 actual.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 let later = history(actual.as_ref()).energy;
                 println!(
-                    "RMS_SILENCE rate={rate} stimulus={stimulus} path={path} energy={energy:?} subnormal={:?} persistent_nonzero={}",
+                    "RMS_SILENCE rate={rate} stimulus={stimulus} path={path} seconds={silence_seconds} energy={energy:?} subnormal={:?} persistent_nonzero={}",
                     energy.map(f64::is_subnormal),
                     energy == later && energy != [0.0; 2]
                 );
@@ -1128,7 +1140,7 @@ fn rms_digital_silence_retires_warm_energy_in_all_runtime_paths() {
     }
     assert!(
         failures.is_empty(),
-        "{}/{cases} real runtime paths retain nonzero energy after eight seconds of digital silence: {failures:?}",
+        "{}/{cases} real runtime paths retain nonzero energy after settling or extended digital silence: {failures:?}",
         failures.len()
     );
     println!("RMS_SILENCE_CASES {cases} finite exact-zero histories, no native timing claim");

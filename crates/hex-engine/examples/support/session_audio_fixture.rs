@@ -37,6 +37,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         let id = next_id;
         next_id += 1;
         assets.push(AssetSnapshot {
+            original_source: None,
             id,
             path: PathBuf::from(format!("memory/session-audio-{index:03}.wav")),
             source_sample_rate: RATE,
@@ -71,6 +72,8 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         };
         let arrangement_duration = 16_384;
         snapshot_tracks.push(TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -85,6 +88,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 edit: None,
@@ -105,6 +109,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             track: track_id,
             scene: SCENE_A,
             content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                active: true,
                 flavor: hex_project::ClipFlavor::default(),
                 gain: hex_project::ClipGain::UNITY,
                 id: scene_a_clip,
@@ -118,6 +123,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             track: track_id,
             scene: SCENE_B,
             content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                active: true,
                 flavor: hex_project::ClipFlavor::default(),
                 gain: hex_project::ClipGain::UNITY,
                 id: scene_b_clip,
@@ -134,6 +140,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),

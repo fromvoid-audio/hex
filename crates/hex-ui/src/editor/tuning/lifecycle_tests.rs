@@ -280,25 +280,28 @@ fn review_lifecycle_failed_tuning_terminal_refuses_save_as_and_deferred_export(
 fn review_final_empty_project_replacement_confirms_active_tuning_draft(cx: &mut TestAppContext) {
     for new_project in [false, true] {
         let scratch = scratch();
-        let (_, editor) = window(cx);
+        let (handle, editor) = window(cx);
         preview(&editor, cx);
-        editor.update(cx, |view, _| {
-            let mode = hex_session::DocumentAudioMode::Resident;
-            if new_project {
-                view.new_project(mode);
-                assert_eq!(view.pending_new_mode, Some(mode));
-            } else {
-                let path = scratch.0.join("other.sqlite");
-                view.choose_project(path.clone(), mode);
-                assert_eq!(view.pending_open_path.as_ref(), Some(&path));
-            }
-            assert!(
-                !view.opening_project,
-                "first request must obtain replacement confirmation"
-            );
-            assert!(!view.tuning.client.has_pending_terminal());
-            assert_eq!(view.tuning.client.snapshot().unwrap().tuning, tuning(333.0));
-        });
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                let mode = hex_session::DocumentAudioMode::Resident;
+                if new_project {
+                    view.new_project(mode, window, cx);
+                    assert!(view.project_open.busy());
+                } else {
+                    let path = scratch.0.join("other.sqlite");
+                    view.choose_project(path.clone(), mode);
+                    assert_eq!(view.pending_open_path.as_ref(), Some(&path));
+                }
+                assert!(
+                    !view.opening_project,
+                    "first request must obtain replacement confirmation"
+                );
+                assert!(!view.tuning.client.has_pending_terminal());
+                assert_eq!(view.tuning.client.snapshot().unwrap().tuning, tuning(333.0));
+            })
+        })
+        .unwrap();
     }
 }
 #[gpui::test]

@@ -1,25 +1,82 @@
-//! Canonical, control-side audio/MIDI arrangement and transactional editing.
-//! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+//! # Purpose
+//! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
+//! transactional history. Main-lane song sections are stable named/color/range
+//! objects, separate from DSP clips. Structural reorder permutes complete
+//! supported song content atomically through retained source/history contracts.
+//! Clip-local MIDI volume has independent immutable identity
+//! from note/source data, with bounded current-format and history fidelity.
+//! Arrangement clips sharing a hybrid TrackId have disjoint
+//! half-open occupancy. Newly placed/extended material replaces older occupancy;
+//! retained fragments preserve their processing/source domains. Group edits resolve
+//! all incoming members together. Current-format loading refuses overlap without
+//! normalizing or rewriting the source document. Source events and DSP tails have
+//! their own owners and are not top-level Arrangement occupancy.
+//!
+//! Track hierarchy is one bounded preorder inventory with typed kind/parent IDs.
+//! Group subtrees are indivisible for structural edits and clipboard membership;
+//! group rows own mixer/effect state, never clips, instruments or Console cells.
+//! Playback admission is owned by hex-engine and may refuse unsupported hierarchy.
+//!
+//! # Dependencies
+//! Uses hex-tuning and neutral hex-lattice-contract metadata/state; never DSP implementations.
+//!
+//! # Does not own
+//! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio
+//! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
+//! preparation must preserve project, IDs and history.
+mod arrangement_occupancy;
+mod arrangement_sections;
+pub use arrangement_sections::{
+    ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
+    SectionReorderPreview, SectionSplicePreview,
+};
+mod audio_event_fade;
 mod audio_events;
-pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
+pub use audio_event_fade::AudioEventFade;
+mod project_tempo;
+mod retained_audio;
+mod track_groups;
+mod track_order;
+pub use audio_events::{
+    AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS, RetainedAudioRoot,
+};
+pub use track_groups::{
+    MAX_GROUP_DEPTH, TrackDestination, TrackHierarchy, TrackHierarchyRow, TrackKind,
+};
+pub use track_order::TrackSelectionIds;
 mod audio_edit;
+mod clip_activation;
 mod clip_fade_trim;
 mod clip_name;
+mod clip_selection_edit;
+mod content_window;
+mod source_ranges;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, AudioViewMode,
+    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioContentView, AudioDomainClock,
+    AudioFadeProjection, AudioImportWarp, AudioProcessingProjection, AudioViewMode,
     AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
     AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
     MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
-    WarpSettings, audio_projection_beat, audio_projection_frame, default_audio_warp,
-    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+    WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
+    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
+pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
+pub use content_window::{ContentWindow, RepeatBoundaryPlan};
 mod appearance;
+mod bounce;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
+pub use bounce::{BounceFile, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES};
+pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
+mod track_clipboard;
+pub use track_clipboard::TrackClipboard;
 mod clip_clipboard;
+mod clip_consolidate;
 mod clip_copy;
+mod clip_duplicate;
 mod clip_group;
 mod clip_group_preview;
+mod clip_reverse;
 pub use clip_clipboard::ClipClipboard;
 pub use clip_group::{ClipGroupContent, ClipGroupPosition, ClipGroupPreview};
 pub use clip_group_preview::ClipGroupMovePreview;
@@ -40,6 +97,9 @@ pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod instrument_history;
+mod midi_history;
+pub use midi_history::MidiHistoryEffect;
 mod provenance;
 pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;
@@ -52,10 +112,19 @@ pub use gain_touch::{
 };
 mod midi;
 mod midi_batch;
+mod midi_note_overwrite;
 mod midi_playback;
+mod midi_source_range;
+mod midi_stretch;
+pub use midi_stretch::MidiClipStretch;
+mod midi_volume;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
     MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope,
+};
+pub use midi_volume::{
+    MAX_MIDI_VOLUME_POINTS, MAX_MIDI_VOLUME_POINTS_PER_CLIP, MidiClipGain, MidiClipVolume,
+    MidiClipVolumePoint,
 };
 mod playable_routing;
 mod return_feeds;
@@ -73,11 +142,19 @@ mod snapshot;
 mod split_tracks;
 pub use session::{
     Scene, SessionAudioClip, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
+    SessionSceneTarget,
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
-pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
+pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
+pub use midi::{
+    MidiClip, MidiClipTrim, MidiNote, MidiOneShotBoundary, MidiSource, MidiSourceIdentity,
+    TrackContent,
+};
+mod midi_loop_resize;
+pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};
+pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };
@@ -90,10 +167,11 @@ pub use snapshot::{
 };
 use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 pub use timebase::{
-    BeatPulse, BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterMapCopyCustody,
-    MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout, MeterPoint, MeterPosition,
-    Tempo, TempoMap, TempoMapCopyCustody, TempoMapCopyError, TempoMapCopyPhase,
-    TempoMapOwnedAllocationLayout, TempoPoint, query_beat_pulses,
+    BeatPulse, BeatTime, InputQuantization, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap,
+    MeterMapCopyCustody, MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout,
+    MeterPoint, MeterPosition, MusicalGridSegment, ResolvedInputGrid, Tempo, TempoMap,
+    TempoMapCopyCustody, TempoMapCopyError, TempoMapCopyPhase, TempoMapOwnedAllocationLayout,
+    TempoPoint, query_beat_pulses,
 };
 
 pub const MAX_TRACKS: usize = 256;
@@ -123,6 +201,7 @@ identifier!(SceneId);
 identifier!(DeviceId);
 identifier!(ReturnId);
 identifier!(RouteId);
+identifier!(SectionId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,9 +241,37 @@ impl fmt::Display for Invalid {
 }
 impl std::error::Error for Invalid {}
 
+/// Expected normalized original PCM content. Presence marks a device-original
+/// asset, never an ordinary clip derivative. Values grant no native custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalSourceFacts {
+    law_version: u32,
+    content_digest: [u8; 32],
+}
+impl OriginalSourceFacts {
+    /// Domain/rate/frame/f32-bit law owned by the native resource catalog.
+    pub const LAW_VERSION: u32 = 1;
+    pub fn new(law_version: u32, content_digest: [u8; 32]) -> Result<Self, Invalid> {
+        if law_version != Self::LAW_VERSION {
+            return Err(Invalid("unsupported original source content law"));
+        }
+        Ok(Self {
+            law_version,
+            content_digest,
+        })
+    }
+    pub fn law_version(self) -> u32 {
+        self.law_version
+    }
+    pub fn content_digest(self) -> [u8; 32] {
+        self.content_digest
+    }
+}
+
 /// Location and validated metadata. Paths/names retain the user's casing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
+    pub(crate) original_source: Option<OriginalSourceFacts>,
     pub(crate) id: AssetId,
     pub(crate) path: PathBuf,
     pub(crate) source_sample_rate: u32,
@@ -173,6 +280,9 @@ pub struct Asset {
     pub(crate) conversion_version: u32,
 }
 impl Asset {
+    pub fn original_source(&self) -> Option<OriginalSourceFacts> {
+        self.original_source
+    }
     pub fn id(&self) -> AssetId {
         self.id
     }
@@ -203,12 +313,14 @@ impl Asset {
 mod clip_fade;
 pub use clip_fade::ClipFade;
 
-/// Edge used by the canonical absolute-frame clip trim command.
+/// Edge used by clip trimming and structural section resizing.
+/// Clip trim uses an absolute frame. Section resize changes the prefix/suffix
+/// length while keeping its start fixed and rippling later song content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrimEdge {
-    /// Inclusive timeline start frame.
+    /// Leading edge or section prefix.
     Left,
-    /// Exclusive timeline end frame.
+    /// Trailing edge or section suffix.
     Right,
 }
 /// Saved audio-clip gain in integer millidecibels, before track processing.
@@ -241,7 +353,10 @@ impl ClipGain {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
-    pub(crate) name: String,
+    pub(crate) active: bool,
+    // Immutable authored label shared by private candidates/history. Rename
+    // replaces this value; public snapshots retain their owned String contract.
+    pub(crate) name: Arc<str>,
     pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
     pub(crate) asset: AssetId,
@@ -256,6 +371,10 @@ pub struct Clip {
     pub(crate) edit: Option<Arc<AudioClipEdit>>,
 }
 impl Clip {
+    /// Authored clip activation, independent of track mute or selection.
+    pub fn active(&self) -> bool {
+        self.active
+    }
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -351,6 +470,8 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) kind: TrackKind,
+    pub(crate) parent_group: Option<TrackId>,
     pub(crate) color: crate::ElementColor,
     pub(crate) gain_lane: GainLane,
     pub(crate) id: TrackId,
@@ -368,6 +489,15 @@ pub struct Track {
     pub(crate) sends: Vec<SendLevel>,
 }
 impl Track {
+    pub fn kind(&self) -> TrackKind {
+        self.kind
+    }
+    pub fn is_group(&self) -> bool {
+        self.kind == TrackKind::Group
+    }
+    pub fn parent_group(&self) -> Option<TrackId> {
+        self.parent_group
+    }
     pub fn color(&self) -> ElementColor {
         self.color
     }
@@ -467,6 +597,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) arrangement_sections: Vec<ArrangementSection>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
@@ -490,6 +621,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            arrangement_sections: Vec::new(),
             tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
@@ -517,6 +649,7 @@ impl Project {
     /// Used by prepared tuning publications; it does not authorize playback itself.
     pub fn same_except_tuning(&self, other: &Self) -> bool {
         let Self {
+            arrangement_sections,
             tuning: _,
             routing,
             audio_feeds,
@@ -534,7 +667,8 @@ impl Project {
             tempo_map,
             meter_map,
         } = self;
-        routing == &other.routing
+        arrangement_sections == &other.arrangement_sections
+            && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes
             && import_provenance == &other.import_provenance
@@ -653,7 +787,8 @@ impl Project {
     pub fn master_gain(&self) -> f32 {
         self.master_gain
     }
-    /// Canonical piecewise-constant tempo map. Audio clips remain frame-anchored.
+    /// Canonical piecewise-constant tempo map. Global tempo edits preserve
+    /// musical onsets; each audio clip retains its own source-processing clock.
     pub fn tempo_map(&self) -> &TempoMap {
         &self.tempo_map
     }

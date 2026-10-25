@@ -4,8 +4,14 @@ use super::*;
 use hex_engine::StreamPageExtent;
 mod actions;
 mod demand;
+mod ordinary;
 mod prewarm;
+mod view;
 pub(crate) use actions::StageAction;
+pub(in crate::candidate_custody) use ordinary::OrdinaryReservation;
+pub(crate) use ordinary::OrdinaryStreams;
+pub(crate) use view::ActiveView;
+use view::StateView;
 #[derive(Clone, Copy)]
 struct ScheduledAction {
     ticket: u64,
@@ -30,7 +36,7 @@ pub(super) struct Workspace {
     pub(super) stamps: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) active: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) role: Option<hex_stream::ProtectionRole>,
-    pub(super) predecessor: Option<AudioCandidateIdentity>,
+    pub(super) predecessor: Option<hex_stream::ReadinessArtifact>,
     pending_action: Option<PendingAction>,
     scheduled: Option<ScheduledAction>,
     prewarm_stamps: [Option<hex_stream::ReadinessStamp>; 2],
@@ -89,7 +95,7 @@ impl Custody {
         &self,
         limit: usize,
     ) -> Result<(), &'static str> {
-        let (count, max_retained, max_peak, current) = {
+        let (count, max_retained, max_peak, current, retained_base, peak_base) = {
             let bank = lock(&self.bank);
             let reservation = bank
                 .publication
@@ -112,6 +118,8 @@ impl Custody {
                 reservation.max_retained_data_bytes,
                 reservation.max_construction_peak_data_bytes,
                 bank.metadata_bytes,
+                bank.accounted_base(false)?,
+                bank.accounted_base(true)?,
             )
         };
         let requested = count
@@ -122,10 +130,10 @@ impl Custody {
         let temporary = count
             .checked_mul(std::mem::size_of::<Workspace>())
             .ok_or("stream demand construction overflow")?;
-        if current
+        if retained_base
             .checked_add(requested)
             .is_none_or(|n| n > max_retained)
-            || current
+            || peak_base
                 .checked_add(requested)
                 .and_then(|n| n.checked_add(temporary))
                 .is_none_or(|n| n > max_peak)
@@ -152,6 +160,8 @@ impl Custody {
         let mut bank = lock(&self.bank);
         if bank.closing
             || bank.metadata_bytes != current
+            || bank.accounted_base(false)? != retained_base
+            || bank.accounted_base(true)? != peak_base
             || bank.publication.stream_extents.is_some()
             || bank
                 .publication
@@ -165,7 +175,14 @@ impl Custody {
         let retained = current
             .checked_add(actual)
             .ok_or("stream demand storage overflow")?;
-        if retained > max_retained || retained.checked_add(overlap).is_none_or(|n| n > max_peak) {
+        if retained_base
+            .checked_add(actual)
+            .is_none_or(|n| n > max_retained)
+            || peak_base
+                .checked_add(actual)
+                .and_then(|n| n.checked_add(overlap))
+                .is_none_or(|n| n > max_peak)
+        {
             return Err("stream demand actual DATA reservation exceeded");
         }
         // No allocation or destructor between validated vacancies and moves.

@@ -14,7 +14,7 @@ pub(crate) fn rename(project: &mut Project, id: ClipId, name: String) -> Result<
     crate::edit::name_valid(&name)?;
     for track in &mut project.tracks {
         if let Some(clip) = track.content.audio_clips.iter_mut().find(|c| c.id == id) {
-            clip.name = name;
+            clip.name = name.into();
             return Ok(Created::None);
         }
         if let Some(clip) = track.content.midi_clips.iter_mut().find(|c| c.id == id) {

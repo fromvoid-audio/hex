@@ -471,44 +471,26 @@ pub(super) fn graph_model(
         .collect();
     let target_identity =
         hex_engine::PostNodeIdentity::new(owner, device.value(), device_view.type_id);
-    let analyzer = view
-        .device_panel
-        .spectrum_result
-        .as_ref()
-        .filter(|result| {
-            view.audio
-                .as_ref()
-                .and_then(|audio| audio.control.spectrum_desired())
-                .is_some_and(|target| {
-                    target.identity == target_identity
-                        && target.token == result.output.stamp.target
-                        && target.project_generation == result.output.stamp.generation
-                        && target.sample_rate_hz == result.output.stamp.sample_rate_hz
-                        && result.output.stamp.applied_revision >= target.activation_floor
-                })
-        })
-        .map(|result| {
-            result
-                .output
-                .frame
-                .bins_dbfs
-                .iter()
-                .enumerate()
-                .map(|(index, dbfs)| {
-                    let (low, high) = hex_audio::spectrum::band_bounds_hz(
-                        result.output.frame.sample_rate_hz,
-                        index,
-                    )
-                    .unwrap_or((MIN_HZ, MAX_HZ));
-                    let center = (low * high).sqrt();
-                    let upper = MAX_HZ.min(result.output.frame.sample_rate_hz as f32 * 0.49);
-                    [
-                        log_position(center, MIN_HZ, upper),
-                        super::super::spectrum_display::level(*dbfs),
-                    ]
-                })
-                .collect()
-        });
+    let analyzer = super::super::eq_panel::spectrum_result(view, target_identity).map(|result| {
+        result
+            .output
+            .frame
+            .bins_dbfs
+            .iter()
+            .enumerate()
+            .map(|(index, dbfs)| {
+                let (low, high) =
+                    hex_audio::spectrum::band_bounds_hz(result.output.frame.sample_rate_hz, index)
+                        .unwrap_or((MIN_HZ, MAX_HZ));
+                let center = (low * high).sqrt();
+                let upper = MAX_HZ.min(result.output.frame.sample_rate_hz as f32 * 0.49);
+                [
+                    log_position(center, MIN_HZ, upper),
+                    super::super::spectrum_display::level(*dbfs),
+                ]
+            })
+            .collect()
+    });
     Some(ResponseGraphModel {
         primary,
         secondary,

@@ -27,7 +27,8 @@ pub use storage::{
 mod readiness;
 pub use readiness::{
     ConstructorPageLoan, PreparedRolePromotion, ProtectedStreamPages, ProtectionRole,
-    ReadinessProgress, ReadinessRefusal, ReadinessStamp, StreamReadinessReservation,
+    ReadinessArtifact, ReadinessProgress, ReadinessRefusal, ReadinessStamp,
+    StreamReadinessReservation,
 };
 mod native_custody;
 pub use native_custody::{
@@ -532,6 +533,14 @@ impl StreamRuntime {
         if let Some(control) = self.control.as_ref() {
             control.wake_worker();
         }
+    }
+
+    /// Actual simultaneous cache capacity. The worker retains a turnover page;
+    /// this scalar is only a bound, never source readiness or native authority.
+    pub fn page_capacity(&self) -> usize {
+        self.pages
+            .as_ref()
+            .map_or(0, |pages| pages.endpoint.cache_capacity())
     }
 
     pub fn pin_pages(&mut self, keys: &[crate::PageKey]) -> bool {
