@@ -154,6 +154,30 @@ fn audio_name_candidates_preserve_source_history_and_owned_snapshots() {
     assert_eq!(original.snapshot(), original_snapshot);
 }
 #[test]
+fn retained_root_labels_are_bounded_and_independent_of_the_project() {
+    let f = fixture();
+    let project = f.editor.project();
+    let before = project.snapshot();
+    let tempo = std::sync::Arc::new(project.tempo_map().clone());
+    let mut snapshot = project.clip(f.audio).unwrap().retained_snapshot();
+    snapshot.name = "Ā".repeat(MAX_NAME_BYTES / "Ā".len());
+    let root = project
+        .restore_retained_audio_root(1, snapshot.clone(), tempo.clone())
+        .unwrap();
+    assert_eq!(root.clip.retained_snapshot(), snapshot);
+    for name in [String::new(), "\n".into(), "x".repeat(MAX_NAME_BYTES + 1)] {
+        let mut invalid = snapshot.clone();
+        invalid.name = name;
+        assert!(
+            project
+                .restore_retained_audio_root(1, invalid, tempo.clone())
+                .is_err()
+        );
+    }
+    assert_eq!(project.snapshot(), before);
+    assert_eq!(root.clip.retained_snapshot(), snapshot);
+}
+#[test]
 fn mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step() {
     for midi_anchor in [false, true] {
         let mut f = fixture();

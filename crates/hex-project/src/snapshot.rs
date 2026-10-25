@@ -321,7 +321,7 @@ impl Project {
                             .iter()
                             .map(|clip| ClipSnapshot {
                                 active: clip.active,
-                                name: clip.name.to_string(),
+                                name: clip.name().to_owned(),
                                 flavor: clip.flavor,
                                 id: clip.id.0,
                                 asset: clip.asset.0,
