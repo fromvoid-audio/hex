@@ -682,6 +682,7 @@ pub(crate) struct Frame {
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
+    pointer_hover_views: Vec<EntityId>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: DebugBounds,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -741,6 +742,7 @@ pub(crate) struct PaintIndex {
     mouse_listeners_index: usize,
     input_handlers_index: usize,
     cursor_styles_index: usize,
+    pointer_hover_views_index: usize,
     accessed_element_states_index: usize,
     tab_handle_index: usize,
     line_layout_index: LineLayoutIndex,
@@ -765,6 +767,7 @@ impl Frame {
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
             cursor_styles: Vec::new(),
+            pointer_hover_views: Vec::new(),
 
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: DebugBounds::default(),
@@ -788,6 +791,7 @@ impl Frame {
         self.input_handlers.clear();
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
+        self.pointer_hover_views.clear();
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -2441,6 +2445,7 @@ impl Window {
             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
             input_handlers_index: self.next_frame.input_handlers.len(),
             cursor_styles_index: self.next_frame.cursor_styles.len(),
+            pointer_hover_views_index: self.next_frame.pointer_hover_views.len(),
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
             tab_handle_index: self.next_frame.tab_stops.paint_index(),
             line_layout_index: self.text_system.layout_index(),
@@ -2454,6 +2459,12 @@ impl Window {
         self.next_frame.debug_bounds.replay(
             &self.rendered_frame.debug_bounds.insertion_history
                 [range.start.debug_bounds_index..range.end.debug_bounds_index],
+        );
+        self.next_frame.pointer_hover_views.extend(
+            self.rendered_frame.pointer_hover_views
+                [range.start.pointer_hover_views_index..range.end.pointer_hover_views_index]
+                .iter()
+                .copied(),
         );
         self.next_frame.cursor_styles.extend(
             self.rendered_frame.cursor_styles
@@ -3754,6 +3765,24 @@ impl Window {
             .unwrap_or_else(|| action.name().to_string())
     }
 
+    /// Record a paint dependency on pressed-pointer hover state. Entries retain
+    /// their insertion ranges through cached/deferred paint replay.
+    pub(crate) fn observe_pointer_hover(&mut self) {
+        self.invalidator.debug_assert_paint();
+        self.next_frame.pointer_hover_views.push(self.current_view());
+    }
+
+    fn invalidate_pointer_hover(&self) {
+        // This is window-local style state, not a model/entity mutation. Use
+        // existing view-path invalidation without notifying model observers or
+        // forcing unrelated cached clip scenes to render again.
+        let mut invalidation = self.invalidator.inner.borrow_mut();
+        invalidation
+            .dirty_views
+            .extend(self.rendered_frame.pointer_hover_views.iter().copied());
+        invalidation.dirty = true;
+    }
+
     /// Whether a pressed pointer has moved beyond GPUI's drag threshold.
     ///
     /// This is window input state, independent of event propagation, view caches,
@@ -3803,8 +3832,9 @@ impl Window {
         }
         if was_dragging != self.pointer_dragging {
             // Capture listeners may consume the movement before any hover
-            // notifier sees it. Refresh the whole scene, including cached views.
-            self.refresh();
+            // notifier sees it. Invalidate only the dependent views, including
+            // those represented by cached paint records.
+            self.invalidate_pointer_hover();
         }
 
         let event = match event {
@@ -3896,7 +3926,7 @@ impl Window {
             self.pointer_press = None;
             self.pointer_dragging = false;
             if was_dragging {
-                self.refresh();
+                self.invalidate_pointer_hover();
             }
         }
 

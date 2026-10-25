@@ -1815,6 +1815,13 @@ impl Interactivity {
         cx: &mut App,
         f: impl FnOnce(&Style, &mut Window, &mut App),
     ) {
+        if self.hover_style.is_some()
+            || self.group_hover_style.is_some()
+            || self.hover_listener.is_some()
+            || self.tooltip_builder.is_some()
+        {
+            window.observe_pointer_hover();
+        }
         self.hovered = hitbox.map(|hitbox| hitbox.is_hovered(window));
         window.with_optional_element_state::<InteractiveElementState, _>(
             global_id,

@@ -52,9 +52,11 @@ impl Render for Fixture {
 fn consumed_drag_move_clears_hover_across_completed_repaints(cx: &mut TestAppContext) {
     let hovered = std::rc::Rc::new(std::cell::Cell::new(false));
     let tooltip_builds = std::rc::Rc::new(std::cell::Cell::new(0));
-    let handle = cx.add_window(|_, _| Fixture {
-        hovered: hovered.clone(),
-        tooltip_builds: tooltip_builds.clone(),
+    let handle = cx.add_window(|_, cx| {
+        CachedHoverRoot(cx.new(|_| Fixture {
+            hovered: hovered.clone(),
+            tooltip_builds: tooltip_builds.clone(),
+        }))
     });
     let mut visual = VisualTestContext::from_window(*handle, cx);
     visual.simulate_resize(size(px(320.), px(120.)));
@@ -93,7 +95,10 @@ fn consumed_drag_move_clears_hover_across_completed_repaints(cx: &mut TestAppCon
         0,
         "held drag must not build a pending tooltip"
     );
-    visual.update(|window, _| window.refresh());
+    visual.update(|window, cx| {
+        let root = window.root::<CachedHoverRoot>().unwrap().unwrap();
+        root.update(cx, |_, cx| cx.notify());
+    });
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_background("hover-target"),
@@ -304,4 +309,14 @@ fn ordinary_pointer_click_preserves_unrelated_cached_content(cx: &mut TestAppCon
     });
     visual.run_until_parked();
     assert_eq!(renders.get(), before);
+}
+
+struct CachedHoverRoot(gpui::Entity<Fixture>);
+impl Render for CachedHoverRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let mut layout = div().size_full();
+        div()
+            .size_full()
+            .child(gpui::AnyView::from(self.0.clone()).cached(layout.style().clone()))
+    }
 }
