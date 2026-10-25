@@ -721,9 +721,10 @@ fn shared_receiver_bounce_case(whole_track: bool) {
     if whole_track {
         let retained = session.project().native_source(source_id).unwrap();
         assert_eq!(retained.receiver(), None);
-        assert_eq!(
-            retained.devices(),
-            original.native_source(source_id).unwrap().devices()
+        assert!(
+            retained
+                .devices()
+                .eq(original.native_source(source_id).unwrap().devices())
         );
         assert_eq!(
             session.project().track(contributor),
