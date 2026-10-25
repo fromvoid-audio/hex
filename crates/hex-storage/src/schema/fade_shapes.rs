@@ -81,7 +81,7 @@ fn apply_shapes(project: Project, shapes: Vec<FadeShape>) -> Result<Project, Sto
             "fade shape references a non-arrangement audio clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 impl<'a> DocumentV29<'a> {
     pub(super) fn for_current_envelope(project: &'a Project) -> Result<Self, StorageError> {

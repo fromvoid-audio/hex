@@ -29,7 +29,12 @@ fn inventory_retains_identity_and_edits_across_global_history_and_track_deletion
             .collect::<Vec<_>>(),
         [first, second]
     );
-    let device = editor.project().native_source(first).unwrap().devices()[0].id();
+    let device = editor
+        .project()
+        .native_source(first)
+        .unwrap()
+        .instrument()
+        .id();
     let state = default_instrument_state()
         .unwrap()
         .with_output_gain_millidb(-6000)
@@ -109,7 +114,12 @@ fn source_media_including_inactive_comparison_is_kept_until_explicit_removal() {
         panic!("asset")
     };
     let source = add(&mut editor, "resource");
-    let device = editor.project().native_source(source).unwrap().devices()[0].id();
+    let device = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
     let state = default_instrument_state()
         .unwrap()
         .with_asset_references(vec![DeviceAssetReference {
@@ -220,7 +230,7 @@ fn retained_devices_share_the_existing_project_device_budget() {
     snapshot.native_sources.clear();
     snapshot.tracks.clear();
     let mut next = editor.project().next_identity();
-    for _ in 0..MAX_NATIVE_SOURCES {
+    for _ in 0..crate::MAX_TRACKS {
         let mut s = source_template.clone();
         s.id = next;
         next += 1;

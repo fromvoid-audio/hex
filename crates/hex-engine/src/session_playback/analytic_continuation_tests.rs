@@ -242,7 +242,7 @@ fn fixture(gain: u8, law: u8, refusal: u8, duration: u64) -> Project {
     let mut snapshot = project(1.0, 0, duration).snapshot();
     snapshot.tracks[0].instrument.as_mut().unwrap().state =
         NativeDeviceState::new(TYPE, 1, vec![gain, law, refusal]).unwrap();
-    Project::from_snapshot(snapshot).unwrap()
+    Project::from_legacy_snapshot(snapshot).unwrap()
 }
 
 fn edited(project: &Project, gain: u8, law: u8, refusal: u8) -> Project {
@@ -552,7 +552,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
             velocity: 100,
         });
         on.next_id += 2;
-        let on = Project::from_snapshot(on).unwrap();
+        let on = Project::from_legacy_snapshot(on).unwrap();
         let off = edited(&on, 0, 0, 0);
         let mut old = playing(&on, session);
         render_checkpoint_prefix(&mut old, 96);
@@ -579,7 +579,10 @@ fn deleted_owner_mid_ramp_retains_target_context_until_original_release_expires(
         let mut removed = off.snapshot();
         removed.tracks.clear();
         removed.session.cells.clear();
-        let mut deleted = handoff(&mut disabled, &Project::from_snapshot(removed).unwrap());
+        let mut deleted = handoff(
+            &mut disabled,
+            &Project::from_legacy_snapshot(removed).unwrap(),
+        );
         assert_eq!(deleted.release_voice_count(), 1);
         assert!(!deleted.releases[0].voice.sampler().is_current());
         assert!(deleted.retained_contexts.iter().any(Option::is_some));
@@ -609,7 +612,7 @@ fn analytic_polyphony_above_mutable_limit_and_capture_single_sample_order_are_pr
         }
     }
     on.next_id += 24;
-    let on = Project::from_snapshot(on).unwrap();
+    let on = Project::from_legacy_snapshot(on).unwrap();
     let off = edited(&on, 0, 0, 0);
     let mut old = playing(&on, false);
     render_checkpoint_prefix(&mut old, 96);

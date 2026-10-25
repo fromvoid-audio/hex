@@ -331,8 +331,22 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
                 .as_ref()
                 .unwrap()
                 .project
-                .device(device)
-                .is_none()
+                .track(track)
+                .unwrap()
+                .ordered_device_chain()
+                .all(|node| match node {
+                    hex_project::TrackDeviceRef::Instrument(item)
+                    | hex_project::TrackDeviceRef::Effect(item) => item.id() != device,
+                })
+        });
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(project.device(device).is_some(), device == instrument);
+            assert_eq!(
+                project.native_sources(),
+                before.native_sources(),
+                "removing a card must retain its source"
+            );
         });
         editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
         pump_until(&editor, cx, |view| {

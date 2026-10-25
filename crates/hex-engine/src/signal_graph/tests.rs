@@ -509,7 +509,11 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
         }],
     };
     routed_midi_fixture::separate_midi(&mut snapshot, 0);
-    f.editor = Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    f.editor = Editor::new(
+        hex_project::Project::from_legacy_snapshot(snapshot).unwrap(),
+        8,
+    )
+    .unwrap();
     let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
     let effects = NativeDeviceRegistry::new(&effects).unwrap();
     let instruments: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&InstrumentDefinition];
