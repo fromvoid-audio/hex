@@ -160,6 +160,9 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn is_source_owner(&self) -> bool {
         self.live.is_some()
     }
+    pub(crate) fn source_has_rendered(&self) -> bool {
+        self.live.as_ref().is_some_and(|ledger| ledger.age != 0)
+    }
     pub(crate) fn has_committed_live_occurrences(&self) -> bool {
         self.live
             .as_ref()

@@ -703,7 +703,15 @@ impl SessionPlayback {
                 }
             }
         }
-        let source_handoff = SharedSourceHandoff::prepare(self, previous, timing_changed)?;
+        let source_handoff = SharedSourceHandoff::prepare(
+            &self.revision,
+            &self.mutable_instruments,
+            &self.routes,
+            self.midi_admission.as_ref(),
+            previous,
+            timing_changed,
+            &mut self.spans,
+        )?;
         let mut mutable_continuity_new_for_old = source_handoff.new_for_old;
         let mut mutable_retarget_new_for_old = source_handoff.retarget_for_old;
         if !timing_changed {
@@ -1369,6 +1377,13 @@ impl SessionPlayback {
                     candidate_owner,
                     RouteOwner::Arrangement | RouteOwner::Session { .. }
                 );
+            let completed_source = source_carried
+                && shared_sources::completed_unchanged_source(
+                    previous,
+                    &self.revision,
+                    new_route.id,
+                    candidate_owner,
+                );
             let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
                 crate::session_inventory::EffectiveSessionMidi::new(
@@ -1419,6 +1434,7 @@ impl SessionPlayback {
                     && !carried
                     && shortening.is_none()
                     && !fresh_mutable_install[new_index]
+                    && !completed_source
                     && !(newly_authored_notes[new_index]
                         && previous.revision.newly_authored_mutable_note(
                             &self.revision,
@@ -2130,6 +2146,13 @@ impl SessionPlayback {
                 .get(new_index)
                 .copied()
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let completed_source = source_handoff.handles_new(receiver)
+                && shared_sources::completed_unchanged_source(
+                    previous,
+                    &self.revision,
+                    route.id,
+                    route.owner,
+                );
             let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
                 crate::session_inventory::EffectiveSessionMidi::new(
@@ -2188,7 +2211,7 @@ impl SessionPlayback {
                         candidate.signature.key(),
                         matches!(route.owner, RouteOwner::Session { .. }),
                     );
-                let fresh_deadline = ((fresh_install || new_note)
+                let fresh_deadline = ((fresh_install || new_note || completed_source)
                     && candidate.source_frame < source_frame)
                     .then_some(candidate.end_frame);
                 let Some(old_deadline) = proof_deadline

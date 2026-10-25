@@ -783,9 +783,9 @@ impl SessionPlayback {
         // Validate every shared restart identity before cutting any speculative
         // gate. Selected MIDI roots may own several independent destinations.
         for (index, route) in self.route_scratch.iter().enumerate() {
-            if !route
+            if route
                 .pending
-                .is_some_and(|pending| pending.frame <= performance_frame)
+                .is_none_or(|pending| pending.frame > performance_frame)
             {
                 continue;
             }

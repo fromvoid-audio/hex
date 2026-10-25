@@ -78,6 +78,12 @@ impl ComputerKeyboardRuntime {
         Ok(())
     }
 
+    pub(crate) fn has_mutable_source_input_voices(&self) -> bool {
+        self.source_input
+            .as_ref()
+            .is_some_and(|source| source.mutable)
+            && self.primary.iter().any(Option::is_some)
+    }
     pub(crate) fn has_active_analytic_source_voices(&self) -> bool {
         self.source_input
             .as_ref()

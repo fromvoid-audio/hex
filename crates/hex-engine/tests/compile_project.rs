@@ -136,7 +136,7 @@ fn converted_source_compiles_against_project_rate_playback_metadata() {
 }
 
 #[test]
-fn solo_compilation_keeps_mix_order_mute_precedence_and_block_partition() {
+fn solo_compilation_preserves_mix_order_and_overrides_mute_across_partitions() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let mut assets = Vec::new();
     let mut tracks = Vec::new();
@@ -199,7 +199,7 @@ fn solo_compilation_keeps_mix_order_mute_precedence_and_block_partition() {
         })
         .unwrap();
     let muted_solo = render(editor.project(), &[8]);
-    assert_eq!(muted_solo, [[2.0, -2.0]; 8]);
+    assert_eq!(muted_solo, [[3.0, -3.0]; 8]);
 
     editor
         .execute(Command::Mute {
@@ -207,6 +207,23 @@ fn solo_compilation_keeps_mix_order_mute_precedence_and_block_partition() {
             muted: true,
         })
         .unwrap();
-    let silent_solos = render(editor.project(), &[8]);
-    assert_eq!(silent_solos, [[0.0; 2]; 8]);
+    let muted_solos = render(editor.project(), &[8]);
+    assert_eq!(muted_solos, [[3.0, -3.0]; 8]);
+    assert_eq!(muted_solos, render(editor.project(), &[1, 3, 4]));
+    editor
+        .execute(Command::ToggleSolo {
+            track: tracks[0],
+            exclusive: false,
+        })
+        .unwrap();
+    assert_eq!(render(editor.project(), &[8]), [[2.0, -2.0]; 8]);
+    editor
+        .execute(Command::ToggleSolo {
+            track: tracks[1],
+            exclusive: false,
+        })
+        .unwrap();
+    assert_eq!(render(editor.project(), &[8]), [[3.0, -3.0]; 8]);
+    assert!(editor.project().track(tracks[0]).unwrap().muted());
+    assert!(editor.project().track(tracks[1]).unwrap().muted());
 }

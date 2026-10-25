@@ -94,7 +94,7 @@ pub(crate) fn isolated(
                 .any(|clip| selected_midi.contains(&clip.value()))
         {
             return Err(
-                "cannot bounce MIDI from a shared-source contributor; bounce its receiver instead"
+                "cannot bounce midi from a shared-source contributor; bounce its receiver instead"
                     .into(),
             );
         }

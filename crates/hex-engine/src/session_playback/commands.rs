@@ -924,7 +924,7 @@ impl SessionPlayback {
                                 self.release_capacity,
                                 &mut next_order,
                                 ReleaseEntry {
-                                    source_origin: source_origin,
+                                    source_origin,
                                     monitor_offset: 0,
                                     location: match ReleaseLocation::new(audio_index, None) {
                                         Ok(location) => location,
@@ -1069,7 +1069,7 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut self.release_order_scratch,
                             ReleaseEntry {
-                                source_origin: source_origin,
+                                source_origin,
                                 monitor_offset: 0,
                                 location: ReleaseLocation::new(audio_index, None)?,
                                 track_id: route.id,

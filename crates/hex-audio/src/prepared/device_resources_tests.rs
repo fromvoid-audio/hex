@@ -243,16 +243,58 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
         assert_eq!(control.reclaim(), 1);
         assert_eq!(control.outstanding_device_resource_leases(), 1);
     }
+    let b_state = hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+        1024, b, 0.05,
+    )
+    .unwrap();
     editor
         .execute(Command::ReplaceDeviceState {
             device,
-            state:
-                hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
-                    1024, b, 0.05,
-                )
-                .unwrap(),
+            state: b_state.clone(),
         })
         .unwrap();
+    // A same-device resource change cannot clone an active retained source.
+    // Refusal returns the unused B lease while A's original PCM keeps playing.
+    let active_revision = control.status.applied_revision.load(Acquire);
+    let unsupported = control
+        .publish_with_policy_and_context_generation(
+            compile(&editor, &sources),
+            PublicationPolicy::InheritRuntime,
+            7,
+        )
+        .unwrap();
+    assert!(
+        block(&mut callback)
+            .iter()
+            .flatten()
+            .all(|sample| (*sample - 0.25).abs() < 1e-6)
+    );
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        active_revision
+    );
+    assert_eq!(control.status.rejected_revision().unwrap().0, unsupported);
+    assert_eq!(control.reclaim(), 1);
+    assert_eq!(control.outstanding_device_resource_leases(), 1);
+    // Explicit replacement has a new device/source identity and may retain A's
+    // finite release alongside B's fresh, untriggered current source.
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: b_state,
+        })
+        .unwrap();
+    assert_ne!(
+        editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id(),
+        device
+    );
     let b_graph = compile(&editor, &sources);
     let b_revision = control
         .publish_with_policy_and_context_generation(b_graph, PublicationPolicy::InheritRuntime, 7)
@@ -413,40 +455,43 @@ fn ordinary_sampler_keyboard_rebind_honors_mute_and_leaves_other_audio_playing()
     )]);
     let keys = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
     keys.set_key(0, Some((60, 127, 1))).unwrap();
-    let graph = |project: &Project, attach: bool| {
-        let cancel = AtomicBool::new(false);
-        let resources =
-            PreparedDeviceResources::prepare_on_control(&sources, project, 1_000_000, &cancel)
-                .unwrap();
-        let revision = Arc::new(
-            PreparedRevision::prepare_with_device_resources(
-                project,
-                &media,
-                Arc::new(SineTable::new()),
-                None,
-                &hex_engine::audio_transform::AudioTransformPreparation::default(),
-                &resources,
-                100_000,
-                &cancel,
-            )
-            .unwrap(),
-        );
-        let mut playback =
-            Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
-        if attach {
+    let graph =
+        |project: &Project,
+         attach: bool,
+         input: &Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>| {
+            let cancel = AtomicBool::new(false);
+            let resources =
+                PreparedDeviceResources::prepare_on_control(&sources, project, 1_000_000, &cancel)
+                    .unwrap();
+            let revision = Arc::new(
+                PreparedRevision::prepare_with_device_resources(
+                    project,
+                    &media,
+                    Arc::new(SineTable::new()),
+                    None,
+                    &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                    &resources,
+                    100_000,
+                    &cancel,
+                )
+                .unwrap(),
+            );
+            let mut playback =
+                Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
+            if attach {
+                playback
+                    .prepare_computer_keyboard(project, track, Arc::clone(input))
+                    .unwrap();
+            }
             playback
-                .prepare_computer_keyboard(project, track, Arc::clone(&keys))
-                .unwrap();
-        }
-        playback
-    };
+        };
     let (mut control, mut callback) = channel(8000).unwrap();
     control
         .configure_device_resource_publication_on_control(limits())
         .unwrap();
     control
         .publish_with_policy_and_context_generation(
-            graph(editor.project(), true),
+            graph(editor.project(), true, &keys),
             PublicationPolicy::InheritRuntime,
             7,
         )
@@ -462,7 +507,7 @@ fn ordinary_sampler_keyboard_rebind_honors_mute_and_leaves_other_audio_playing()
         editor.execute(Command::Mute { track, muted }).unwrap();
         let revision = control
             .publish_with_policy_and_context_generation(
-                graph(editor.project(), true),
+                graph(editor.project(), true, &keys),
                 PublicationPolicy::InheritRuntime,
                 7,
             )
@@ -479,20 +524,47 @@ fn ordinary_sampler_keyboard_rebind_honors_mute_and_leaves_other_audio_playing()
         );
         control.reclaim();
     }
+    // Independent uninterrupted key-off oracle: removal releases the old
+    // source through its finite envelope instead of cutting off its PCM.
+    let oracle_keys = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+    oracle_keys.set_key(0, Some((60, 127, 1))).unwrap();
+    let mut oracle = graph(editor.project(), true, &oracle_keys);
+    oracle.apply(PlaybackCommand::Play);
+    oracle.render(&mut [[0.0; 2]; 96]).unwrap();
+    oracle_keys.set_key(0, None).unwrap();
     editor.execute(Command::RemoveInstrument { track }).unwrap();
     control
         .publish_with_policy_and_context_generation(
-            graph(editor.project(), false),
+            graph(editor.project(), false, &keys),
             PublicationPolicy::InheritRuntime,
             7,
         )
         .unwrap();
-    assert!(
-        block(&mut callback)
-            .iter()
-            .flatten()
-            .all(|sample| (*sample - 0.125).abs() < 1e-6)
-    );
+    for release_block in 0..14 {
+        let actual = block(&mut callback);
+        let mut expected = [[0.0; 2]; 32];
+        oracle.render(&mut expected).unwrap();
+        for (actual, expected) in actual.iter().zip(expected) {
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1e-6,
+                    "release block={release_block}: {actual:?} != {expected:?}"
+                );
+            }
+        }
+        if release_block == 0 {
+            assert!(actual.iter().flatten().any(|sample| *sample > 0.125));
+        }
+        if release_block == 13 {
+            assert!(
+                actual
+                    .iter()
+                    .flatten()
+                    .all(|sample| (*sample - 0.125).abs() < 1e-6),
+                "unrelated audio continues after the sampler release is quiet"
+            );
+        }
+    }
     assert!(keys.is_cancelled());
     control.reclaim();
     control.request_shutdown();

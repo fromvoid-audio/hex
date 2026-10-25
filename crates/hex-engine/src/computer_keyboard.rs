@@ -1627,7 +1627,7 @@ impl ComputerKeyboardRuntime {
                                 .as_ref()
                                 .and_then(|source| source.context.as_ref())
                                 .map(|owner| owner.context())
-                                .or_else(|| self.context.as_deref())
+                                .or(self.context.as_deref())
                                 .ok_or(Invalid("computer keyboard context missing"))?;
                             context.sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
                         }
