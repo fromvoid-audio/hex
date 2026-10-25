@@ -4279,19 +4279,6 @@ mod tests {
     #[cfg(feature = "allocation-probe")]
     fn saturator_track_and_return_graph(drive_db: f32) -> Playback {
         use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-        use hex_project::{
-            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
-            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
-            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
-        };
-
-        const TRACK_ID: u64 = 1;
-        const ASSET_ID: u64 = 4;
-        const CLIP_ID: u64 = 5;
-        const TRACK_DEVICE_ID: u64 = 6;
-        const RETURN_ID: u64 = 7;
-        const RETURN_DEVICE_ID: u64 = 8;
-        const FRAMES: u64 = 512;
         let make_state = || {
             let mut state = hex_engine::default_native_device_state_for_class(
                 hex_engine::NativeDeviceClass::Effect,
@@ -4311,6 +4298,27 @@ mod tests {
             )
             .expect("saturator curve")
         };
+        native_effect_track_and_return_graph(make_state())
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn native_effect_track_and_return_graph(
+        state: hex_lattice_contract::NativeDeviceState,
+    ) -> Playback {
+        use hex_project::{
+            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
+            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
+            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
+        };
+
+        const TRACK_ID: u64 = 1;
+        const ASSET_ID: u64 = 4;
+        const CLIP_ID: u64 = 5;
+        const TRACK_DEVICE_ID: u64 = 6;
+        const RETURN_ID: u64 = 7;
+        const RETURN_DEVICE_ID: u64 = 8;
+        const FRAMES: u64 = 512;
+        let make_state = || state.clone();
         let project = CanonicalProject::from_snapshot(Snapshot {
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -5145,6 +5153,46 @@ mod tests {
         assert!(output.iter().all(|frame| {
             (frame[0] - 0.34375).abs() < 1.0e-6 && (frame[1] + 0.55).abs() < 1.0e-6
         }));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn overdrive_track_return_handoff_and_render_allocate_nothing() {
+        use hex_devices::overdrive::{OVERDRIVE_DEFINITION as d, parameter};
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let original = d.default_state().unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(original.clone()))
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        let changed = d
+            .patch_parameter(&original, parameter::DRIVE, ParameterValue::Float(1.0))
+            .unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(changed))
+            .unwrap();
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(output.iter().flatten().any(|sample| *sample != 0.0));
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();

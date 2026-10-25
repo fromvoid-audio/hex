@@ -302,6 +302,7 @@ fn admitted_registered_inventory_and_post_handoff_ownership_are_recomposed_exact
         "hex.compressor",
         "hex.gate",
         "hex.auto-pan",
+        "hex.overdrive",
     ] {
         shapes.push(Shape {
             tracks: TRACKS,
