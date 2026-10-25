@@ -3567,6 +3567,7 @@ impl SessionPlayback {
         self.performance_frame = previous.performance_frame;
         self.arrangement_frame = previous.arrangement_frame;
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
+        self.interactive_start_frame = previous.interactive_start_frame;
         self.playing = previous.playing;
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;

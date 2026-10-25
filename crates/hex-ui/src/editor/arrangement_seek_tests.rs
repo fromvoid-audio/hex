@@ -325,14 +325,14 @@ fn queued_play_intent_controls_the_next_toggle_and_seek() {
 }
 
 #[test]
-fn second_spacebar_cancels_pending_stateful_play_instead_of_restarting_it() {
+fn stateful_spacebar_uses_the_transport_queue_and_second_press_pauses() {
     assert_eq!(
         toggle_action(false, None, None, 24_000, None),
         ToggleAction::Unavailable,
         "an unknown source must not use the direct fast-seek path"
     );
     let first = toggle_action(false, None, None, 24_000, Some(true));
-    assert_eq!(first, ToggleAction::PreparedPlayFrom(24_000));
+    assert_eq!(first, ToggleAction::PlayFrom(24_000));
 
     // Audio has not admitted PlayFrom yet, so its actual transport bit is
     // still false. The pending intent must nevertheless make this Pause.
