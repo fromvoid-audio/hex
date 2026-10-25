@@ -12054,3 +12054,6 @@ fn analytic_clip_volume_survives_track_stop_and_removed_track_handoffs() {
         }
     }
 }
+
+#[path = "delay_tests.rs"]
+mod delay_tests;

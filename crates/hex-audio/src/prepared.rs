@@ -70,6 +70,8 @@ pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
 mod applied_source;
 #[cfg(all(test, feature = "allocation-probe"))]
+mod delay_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
 mod device_resources_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;

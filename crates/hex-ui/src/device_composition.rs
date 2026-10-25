@@ -12,6 +12,7 @@ pub(crate) const SAMPLER_FRAME_WIDTH: f32 = 1040.0;
 pub(crate) const UTILITY_FRAME_WIDTH: f32 = 144.0;
 pub(crate) const SATURATOR_FRAME_WIDTH: f32 = 230.0;
 pub(crate) const EQ8_FRAME_WIDTH: f32 = 600.0;
+pub(crate) const DELAY_FRAME_WIDTH: f32 = 500.0;
 pub(crate) const COMPRESSOR_FRAME_WIDTH: f32 = 326.0;
 pub(crate) const OVERDRIVE_FRAME_WIDTH: f32 = 174.0;
 pub(crate) const GATE_FRAME_WIDTH: f32 = 142.0;
