@@ -1990,6 +1990,9 @@ mod tests {
             chain.entries[0].meter.take_dynamics(),
             DynamicsMeter::default()
         );
+        // Existing I/O meters accumulate one maximum across both channels for
+        // each side, independently of committed provider dynamics readings.
+        assert_eq!(chain.entries[0].meter.take_peaks(), [4.0, 4.0]);
 
         chain.begin_block();
         let mut committed = [[0.25, 0.75]];
@@ -2003,7 +2006,7 @@ mod tests {
                 clipped: false,
             }
         );
-        assert_eq!(chain.entries[0].meter.take_peaks(), [0.25, 0.75]);
+        assert_eq!(chain.entries[0].meter.take_peaks(), [0.75, 0.75]);
     }
 
     #[test]
@@ -2038,7 +2041,7 @@ mod tests {
             bypassed.entries[0].meter.take_dynamics(),
             DynamicsMeter::default()
         );
-        assert_eq!(bypassed.entries[0].meter.take_peaks(), [2.0, 3.0]);
+        assert_eq!(bypassed.entries[0].meter.take_peaks(), [3.0, 3.0]);
     }
 
     const SNAPSHOT_PATCH_PARAMETER: ParameterId = ParameterId::from_static(1);
