@@ -15,7 +15,10 @@ impl EditorView {
     /// Plain L/W remain musical notes while typing is enabled and retain the
     /// existing Session toggle. Command-L is the explicit modified shortcut.
     pub(super) fn loop_selection_key(&mut self, window: &Window) {
-        if self.computer_keyboard.enabled || !self.loop_shortcut_context(window) {
+        if self.computer_keyboard.enabled || !self.loop_shortcut_clear() {
+            return;
+        }
+        if self.clip_loop_key(window) || !self.focus.is_focused(window) {
             return;
         }
         if self.mode != EditorMode::Arrangement {
@@ -26,8 +29,10 @@ impl EditorView {
     }
 
     fn loop_shortcut_context(&self, window: &Window) -> bool {
-        self.focus.is_focused(window)
-            && !self.sections.naming()
+        self.focus.is_focused(window) && self.loop_shortcut_clear()
+    }
+    fn loop_shortcut_clear(&self) -> bool {
+        !self.sections.naming()
             && !self.changelog.is_open()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()

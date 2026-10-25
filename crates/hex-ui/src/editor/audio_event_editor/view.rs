@@ -20,7 +20,7 @@ pub(in crate::editor) fn view(
         view.audio_event_editor = State {
             owner: Some(owner),
             revision,
-            cursor: root.view_start,
+            cursor: editor_bounds(&root).0,
             clipboard,
             pending,
             ..State::default()
@@ -28,13 +28,13 @@ pub(in crate::editor) fn view(
     }
     if view.audio_event_editor.revision != revision {
         view.audio_event_editor.gesture = None;
-        view.audio_event_editor.cursor = view
-            .audio_event_editor
-            .cursor
-            .clamp(root.view_start, root.view_end);
+        // Loop bounds do not invalidate a source-local time selection/cursor.
+        // A retained cycle may hide part of that selection without deleting it.
+        let (first, last) = editor_bounds(&root);
+        view.audio_event_editor.cursor = view.audio_event_editor.cursor.clamp(first, last);
         view.audio_event_editor.range = view.audio_event_editor.range.and_then(|(start, end)| {
-            let start = start.max(root.view_start);
-            let end = end.min(root.view_end);
+            let start = start.max(first);
+            let end = end.min(last);
             (start < end).then_some((start, end))
         });
         view.audio_event_editor.revision = revision;
@@ -55,10 +55,9 @@ pub(in crate::editor) fn view(
         }
     };
     if view.audio_event_editor.selected.is_some_and(|id| {
-        !events
-            .events
-            .iter()
-            .any(|e| e.id == id && e.start >= root.view_start && e.end <= root.view_end)
+        !events.events.iter().any(|e| {
+            e.id == id && e.start >= editor_bounds(&root).0 && e.end <= editor_bounds(&root).1
+        })
     }) {
         view.audio_event_editor.selected = None;
     }
@@ -85,7 +84,7 @@ pub(in crate::editor) fn view(
     let local = view.event_viewport(&root);
     let viewport = view.event_project_viewport(&root)?;
     let first = root
-        .root_frame_at(root.view_start, state.project.tempo_map())
+        .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
         .ok()?;
     let frame_at = |position: u64| root.root_frame_at(position, state.project.tempo_map()).ok();
     let frame_to_x =
@@ -145,8 +144,8 @@ pub(in crate::editor) fn view(
         );
     }
     for event in &preview.events {
-        let raw_a = event.start.max(root.view_start);
-        let raw_b = event.end.min(root.view_end);
+        let raw_a = event.start.max(editor_bounds(&root).0);
+        let raw_b = event.end.min(editor_bounds(&root).1);
         if raw_a >= raw_b {
             continue;
         }
@@ -264,7 +263,7 @@ pub(in crate::editor) fn view(
                 .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                 .child(theme::text(format!("event {}", event.id))),
         );
-        if event.start >= root.view_start && start >= first + local.start {
+        if event.start >= editor_bounds(&root).0 && start >= first + local.start {
             element = element.child(
                 div()
                     .absolute()
@@ -275,7 +274,7 @@ pub(in crate::editor) fn view(
                     .cursor(gpui::CursorStyle::ResizeLeftBracket),
             );
         }
-        if event.end <= root.view_end && end <= first + local.start + local.length {
+        if event.end <= editor_bounds(&root).1 && end <= first + local.start + local.length {
             element = element.child(
                 div()
                     .absolute()
@@ -306,8 +305,8 @@ pub(in crate::editor) fn view(
         }),
     );
     for (index, (a, b)) in intersections.into_iter().enumerate() {
-        let a = frame_at(a.max(root.view_start))?.max(first + local.start);
-        let b = frame_at(b.min(root.view_end))?.min(first + local.start + local.length);
+        let a = frame_at(a.max(editor_bounds(&root).0))?.max(first + local.start);
+        let b = frame_at(b.min(editor_bounds(&root).1))?.min(first + local.start + local.length);
         if a < b {
             body = body.child(
                 div()
@@ -362,7 +361,7 @@ pub(in crate::editor) fn view(
             );
         }
     }
-    body = body.children(view.arrange_audio_highlights(local.start, local.length));
+    body = body.children(view.arrange_audio_highlights(first, local.start, local.length));
     let cursor = frame_at(
         view.audio_event_editor
             .cursor
@@ -468,7 +467,7 @@ pub(in crate::editor) fn view(
                     Kind::Select
                 } else if let Some(hit) = hit {
                     let first = root
-                        .root_frame_at(root.view_start, state.project.tempo_map())
+                        .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
                         .unwrap_or(0);
                     let local = view.event_viewport(&root);
                     let bounds = view.audio_event_editor.bounds;
@@ -481,14 +480,14 @@ pub(in crate::editor) fn view(
                             / local.length.max(1) as f32
                             * width
                     };
-                    if hit.start >= root.view_start
+                    if hit.start >= editor_bounds(&root).0
                         && root
                             .root_frame_at(hit.start, state.project.tempo_map())
                             .is_ok_and(|frame| frame >= first + local.start)
                         && (offset - x(hit.start)).abs() <= 6.0
                     {
                         Kind::Leading(hit)
-                    } else if hit.end <= root.view_end
+                    } else if hit.end <= editor_bounds(&root).1
                         && root
                             .root_frame_at(hit.end, state.project.tempo_map())
                             .is_ok_and(|frame| frame <= first + local.start + local.length)
@@ -674,6 +673,7 @@ pub(in crate::editor) fn view(
         .flex()
         .flex_col()
         .child(toolbar)
+        .children(view.audio_loop_ruler(cx))
         .child(body)
         .on_action(
             cx.listener(|view, _: &super::super::ToggleSnapGrid, _, cx| {
@@ -792,9 +792,11 @@ pub(in crate::editor) fn view(
         )
         .on_action(
             cx.listener(|view, _: &super::super::CancelDragOrStop, _, cx| {
-                view.advance_selection_intent();
-                view.audio_event_editor.gesture = None;
-                view.audio_event_editor.range = None;
+                if !view.cancel_audio_loop_gesture() {
+                    view.advance_selection_intent();
+                    view.audio_event_editor.gesture = None;
+                    view.audio_event_editor.range = None;
+                }
                 cx.stop_propagation();
                 cx.notify();
             }),
