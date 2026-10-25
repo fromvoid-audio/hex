@@ -196,3 +196,158 @@ fn arrangement_bounce_admits_native_candidate_once_and_refusals_preserve_history
         ResidentPublicationPolicy::ArrangementEdit
     ));
 }
+
+#[test]
+fn resident_sampler_clip_conversion_keeps_main_live_and_refusal_is_atomic() {
+    fn context(revision: u64) -> hex_engine::AudioSourceContext {
+        hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: revision,
+        }
+    }
+    fn edit(
+        session: &mut Session,
+        sink: &mut OfflineSink,
+        current: &mut Snapshot,
+        command: Command,
+        revision: u64,
+    ) -> Created {
+        let (created, next) = session
+            .command_resident_snapshot(
+                command,
+                context(revision),
+                sink,
+                sampler_export::Admission::default(),
+                Some(current),
+            )
+            .unwrap();
+        *current = next;
+        created
+    }
+    let files = sampler_export::tests::Files::new(false);
+    let (mut session, snapshot) = sampler_export::tests::direct_sampler(&files);
+    drop(snapshot);
+    let track = session.project().tracks()[0].id();
+    let observed = Arc::new(Observed::default());
+    let mut sink = OfflineSink {
+        observed: observed.clone(),
+        pending: None,
+    };
+    let mut snapshot = session
+        .resident_seek_inputs(sampler_export::Admission::default(), None, None)
+        .unwrap()
+        .prepare(
+            session.project(),
+            &mut sink,
+            &session.media_bank(),
+            session.sine_table(),
+            &session.audio_transforms,
+            &session.audio_clip_waveforms,
+            context(0),
+        )
+        .unwrap();
+    let length = hex_project::BeatTime::from_ratio(1, 100).unwrap();
+    let Created::Clip(clip) = edit(
+        &mut session,
+        &mut sink,
+        &mut snapshot,
+        Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length,
+        },
+        1,
+    ) else {
+        panic!("clip")
+    };
+    edit(
+        &mut session,
+        &mut sink,
+        &mut snapshot,
+        Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: length,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        },
+        2,
+    );
+    let main = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    edit(
+        &mut session,
+        &mut sink,
+        &mut snapshot,
+        Command::InsertMainDevice {
+            before: None,
+            state: main,
+        },
+        3,
+    );
+    let original = session.project().clone();
+    let original_bytes = std::fs::read(files.source()).unwrap();
+    let frames = session.project().midi_bounce_range(clip).unwrap().1 as usize;
+    let render = |snapshot: &Snapshot| {
+        let mut runtime = super::super::playback_with_loop(snapshot, None).unwrap();
+        runtime
+            .try_apply_action(hex_engine::PlaybackAction::Transport(
+                hex_engine::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        let mut pcm = vec![[0.0; 2]; frames];
+        runtime.render(&mut pcm).unwrap();
+        pcm
+    };
+    let expected = render(&snapshot);
+    assert!(expected.iter().flatten().any(|v| v.abs() > 0.001));
+    let mut current = Some(snapshot);
+    observed.refuse.store(true, Ordering::Release);
+    assert!(
+        super::super::bounce::bounce_clip(
+            &mut session,
+            clip,
+            files.source().parent().unwrap(),
+            context(4),
+            &mut sink,
+            sampler_export::Admission::default(),
+            &mut current
+        )
+        .is_err()
+    );
+    assert_eq!(session.project(), &original);
+    assert_eq!(std::fs::read(files.source()).unwrap(), original_bytes);
+    observed.refuse.store(false, Ordering::Release);
+    super::super::bounce::bounce_clip(
+        &mut session,
+        clip,
+        files.source().parent().unwrap(),
+        context(4),
+        &mut sink,
+        sampler_export::Admission::default(),
+        &mut current,
+    )
+    .unwrap();
+    let actual = render(current.as_ref().unwrap());
+    let error = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        error < 1e-6,
+        "resource-backed clip conversion changed PCM: {error}"
+    );
+    assert_eq!(session.project().main_devices(), original.main_devices());
+    assert_eq!(
+        session.project().native_sources(),
+        original.native_sources()
+    );
+}

@@ -76,6 +76,11 @@ fn pcm(revision: Arc<hex_engine::PreparedRevision>, frames: usize) -> Vec<hex_en
 
 #[test]
 fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
+    for main_type in ["hex.utility", "hex.overdrive"] {
+        bounce_with_main(main_type);
+    }
+}
+fn bounce_with_main(main_type: &'static str) {
     let folder = Folder::new();
     let (mut session, track, clip) = fixture();
     session
@@ -125,6 +130,19 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
             state: effect,
         })
         .unwrap();
+    let main = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static(main_type),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    session
+        .command(Command::InsertMainDevice {
+            before: None,
+            state: main,
+        })
+        .unwrap();
     let original = session.project().clone();
     let (start, frames) = original.midi_bounce_range(clip).unwrap();
     let before = session.compile_prepared_revision(None).unwrap();
@@ -145,6 +163,11 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
         session.project().native_sources(),
         original.native_sources(),
         "render normalization must not change retained source state"
+    );
+    assert_eq!(session.project().main_devices(), original.main_devices());
+    assert_eq!(
+        session.project().track(track).unwrap().devices(),
+        original.track(track).unwrap().devices()
     );
     let actual = pcm(Arc::clone(&bounced), expected.len());
     let error = actual
