@@ -2798,6 +2798,12 @@ fn handle_tooltip_mouse_move(
                 async move |cx| {
                     cx.background_executor().timer(TOOLTIP_SHOW_DELAY).await;
                     cx.update(|window, cx| {
+                        // A capture listener can consume movement before this
+                        // pending tooltip receives its cancellation event.
+                        if window.is_pointer_dragging() {
+                            active_tooltip.borrow_mut().take();
+                            return;
+                        }
                         let new_tooltip =
                             build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
                                 let active_tooltip = active_tooltip.clone();

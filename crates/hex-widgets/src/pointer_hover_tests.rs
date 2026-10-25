@@ -16,22 +16,6 @@ impl Render for Fixture {
         div()
             .size_full()
             .child(
-                div()
-                    .id("hover-target")
-                    .debug_selector(|| "hover-target".into())
-                    .absolute()
-                    .left(px(100.))
-                    .top(px(20.))
-                    .size(px(60.))
-                    .bg(rgb(0x111111))
-                    .hover(|style| style.bg(rgb(0xff0000)))
-                    .on_hover(move |value, _, _| hovered.set(*value))
-                    .tooltip(move |_, cx| {
-                        tooltip_builds.set(tooltip_builds.get() + 1);
-                        cx.new(|_| gpui::Empty).into()
-                    }),
-            )
-            .child(
                 canvas(
                     |_, _, _| (),
                     |_, _, window, _| {
@@ -44,6 +28,22 @@ impl Render for Fixture {
                 )
                 .absolute()
                 .size_full(),
+            )
+            .child(
+                div()
+                    .id("hover-target")
+                    .debug_selector(|| "hover-target".into())
+                    .absolute()
+                    .left(px(100.))
+                    .top(px(20.))
+                    .size(px(60.))
+                    .bg(rgb(0x111111))
+                    .hover(|style| style.bg(rgb(0xff0000)))
+                    .on_hover(move |value, _, _| hovered.set(*value))
+                    .hoverable_tooltip(move |_, cx| {
+                        tooltip_builds.set(tooltip_builds.get() + 1);
+                        cx.new(|_| TooltipFixture).into()
+                    }),
             )
     }
 }
@@ -217,5 +217,52 @@ fn pointer_hover_suppression_preserves_typed_drop_feedback_and_delivery(cx: &mut
     assert_eq!(
         visual.rendered_background("drop-target"),
         Some(rgb(0xff0000).into())
+    );
+}
+
+struct TooltipFixture;
+impl Render for TooltipFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("tooltip")
+            .debug_selector(|| "drag-tooltip".into())
+            .size(px(20.))
+            .bg(rgb(0xff00ff))
+    }
+}
+
+#[gpui::test]
+fn a_visible_hoverable_tooltip_is_hidden_on_drag_without_waiting_for_its_hide_delay(
+    cx: &mut TestAppContext,
+) {
+    let handle = cx.add_window(|_, _| Fixture::default());
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.simulate_resize(size(px(320.), px(120.)));
+    visual.simulate_mouse_move(point(px(120.), px(40.)), None, Modifiers::default());
+    visual.run_until_parked();
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("drag-tooltip").is_some(),
+        "ordinary hover must show the tooltip first"
+    );
+    visual.simulate_mouse_down(
+        point(px(120.), px(40.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    // Remain inside the already visible hoverable tooltip. Its normal policy
+    // deliberately keeps it open here, even when its source loses hover.
+    visual.simulate_mouse_move(
+        point(px(132.), px(50.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("drag-tooltip").is_none(),
+        "drag suppression must bypass hoverable retention and hide delay"
     );
 }

@@ -815,7 +815,14 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 @@ -2498 +2540 @@
 -            if !cx.has_active_drag() {
 +            if !cx.has_active_drag() && !window.is_pointer_dragging() {
-@@ -2906,0 +2949,12 @@
+@@ -2758,0 +2801,6 @@
++                        // A capture listener can consume movement before this
++                        // pending tooltip receives its cancellation event.
++                        if window.is_pointer_dragging() {
++                            active_tooltip.borrow_mut().take();
++                            return;
++                        }
+@@ -2906,0 +2955,12 @@
 +impl Stateful<Div> {
 +    /// Attach native semantics to this stateful control without changing its layout.
 +    pub fn accessibility(
@@ -4791,7 +4798,19 @@ diff --git a/src/window.rs b/src/window.rs
          let current_focus_path = self.rendered_frame.focus_path();
          let current_window_active = self.rendered_frame.window_active;
  
-@@ -2220,6 +2363,7 @@
+@@ -2086,6 +2229,11 @@
+     }
+ 
+     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
++        // Hoverable tooltips may otherwise retain themselves or wait through a
++        // hide delay even after their source stops being eligible.
++        if self.is_pointer_dragging() {
++            return None;
++        }
+         // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
+         for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
+             let Some(Some(tooltip_request)) = self
+@@ -2220,6 +2368,7 @@
  
      pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
          PrepaintStateIndex {
@@ -4799,7 +4818,7 @@ diff --git a/src/window.rs b/src/window.rs
              hitboxes_index: self.next_frame.hitboxes.len(),
              tooltips_index: self.next_frame.tooltip_requests.len(),
              deferred_draws_index: self.next_frame.deferred_draws.len(),
-@@ -2230,6 +2374,14 @@
+@@ -2230,6 +2379,14 @@
      }
  
      pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
@@ -4814,7 +4833,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.hitboxes.extend(
              self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                  .iter()
-@@ -2287,10 +2439,17 @@
+@@ -2287,10 +2444,17 @@
              accessed_element_states_index: self.next_frame.accessed_element_states.len(),
              tab_handle_index: self.next_frame.tab_stops.paint_index(),
              line_layout_index: self.text_system.layout_index(),
@@ -4832,7 +4851,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.cursor_styles.extend(
              self.rendered_frame.cursor_styles
                  [range.start.cursor_styles_index..range.end.cursor_styles_index]
-@@ -3524,14 +3683,28 @@
+@@ -3524,14 +3688,28 @@
          subscription
      }
  
@@ -4868,7 +4887,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3749,22 @@
+@@ -3576,6 +3754,22 @@
              .unwrap_or_else(|| action.name().to_string())
      }
  
@@ -4891,7 +4910,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3584,6 +3773,34 @@
+@@ -3584,6 +3778,34 @@
          cx.propagate_event = true;
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
@@ -4926,7 +4945,7 @@ diff --git a/src/window.rs b/src/window.rs
  
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
-@@ -3666,6 +3883,14 @@
+@@ -3666,6 +3888,14 @@
              self.dispatch_mouse_event(any_mouse_event, cx);
          } else if let Some(any_key_event) = event.keyboard_event() {
              self.dispatch_key_event(any_key_event, cx);

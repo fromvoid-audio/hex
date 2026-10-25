@@ -2229,6 +2229,11 @@ impl Window {
     }
 
     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
+        // Hoverable tooltips may otherwise retain themselves or wait through a
+        // hide delay even after their source stops being eligible.
+        if self.is_pointer_dragging() {
+            return None;
+        }
         // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
         for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
             let Some(Some(tooltip_request)) = self
