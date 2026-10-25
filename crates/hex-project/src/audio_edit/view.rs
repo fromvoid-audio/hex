@@ -644,6 +644,14 @@ impl<'a> AudioViewProjection<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioViewResizeOperation {
+    /// Select a processing-root cycle without changing the outer placement.
+    /// Positions use this clip's AudioDomainClock (frames or raw BeatTime).
+    /// Source processing, hidden events and original media remain retained.
+    CycleRange {
+        start: u64,
+        end: u64,
+        looping: bool,
+    },
     /// Resize the outer span while preserving an existing Once/Repeat mode.
     OuterEnd {
         project_frame: u64,
@@ -708,10 +716,59 @@ pub fn preview_view_resize(
         },
     );
     let start = reference_start_raw.unwrap_or(i128::from(clip.start));
+    if let AudioViewResizeOperation::CycleRange {
+        start: first,
+        end: last,
+        looping,
+    } = operation
+    {
+        if first >= last || last > clock.length() {
+            return Err(Invalid(
+                "clip loop must be a positive interval inside its retained root",
+            ));
+        }
+        let length_clock = |n| match clock {
+            AudioDomainClock::Frames(_) => AudioDomainClock::Frames(n),
+            AudioDomainClock::Beats(_) => AudioDomainClock::Beats(BeatTime::from_raw(n)),
+        };
+        let phase = old
+            .filter(|_| first == view_start && last == view_end)
+            .map_or(0, |p| p.cycle_phase % (last - first));
+        let placement = AudioViewPlacement {
+            mode: if looping {
+                AudioViewMode::Repeat
+            } else {
+                AudioViewMode::Once
+            },
+            outer_length: old.map_or(length_clock(view_end - view_start), |p| p.outer_length),
+            cycle_phase: phase,
+        };
+        let projected = AudioViewProjection::from_parts(
+            clip,
+            tempo,
+            clock,
+            first..last,
+            reference_start_raw.unwrap_or(i128::from(clip.start)),
+            Some(placement),
+            displacement,
+        )?;
+        let (frame_start, frame_end) = projected.outer_frame_bounds();
+        return Ok(AudioViewResize {
+            view_start: first,
+            view_end: last,
+            reference_start_raw,
+            placement,
+            frame_start,
+            frame_end,
+        });
+    }
     let project_frame = match operation {
         AudioViewResizeOperation::OuterEnd { project_frame }
         | AudioViewResizeOperation::RepeatOuterEnd { project_frame }
         | AudioViewResizeOperation::CycleEnd { project_frame } => project_frame,
+        AudioViewResizeOperation::CycleRange { .. } => {
+            return Err(Invalid("clip loop range was not resolved"));
+        }
     };
     let position = if reference_start_raw.is_some() {
         audio_projection_beat(tempo, i128::from(project_frame) - displacement)?
@@ -729,6 +786,9 @@ pub fn preview_view_resize(
         cycle_phase: 0,
     });
     match operation {
+        AudioViewResizeOperation::CycleRange { .. } => {
+            return Err(Invalid("clip loop range was not resolved"));
+        }
         AudioViewResizeOperation::OuterEnd { .. }
         | AudioViewResizeOperation::RepeatOuterEnd { .. } => {
             let length = u64::try_from(delta)

@@ -81,6 +81,17 @@ impl EditorView {
                 && self.audio_event_editor.revision == revision
         })
     }
+    pub(in crate::editor) fn audio_loop_current(&self) -> bool {
+        self.event_context_current()
+    }
+    pub(in crate::editor) fn audio_loop_grid(&self) -> SnapGrid {
+        self.audio_event_editor.grid
+    }
+    pub(in crate::editor) fn audio_loop_time_selection(&self) -> Option<(u64, u64)> {
+        self.event_context_current()
+            .then_some(self.audio_event_editor.range)
+            .flatten()
+    }
     fn event_range(&self) -> Option<(u64, u64)> {
         if let Some(range) = self.audio_event_editor.range.filter(|(a, b)| a < b) {
             return Some(range);

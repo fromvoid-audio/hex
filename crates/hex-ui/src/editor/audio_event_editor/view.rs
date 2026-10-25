@@ -28,13 +28,17 @@ pub(in crate::editor) fn view(
     }
     if view.audio_event_editor.revision != revision {
         view.audio_event_editor.gesture = None;
-        view.audio_event_editor.cursor = view
-            .audio_event_editor
-            .cursor
-            .clamp(root.view_start, root.view_end);
+        // Loop bounds do not invalidate a source-local time selection/cursor.
+        // A retained cycle may hide part of that selection without deleting it.
+        let (first, last) = if root.placement.is_some() {
+            (0, root.domain.clock.length())
+        } else {
+            (root.view_start, root.view_end)
+        };
+        view.audio_event_editor.cursor = view.audio_event_editor.cursor.clamp(first, last);
         view.audio_event_editor.range = view.audio_event_editor.range.and_then(|(start, end)| {
-            let start = start.max(root.view_start);
-            let end = end.min(root.view_end);
+            let start = start.max(first);
+            let end = end.min(last);
             (start < end).then_some((start, end))
         });
         view.audio_event_editor.revision = revision;
@@ -674,6 +678,7 @@ pub(in crate::editor) fn view(
         .flex()
         .flex_col()
         .child(toolbar)
+        .children(view.audio_loop_ruler(cx))
         .child(body)
         .on_action(
             cx.listener(|view, _: &super::super::ToggleSnapGrid, _, cx| {
@@ -792,9 +797,11 @@ pub(in crate::editor) fn view(
         )
         .on_action(
             cx.listener(|view, _: &super::super::CancelDragOrStop, _, cx| {
-                view.advance_selection_intent();
-                view.audio_event_editor.gesture = None;
-                view.audio_event_editor.range = None;
+                if !view.cancel_audio_loop_gesture() {
+                    view.advance_selection_intent();
+                    view.audio_event_editor.gesture = None;
+                    view.audio_event_editor.range = None;
+                }
                 cx.stop_propagation();
                 cx.notify();
             }),
