@@ -862,6 +862,89 @@ impl PreparedRevision {
             .any(crate::Track::has_mutable_instrument)
     }
 
+    /// Conservative, cursor-independent guard for live structural section edits
+    /// and history. Existing mutable MIDI identities cannot be relocated or
+    /// expose previously unplayed onsets without a separate history proof.
+    /// Length-only retained prefixes remain eligible when no onset is exposed.
+    /// Missing ordinary source evidence requires stopped preparation. This is
+    /// a read-only control query, not runtime handoff admission or DSP custody.
+    /// The section coordinator separately validates clock and transport fences.
+    pub fn section_midi_relocation_requires_stop(&self, candidate: &Self) -> bool {
+        if !self.has_arrangement_mutable_instruments()
+            && !candidate.has_arrangement_mutable_instruments()
+        {
+            return false;
+        }
+        if self.device_resource_scope.is_none() || candidate.device_resource_scope.is_none() {
+            return true;
+        }
+        for compiled in self
+            .arrangement
+            .tracks()
+            .iter()
+            .chain(candidate.arrangement.tracks())
+        {
+            if !compiled.has_mutable_instrument() {
+                continue;
+            }
+            let Some(id) = compiled.canonical_track_id() else {
+                return true;
+            };
+            let (Some(old), Some(new)) = (
+                self.mutable_track_revision(id),
+                candidate.mutable_track_revision(id),
+            ) else {
+                return true;
+            };
+            if old.midi_source_track != new.midi_source_track {
+                return true;
+            }
+            for old_clip in &old.arrangement_midi_sources {
+                let Some(new_clip) = new
+                    .arrangement_midi_sources
+                    .binary_search_by_key(&old_clip.id, |clip| clip.id)
+                    .ok()
+                    .and_then(|index| new.arrangement_midi_sources.get(index))
+                else {
+                    continue;
+                };
+                if old_clip.start != new_clip.start
+                    || old_clip.playback_offset != new_clip.playback_offset
+                    || old_clip.source != new_clip.source
+                    || old_clip.content_view != new_clip.content_view
+                {
+                    return true;
+                }
+                if new_clip.length > old_clip.length {
+                    let Some(track) = candidate
+                        .arrangement
+                        .tracks()
+                        .iter()
+                        .find(|track| track.canonical_track_id() == Some(id))
+                    else {
+                        return true;
+                    };
+                    let mut exposed = false;
+                    if track
+                        .for_each_mutable_midi_span(
+                            old_clip.end_frame,
+                            new_clip.end_frame,
+                            |span| {
+                                exposed |=
+                                    span.clip == old_clip.id && span.start >= old_clip.end_frame;
+                            },
+                        )
+                        .is_err()
+                        || exposed
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Whether an Arrangement seek must reconstruct stateful history instead
     /// of using the direct absolute-frame sampler path. Built-in Sine and
     /// Operator MIDI notes are deterministic functions of note age and gate
