@@ -24,7 +24,7 @@ use hex_lattice_contract::{
     NativeDeviceState,
 };
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
-pub use meter::DeviceMeter;
+pub use meter::{DeviceMeter, DynamicsMeter};
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
     PreparedRuntimeDevice, PreparedRuntimeInstance,
@@ -261,6 +261,11 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     /// across a successful graph handoff; implementations must not expose
     /// authored state or mutate processing history here.
     fn transient_audition_requested_selection(&self) -> Option<ProcessorAuditionSelection> {
+        None
+    }
+    /// Drain bounded provider telemetry after the enclosing render commits.
+    /// Must not allocate, block, retain resources or change audible history.
+    fn take_dynamics_meter(&mut self) -> Option<DynamicsMeter> {
         None
     }
 }
@@ -1612,6 +1617,10 @@ impl NativeRuntimeChain {
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
             entry.runtime.commit();
+            let reading = entry.runtime.take_dynamics_meter();
+            if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
+                entry.meter.observe_dynamics(reading);
+            }
         }
     }
     /// Restore every speculative effect after a later host render stage refuses.
@@ -1883,6 +1892,155 @@ mod compensation_tests;
 mod tests {
     use super::*;
     use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
+
+    const DYNAMICS_METER_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.dynamics-meter");
+
+    struct DynamicsMeterPrepared;
+    struct DynamicsMeterRuntime {
+        pending: DynamicsMeter,
+    }
+
+    impl PreparedNativeProcessor for DynamicsMeterPrepared {
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<DynamicsMeterRuntime>()
+        }
+
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            Box::new(DynamicsMeterRuntime {
+                pending: DynamicsMeter::default(),
+            })
+        }
+    }
+
+    impl NativeProcessorRuntime for DynamicsMeterRuntime {
+        fn process_block(
+            &mut self,
+            frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+            self.pending = DynamicsMeter {
+                reduction_db: [
+                    frames
+                        .iter()
+                        .map(|frame| frame[0].abs())
+                        .fold(0.0, f32::max),
+                    frames
+                        .iter()
+                        .map(|frame| frame[1].abs())
+                        .fold(0.0, f32::max),
+                ],
+                clipped: frames.iter().any(|frame| frame[0].abs() > 1.0),
+            };
+        }
+
+        fn reset(&mut self) {
+            self.pending = DynamicsMeter::default();
+        }
+
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+
+        fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+            if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+                self.pending = previous.pending;
+            }
+        }
+
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+
+        fn take_dynamics_meter(&mut self) -> Option<DynamicsMeter> {
+            Some(std::mem::take(&mut self.pending))
+        }
+    }
+
+    fn dynamics_meter_chain(bypassed: bool) -> NativeRuntimeChain {
+        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(3),
+            device_id: 9,
+            device_type: DYNAMICS_METER_TYPE,
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 48_000,
+            configuration: None,
+            definition: Some(std::sync::Arc::new(DynamicsMeterPrepared)),
+        }])
+        .expect("prepared dynamics meter runtime")
+    }
+
+    #[test]
+    fn dynamics_meter_publishes_only_the_committed_active_runtime_reading() {
+        let mut chain = dynamics_meter_chain(false);
+        chain.set_metering(true);
+
+        chain.begin_block();
+        let mut speculative = [[2.5, 4.0]];
+        chain.process_block(&mut speculative).unwrap();
+        chain.rollback_block();
+        assert_eq!(
+            chain.entries[0].meter.take_dynamics(),
+            DynamicsMeter::default()
+        );
+        // Existing I/O meters accumulate one maximum across both channels for
+        // each side, independently of committed provider dynamics readings.
+        assert_eq!(chain.entries[0].meter.take_peaks(), [4.0, 4.0]);
+
+        chain.begin_block();
+        let mut committed = [[0.25, 0.75]];
+        chain.process_block(&mut committed).unwrap();
+        chain.commit_block();
+
+        assert_eq!(
+            chain.entries[0].meter.take_dynamics(),
+            DynamicsMeter {
+                reduction_db: [0.25, 0.75],
+                clipped: false,
+            }
+        );
+        assert_eq!(chain.entries[0].meter.take_peaks(), [0.75, 0.75]);
+    }
+
+    #[test]
+    fn dynamics_meter_drains_readings_while_metering_is_disabled_or_device_bypassed() {
+        let mut disabled = dynamics_meter_chain(false);
+        disabled.begin_block();
+        let mut frames = [[2.0, 3.0]];
+        disabled.process_block(&mut frames).unwrap();
+        disabled.commit_block();
+        assert_eq!(
+            disabled.entries[0].meter.take_dynamics(),
+            DynamicsMeter::default()
+        );
+
+        disabled.set_metering(true);
+        disabled.begin_block();
+        let mut quiet = [[0.0, 0.0]];
+        disabled.process_block(&mut quiet).unwrap();
+        disabled.commit_block();
+        assert_eq!(
+            disabled.entries[0].meter.take_dynamics(),
+            DynamicsMeter::default()
+        );
+
+        let mut bypassed = dynamics_meter_chain(true);
+        bypassed.set_metering(true);
+        bypassed.begin_block();
+        let mut bypassed_frames = [[2.0, 3.0]];
+        bypassed.process_block(&mut bypassed_frames).unwrap();
+        bypassed.commit_block();
+        assert_eq!(
+            bypassed.entries[0].meter.take_dynamics(),
+            DynamicsMeter::default()
+        );
+        assert_eq!(bypassed.entries[0].meter.take_peaks(), [3.0, 3.0]);
+    }
 
     const SNAPSHOT_PATCH_PARAMETER: ParameterId = ParameterId::from_static(1);
     const SNAPSHOT_PATCH_DESCRIPTORS: &[ParameterDescriptor] = &[ParameterDescriptor {
