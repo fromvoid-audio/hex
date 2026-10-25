@@ -779,9 +779,24 @@ fn pointer_remove_retains_keyboard(cx: &mut TestAppContext, kind: u8) {
             }
     });
     editor.read_with(cx, |view, _| {
+        let mut expected_sources = original.snapshot().native_sources;
+        if kind == 1 {
+            let source_id = original.track(track).unwrap().source_id().unwrap().value();
+            let source = expected_sources
+                .iter_mut()
+                .find(|source| source.id == source_id)
+                .expect("instrument source remains in the inventory");
+            assert_eq!(source.receiver, Some(track.value()));
+            source.receiver = None;
+        }
         assert_eq!(
-            view.state.as_ref().unwrap().project.native_sources(),
-            original.native_sources()
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .snapshot()
+                .native_sources,
+            expected_sources
         );
     });
     visual.run_until_parked();
