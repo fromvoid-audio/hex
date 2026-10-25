@@ -314,6 +314,26 @@ fn source_range_clips_halo_without_u64_overflow_near_maximum() {
     assert!(start < end);
     assert_eq!(end, u64::MAX);
 
+    // This integer rate ratio preserves phase under a whole-tap-window
+    // translation. Render the final halo as well as querying it: clipping tap
+    // slices near the u64 boundary must retain the exact ordinary-window bits.
+    let frames: Vec<[f32; 2]> = (0..usize::try_from(end - start).expect("bounded halo"))
+        .map(|i| [(i % 17) as f32 / 32.0, -(i as f32 % 23.0) / 64.0])
+        .collect();
+    let local = ResamplePlan::new(192_000, 8_000, end - start, u64::MAX, u64::MAX, 1)
+        .expect("translated halo plan");
+    let mut large_output = [[0.0; 2]];
+    let mut local_output = [[0.0; 2]];
+    plan.render_window(start, &frames, plan.output_frames() - 1, &mut large_output)
+        .expect("maximum-range halo render");
+    local
+        .render_window(0, &frames, local.output_frames() - 1, &mut local_output)
+        .expect("translated halo render");
+    assert_eq!(
+        large_output[0].map(f32::to_bits),
+        local_output[0].map(f32::to_bits)
+    );
+
     let identity = ResamplePlan::new(48_000, 48_000, u64::MAX, u64::MAX, u64::MAX, 2)
         .expect("identity maximum-range plan");
     assert!(identity.required_source_range(u64::MAX - 1, 2).is_err());
