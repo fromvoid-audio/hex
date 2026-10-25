@@ -1388,7 +1388,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
         assert_eq!(pair[0].frame, index as u64);
         assert_eq!(pair[1].kind, MidiEventKind::NoteOff);
         assert_eq!(pair[1].frame, index as u64 + 1);
-        assert_eq!(pair[0].note.value(), 4 + index as u64);
+        assert_eq!(pair[0].note.value(), first_note + index as u64);
         assert_eq!(pair[1].note, pair[0].note);
     }
     assert_eq!(clip, project.tracks()[0].midi_clips()[0].id());
