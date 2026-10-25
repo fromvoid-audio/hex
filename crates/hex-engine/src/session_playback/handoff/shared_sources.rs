@@ -1388,7 +1388,7 @@ mod tests {
                 .unwrap();
             let mut state =
                 hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
-            state.gain = 0.5;
+            state.reverse = !state.reverse;
             let state = state
                 .to_native()
                 .unwrap()
