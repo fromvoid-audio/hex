@@ -2910,3 +2910,71 @@ fn busy_controls_keep_available_paint_but_refuse_input(cx: &mut TestAppContext) 
     visual.simulate_keystrokes("space");
     assert!(toggle.read_with(cx, |toggle, _| toggle.checked()));
 }
+
+#[gpui::test]
+fn numeric_f32_storage_and_equivalent_accessibility_values_use_canonical_precision(
+    cx: &mut TestAppContext,
+) {
+    let spec =
+        NumericSpec::new_f32(0.1, 0.7, 0.2, NumericScale::Linear, 2, None::<String>).unwrap();
+    let (handle, control) =
+        open_numeric_control_with_spec(cx, NumericControlKind::HorizontalSlider, spec, 0.1);
+    assert_eq!(control.read_with(cx, |c, _| c.value()), f64::from(0.1_f32));
+    control.update(cx, |c, cx| c.set_external_value(0.7, cx).unwrap());
+    assert_eq!(control.read_with(cx, |c, _| c.value()), f64::from(0.7_f32));
+    // Native accessibility preflight retains its declared canonical bounds.
+    // Use an interior decimal to test equivalent-value coalescing there.
+    control.update(cx, |c, cx| c.set_external_value(0.3, cx).unwrap());
+    let acknowledged = control.read_with(cx, |c, _| c.accessibility_value(0.3).unwrap());
+    control.update(cx, |c, cx| {
+        c.set_accessibility_binding(
+            gpui::AccessibilityBinding {
+                revision: 1,
+                name: "f32".into(),
+                value: acknowledged,
+                pending: false,
+                guard: Rc::new(|_| true),
+            },
+            cx,
+        )
+    });
+    let phases = Rc::new(RefCell::new(Vec::new()));
+    let events = phases.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            events.borrow_mut().push((event.phase, event.value));
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(180.0)));
+    visual.run_until_parked();
+    let id = gpui::AccessibilityId(control.entity_id().as_u64());
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::SetNumber(0.3),
+            app
+        ))
+    );
+    assert!(
+        phases.borrow().is_empty(),
+        "equivalent f32 value is not a new edit"
+    );
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::SetNumber(f64::from(0.1_f32)),
+            app
+        )),
+        "equivalent earlier value must not mark the owner pending"
+    );
+    assert_eq!(control.read_with(cx, |c, _| c.value()), f64::from(0.1_f32));
+    assert_eq!(
+        *phases.borrow(),
+        vec![
+            (crate::NumericEventPhase::Begin, f64::from(0.3_f32)),
+            (crate::NumericEventPhase::Change, f64::from(0.1_f32)),
+            (crate::NumericEventPhase::Commit, f64::from(0.1_f32)),
+        ]
+    );
+}
