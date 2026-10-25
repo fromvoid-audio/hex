@@ -262,17 +262,31 @@ impl SessionPlayback {
                     }
                     if let PreparedAudioSource::Streamed(source) = clip.source() {
                         if let Some(elapsed) = performance_frame.checked_sub(launch_frame) {
-                            if let Some(start) = clip
-                                .source_start
-                                .checked_add(elapsed)
-                                .filter(|start| *start < clip.source_end)
-                            {
+                            if let Some(start) = clip.source_frame(elapsed) {
                                 let count = window.frames.min(
-                                    usize::try_from(clip.source_end - start).unwrap_or(usize::MAX),
+                                    usize::try_from(clip.playback_end() - start)
+                                        .unwrap_or(usize::MAX),
                                 );
                                 crate::stream_demand::visit_page_range(
                                     source, start, count, visit,
                                 )?;
+                                // Later complete cycles demand the same pages.
+                                // One suffix and one cycle prefix cover the union,
+                                // independent of block length or cycle density.
+                                if let Some(range) = clip.loop_range {
+                                    let rest = (window.frames - count).min(
+                                        usize::try_from(range.end() - range.start())
+                                            .unwrap_or(usize::MAX),
+                                    );
+                                    if rest > 0 {
+                                        crate::stream_demand::visit_page_range(
+                                            source,
+                                            range.start(),
+                                            rest,
+                                            visit,
+                                        )?;
+                                    }
+                                }
                             }
                         }
                     }

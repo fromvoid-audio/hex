@@ -70,6 +70,7 @@ fn fixture(
                 let id = next_id;
                 next_id += 1;
                 SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    loop_range: None,
                     active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
