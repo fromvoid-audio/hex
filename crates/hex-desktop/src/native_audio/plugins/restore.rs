@@ -55,14 +55,15 @@ impl Plugins {
         if control.status.applied_audio_source().is_some() {
             return Ok(None);
         }
-        let Some(source) = control.status.native_effect_source() else {
-            return Ok(None);
-        };
+        let source = control
+            .status
+            .recording_source()
+            .ok_or("ordinary vst3 restore source unavailable")?;
         if self.pending.is_some() || source.context != context {
             return Err("stopped vst3 source is not current".into());
         }
         let fence = control
-            .request_native_epoch_fence(source)
+            .request_ordinary_native_epoch_fence(source)
             .map_err(str::to_owned)?;
         self.restore = Some(Restore {
             context,
@@ -116,7 +117,7 @@ impl Plugins {
             restore.submitted = Some(revision);
         }
     }
-    pub(super) fn poll_restore(
+    pub fn poll_restore(
         &mut self,
         control: &mut PublicationControl,
         context: Option<AudioSourceContext>,

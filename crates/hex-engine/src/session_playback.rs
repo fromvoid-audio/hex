@@ -124,6 +124,10 @@ pub enum SessionPlaybackError {
     SessionTempoUnavailable(crate::PreparedTempoError),
     ReleaseBankFull,
     DeviceRuntime,
+    /// The exact foreign endpoint is still needed by an outgoing tail. A
+    /// publication owner may retry pure handoff planning after real rendering
+    /// advances that tail; it must not duplicate, reset or substitute the source.
+    ForeignTailSourceBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
@@ -158,6 +162,9 @@ impl SessionPlaybackError {
             Self::TempoConversion => "session playback timing conversion failed",
             Self::ReleaseBankFull => "session playback outgoing release bank is full",
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
+            Self::ForeignTailSourceBusy => {
+                "native effect endpoint is still owned by an outgoing tail"
+            }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"
             }

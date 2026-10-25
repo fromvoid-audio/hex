@@ -235,6 +235,19 @@ impl NativeAudioSink {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.remember_applied_loop();
         self.poll_section_edit();
+        // A request can wake the Session worker directly after the callback's
+        // restore ACK, before its next idle poll. Retire that exact applied
+        // gate before testing a successor publication, as for section edits.
+        if let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        {
+            self.plugins.poll_restore(
+                control,
+                self.desired.as_ref().map(|source| source.context()),
+            );
+        }
         let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
                 Ok(policy) => Some(policy),

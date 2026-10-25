@@ -628,7 +628,36 @@ fn ordinary_epochs(location: usize) {
         let stale_playback = compile(&f, true);
         let stale_revision = Arc::clone(stale_playback.prepared_revision().unwrap());
         f.control.stop();
-        let fence = f.control.request_native_epoch_fence(source).unwrap();
+        for stale in [
+            AppliedAudioSource {
+                output_identity: source.output_identity + 1,
+                ..source
+            },
+            AppliedAudioSource {
+                audio_revision: source.audio_revision + 1,
+                ..source
+            },
+            AppliedAudioSource {
+                context: hex_engine::AudioSourceContext {
+                    editor_revision: source.context.editor_revision + 1,
+                    ..source.context
+                },
+                ..source
+            },
+        ] {
+            assert!(
+                f.control
+                    .request_ordinary_native_epoch_fence(stale)
+                    .is_err()
+            );
+            assert!(!f.control.status.stopped_edit_pending());
+        }
+        let fence = if epoch_index == 0 {
+            f.control.request_native_epoch_fence(source)
+        } else {
+            f.control.request_ordinary_native_epoch_fence(source)
+        }
+        .unwrap();
         allocation_free(|| {
             f.data
                 .owner_mut()

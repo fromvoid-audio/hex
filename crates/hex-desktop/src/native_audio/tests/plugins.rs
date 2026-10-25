@@ -81,6 +81,21 @@ fn terminal(h: &mut ResidentHarness) -> Event {
     }
 }
 
+fn restored_terminal(h: &mut ResidentHarness) -> Event {
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        h.pump();
+        h.render();
+        if let Ok(event) = h.service.try_event()
+            && event.stopped_playback_restore_complete
+        {
+            return event;
+        }
+        assert!(Instant::now() < end, "stopped restore terminal timed out");
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return_main() {
@@ -305,6 +320,9 @@ fn native_effect_coordinator_restores_committed_effect_after_stop() {
         assert_eq!(restored.state.can_undo, accepted.state.can_undo);
         let (_, metadata) = h.applied(applied);
         assert!(metadata.stopped_restore);
+        // A new endpoint epoch has a fresh transport completion prefix; the
+        // native child's independent DSP gain-ramp counter remains at1.
+        wait(|| h.plugin_completed.load(Acquire) == 0);
         wait(|| {
             h.audio
                 .as_mut()
@@ -315,7 +333,7 @@ fn native_effect_coordinator_restores_committed_effect_after_stop() {
         });
         for block in 0..3 {
             let output = h.render_plugin_block();
-            wait(|| h.plugin_completed.load(Acquire) > block + 1);
+            wait(|| h.plugin_completed.load(Acquire) > block);
             if block < 2 {
                 // Return-path compensation delays the dry path too, as in the
                 // original insertion PCM oracle above.
@@ -390,6 +408,187 @@ fn native_effect_pending_restore_document_change_does_not_strand_next_output() {
     assert!(next.error.is_none(), "{:?}", next.error);
     assert!(next.plugin_effect_complete[0].accepted);
     assert_eq!(next.state.revision, new.state.revision + 1);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_history_reuses_original_after_undo_with_and_without_stop() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for stop in [false, true] {
+        native_effect_history_case(stop, false);
+    }
+    native_effect_history_case(true, true);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_history_after_observed_tail_terminal() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    native_effect_history_case(false, true);
+}
+
+fn native_effect_history_case(stop_while_undone: bool, drain_tail: bool) {
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let files = Files::new();
+    let original = h.run(Request::Import(files.wav(48_000, 4096))).state;
+    (applied, _) = h.applied(applied);
+    let track = original.project.tracks()[0].id();
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &original,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let inserted = terminal(&mut h);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render_plugin_block();
+    wait(|| h.plugin_completed.load(Acquire) == 1);
+    let undone = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert!(undone.state.project.main_devices().is_empty());
+    assert_eq!(
+        undone.state.project.track(track).unwrap().clips(),
+        original.project.track(track).unwrap().clips()
+    );
+    assert_eq!(
+        undone.state.project.assets().collect::<Vec<_>>(),
+        original.project.assets().collect::<Vec<_>>()
+    );
+    assert!(undone.state.can_redo);
+    if drain_tail {
+        let end = Instant::now() + Duration::from_secs(10);
+        let mut blocks = 0;
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .native_effect_source()
+            .is_some()
+        {
+            let before = h.plugin_completed.load(Acquire);
+            h.render_plugin_block();
+            blocks += 1;
+            if h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .native_effect_source()
+                .is_some()
+            {
+                wait(|| h.plugin_completed.load(Acquire) > before);
+            }
+            assert!(
+                Instant::now() < end,
+                "actual native tail terminal timed out"
+            );
+        }
+        assert!(
+            blocks > 0,
+            "control did not exercise the real outgoing tail"
+        );
+    }
+    let processed_before_stop = h.plugin_completed.load(Acquire);
+    if stop_while_undone {
+        h.audio.as_ref().unwrap().control.stop();
+        h.render_plugin_block();
+        let mut restored = h.run(Request::RestoreStoppedPlayback);
+        if !restored.stopped_playback_restore_complete {
+            restored = restored_terminal(&mut h);
+        }
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert!(restored.stopped_playback_restore_complete);
+        (applied, _) = h.applied(applied);
+    }
+    h.service.submit(Request::Redo).unwrap();
+    let redone = h.next();
+    assert!(
+        redone.error.is_none(),
+        "stop_while_undone={stop_while_undone}: {:?}",
+        redone.error
+    );
+    assert_eq!(
+        redone.state.project.snapshot(),
+        inserted.state.project.snapshot()
+    );
+    assert_eq!(redone.state.revision, inserted.state.revision + 2);
+    assert!(!redone.state.can_redo);
+    let end = Instant::now() + Duration::from_secs(10);
+    while h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_revision
+        .load(Acquire)
+        <= applied
+    {
+        h.pump();
+        let before = h.plugin_completed.load(Acquire);
+        h.render_plugin_block();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(
+            status
+                .rejected_revision()
+                .is_none_or(|(revision, _)| revision <= applied),
+            "redo callback refusal: {:?}",
+            status.rejected_revision()
+        );
+        if status.native_effect_source().is_some() && status.playing.load(Acquire) {
+            wait(|| h.plugin_completed.load(Acquire) > before);
+        }
+        assert!(Instant::now() < end, "actual history handoff timed out");
+    }
+    h.applied(applied);
+    assert_eq!(
+        h.plugin_records.load(Acquire),
+        1,
+        "history loaded a substitute source"
+    );
+    if stop_while_undone {
+        wait(|| h.plugin_completed.load(Acquire) == 0);
+        wait(|| {
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .is_ok()
+        });
+        for block in 0..3 {
+            let output = h.render_plugin_block();
+            wait(|| h.plugin_completed.load(Acquire) > block);
+            let expected = if block < 2 {
+                0.0
+            } else {
+                0.25 * (0.5 + processed_before_stop as f32 * 0.125)
+            };
+            assert!(
+                output.iter().all(|frame| *frame == [expected; 2]),
+                "history PCM: stop={stop_while_undone}, drained={drain_tail}, old DSP blocks={processed_before_stop}, block={block}, first={:?}, expected={expected}",
+                output[0]
+            );
+        }
+    }
 }
 
 #[test]

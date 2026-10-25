@@ -50,6 +50,25 @@ impl PublicationControl {
         &self,
         expected: AppliedAudioSource,
     ) -> Result<StoppedEditFence, &'static str> {
+        self.request_native_epoch_source_fence(expected, false)
+    }
+    /// Fence the exact current ordinary graph while renewing original loaded
+    /// sources, including sources removed by Undo whose tail has already ended.
+    /// Stop may remove the last foreign runtime before acknowledgement; the
+    /// actual ordinary graph/source must still match. Constructor/sampler and
+    /// verified-streaming paths retain their existing fences. Readiness grants
+    /// no return or renewal: original graph and endpoint ingestion remain required.
+    pub fn request_ordinary_native_epoch_fence(
+        &self,
+        expected: AppliedAudioSource,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.request_native_epoch_source_fence(expected, true)
+    }
+    fn request_native_epoch_source_fence(
+        &self,
+        expected: AppliedAudioSource,
+        ordinary: bool,
+    ) -> Result<StoppedEditFence, &'static str> {
         self.status.retire_stopped_edit_on_control();
         // Compensated stream windows currently reject the native bridge's
         // positive latency. Do not admit renewal in a mode that cannot install
@@ -61,20 +80,34 @@ impl PublicationControl {
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
             || self.status.publication_pending.recording_active()
-            || self.status.native_effect_source() != Some(expected)
+            || if ordinary {
+                self.status.applied_audio_source().is_some()
+                    || !self.candidate_root.ordinary_streams_configured()
+                    || self.status.recording_source() != Some(expected)
+            } else {
+                self.status.native_effect_source() != Some(expected)
+            }
         {
             return Err("native epoch output is not current or publication is pending");
         }
         if !self.status.publication_pending.reserve_native_epoch() {
             return Err("native epoch publication or recording is pending");
         }
-        match self.status.sampler_edit.begin_source(
-            expected,
-            self.status.admitted_ticket.load(Acquire),
-            false,
-            false,
-            true,
-        ) {
+        let result = if ordinary {
+            self.status.sampler_edit.begin_ordinary_native_epoch_source(
+                expected,
+                self.status.admitted_ticket.load(Acquire),
+            )
+        } else {
+            self.status.sampler_edit.begin_source(
+                expected,
+                self.status.admitted_ticket.load(Acquire),
+                false,
+                false,
+                true,
+            )
+        };
+        match result {
             Ok(token) => Ok(token),
             Err(reason) => {
                 self.status.publication_pending.release_native_epoch();
@@ -136,7 +169,11 @@ impl PublicationControl {
             || !self.candidate_root.ordinary_streams_configured()
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
-            || (self.status.native_effect_source() != Some(source) && !vacant)
+            || (self.status.native_effect_source() != Some(source)
+                && !(self.status.sampler_edit.ordinary_native_epoch_active()
+                    && self.status.applied_audio_source().is_none()
+                    && self.status.recording_source() == Some(source))
+                && !vacant)
             || source.output_identity != self.candidate_root.root_id()
             || self.status.sampler_edit.native_epoch_context(fence) != Some(source.context)
         {
@@ -337,6 +374,17 @@ impl PublicationControl {
     }
 }
 impl Callback {
+    pub(super) fn current_native_epoch_fence_source(&self) -> Option<AppliedAudioSource> {
+        if !self.status.sampler_edit.ordinary_native_epoch_active() {
+            return self.current_native_epoch_source();
+        }
+        let active = self.active.as_ref().and_then(ActivePublication::legacy)?;
+        active.source_context.map(|context| AppliedAudioSource {
+            context,
+            audio_revision: active.revision,
+            output_identity: self.candidate_root.root_id(),
+        })
+    }
     pub(super) fn current_native_epoch_source(&self) -> Option<AppliedAudioSource> {
         match self.active.as_ref()? {
             ActivePublication::Eligible(active) => active.applied_audio_source(),
@@ -423,7 +471,7 @@ impl Callback {
             }
             return;
         }
-        if self.current_native_epoch_source() != Some(source)
+        if self.current_native_epoch_fence_source() != Some(source)
             || self
                 .active
                 .as_ref()
