@@ -995,17 +995,15 @@ impl EditorView {
                 || "no item selected".into(),
                 |name| name.to_string_lossy().into_owned(),
             ),
-            _ => self
+            Some(BrowserItemKey::Device(class, id)) => self
                 .browser_visible_devices(cx)
-                .get(
-                    self.browser
-                        .selected_index
-                        .saturating_sub(self.browser_visible_entries(cx).len()),
-                )
+                .iter()
+                .find(|(candidate, entry)| *candidate == class && entry.type_id == id)
                 .map_or_else(
                     || "no item selected".into(),
                     |(_, entry)| entry.name.to_string(),
                 ),
+            None => "no item selected".into(),
         }
     }
 
@@ -1013,9 +1011,7 @@ impl EditorView {
         let entry = if self.browser.section == BrowserSection::Instruments {
             None
         } else {
-            self.browser_visible_entries(cx)
-                .get(self.browser.selected_index)
-                .cloned()
+            self.browser_selected_entry(cx)
         };
         browser_divider()
             .h(px(50.0))

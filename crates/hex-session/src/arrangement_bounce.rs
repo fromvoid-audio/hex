@@ -8,6 +8,7 @@ use std::{
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
 };
+mod console;
 static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn isolated(
@@ -58,7 +59,9 @@ pub(crate) fn isolated(
             .tracks
             .retain(|track| track.id == item.track.value());
         let track = snapshot.tracks.first_mut().ok_or("bounce track changed")?;
-        if matches!(target, BounceTarget::Clips(_)) {
+        if matches!(item.source, hex_project::BounceSource::Console { .. }) {
+            track.content = console::content(project, item, &mut snapshot.next_id)?;
+        } else if matches!(target, BounceTarget::Clips(_)) {
             let selected = item
                 .clips
                 .iter()
@@ -200,6 +203,7 @@ impl Session {
                 .map_err(|e| e.to_string())?;
                 prepared.push(PreparedImport::new(decoded).map_err(|e| e.to_string())?);
                 files.push(BounceFile {
+                    source: item.source,
                     track: item.track,
                     start: item.start,
                     frames,

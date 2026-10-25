@@ -154,6 +154,7 @@ pub(crate) fn plan(
         }
     }
     Ok(BounceTrack {
+        source: crate::BounceSource::Arrangement,
         track: owner.id(),
         start,
         end,
@@ -171,7 +172,10 @@ pub(crate) fn commit(
     let [file] = files.as_slice() else {
         return Err(Invalid("audio grouping requires one rendered output"));
     };
-    if file.track != item.track || file.start != item.start || file.frames != item.end - item.start
+    if file.source != crate::BounceSource::Arrangement
+        || file.track != item.track
+        || file.start != item.start
+        || file.frames != item.end - item.start
     {
         return Err(Invalid(
             "grouped render differs from its captured audio span",
