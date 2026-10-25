@@ -141,17 +141,17 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     // The fixture's two-frame release must start in this first callback even
     // while Service is blocked, then become exactly silent.
     let cancelled = render(h, true);
-    for i in 0..64 {
-        for c in 0..2 {
+    for (i, frame) in cancelled.iter().enumerate() {
+        for (c, sample) in frame.iter().enumerate() {
             let expected = match i {
                 0 => root[0][c] + octave[0][c],
                 1 => (root[1][c] + octave[1][c]) * 0.5,
                 _ => 0.0,
             };
             assert!(
-                (cancelled[i][c] - expected).abs() < 1e-6,
+                (sample - expected).abs() < 1e-6,
                 "focus cancellation {i}: {:?}; {:?}",
-                cancelled[i],
+                frame,
                 cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
             );
         }
