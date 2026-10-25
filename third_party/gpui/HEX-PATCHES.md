@@ -316,7 +316,9 @@ before mouse dispatch. This input state survives consumed move events and cached
 view replay, and ends on matching release, button loss, escape or window
 inactivation. Div suppresses ordinary/group hover styles and tooltip eligibility
 while this state is active, reconciling stored hover callbacks during paint when
-capture prevented their move listener from running. Typed drag-over styles and
+capture prevented their move listener from running. Already visible hoverable
+tooltips are hidden immediately, and pending tooltip builders do not run during
+the drag even when capture swallowed their cancellation event. Typed drag-over styles and
 drop handlers keep their existing hit testing and delivery. This is a bounded
 pure-Rust input/paint change in the existing dependency; there is no native API,
 unsafe Hex code, new UI framework or project/audio contract change.
