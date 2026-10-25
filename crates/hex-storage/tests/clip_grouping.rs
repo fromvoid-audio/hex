@@ -415,3 +415,57 @@ fn current_group_inventory_requires_each_clip_and_explicit_nullable_state() {
         assert!(decode(&bytes(&duplicate)).is_err());
     }
 }
+
+#[test]
+fn time_group_midi_empty_margins_and_note_timing_survive_current_codec() {
+    use hex_project::{BeatTime, TimeRange};
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = e
+        .execute(Command::AddTrack {
+            name: "notes".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = e
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ONE,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    e.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })
+    .unwrap();
+    let end = e
+        .project()
+        .tempo_map()
+        .beat_to_frame(BeatTime::from_quarters(3).unwrap())
+        .unwrap();
+    let Created::Clip(group) = e
+        .execute(Command::GroupTimeRange(
+            TimeRange::new(vec![track], 0, end).unwrap(),
+        ))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let reopened = decode(&encode(e.project()).unwrap()).unwrap();
+    assert_eq!(reopened, *e.project());
+    let clip = reopened.midi_clip(group).unwrap();
+    assert_eq!(
+        (clip.start(), clip.length()),
+        (BeatTime::ZERO, BeatTime::from_quarters(3).unwrap())
+    );
+    assert_eq!(clip.notes()[0].start(), BeatTime::ONE);
+}
