@@ -1,4 +1,10 @@
 //! Compact, bounded left-side media and project browser.
+//!
+//! This UI owner composes existing file, native-device and plugin projections;
+//! library/catalog owners retain matching and within-kind ordering. Nonempty All
+//! search places native devices then plugins before files. Other sources and empty
+//! browsing retain file-first order. Row ranges are shared by virtualization,
+//! stable-key selection/history, activation, folder navigation and audition.
 mod audition;
 mod folder_places;
 mod history;
@@ -150,11 +156,36 @@ pub(super) enum BrowserSection {
     Collection(usize),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum BrowserItemKey {
     File(PathBuf),
     Plugin(PathBuf, Option<[u8; 16]>),
     Device(hex_engine::NativeDeviceClass, hex_engine::DeviceTypeId),
+}
+
+/// Global row ranges; existing projections retain their local order/identity.
+struct BrowserRows {
+    files: std::ops::Range<usize>,
+    devices: std::ops::Range<usize>,
+    plugins: std::ops::Range<usize>,
+}
+
+impl BrowserRows {
+    fn new(files: usize, devices: usize, plugins: usize, devices_first: bool) -> Self {
+        if devices_first {
+            Self {
+                devices: 0..devices,
+                plugins: devices..devices + plugins,
+                files: devices + plugins..devices + plugins + files,
+            }
+        } else {
+            Self {
+                files: 0..files,
+                devices: files..files + devices,
+                plugins: files + devices..files + devices + plugins,
+            }
+        }
+    }
 }
 
 pub(super) struct BrowserState {
@@ -852,11 +883,7 @@ impl EditorView {
         if !self.browser.results_focused || self.browser.section == BrowserSection::Instruments {
             return;
         }
-        if let Some(entry) = self
-            .browser_visible_entries(cx)
-            .get(self.browser.selected_index)
-            .cloned()
-        {
+        if let Some(entry) = self.browser_selected_entry(cx) {
             match entry.kind {
                 EntryKind::WaveAudio => self.play_browser_sample(entry.path, cx),
                 EntryKind::Directory => self.expand_browser_folder(entry.path, cx),
@@ -1442,10 +1469,9 @@ impl EditorView {
         self.browser.results_focused = count > 0;
         if previous != (self.browser.results_focused, self.browser.selected_index) {
             let path = self
-                .browser_visible_entries(cx)
-                .get(self.browser.selected_index)
+                .browser_selected_entry(cx)
                 .filter(|entry| entry.kind == EntryKind::WaveAudio)
-                .map(|entry| entry.path.clone());
+                .map(|entry| entry.path);
             self.browser_selection_audition(path, cx);
         }
         self.browser
@@ -1498,12 +1524,11 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let Some(entry) = self
-            .browser_visible_entries(cx)
-            .get(self.browser.selected_index)
-            .cloned()
-        else {
-            if !self.browser_visible_devices(cx).is_empty() {
+        let Some(entry) = self.browser_selected_entry(cx) else {
+            if matches!(
+                self.browser_selected_item(cx),
+                Some(BrowserItemKey::Device(..))
+            ) {
                 self.status = "drag a browser device onto a track or device rail".into();
                 cx.notify();
             }
@@ -1568,10 +1593,9 @@ impl EditorView {
         if !self.browser.results_focused {
             return None;
         }
-        self.browser_visible_entries(cx)
-            .get(self.browser.selected_index)
+        self.browser_selected_entry(cx)
             .filter(|entry| entry.kind == EntryKind::WaveAudio)
-            .map(|entry| entry.path.clone())
+            .map(|entry| entry.path)
     }
 
     /// Reveal only the same stable sample painted by the control. A replacement
@@ -1612,6 +1636,28 @@ impl EditorView {
     fn browser_place_unavailable(&self) -> bool {
         matches!(self.browser.section, BrowserSection::Place(_))
             && (self.browser.loading || self.browser.error.is_some())
+    }
+
+    fn browser_devices_first(&self, cx: &App) -> bool {
+        self.browser.section == BrowserSection::All
+            && !self.browser.search.read(cx).text().is_empty()
+    }
+
+    fn browser_rows(&self, cx: &App) -> BrowserRows {
+        BrowserRows::new(
+            self.browser_visible_entries(cx).len(),
+            self.browser_visible_devices(cx).len(),
+            self.browser_visible_plugins(cx).len(),
+            self.browser_devices_first(cx),
+        )
+    }
+
+    fn browser_selected_entry(&self, cx: &App) -> Option<LibraryEntry> {
+        let local = self
+            .browser
+            .selected_index
+            .checked_sub(self.browser_rows(cx).files.start)?;
+        self.browser_visible_entries(cx).get(local).cloned()
     }
 
     fn browser_visible_entries(&self, cx: &App) -> Arc<Vec<LibraryEntry>> {
@@ -1719,6 +1765,7 @@ impl EditorView {
         if matches!(section, BrowserSection::All | BrowserSection::Instruments)
             && self.browser.device_catalog.is_none()
         {
+            let selection = self.browser_selected_item(cx);
             let catalog = (|| {
                 let mut entries = Vec::new();
                 for class in [
@@ -1735,6 +1782,9 @@ impl EditorView {
                 Ok(entries)
             })();
             self.browser.device_catalog = Some(catalog);
+            if selection.is_some() {
+                self.restore_browser_selection(selection, cx);
+            }
         }
         let entries = self.browser_visible_entries(cx);
         let devices = if section == BrowserSection::All {
@@ -1746,25 +1796,32 @@ impl EditorView {
         let device_count = devices.len();
         let plugins = self.browser_visible_plugins(cx);
         let row_count = file_count + device_count + plugins.len();
+        let positions = BrowserRows::new(
+            file_count,
+            device_count,
+            plugins.len(),
+            self.browser_devices_first(cx),
+        );
         let rows = uniform_list(
             "library-browser-entries",
             row_count,
             cx.processor(move |view, range: std::ops::Range<usize>, _window, cx| {
                 range
                     .filter_map(|index| {
-                        if let Some(entry) = entries.get(index).cloned() {
-                            Some(view.browser_row(index, entry, cx))
+                        if positions.files.contains(&index) {
+                            entries
+                                .get(index - positions.files.start)
+                                .cloned()
+                                .map(|entry| view.browser_row(index, entry, cx))
+                        } else if positions.devices.contains(&index) {
+                            devices.get(index - positions.devices.start).cloned().map(
+                                |(class, entry)| view.browser_device_row(index, class, entry, cx),
+                            )
                         } else {
-                            if let Some((class, entry)) =
-                                devices.get(index.saturating_sub(file_count)).cloned()
-                            {
-                                Some(view.browser_device_row(index, class, entry, cx))
-                            } else {
-                                plugins
-                                    .get(index.saturating_sub(file_count + device_count))
-                                    .cloned()
-                                    .map(|row| view.browser_plugin_row(index, row, cx))
-                            }
+                            plugins
+                                .get(index.checked_sub(positions.plugins.start)?)
+                                .cloned()
+                                .map(|row| view.browser_plugin_row(index, row, cx))
                         }
                     })
                     .collect()
@@ -2293,8 +2350,13 @@ impl EditorView {
                         cx.stop_propagation();
                         return;
                     }
+                    let Some(current) =
+                        view.browser_history_index(&BrowserItemKey::File(click_path.clone()), cx)
+                    else {
+                        return;
+                    };
                     view.checkpoint_browser_history(cx);
-                    view.browser.selected_index = index;
+                    view.browser.selected_index = current;
                     view.browser.results_focused = true;
                     view.browser_selection_audition(
                         (click_kind == EntryKind::WaveAudio).then(|| click_path.clone()),
@@ -2328,7 +2390,12 @@ impl EditorView {
                     if view.browser_place_unavailable() {
                         return;
                     }
-                    view.browser.selected_index = index;
+                    let Some(current) =
+                        view.browser_history_index(&BrowserItemKey::File(sampler_path.clone()), cx)
+                    else {
+                        return;
+                    };
+                    view.browser.selected_index = current;
                     view.browser.results_focused = true;
                     view.open_first_sampler_menu(sampler_path.clone(), event.position, window, cx);
                 }),
@@ -2483,7 +2550,9 @@ impl EditorView {
             return_destination: Rc::new(Cell::new(None)),
         });
         let row = div()
-            .id(("browser-device", index))
+            .id(gpui::SharedString::from(format!(
+                "browser-device-{class_label}-{debug_type}"
+            )))
             .debug_selector(move || format!("browser-device-{class_label}-{debug_type}"))
             .h(px(ROW_HEIGHT))
             .px_1()
@@ -2502,8 +2571,13 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
+                    let Some(current) =
+                        view.browser_history_index(&BrowserItemKey::Device(class, type_id), cx)
+                    else {
+                        return;
+                    };
                     view.checkpoint_browser_history(cx);
-                    view.browser.selected_index = index;
+                    view.browser.selected_index = current;
                     view.browser.results_focused = true;
                     view.browser.results_focus.focus(window);
                     window.prevent_default();

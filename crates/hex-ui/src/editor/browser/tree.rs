@@ -528,7 +528,7 @@ impl EditorView {
                     if entries[index].kind != EntryKind::WaveAudio {
                         self.browser_selection_audition(None, cx);
                     }
-                    Some(index)
+                    Some(self.browser_rows(cx).files.start + index)
                 } else {
                     self.browser_selection_audition(None, cx);
                     entries
@@ -538,14 +538,12 @@ impl EditorView {
                             entry.kind == EntryKind::Directory && path.starts_with(&entry.path)
                         })
                         .max_by_key(|(_, entry)| entry.path.components().count())
-                        .map(|(index, _)| index)
+                        .map(|(index, _)| self.browser_rows(cx).files.start + index)
                 }
             }
-            BrowserItemKey::Device(class, id) => self
-                .browser_visible_devices(cx)
-                .iter()
-                .position(|(candidate, entry)| *candidate == class && entry.type_id == id)
-                .map(|index| entries.len() + index),
+            BrowserItemKey::Device(class, id) => {
+                self.browser_history_index(&BrowserItemKey::Device(class, id), cx)
+            }
             BrowserItemKey::Plugin(path, id) => {
                 self.browser_history_index(&BrowserItemKey::Plugin(path, id), cx)
             }
@@ -580,7 +578,7 @@ impl EditorView {
             .position(|entry| entry.path == path)
             && !self.browser.results_focused
         {
-            self.browser.selected_index = index;
+            self.browser.selected_index = self.browser_rows(cx).files.start + index;
             self.browser.results_focused = true;
         }
         self.start_browser_tree_worker(cx);
@@ -597,7 +595,7 @@ impl EditorView {
         }
         self.checkpoint_browser_history(cx);
         let entries = self.browser_visible_entries(cx);
-        let Some(entry) = entries.get(self.browser.selected_index) else {
+        let Some(entry) = self.browser_selected_entry(cx) else {
             return;
         };
         if entry.kind == EntryKind::Directory && self.browser.tree.expanded.contains(&entry.path) {
@@ -606,6 +604,7 @@ impl EditorView {
             candidate.kind == EntryKind::Directory
                 && entry.path.parent() == Some(candidate.path.as_path())
         }) {
+            let index = self.browser_rows(cx).files.start + index;
             self.browser.selected_index = index;
             self.browser.results_focused = true;
             self.browser_selection_audition(None, cx);
@@ -625,9 +624,10 @@ impl EditorView {
                 .iter()
                 .position(|entry| entry.path.parent() == Some(path.as_path()))
             {
+                let entry = &entries[index];
+                let index = self.browser_rows(cx).files.start + index;
                 self.browser.selected_index = index;
                 self.browser.results_focused = true;
-                let entry = &entries[index];
                 self.browser_selection_audition(
                     (entry.kind == EntryKind::WaveAudio).then(|| entry.path.clone()),
                     cx,
