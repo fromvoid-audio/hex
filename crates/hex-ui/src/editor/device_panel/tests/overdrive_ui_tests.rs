@@ -172,3 +172,84 @@ fn overdrive_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
         );
     });
 }
+
+#[gpui::test]
+fn overdrive_preview_uses_unacknowledged_draft_and_retires_on_owner_change(
+    cx: &mut TestAppContext,
+) {
+    let (project, track, _, _) = crate::editor::clip_drag_ui_test::midi_project();
+    let original = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.overdrive"),
+    )
+    .expect("state");
+    let mut controller = Editor::new(project, 8).expect("editor");
+    controller
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: original.clone(),
+        })
+        .expect("device");
+    let device = controller.project().track(track).expect("track").devices()[0].id();
+    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        controller.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        cx.notify();
+    });
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let expected = hex_engine::patch_native_device_parameter(
+        &original,
+        hex_lattice_contract::ParameterId::from_static(1),
+        ParameterValue::Float(2_400.0),
+    )
+    .expect("draft");
+    editor.update(cx, |view, cx| {
+        // The no-worker fixture deliberately holds acknowledgement outstanding.
+        view.worker_requests_pending = 1;
+        view.device_panel.pending_values.insert(
+            ParameterKey {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(1),
+            },
+            ParameterValue::Float(2_400.0),
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .expect("state")
+                .project
+                .track(track)
+                .expect("track")
+                .devices()[0]
+                .state(),
+            &original
+        );
+        assert_eq!(
+            overdrive_panel::cached_curve(view, device),
+            Some(
+                &hex_engine::native_overdrive_filter_response(&expected, 48_000)
+                    .expect("draft preview")
+            )
+        );
+    });
+    editor.update(cx, |view, cx| {
+        view.worker_requests_pending = 0;
+        view.selected_track = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(overdrive_panel::cached_curve(view, device).is_none())
+    });
+}
