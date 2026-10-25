@@ -118,10 +118,12 @@ impl AudioTransformPreparation {
         }
         // The existing key matcher checks the anchor source. Every remaining
         // source's immutable PCM and conversion identity participates explicitly.
+        // Group output is frozen in frames; translating its destination does
+        // not change the captured source program or require another PCM copy.
         let anchor = &sources[0];
         if let Some(audio) = self.lookup_key(anchor.audio, anchor.asset, |key| {
-            matches!(key, EntryKey::Group { root_only: old_root_only, edit: old, start, duration, sources: old_sources }
-                if *old_root_only == root_only && old == edit && *start == clip.start() && *duration == clip.duration()
+            matches!(key, EntryKey::Group { root_only: old_root_only, edit: old, duration, sources: old_sources }
+                if *old_root_only == root_only && old == edit && *duration == clip.duration()
                 && old_sources.len() == sources.len()
                 && old_sources.iter().zip(sources).all(|((pcm, conversion, rate), source)|
                     pcm.shares_pcm_with(source.audio) && pcm.sample_rate() == source.audio.sample_rate()
@@ -257,7 +259,6 @@ impl AudioTransformPreparation {
             key: EntryKey::Group {
                 root_only,
                 edit: edit.clone(),
-                start: clip.start(),
                 duration: clip.duration(),
                 sources: identities,
             },
