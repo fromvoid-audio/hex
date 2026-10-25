@@ -157,7 +157,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     })?;
     // The frozen predecessor sees only state it can represent. It still owns
     // its complete directed views, native devices, musical roots and histories.
-    let legacy = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
+    let legacy = Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
     let mut value = super::content_views::encode(&legacy)?;
     let object = value
         .as_object_mut()
@@ -226,7 +226,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "audio event fades reference a missing arrangement clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 #[cfg(test)]

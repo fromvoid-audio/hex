@@ -3,6 +3,7 @@
 use hex_project::{Command, Editor};
 use hex_storage::{decode, encode};
 use serde_json::{Value, json};
+mod common;
 
 const WRITERS: &[&[u8]] = &[
     include_bytes!("fixtures/early/schema13-hybrid-89674b36.json"),
@@ -164,7 +165,8 @@ fn original_writers_preserve_complete_saved_values_roundtrip_and_history() {
         let mut old = value(fixture);
         let version = old["version"].as_u64().unwrap();
         let project = decode(fixture).unwrap_or_else(|err| panic!("schema{version}: {err}"));
-        let current = value(&encode(&project).unwrap());
+        let mut current = value(&encode(&project).unwrap());
+        common::restore_pre_binding_instruments(&mut current);
         if matches!(version, 20 | 21) && old.get("import_provenance").is_none() {
             for track in old["tracks"].as_array_mut().unwrap() {
                 for clip in track["audio_clips"].as_array_mut().unwrap() {
@@ -344,7 +346,7 @@ fn historical_load_and_save_as_keep_original_bytes_and_tokens() {
 }
 
 #[test]
-fn retained_explicit_schema22_writer_preserves_gain_seams_and_relocated_touch_origins() {
+fn source_bearing_project_refuses_schema22_and_current_format_preserves_gain_history() {
     use hex_project::{BeatTime, GainTouchContext, GainTouchSpan, GainTouchStep, Project};
     let base = decode(include_bytes!(
         "fixtures/early/schema22-touch-60c88034.json"
@@ -385,7 +387,8 @@ fn retained_explicit_schema22_writer_preserves_gain_seams_and_relocated_touch_or
         ],
     }];
     let project = Project::from_snapshot(snapshot).unwrap();
-    let encoded = hex_storage::encode_schema22(&project).unwrap();
+    assert!(hex_storage::encode_schema22(&project).is_err());
+    let encoded = encode(&project).unwrap();
     assert_eq!(decode(&encoded).unwrap(), project);
     let original = value(&encoded);
     for field in ["incoming_gain", "source_start_raw"] {

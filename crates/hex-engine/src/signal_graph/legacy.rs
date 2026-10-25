@@ -43,6 +43,10 @@ impl RendererRuntime {
                 compensation
                     .delays
                     .push_transport_stamp(TransportStamp {
+                        tempo_micro_bpm: project
+                            .tempo_map
+                            .as_ref()
+                            .map(|map| map.tempo_at(beat).micro_bpm()),
                         performance_frame: frame,
                         transport_is_running: true,
                         arrangement_frame: frame,

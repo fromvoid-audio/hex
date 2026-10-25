@@ -616,6 +616,10 @@ impl Command {
             | Self::ClearSessionCell { .. }
             | Self::SetSessionStopCell { .. }
             | Self::PlaceMidiClip { .. }
+            | Self::BindTrackSource { .. }
+            | Self::CreateNativeSource { .. }
+            | Self::RenameNativeSource { .. }
+            | Self::RemoveNativeSource(_)
             | Self::PlaceMidiClipWithOverwrite { .. } => ClipCommandScope::Unrelated,
         }
     }

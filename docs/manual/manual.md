@@ -423,6 +423,50 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+reverb combines resonant input filters (20 hz–20 khz, q 0.1–10), early reflections and a diffusion network.
+use predelay to separate the room from the source; size, decay, diffusion and
+scale shape its space. spin moves the early reflections, while chorus modulates
+the late network. low/high controls shape frequency-dependent decay. reflect and
+diffuse set the two wet components; stereo sets their width. dry/wet blends the
+room with the original. on a return, start at 100 percent wet and use the send.
+
+freeze holds the network. flat removes its decay shaping and cut blocks new
+excitation. stop and seek clear the room; loop wraps continue it. bypass passes
+dry while history advances privately. removing a device drains its old history;
+a removed frozen tail persists until stop. retained tails use bounded host banks;
+a full bank refuses another edit rather than discarding an existing tail. smooth
+sets none, fast or slow parameter transitions; density selects scattering depth.
+all controls use undo/redo and survive save/reopen. device-parameter automation
+lanes are not currently offered. the functional control set does not establish
+sound parity with another application's reverb.
+
+the delay effect has independent left and right timing. **sync** selects a
+multiple of a sixteenth note; **time** selects 1–5000 ms. sync is bounded to
+16 seconds, including offsets and modulation. **link** shares timing, mode and
+division changes; the two percentage offsets remain independent. **feedback**
+sets repeat gain from 0–95%, and **dry/wet** blends the original and delayed sound.
+
+**repitch** glides to new times, **fade** crossfades taps and **jump** changes
+them immediately. **ping pong** alternates repeats between channels. **freeze**
+ignores new input and cycles the existing history; turn it off to let repeats
+decay. the filter graph edits frequency horizontally and octave width vertically.
+expand **lfo** for timing modes, waveform, morph, delay/filter modulation,
+**hi quality** interpolation and **eq loudness** mix law.
+
+bypass keeps delay history warm while passing dry audio. removing a playing delay
+releases freeze and lets its existing repeats decay; stop and seek clear history.
+loop wraps preserve repeats. changing sample rate prepares empty history at the
+new rate. settings use ordinary device undo and save/reopen; runtime audio history
+is transient. automation lanes are currently unsupported. the control set follows
+the reference device, while the filter, interpolation and modulation algorithms
+are original hex implementations.
+
+overdrive filters the signal before distortion. use **frequency** and **bandwidth**
+to choose the input band; the graph shows this filter response. **drive** adds
+distortion, **tone** adjusts its brightness, and **dynamics** restores more of the
+input's level changes as it increases. **dry/wet** blends the original signal with
+the processed sound. the effect is available on track, return and main chains.
+
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes

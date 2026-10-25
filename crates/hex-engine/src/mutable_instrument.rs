@@ -47,11 +47,13 @@ pub(crate) fn runtime_limits(
 }
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
-/// Combined declared DSP storage for committed/scratch pairs in one active
-/// graph or one retained-tail bank. Variable-size instrument requirements draw
-/// from this pool; the separate 64 KiB effect-twin limit is not an instrument cap.
-/// Host ledgers, checkpoints and retarget proofs have separate charged bounds.
+/// Per-instrument committed/scratch storage limit. Effect limits are separate;
+/// the combined graph/tail pool below charges all providers and owned buffers.
 pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
+/// Complete declared DSP pair pool, including owned time-effect rings. Host
+/// ledgers/checkpoints and the existing complete candidate cap remain independent.
+pub(crate) const MAX_GRAPH_RUNTIME_PAIR_BYTES: usize =
+    2 * hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES;
 /// Retarget proof storage is independent of effect runtime payload size.
 pub(crate) const MAX_INSTRUMENT_RETARGET_PROOF_BYTES: usize = 4_096;
 
@@ -1103,7 +1105,7 @@ fn has_mutable_suppression(
 }
 
 /// Checked complete active-pair budget. The already-prepared effect graph
-/// admits at most 256 stateful instances. Effects retain their separate 64 KiB
+/// admits at most 256 stateful instances. Effects retain their separate 256 KiB
 /// per-twin bound; variable-size instruments consume the same aggregate pool.
 pub(crate) fn validate_mutable_graph_budget(
     existing_count: usize,
@@ -1118,7 +1120,7 @@ pub(crate) fn validate_mutable_graph_budget(
         .checked_add(pair_bytes)
         .ok_or(MutableInstrumentRuntimeError::Budget)?;
     if total_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-        || total_bytes > MAX_STATEFUL_RUNTIME_PAIR_BYTES
+        || total_bytes > MAX_GRAPH_RUNTIME_PAIR_BYTES
     {
         return Err(MutableInstrumentRuntimeError::Budget);
     }

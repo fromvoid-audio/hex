@@ -166,9 +166,13 @@ pub(crate) fn paste(
             .parent_group
             .and_then(|parent| remap.get(&parent).copied())
             .or(destination.parent_group);
-        for device in track.devices.iter_mut().chain(track.instrument.iter_mut()) {
+        for device in &mut track.devices {
             device.id = DeviceId(project.allocate_id()?);
         }
+        if let Some(binding) = &track.instrument {
+            track.instrument = Some(project.copy_source_binding(binding)?);
+        }
+
         for clip in &mut track.content.audio_clips {
             clip.id = ClipId(project.allocate_id()?);
         }

@@ -3805,7 +3805,13 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
-                Request::Edit(command) if private_sampler => {
+                Request::Edit(command)
+                    if private_sampler
+                        || matches!(&command,
+                        Command::BindTrackSource { source: Some(source), .. }
+                        if session.project().native_source(*source).is_some_and(|definition|
+                            hex_engine::native_device_resources::requires_private_sampler_state(definition.instrument().state()))) =>
+                {
                     let current = compiled.as_ref().map(|(_, p)| {
                         hex_engine::native_device_resources::ControlSamplerSelection {
                             sources: current_sources.as_ref(),

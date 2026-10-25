@@ -212,7 +212,8 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
             notes: Vec::new(),
         })
         .collect();
-    let full_project = Project::from_snapshot(Snapshot {
+    let full_project = Project::from_legacy_snapshot(Snapshot {
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),

@@ -25,6 +25,7 @@ struct Root {
     selector: Entity<Selector>,
     width: f32,
     top: f32,
+    height: f32,
 }
 impl Render for Root {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -32,7 +33,7 @@ impl Render for Root {
             .debug_selector(|| "selector-slot".into())
             .w(px(self.width))
             .pt(px(self.top))
-            .h(px(self.top + 24.0))
+            .h(px(self.top + self.height))
             .overflow_hidden()
             .child(self.selector.clone())
     }
@@ -61,6 +62,7 @@ fn fixture(
                 selector: selector.clone(),
                 width: 180.0,
                 top: 0.0,
+                height: 24.0,
             });
             (selector, root)
         })
@@ -247,4 +249,51 @@ fn compact_popup_and_field_form_one_aligned_rectangle(cx: &mut TestAppContext) {
     visual.simulate_click(first.center(), gpui::Modifiers::default());
     visual.run_until_parked();
     selector.read_with(cx, |selector, _| assert_eq!(selector.selected(), 0));
+}
+
+#[gpui::test]
+fn segmented_grid_rows_are_bounded_and_vertical_keys_follow_columns(cx: &mut TestAppContext) {
+    for columns in [0, 129, usize::MAX] {
+        assert!(
+            SelectorConfig::new("grid", ["a"], 0, STYLE)
+                .unwrap()
+                .with_segment_columns(columns)
+                .is_err()
+        );
+    }
+    let (handle, selector, root) = fixture(cx, SelectorAppearance::CompactSegments);
+    let grid = cx.new(|cx| {
+        Selector::from_config(
+            cx,
+            SelectorConfig::new("grid", ["1", "2", "3", "4", "5", "6", "8", "16"], 0, STYLE)
+                .unwrap()
+                .with_segment_columns(2)
+                .unwrap(),
+        )
+    });
+    root.update(cx, |root, cx| {
+        root.selector = grid.clone();
+        root.width = 64.0;
+        root.height = 70.0;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(200.0), px(160.0)));
+    visual.run_until_parked();
+    let first = visual.debug_bounds("grid-option-0").unwrap();
+    let second = visual.debug_bounds("grid-option-1").unwrap();
+    let third = visual.debug_bounds("grid-option-2").unwrap();
+    let last = visual.debug_bounds("grid-option-7").unwrap();
+    assert_eq!(first.top(), second.top());
+    assert!(first.right() <= second.left());
+    assert!(first.bottom() <= third.top());
+    assert!(last.bottom() <= visual.debug_bounds("selector-slot").unwrap().bottom());
+    visual.simulate_click(first.center(), gpui::Modifiers::default());
+    visual.simulate_keystrokes("down");
+    assert_eq!(grid.read_with(cx, |g, _| g.selected), 2);
+    visual.simulate_keystrokes("right");
+    assert_eq!(grid.read_with(cx, |g, _| g.selected), 3);
+    visual.simulate_keystrokes("up");
+    assert_eq!(grid.read_with(cx, |g, _| g.selected), 1);
+    assert_eq!(selector.read_with(cx, |g, _| g.selected), 0);
 }

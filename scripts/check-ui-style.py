@@ -124,6 +124,12 @@ widgets = (
     # Saturator composition uses typed shared controls and a normalized plot;
     # its axis/error text is routed through theme::text at the panel boundary.
     'plot)', 'plot.id(', 'self.project_spectrum_panel(', 'self.project_spectrum_pointer_events(', 'chooser)', 'drive)', 'wet)',
+    # Delay composition children are typed Div/shared controls; captions are
+    # normalized through theme::text by control()/channel()/segment_button().
+    'row()', 'mode)', 'timing)', 'offset)', 'right)', 'freeze)', 'smoothing)',
+    'ping)', 'mix)', 'filter)', 'frequency)', 'width)', 'filter_row)',
+    'disclosure)', 'delay_mod)', 'filter_mod)', 'modulation)', 'rate)', 'wave)',
+    'morph)', 'quality)', 'loudness)', 'timings)', 'center)',
     # Compressor composition uses shared typed numeric controls and normalized plot.
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
@@ -189,7 +195,15 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith(('self.console_column_edge(',
                                    'self.console_column_surface(', 'tail)'))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component:
+        # Reverb's grouped panel passes bound controls and provider plot data;
+        # titles and numeric/toggle labels normalize through theme::text.
+        reverb_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/reverb_panel.rs'
+            and suffix.startswith(('row(', 'title(', 'graph(', 'graph_column)',
+                                   'contour)', 'early)', 'diffusion)', 'chorus)',
+                                   'top)', 'bottom)', 'smooth)', 'density)', 'freeze)', 'high)', 'low)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

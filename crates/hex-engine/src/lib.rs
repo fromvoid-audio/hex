@@ -10,6 +10,7 @@
 //! Does not edit canonical projects, open media files/devices, own page-worker queues or infer
 //! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
 //! control owns preparation and final destruction.
+mod native_effect_storage;
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -17,10 +18,16 @@ pub use hex_devices::auto_pan::{
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
+/// Native delay metadata and control-side filter display queries.
+pub use hex_devices::delay;
 /// Control-side EQ node editing and its opaque versioned state contract.
 pub use hex_devices::eq;
 pub use hex_devices::operator_state::algorithms::CATALOG as native_operator_algorithms;
 pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
+pub use hex_devices::overdrive::{
+    OverdriveFilterResponse, filter_response as native_overdrive_filter_response,
+};
+pub use hex_devices::reverb::{ReverbPreview, preview as native_reverb_preview};
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
 };

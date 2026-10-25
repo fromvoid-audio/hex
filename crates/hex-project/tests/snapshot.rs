@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 fn valid_snapshot() -> Snapshot {
     Snapshot {
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
@@ -163,6 +164,14 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
         state: hex_project::default_instrument_state().unwrap(),
     });
     valid.tracks[0].instrument_position = Some(0);
+    valid
+        .native_sources
+        .push(hex_project::NativeSourceSnapshot {
+            id: 51,
+            name: "source".into(),
+            devices: vec![valid.tracks[0].instrument.clone().unwrap()],
+            instrument_index: 0,
+        });
     assert_eq!(
         Project::from_snapshot(valid).unwrap().tracks()[0].instrument_position(),
         Some(0)
