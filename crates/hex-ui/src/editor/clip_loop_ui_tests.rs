@@ -124,13 +124,45 @@ fn drag(f: &mut Fixture, kind: &str, dx: f32, modifiers: Modifiers) -> gpui::Poi
 fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge(
     cx: &mut TestAppContext,
 ) {
-    for (midi, reversed) in [(false, false), (true, false), (false, true), (true, true)] {
+    for (midi, reversed, selected_range) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, false),
+        (false, false, true),
+        (true, false, true),
+    ] {
         let mut f = fixture(cx, midi);
         if reversed {
             f.editor.update(&mut f.visual, |v, _| {
                 assert!(v.enqueue(Request::Edit(Command::ReverseClips(vec![f.clip]))));
             });
             pump(&f.editor, &mut f.visual);
+        }
+        if selected_range {
+            f.editor.update(&mut f.visual, |v, cx| {
+                let state = v.state.as_ref().unwrap();
+                let track = state
+                    .project
+                    .tracks()
+                    .iter()
+                    .find(|track| {
+                        track.clips().iter().any(|clip| clip.id() == f.clip)
+                            || track.midi_clips().iter().any(|clip| clip.id() == f.clip)
+                    })
+                    .unwrap()
+                    .id();
+                v.time_selection = Some(crate::editor::time_selection::TimeSelection {
+                    anchor_track: track,
+                    end_track: track,
+                    anchor_frame: 0,
+                    end_frame: state.timeline_frames,
+                });
+                v.time_selection_project_scope = false;
+                v.selected_clip = None;
+                cx.notify();
+            });
+            f.visual.run_until_parked();
         }
         let before = f.editor.read_with(&f.visual, |v, _| {
             v.state.as_ref().unwrap().project.snapshot()
@@ -173,7 +205,7 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             "upper right edge still trims"
         );
         let modifiers = Modifiers {
-            shift: true,
+            shift: !selected_range,
             ..Default::default()
         };
         let target = drag(&mut f, "outer", 70.0, modifiers);
