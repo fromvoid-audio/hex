@@ -164,12 +164,18 @@ where
                 if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
                     let left_max_ordering = self.nodes[*left].max_ordering();
                     let right_max_ordering = self.nodes[*right].max_ordering();
+                    // The first result can satisfy the other child's already
+                    // loaded upper bound, avoiding another recursive query.
                     if left_max_ordering > right_max_ordering {
                         max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
-                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+                        if max_ordering < right_max_ordering {
+                            max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+                        }
                     } else {
                         max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
-                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+                        if max_ordering < left_max_ordering {
+                            max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+                        }
                     }
                 }
             }
@@ -278,6 +284,37 @@ mod ordering_verification {
     }
 
     pub(super) fn verify() -> Result<(), String> {
+        // A higher-order child can miss the query entirely; tied maxima can
+        // occur in disjoint children. Resolve both against an independent scan,
+        // including an initial maximum that already satisfies either subtree.
+        for orders in [[3, 7], [7, 3], [7, 7]] {
+            let mut tree = BoundsTree::default();
+            let leaves = [
+                (rect(0.0, 0.0, 4.0, 4.0), orders[0]),
+                (rect(20.0, 0.0, 4.0, 4.0), orders[1]),
+            ];
+            let left = tree.push_leaf(leaves[0].0, leaves[0].1);
+            let right = tree.push_leaf(leaves[1].0, leaves[1].1);
+            let root = tree.push_internal(left, right);
+            for query in [
+                rect(1.0, 1.0, 1.0, 1.0),
+                rect(21.0, 1.0, 1.0, 1.0),
+                rect(0.0, 0.0, 24.0, 4.0),
+                rect(10.0, 1.0, 1.0, 1.0),
+            ] {
+                for initial in [0, 3, 7, 9] {
+                    let expected = leaves
+                        .iter()
+                        .filter(|(bounds, _)| bounds.intersects(&query))
+                        .map(|(_, order)| *order)
+                        .fold(initial, cmp::max);
+                    require(
+                        tree.find_max_ordering(root, &query, initial) == expected,
+                        "sibling maxima query differs from independent leaf scan",
+                    )?;
+                }
+            }
+        }
         for scale in [1.0, 2.0] {
             for seed in 1..=24_u64 {
                 let mut tree = BoundsTree::default();

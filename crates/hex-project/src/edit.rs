@@ -15,6 +15,25 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Register an independent, currently unassigned native source chain.
+    /// Exactly one device is designated as the instrument; other devices are
+    /// source-owned processing, never copied from a track implicitly.
+    CreateNativeSource {
+        name: String,
+        devices: Vec<hex_lattice_contract::NativeDeviceState>,
+        instrument_index: usize,
+    },
+    /// Assign an existing singleton source, or unlink without deleting it.
+    BindTrackSource {
+        track: TrackId,
+        source: Option<crate::SourceId>,
+    },
+    RenameNativeSource {
+        source: crate::SourceId,
+        name: String,
+    },
+    /// Explicit authored-state deletion. Track bindings are not admitted yet.
+    RemoveNativeSource(crate::SourceId),
     /// Create one effects-only group around normalized sibling subtrees.
     GroupTracks {
         tracks: crate::TrackSelectionIds,
@@ -1007,6 +1026,7 @@ pub struct MidiNoteInsert {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Created {
+    NativeSource(crate::SourceId),
     ArrangementSection(crate::SectionId),
     Track(TrackId),
     /// Inclusive track-only ID range born in one atomic paste.
@@ -1632,6 +1652,10 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            source_command @ (Command::CreateNativeSource { .. }
+            | Command::BindTrackSource { .. }
+            | Command::RenameNativeSource { .. }
+            | Command::RemoveNativeSource(_)) => crate::native_sources::apply(self, source_command),
             Command::CommitArrangementBounce {
                 target,
                 in_place,

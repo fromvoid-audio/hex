@@ -2,6 +2,7 @@
 use hex_project::{AudioEventEdit, ClipId, Command, Created, Editor, Project};
 use hex_storage::{decode, encode};
 use serde_json::{Value, json};
+mod common;
 fn fixture() -> (Editor, Vec<ClipId>) {
     let mut e = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     let Created::Imported { track, clip: a, .. } = e
@@ -61,6 +62,7 @@ fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
 fn strip_flat_hierarchy(value: &mut Value) {
+    common::restore_pre_binding_instruments(value);
     let expected: Vec<_> = value["tracks"]
         .as_array()
         .unwrap()
@@ -345,7 +347,11 @@ fn grouped_and_retained_child_fades_roundtrip_with_independent_captured_tempo() 
         42
     );
     assert!(!value["grouped_audio"][0]["group"]["events"][0]["fade"].is_null());
-    assert!(!value["grouped_audio"][0]["group"]["sources"][0]["document"]["audio_event_fades"][0]["events"][0]["fade"].is_null());
+    assert!(
+        !value["grouped_audio"][0]["group"]["sources"][0]["document"]["audio_event_fades"][0]
+            ["events"][0]["fade"]
+            .is_null()
+    );
     let restored = decode(&data).unwrap();
     assert_eq!(restored, *e.project());
     let roots = restored.clip(group).unwrap().audio_events().sources;

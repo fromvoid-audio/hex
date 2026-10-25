@@ -88,7 +88,7 @@ fn fixture() -> Project {
     for bus in &mut s.return_tracks {
         bus.devices = vec![device(&mut s.next_id)];
     }
-    Project::from_snapshot(s).unwrap()
+    Project::from_legacy_snapshot(s).unwrap()
 }
 fn declared_graph(p: &Project) -> (Graph, BTreeMap<NodeKey, Fixed>) {
     let graph = Graph::from_project(p, &BTreeMap::new(), &[]).unwrap();

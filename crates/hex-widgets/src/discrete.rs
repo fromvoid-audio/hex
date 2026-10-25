@@ -520,6 +520,7 @@ pub struct SelectorConfig {
     selected: usize,
     style: ControlStyle,
     appearance: SelectorAppearance,
+    segment_columns: Option<usize>,
 }
 
 impl SelectorConfig {
@@ -543,6 +544,7 @@ impl SelectorConfig {
             selected,
             style: style.validate()?,
             appearance: SelectorAppearance::Standard,
+            segment_columns: None,
         })
     }
 
@@ -550,6 +552,16 @@ impl SelectorConfig {
     pub fn with_accessibility_name(mut self, name: impl Into<SharedString>) -> Self {
         self.accessibility_name = name.into();
         self
+    }
+
+    /// Arrange the same compact choice segments in a bounded keyboard grid.
+    pub fn with_segment_columns(mut self, columns: usize) -> Result<Self, &'static str> {
+        if !(1..=128).contains(&columns) {
+            return Err("selector grid requires 1..128 columns");
+        }
+        self.appearance = SelectorAppearance::CompactSegments;
+        self.segment_columns = Some(columns);
+        Ok(self)
     }
 
     pub fn with_appearance(mut self, appearance: SelectorAppearance) -> Self {
@@ -571,6 +583,7 @@ pub struct Selector {
     enabled: bool,
     style: ControlStyle,
     appearance: SelectorAppearance,
+    segment_columns: Option<usize>,
     tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
@@ -623,6 +636,7 @@ impl Selector {
             enabled: true,
             style: config.style,
             appearance: config.appearance,
+            segment_columns: config.segment_columns,
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
@@ -809,8 +823,14 @@ impl Selector {
         }
         if self.appearance == SelectorAppearance::CompactSegments {
             let next = match event.keystroke.key.as_str() {
-                "right" | "down" | "space" => (self.selected + 1) % self.choices.len(),
-                "left" | "up" => (self.selected + self.choices.len() - 1) % self.choices.len(),
+                "right" | "space" => (self.selected + 1) % self.choices.len(),
+                "left" => (self.selected + self.choices.len() - 1) % self.choices.len(),
+                "down" => (self.selected + self.segment_columns.unwrap_or(1)) % self.choices.len(),
+                "up" => {
+                    (self.selected + self.choices.len()
+                        - self.segment_columns.unwrap_or(1) % self.choices.len())
+                        % self.choices.len()
+                }
                 _ => return,
             };
             cx.stop_propagation();
@@ -864,12 +884,15 @@ impl gpui::Render for Selector {
             }));
         }
         if self.appearance == SelectorAppearance::CompactSegments {
+            let columns = self.segment_columns.unwrap_or(self.choices.len());
+            let height = self.choices.len().div_ceil(columns) as f32 * 16.0 - 2.0;
             let mut row = div()
                 .id(self.id.clone())
                 .debug_selector(|| self.id.to_string())
                 .w_full()
-                .h(px(14.0))
-                .flex()
+                .h(px(height))
+                .grid()
+                .grid_cols(columns as u16)
                 .gap(px(2.0))
                 .track_focus(&self.focus)
                 .on_key_down(cx.listener(Self::key_down));
@@ -881,7 +904,7 @@ impl gpui::Render for Selector {
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
-                        .h_full()
+                        .h(px(14.0))
                         .flex()
                         .items_center()
                         .justify_center()

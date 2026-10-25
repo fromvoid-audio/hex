@@ -456,7 +456,7 @@ impl EditorView {
                                 cx.notify();
                                 return (true, false);
                             }
-                            if view.pointer_hits_fade_control(x, y) {
+                            if view.pointer_hits_priority_clip_control(x, y) {
                                 return (false, false);
                             }
                             if event.click_count == 2

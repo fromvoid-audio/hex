@@ -141,6 +141,11 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
         clip
     );
     assert!(session.project().midi_clip(clip).is_none());
+    assert_eq!(
+        session.project().native_sources(),
+        original.native_sources(),
+        "render normalization must not change retained source state"
+    );
     let actual = pcm(Arc::clone(&bounced), expected.len());
     let error = actual
         .iter()
@@ -460,4 +465,46 @@ fn effects_before_instrument_refuse_without_changing_source_or_redo() {
     );
     assert_eq!(session.project(), &original);
     assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 0);
+}
+
+#[test]
+fn isolated_clip_source_omits_unrelated_retained_source_media_without_changing_live_state() {
+    let (session, track, clip) = fixture();
+    let mut editor = hex_project::Editor::new(session.project().clone(), 4).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "unassigned-original.wav".into(),
+            sample_rate: 48_000,
+            frames: 16,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let state = hex_project::default_instrument_state()
+        .unwrap()
+        .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+            slot: hex_lattice_contract::DeviceAssetSlot::new(1).unwrap(),
+            asset: hex_lattice_contract::DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    editor
+        .execute(Command::CreateNativeSource {
+            name: "unassigned".into(),
+            devices: vec![state],
+            instrument_index: 0,
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    let (isolated, owner, _) = isolated_source(&original, clip).unwrap();
+    assert_eq!(owner, track);
+    assert_eq!(isolated.native_sources().len(), 1);
+    assert_eq!(
+        isolated.track(track).unwrap().source_id(),
+        original.track(track).unwrap().source_id()
+    );
+    assert!(isolated.asset(asset).is_none());
+    assert_eq!(editor.project(), &original);
+    assert!(editor.project().asset(asset).is_some());
+    assert_eq!(editor.project().native_sources().len(), 2);
 }
