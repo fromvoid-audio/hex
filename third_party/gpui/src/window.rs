@@ -53,6 +53,9 @@ use util::post_inc;
 use util::{ResultExt, measure};
 use uuid::Uuid;
 
+/// Shared threshold for pointer hover suppression and typed drag initiation.
+pub(crate) const POINTER_DRAG_THRESHOLD: f64 = 2.;
+
 mod prompts;
 
 use crate::util::atomic_incr_if_not_zero;
@@ -905,6 +908,8 @@ pub struct Window {
     default_prevented: bool,
     mouse_position: Point<Pixels>,
     mouse_hit_test: HitTest,
+    pointer_press: Option<(MouseButton, Point<Pixels>)>,
+    pointer_dragging: bool,
     modifiers: Modifiers,
     capslock: Capslock,
     scale_factor: f32,
@@ -1149,6 +1154,8 @@ impl Window {
                         window.active.set(active);
                         if !active {
                             window.hidden_cursor_restore.take();
+                            window.pointer_press = None;
+                            window.pointer_dragging = false;
                         }
                         window.modifiers = window.platform_window.modifiers();
                         window.capslock = window.platform_window.capslock();
@@ -1302,6 +1309,8 @@ impl Window {
             default_prevented: true,
             mouse_position,
             mouse_hit_test: HitTest::default(),
+            pointer_press: None,
+            pointer_dragging: false,
             modifiers,
             capslock,
             scale_factor,
@@ -3740,6 +3749,16 @@ impl Window {
             .unwrap_or_else(|| action.name().to_string())
     }
 
+    /// Whether a pressed pointer has moved beyond GPUI's drag threshold.
+    ///
+    /// This is window input state, independent of event propagation, view caches,
+    /// and asynchronous edit acknowledgements. It suppresses ordinary hover paint;
+    /// it does not replace a consumer's capture, cancellation or drop contract.
+    /// Release, button loss, escape and window deactivation clear it.
+    pub fn is_pointer_dragging(&self) -> bool {
+        self.pointer_dragging
+    }
+
     /// Dispatch input through this window's existing event path, without exposing
     /// private propagation metadata or generating operating-system input events.
     pub fn dispatch_input(&mut self, event: PlatformInput, cx: &mut App) {
@@ -3754,6 +3773,34 @@ impl Window {
         cx.propagate_event = true;
         // Handlers may set this to true by calling `prevent_default`.
         self.default_prevented = false;
+
+        let was_dragging = self.pointer_dragging;
+        match &event {
+            PlatformInput::MouseDown(down) if self.pointer_press.is_none() => {
+                self.pointer_press = Some((down.button, down.position));
+            }
+            PlatformInput::MouseMove(moved) => {
+                if let Some((button, origin)) = self.pointer_press {
+                    if moved.pressed_button == Some(button) {
+                        self.pointer_dragging |=
+                            (moved.position - origin).magnitude() > POINTER_DRAG_THRESHOLD;
+                    } else {
+                        self.pointer_press = None;
+                        self.pointer_dragging = false;
+                    }
+                }
+            }
+            PlatformInput::KeyDown(key) if key.keystroke.key == "escape" => {
+                self.pointer_press = None;
+                self.pointer_dragging = false;
+            }
+            _ => {}
+        }
+        if was_dragging != self.pointer_dragging {
+            // Capture listeners may consume the movement before any hover
+            // notifier sees it. Refresh the whole scene, including cached views.
+            self.refresh();
+        }
 
         let event = match event {
             // Track the mouse position with our own state, since accessing the platform
@@ -3836,6 +3883,14 @@ impl Window {
             self.dispatch_mouse_event(any_mouse_event, cx);
         } else if let Some(any_key_event) = event.keyboard_event() {
             self.dispatch_key_event(any_key_event, cx);
+        }
+
+        if let PlatformInput::MouseUp(up) = &event
+            && self.pointer_press.is_some_and(|(button, _)| button == up.button)
+        {
+            self.pointer_press = None;
+            self.pointer_dragging = false;
+            self.refresh();
         }
 
         DispatchEventResult {
