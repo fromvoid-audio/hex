@@ -19,6 +19,13 @@ build; it does not mean every workflow or device has completed native testing.
 shortcuts apply when the relevant workspace has focus. a text field, browser
 search, dialog or device editor can handle the same key differently.
 
+space starts from the beginning of the time selection, or from the arrange edit
+cursor when there is no time selection. effects start with fresh tails. native
+mutable instruments retrigger notes whose gates cross the cursor and keep their
+original note-off times; earlier voice history is reset. starting does not replay
+the song before the cursor. section launches and exact-history seeks have their
+own preparation behavior.
+
 # install and update
 
 the macos package includes `hex.app`, this manual in pdf and offline html,
@@ -244,15 +251,20 @@ transport and audible result; a selected item is not evidence that it is playing
 
 ## arrangement automation view
 
-press **a** or use the toolbar's **a** control to show track-gain automation over
-faded clips. repeat to return to clip editing. switching views preserves clips,
-selection, automation and undo history. **c** and **0** toggle contextual
-activation outside automation view: the focused device, track, selected clips,
-or selected time span. a partial time span splits clips at its edges. text fields
-and the computer midi keyboard keep their own input.
+press **a** or use the toolbar's **a** control to show track-gain automation across
+the entire arranger, including unselected tracks. audio and midi clips fade into
+the background while the curves own editing. the toolbar control stays highlighted
+while this mode is on; the key and toolbar always switch the same view.
+repeat to return to clip editing. switching views preserves clips, selection,
+automation and undo history. **c** and **0** keep contextual activation for focused
+devices and track headers; in clip editing they affect the selected clips or time
+span. a partial time span splits clips at its edges. automation lanes prevent
+activation of the retained background clips. text fields and the computer midi
+keyboard keep their own input.
 
 click a gain curve to add a point, drag a point to change its time or value, and
-release to apply the edit. **command** gives free beat placement. **escape**
+release to apply the edit. editing another track's curve keeps the background
+clip selection. **command** gives free beat placement. **escape**
 cancels a held edit; **backspace** removes the selected automation point.
 one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.

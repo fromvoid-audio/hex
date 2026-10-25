@@ -565,8 +565,12 @@ impl SessionPlayback {
                     )
                 });
             }
-            let mut chunk_frames = (output.len() - output_offset)
-                .min(if self.compensation.is_some() { 1 } else { 256 });
+            let upstream_frame_routing = self
+                .compensation
+                .as_ref()
+                .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing());
+            let mut chunk_frames =
+                (output.len() - output_offset).min(if upstream_frame_routing { 1 } else { 256 });
             let current_first_frame = self.current_sampler_console
                 && self.route_scratch.iter().any(|r| r.current_first_frame);
             if current_first_frame {
@@ -597,7 +601,7 @@ impl SessionPlayback {
             let chunk_end = output_offset
                 .checked_add(chunk_frames)
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            if self.compensation.is_some() {
+            if upstream_frame_routing {
                 self.render_compensated_route_frame(
                     performance_frame,
                     arrangement_frame,
@@ -629,47 +633,88 @@ impl SessionPlayback {
                     route.current_first_frame = false;
                 }
             }
-            if let Some(compensation) = self.compensation.as_ref() {
-                compensation
-                    .process_main_with_foreign(
+            if self.compensation.is_some() && !upstream_frame_routing {
+                // Only Main needs delayed content clocks. Keep upstream work
+                // batched, then advance the existing stamp/Main/tail owners in
+                // exactly the original sample order, inside this transaction.
+                for index in output_offset..chunk_end {
+                    let advance = (index - output_offset) as u64;
+                    let performance = performance_frame
+                        .checked_add(advance)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    let arrangement = arrangement_frame
+                        .checked_add(advance)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    self.push_compensated_stamp(performance, arrangement, arrangement_loop_pass)?;
+                    self.compensation
+                        .as_ref()
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?
+                        .process_main_with_foreign(
+                            &mut self.main_chain,
+                            &mut output[index..index + 1],
+                            index,
+                            foreign,
+                            observer,
+                        )
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                    let clock = crate::effect_clock::ArrangementEffectClock::session(
+                        self.revision.session().timing(),
+                        arrangement,
+                        performance,
+                        arrangement_loop_pass,
+                        true,
+                    );
+                    self.return_effect_tails.render_main_chunk(
+                        &mut output[index..index + 1],
+                        self.compensation.as_ref(),
+                        &clock,
+                        index,
+                        foreign,
+                    )?;
+                }
+            } else {
+                if let Some(compensation) = self.compensation.as_ref() {
+                    compensation
+                        .process_main_with_foreign(
+                            &mut self.main_chain,
+                            &mut output[output_offset..chunk_end],
+                            output_offset,
+                            foreign,
+                            observer,
+                        )
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                } else {
+                    let main_clock = crate::effect_clock::ArrangementEffectClock::session(
+                        self.revision.session().timing(),
+                        arrangement_frame,
+                        performance_frame,
+                        arrangement_loop_pass,
+                        true,
+                    );
+                    crate::main_chain::process(
                         &mut self.main_chain,
                         &mut output[output_offset..chunk_end],
                         output_offset,
-                        foreign,
+                        Some(&main_clock),
                         observer,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-            } else {
-                let main_clock = crate::effect_clock::ArrangementEffectClock::session(
+                }
+                let tail_clock = crate::effect_clock::ArrangementEffectClock::session(
                     self.revision.session().timing(),
                     arrangement_frame,
                     performance_frame,
                     arrangement_loop_pass,
                     true,
                 );
-                crate::main_chain::process(
-                    &mut self.main_chain,
+                self.return_effect_tails.render_main_chunk(
                     &mut output[output_offset..chunk_end],
+                    self.compensation.as_ref(),
+                    &tail_clock,
                     output_offset,
-                    Some(&main_clock),
-                    observer,
-                )
-                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                    foreign,
+                )?;
             }
-            let tail_clock = crate::effect_clock::ArrangementEffectClock::session(
-                self.revision.session().timing(),
-                arrangement_frame,
-                performance_frame,
-                arrangement_loop_pass,
-                true,
-            );
-            self.return_effect_tails.render_main_chunk(
-                &mut output[output_offset..chunk_end],
-                self.compensation.as_ref(),
-                &tail_clock,
-                output_offset,
-                foreign,
-            )?;
             let chunk = u64::try_from(chunk_frames)
                 .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
             performance_frame = performance_frame
@@ -716,6 +761,7 @@ impl SessionPlayback {
         self.performance_frame = performance_frame;
         self.arrangement_frame = arrangement_frame;
         self.arrangement_loop_pass = arrangement_loop_pass;
+        self.interactive_start_frame = None;
         if route_changed {
             self.advance_route_state_generation();
         }
@@ -1038,6 +1084,7 @@ impl SessionPlayback {
                             performance_frame,
                             arrangement_frame,
                             arrangement_loop_pass,
+                            chase_at_start: self.interactive_start_frame == Some(performance_frame),
                             loop_region: if self.linear_arrangement_export {
                                 None
                             } else {
@@ -1865,6 +1912,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
+    chase_at_start: bool,
     loop_region: Option<hex_project::LoopRegion>,
     timing: &'a T,
 }
@@ -1887,6 +1935,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        chase_at_start,
         loop_region,
         timing,
     } = context;
@@ -1927,7 +1976,10 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                                     && span.start < region.start()
                                     && span.gate_end > region.start()
                             });
-                        let source_start = if is_wrap_chase {
+                        let is_start_chase = chase_at_start
+                            && span.start < arrangement_frame
+                            && span.gate_end > arrangement_frame;
+                        let source_start = if is_wrap_chase || is_start_chase {
                             arrangement_frame
                         } else {
                             span.start
@@ -2397,12 +2449,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
                         let Some(elapsed) = absolute.checked_sub(launch_frame) else {
                             continue;
                         };
-                        let Some(source_frame) = prepared.source_start.checked_add(elapsed) else {
+                        let Some(source_frame) = prepared.source_frame(elapsed) else {
                             continue;
                         };
-                        if source_frame >= prepared.source_end {
-                            continue;
-                        }
                         let source_index = usize::try_from(source_frame)
                             .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
                         let mut sample = *frames
@@ -2420,13 +2469,15 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
                     let Some(mut elapsed) = performance_frame.checked_sub(launch_frame) else {
                         return Ok(());
                     };
-                    let Some(mut source_frame) = prepared.source_start.checked_add(elapsed) else {
-                        return Ok(());
-                    };
                     let mut output_offset = 0_usize;
-                    while output_offset < output.len() && source_frame < prepared.source_end {
+                    // Every iteration renders at least one frame or stops. A
+                    // one-frame cycle is bounded by the admitted block length.
+                    while output_offset < output.len() {
+                        let Some(source_frame) = prepared.source_frame(elapsed) else {
+                            break;
+                        };
                         let remaining =
-                            usize::try_from(prepared.source_end.saturating_sub(source_frame))
+                            usize::try_from(prepared.playback_end().saturating_sub(source_frame))
                                 .unwrap_or(usize::MAX);
                         let count = (output.len() - output_offset).min(remaining);
                         let offset = u64::try_from(output_offset)
@@ -2455,10 +2506,6 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
                             .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
                         elapsed = elapsed
                             .checked_add(rendered)
-                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                        source_frame = prepared
-                            .source_start
-                            .checked_add(elapsed)
                             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                         output_offset = output_offset
                             .checked_add(

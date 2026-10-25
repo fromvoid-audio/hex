@@ -193,6 +193,7 @@ impl SourceDevice {
 }
 
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::session_audio_loops::refuse_legacy(project)?;
     let mut value = encode45(project)?;
     let snapshot = project.snapshot();
     let mut bindings = Vec::with_capacity(snapshot.tracks.len());

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 /// schema46 representation layer; device IDs, states, references and placements
 /// are reconstructed from the canonical source inventory.
 pub fn restore_pre_binding_instruments(value: &mut Value) -> usize {
+    remove_audio_cycles(value);
     let sources = value["native_sources"].as_array().unwrap().clone();
     let bindings = value["track_source_bindings"].as_array().unwrap().clone();
     let mut tracks = std::mem::take(value["tracks"].as_array_mut().unwrap());
@@ -96,4 +97,22 @@ pub fn restore_pre_binding_instruments(value: &mut Value) -> usize {
     let current_next_id = value["next_id"].as_u64().unwrap();
     value["next_id"] = json!(current_next_id.checked_sub(promoted as u64).unwrap());
     promoted
+}
+
+/// Remove only the schema48 layer when constructing a frozen older envelope.
+/// Every row must explicitly retain one-shot behavior before comparison.
+pub fn remove_audio_cycles(value: &mut Value) {
+    let cycles = value
+        .as_object_mut()
+        .unwrap()
+        .remove("session_audio_cycles")
+        .unwrap();
+    assert!(
+        cycles
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["cycle"].is_null()),
+        "historical comparison cannot discard audio cycles"
+    );
 }

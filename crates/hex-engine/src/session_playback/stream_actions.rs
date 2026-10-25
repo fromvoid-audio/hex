@@ -172,9 +172,11 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         let resolved = match action {
-            PlaybackAction::Transport(
-                PlaybackCommand::Seek(frame) | PlaybackCommand::PlayFrom(frame),
-            )
+            PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => Resolved::Seek {
+                frame,
+                beat: self.play_from_coordinates(frame)?,
+            },
+            PlaybackAction::Transport(PlaybackCommand::Seek(frame))
             | PlaybackAction::Session(SessionPlaybackCommand::Seek(frame)) => Resolved::Seek {
                 frame,
                 beat: self.seek_coordinates(frame)?,

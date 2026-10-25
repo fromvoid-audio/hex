@@ -106,11 +106,21 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        47
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut schema46: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     schema46["version"] = 46.into();
+    assert!(
+        schema46
+            .as_object_mut()
+            .unwrap()
+            .remove("session_audio_cycles")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         decode(&serde_json::to_vec(&schema46).unwrap()).unwrap(),
         project,

@@ -109,6 +109,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             track: track_id,
             scene: SCENE_A,
             content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                loop_range: None,
                 active: true,
                 flavor: hex_project::ClipFlavor::default(),
                 gain: hex_project::ClipGain::UNITY,
@@ -123,6 +124,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             track: track_id,
             scene: SCENE_B,
             content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                loop_range: None,
                 active: true,
                 flavor: hex_project::ClipFlavor::default(),
                 gain: hex_project::ClipGain::UNITY,

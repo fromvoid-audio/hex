@@ -202,6 +202,16 @@ fn activation_session_cells_and_typing_focus_do_not_fall_back_to_track(cx: &mut 
             cx.notify();
             clip
         });
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes("a");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(
+                !v.automation_view.enabled,
+                "console focus does not toggle arranger mode"
+            );
+        });
         visual.simulate_keystrokes("c");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {

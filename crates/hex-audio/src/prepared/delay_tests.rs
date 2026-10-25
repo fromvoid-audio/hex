@@ -95,6 +95,58 @@ fn editor_with_delay() -> (Editor, hex_project::TrackId, hex_project::DeviceId) 
     };
     (editor, track, device)
 }
+
+#[test]
+fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
+    let (mut editor, track, _) = editor_with_delay();
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let operator = &hex_devices::operator_state::OPERATOR_METADATA;
+    let state = operator
+        .patch_parameter(
+            &operator.default_state().unwrap(),
+            hex_devices::operator_state::parameter::feedback(1),
+            ParameterValue::Float(0.3),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState { device, state })
+        .unwrap();
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    let mut output = [[0.0; 2]; 127];
+    block(&mut callback, &mut output);
+    for destination in [0, 12_000, 12_000, 23_000, 48_000_000] {
+        control
+            .command(PlaybackCommand::PlayFrom(destination))
+            .unwrap();
+        // Includes actual command consumption, voice/effect reset, held-note
+        // chase and rendering, with all construction outside the probe.
+        block(&mut callback, &mut output);
+        assert_eq!(control.status.position.load(Acquire), destination + 127);
+        assert_eq!(output, [[0.0; 2]; 127], "old delay history must reset");
+        let mut audible = output.iter().flatten().any(|v| v.abs() > 1e-6);
+        for _ in 0..5 {
+            block(&mut callback, &mut output);
+            audible |= output.iter().flatten().any(|v| v.abs() > 1e-6);
+        }
+        assert_eq!(audible, destination < 24_000);
+        control.command(PlaybackCommand::Pause).unwrap();
+        block(&mut callback, &mut output);
+        assert_eq!(output, [[0.0; 2]; 127]);
+    }
+    control.stop();
+    block(&mut callback, &mut output);
+    assert_eq!(output, [[0.0; 2]; 127]);
+    control.request_shutdown();
+    block(&mut callback, &mut output);
+    control.reclaim();
+}
 #[test]
 fn delay_prepared_publication_parameter_handoff_tail_retirement_and_stop_allocate_nothing() {
     let (mut editor, _, device) = editor_with_delay();

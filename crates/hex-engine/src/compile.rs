@@ -768,7 +768,7 @@ fn compile_project_inner<'a>(
     if project
         .signal_graph
         .as_ref()
-        .is_some_and(|graph| graph.needs_runtime())
+        .is_some_and(|graph| graph.needs_upstream_frame_routing())
     {
         for track in &mut project.tracks {
             track.source_mix = crate::PreparedTrackMix::identity();
