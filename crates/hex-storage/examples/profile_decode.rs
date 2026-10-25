@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "STORAGE_CSV,{tracks},{clips},{},{:.3},{:.3},{:.3}",
             bytes.len(),
             times[8],
-            times[15],
+            times[14],
             times[15]
         );
     }
