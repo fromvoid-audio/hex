@@ -798,39 +798,34 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 @@ -2159 +2194 @@
 -                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
 +                            && (event.position - mouse_down.position).magnitude() > POINTER_DRAG_THRESHOLD
-@@ -2260,0 +2296,10 @@
-+                // A capture listener may consume the move before this element
-+                // receives it. Reconcile the held hover state during paint too.
-+                let is_hovered = has_mouse_down.borrow().is_none()
-+                    && !cx.has_active_drag()
-+                    && !window.is_pointer_dragging()
-+                    && hitbox.is_hovered(window);
-+                if *was_hovered.borrow() != is_hovered {
-+                    *was_hovered.borrow_mut() = is_hovered;
-+                    hover_listener(&is_hovered, window, cx);
-+                }
-@@ -2266,0 +2312 @@
+@@ -2261,4 +2296 @@
+-                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+-                    if phase != DispatchPhase::Bubble {
+-                        return;
+-                    }
++                window.on_pointer_hover_change(move |window, cx| {
+@@ -2266,0 +2299 @@
 +                        && !window.is_pointer_dragging()
-@@ -2298 +2344,2 @@
+@@ -2298 +2331,2 @@
 -                        pending_mouse_down.borrow().is_none()
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
-@@ -2305 +2352,3 @@
+@@ -2305 +2339,3 @@
 -                        pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
 +                            && hitbox.is_hovered(window)
-@@ -2498 +2547 @@
+@@ -2498 +2534 @@
 -            if !cx.has_active_drag() {
 +            if !cx.has_active_drag() && !window.is_pointer_dragging() {
-@@ -2758,0 +2808,6 @@
+@@ -2758,0 +2795,6 @@
 +                        // A capture listener can consume movement before this
 +                        // pending tooltip receives its cancellation event.
 +                        if window.is_pointer_dragging() {
 +                            active_tooltip.borrow_mut().take();
 +                            return;
 +                        }
-@@ -2906,0 +2962,12 @@
+@@ -2906,0 +2949,12 @@
 +impl Stateful<Div> {
 +    /// Attach native semantics to this stateful control without changing its layout.
 +    pub fn accessibility(
@@ -4518,7 +4513,21 @@ diff --git a/src/window.rs b/src/window.rs
  mod prompts;
  
  use crate::util::atomic_incr_if_not_zero;
-@@ -656,7 +659,7 @@
+@@ -462,6 +465,13 @@
+ pub(crate) type AnyMouseListener =
+     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
+ 
++type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App)>;
++
++struct PointerHoverObserver {
++    view: EntityId,
++    listener: Option<PointerHoverListener>,
++}
++
+ #[derive(Clone)]
+ pub(crate) struct CursorStyleRequest {
+     pub(crate) hitbox_id: Option<HitboxId>,
+@@ -656,7 +666,7 @@
      current_view: EntityId,
      priority: usize,
      parent_node: DispatchNodeId,
@@ -4527,7 +4536,7 @@ diff --git a/src/window.rs b/src/window.rs
      text_style_stack: Vec<TextStyleRefinement>,
      element: Option<AnyElement>,
      absolute_offset: Point<Pixels>,
-@@ -665,6 +668,7 @@
+@@ -665,6 +675,7 @@
  }
  
  pub(crate) struct Frame {
@@ -4535,18 +4544,18 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) focus: Option<FocusId>,
      pub(crate) window_active: bool,
      pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
-@@ -678,8 +682,9 @@
+@@ -678,8 +689,9 @@
      pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
      pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
      pub(crate) cursor_styles: Vec<CursorStyleRequest>,
-+    pointer_hover_views: Vec<EntityId>,
++    pointer_hover_observers: Vec<PointerHoverObserver>,
      #[cfg(any(test, feature = "test-support"))]
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
      #[cfg(any(feature = "inspector", debug_assertions))]
      pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
      #[cfg(any(feature = "inspector", debug_assertions))]
-@@ -687,8 +692,42 @@
+@@ -687,8 +699,42 @@
      pub(crate) tab_stops: TabStopMap,
  }
  
@@ -4589,11 +4598,11 @@ diff --git a/src/window.rs b/src/window.rs
      hitboxes_index: usize,
      tooltips_index: usize,
      deferred_draws_index: usize,
-@@ -703,14 +742,18 @@
+@@ -703,14 +749,18 @@
      mouse_listeners_index: usize,
      input_handlers_index: usize,
      cursor_styles_index: usize,
-+    pointer_hover_views_index: usize,
++    pointer_hover_observers_index: usize,
      accessed_element_states_index: usize,
      tab_handle_index: usize,
      line_layout_index: LineLayoutIndex,
@@ -4608,11 +4617,11 @@ diff --git a/src/window.rs b/src/window.rs
              focus: None,
              window_active: false,
              element_states: FxHashMap::default(),
-@@ -724,9 +767,10 @@
+@@ -724,9 +774,10 @@
              input_handlers: Vec::new(),
              tooltip_requests: Vec::new(),
              cursor_styles: Vec::new(),
-+            pointer_hover_views: Vec::new(),
++            pointer_hover_observers: Vec::new(),
  
              #[cfg(any(test, feature = "test-support"))]
 -            debug_bounds: FxHashMap::default(),
@@ -4620,7 +4629,7 @@ diff --git a/src/window.rs b/src/window.rs
  
              #[cfg(any(feature = "inspector", debug_assertions))]
              next_inspector_instance_ids: FxHashMap::default(),
-@@ -738,6 +782,7 @@
+@@ -738,6 +789,7 @@
      }
  
      pub(crate) fn clear(&mut self) {
@@ -4628,11 +4637,11 @@ diff --git a/src/window.rs b/src/window.rs
          self.element_states.clear();
          self.accessed_element_states.clear();
          self.mouse_listeners.clear();
-@@ -746,11 +791,15 @@
+@@ -746,11 +798,15 @@
          self.input_handlers.clear();
          self.tooltip_requests.clear();
          self.cursor_styles.clear();
-+        self.pointer_hover_views.clear();
++        self.pointer_hover_observers.clear();
          self.hitboxes.clear();
          self.window_control_hitboxes.clear();
          self.deferred_draws.clear();
@@ -4644,7 +4653,7 @@ diff --git a/src/window.rs b/src/window.rs
  
          #[cfg(any(feature = "inspector", debug_assertions))]
          {
-@@ -815,11 +864,21 @@
+@@ -815,11 +871,21 @@
      }
  }
  
@@ -4666,7 +4675,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) platform_window: Box<dyn PlatformWindow>,
      display_id: Option<DisplayId>,
      sprite_atlas: Arc<dyn PlatformAtlas>,
-@@ -833,7 +892,7 @@
+@@ -833,7 +899,7 @@
      pub(crate) viewport_size: Size<Pixels>,
      layout_engine: Option<TaffyLayoutEngine>,
      pub(crate) root: Option<AnyView>,
@@ -4675,7 +4684,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) text_style_stack: Vec<TextStyleRefinement>,
      pub(crate) rendered_entity_stack: Vec<EntityId>,
      pub(crate) element_offset_stack: Vec<Point<Pixels>>,
-@@ -853,6 +912,8 @@
+@@ -853,6 +919,8 @@
      default_prevented: bool,
      mouse_position: Point<Pixels>,
      mouse_hit_test: HitTest,
@@ -4684,7 +4693,7 @@ diff --git a/src/window.rs b/src/window.rs
      modifiers: Modifiers,
      capslock: Capslock,
      scale_factor: f32,
-@@ -1095,6 +1156,11 @@
+@@ -1095,6 +1163,11 @@
                  handle
                      .update(&mut cx, |_, window, cx| {
                          window.active.set(active);
@@ -4696,7 +4705,15 @@ diff --git a/src/window.rs b/src/window.rs
                          window.modifiers = window.platform_window.modifiers();
                          window.capslock = window.platform_window.capslock();
                          window
-@@ -1121,6 +1187,16 @@
+@@ -1102,6 +1175,7 @@
+                             .clone()
+                             .retain(&(), |callback| callback(window, cx));
+ 
++                        window.dispatch_pointer_hover(cx);
+                         window.bounds_changed(cx);
+                         window.refresh();
+ 
+@@ -1121,6 +1195,16 @@
                      .log_err();
              }
          }));
@@ -4713,7 +4730,7 @@ diff --git a/src/window.rs b/src/window.rs
          platform_window.on_input({
              let mut cx = cx.to_async();
              Box::new(move |event| {
-@@ -1208,6 +1284,7 @@
+@@ -1208,6 +1292,7 @@
              handle,
              invalidator,
              removed: false,
@@ -4721,7 +4738,7 @@ diff --git a/src/window.rs b/src/window.rs
              platform_window,
              display_id,
              sprite_atlas,
-@@ -1236,6 +1313,8 @@
+@@ -1236,6 +1321,8 @@
              default_prevented: true,
              mouse_position,
              mouse_hit_test: HitTest::default(),
@@ -4730,7 +4747,7 @@ diff --git a/src/window.rs b/src/window.rs
              modifiers,
              capslock,
              scale_factor,
-@@ -1371,8 +1450,17 @@
+@@ -1371,8 +1458,17 @@
          }
      }
  
@@ -4748,7 +4765,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.removed = true;
      }
  
-@@ -1908,6 +1996,61 @@
+@@ -1908,6 +2004,61 @@
          self.platform_window.completed_frame();
      }
  
@@ -4810,7 +4827,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Produces a new frame and assigns it to `rendered_frame`. To actually show
      /// the contents of the new [`Scene`], use [`Self::present`].
      #[profiling::function]
-@@ -1941,6 +2084,10 @@
+@@ -1941,6 +2092,10 @@
          let previous_window_active = self.rendered_frame.window_active;
          mem::swap(&mut self.rendered_frame, &mut self.next_frame);
          self.next_frame.clear();
@@ -4821,7 +4838,7 @@ diff --git a/src/window.rs b/src/window.rs
          let current_focus_path = self.rendered_frame.focus_path();
          let current_window_active = self.rendered_frame.window_active;
  
-@@ -2086,6 +2233,11 @@
+@@ -2086,6 +2241,11 @@
      }
  
      fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
@@ -4833,7 +4850,7 @@ diff --git a/src/window.rs b/src/window.rs
          // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
          for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
              let Some(Some(tooltip_request)) = self
-@@ -2220,6 +2372,7 @@
+@@ -2220,6 +2380,7 @@
  
      pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
          PrepaintStateIndex {
@@ -4841,7 +4858,7 @@ diff --git a/src/window.rs b/src/window.rs
              hitboxes_index: self.next_frame.hitboxes.len(),
              tooltips_index: self.next_frame.tooltip_requests.len(),
              deferred_draws_index: self.next_frame.deferred_draws.len(),
-@@ -2230,6 +2383,14 @@
+@@ -2230,6 +2391,14 @@
      }
  
      pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
@@ -4856,11 +4873,11 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.hitboxes.extend(
              self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                  .iter()
-@@ -2284,13 +2445,27 @@
+@@ -2284,13 +2453,30 @@
              mouse_listeners_index: self.next_frame.mouse_listeners.len(),
              input_handlers_index: self.next_frame.input_handlers.len(),
              cursor_styles_index: self.next_frame.cursor_styles.len(),
-+            pointer_hover_views_index: self.next_frame.pointer_hover_views.len(),
++            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
              accessed_element_states_index: self.next_frame.accessed_element_states.len(),
              tab_handle_index: self.next_frame.tab_stops.paint_index(),
              line_layout_index: self.text_system.layout_index(),
@@ -4875,16 +4892,19 @@ diff --git a/src/window.rs b/src/window.rs
 +            &self.rendered_frame.debug_bounds.insertion_history
 +                [range.start.debug_bounds_index..range.end.debug_bounds_index],
 +        );
-+        self.next_frame.pointer_hover_views.extend(
-+            self.rendered_frame.pointer_hover_views
-+                [range.start.pointer_hover_views_index..range.end.pointer_hover_views_index]
-+                .iter()
-+                .copied(),
++        self.next_frame.pointer_hover_observers.extend(
++            self.rendered_frame.pointer_hover_observers
++                [range.start.pointer_hover_observers_index..range.end.pointer_hover_observers_index]
++                .iter_mut()
++                .map(|observer| PointerHoverObserver {
++                    view: observer.view,
++                    listener: observer.listener.take(),
++                }),
 +        );
          self.next_frame.cursor_styles.extend(
              self.rendered_frame.cursor_styles
                  [range.start.cursor_styles_index..range.end.cursor_styles_index]
-@@ -3524,14 +3699,28 @@
+@@ -3524,14 +3710,28 @@
          subscription
      }
  
@@ -4920,7 +4940,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3765,40 @@
+@@ -3576,6 +3776,79 @@
              .unwrap_or_else(|| action.name().to_string())
      }
  
@@ -4928,7 +4948,41 @@ diff --git a/src/window.rs b/src/window.rs
 +    /// their insertion ranges through cached/deferred paint replay.
 +    pub(crate) fn observe_pointer_hover(&mut self) {
 +        self.invalidator.debug_assert_paint();
-+        self.next_frame.pointer_hover_views.push(self.current_view());
++        let view = self.current_view();
++        self.next_frame
++            .pointer_hover_observers
++            .push(PointerHoverObserver { view, listener: None });
++    }
++
++    /// Register a hover notification independent of mouse-event propagation.
++    /// Notifications run during input, never while painting a view's model.
++    pub(crate) fn on_pointer_hover_change(
++        &mut self,
++        listener: impl Fn(&mut Window, &mut App) + 'static,
++    ) {
++        self.invalidator.debug_assert_paint();
++        let view = self.current_view();
++        self.next_frame
++            .pointer_hover_observers
++            .push(PointerHoverObserver {
++                view,
++                listener: Some(Box::new(listener)),
++            });
++    }
++
++    fn dispatch_pointer_hover(&mut self, cx: &mut App) {
++        let observers = mem::take(&mut self.rendered_frame.pointer_hover_observers);
++        let propagate = cx.propagate_event;
++        let default_prevented = self.default_prevented;
++        for observer in &observers {
++            if let Some(listener) = &observer.listener {
++                listener(self, cx);
++            }
++        }
++        // Hover notifications do not consume the active gesture's mouse event.
++        cx.propagate_event = propagate;
++        self.default_prevented = default_prevented;
++        self.rendered_frame.pointer_hover_observers = observers;
 +    }
 +
 +    fn invalidate_pointer_hover(&self) {
@@ -4938,7 +4992,12 @@ diff --git a/src/window.rs b/src/window.rs
 +        let mut invalidation = self.invalidator.inner.borrow_mut();
 +        invalidation
 +            .dirty_views
-+            .extend(self.rendered_frame.pointer_hover_views.iter().copied());
++            .extend(
++                self.rendered_frame
++                    .pointer_hover_observers
++                    .iter()
++                    .map(|observer| observer.view),
++            );
 +        invalidation.dirty = true;
 +    }
 +
@@ -4961,7 +5020,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3584,6 +3807,35 @@
+@@ -3584,6 +3857,35 @@
          cx.propagate_event = true;
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
@@ -4997,10 +5056,24 @@ diff --git a/src/window.rs b/src/window.rs
  
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
-@@ -3666,6 +3918,16 @@
+@@ -3662,10 +3964,31 @@
+             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
+         };
+ 
++        let keyboard_hover_transition = event.keyboard_event().is_some()
++            && was_dragging != self.pointer_dragging;
++        if keyboard_hover_transition {
++            self.dispatch_pointer_hover(cx);
++        }
+         if let Some(any_mouse_event) = event.mouse_event() {
              self.dispatch_mouse_event(any_mouse_event, cx);
          } else if let Some(any_key_event) = event.keyboard_event() {
              self.dispatch_key_event(any_key_event, cx);
++        }
++
++        if keyboard_hover_transition {
++            self.dispatch_pointer_hover(cx);
++            self.invalidate_pointer_hover();
 +        }
 +
 +        if let PlatformInput::MouseUp(up) = &event
@@ -5010,10 +5083,22 @@ diff --git a/src/window.rs b/src/window.rs
 +            self.pointer_dragging = false;
 +            if was_dragging {
 +                self.invalidate_pointer_hover();
++                self.dispatch_pointer_hover(cx);
 +            }
          }
  
          DispatchEventResult {
+@@ -3686,6 +4009,10 @@
+             self.handle_inspector_mouse_event(event, cx);
+             // When inspector is picking, all other mouse handling is skipped.
+             return;
++        }
++
++        if event.is::<MouseMoveEvent>() {
++            self.dispatch_pointer_hover(cx);
+         }
+ 
+         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
 diff --git a/src/element.rs b/src/element.rs
 --- a/src/element.rs
 +++ b/src/element.rs

@@ -465,6 +465,13 @@ type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
 pub(crate) type AnyMouseListener =
     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
 
+type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App)>;
+
+struct PointerHoverObserver {
+    view: EntityId,
+    listener: Option<PointerHoverListener>,
+}
+
 #[derive(Clone)]
 pub(crate) struct CursorStyleRequest {
     pub(crate) hitbox_id: Option<HitboxId>,
@@ -682,7 +689,7 @@ pub(crate) struct Frame {
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
-    pointer_hover_views: Vec<EntityId>,
+    pointer_hover_observers: Vec<PointerHoverObserver>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: DebugBounds,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -742,7 +749,7 @@ pub(crate) struct PaintIndex {
     mouse_listeners_index: usize,
     input_handlers_index: usize,
     cursor_styles_index: usize,
-    pointer_hover_views_index: usize,
+    pointer_hover_observers_index: usize,
     accessed_element_states_index: usize,
     tab_handle_index: usize,
     line_layout_index: LineLayoutIndex,
@@ -767,7 +774,7 @@ impl Frame {
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
             cursor_styles: Vec::new(),
-            pointer_hover_views: Vec::new(),
+            pointer_hover_observers: Vec::new(),
 
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: DebugBounds::default(),
@@ -791,7 +798,7 @@ impl Frame {
         self.input_handlers.clear();
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
-        self.pointer_hover_views.clear();
+        self.pointer_hover_observers.clear();
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -1168,6 +1175,7 @@ impl Window {
                             .clone()
                             .retain(&(), |callback| callback(window, cx));
 
+                        window.dispatch_pointer_hover(cx);
                         window.bounds_changed(cx);
                         window.refresh();
 
@@ -2445,7 +2453,7 @@ impl Window {
             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
             input_handlers_index: self.next_frame.input_handlers.len(),
             cursor_styles_index: self.next_frame.cursor_styles.len(),
-            pointer_hover_views_index: self.next_frame.pointer_hover_views.len(),
+            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
             tab_handle_index: self.next_frame.tab_stops.paint_index(),
             line_layout_index: self.text_system.layout_index(),
@@ -2460,11 +2468,14 @@ impl Window {
             &self.rendered_frame.debug_bounds.insertion_history
                 [range.start.debug_bounds_index..range.end.debug_bounds_index],
         );
-        self.next_frame.pointer_hover_views.extend(
-            self.rendered_frame.pointer_hover_views
-                [range.start.pointer_hover_views_index..range.end.pointer_hover_views_index]
-                .iter()
-                .copied(),
+        self.next_frame.pointer_hover_observers.extend(
+            self.rendered_frame.pointer_hover_observers
+                [range.start.pointer_hover_observers_index..range.end.pointer_hover_observers_index]
+                .iter_mut()
+                .map(|observer| PointerHoverObserver {
+                    view: observer.view,
+                    listener: observer.listener.take(),
+                }),
         );
         self.next_frame.cursor_styles.extend(
             self.rendered_frame.cursor_styles
@@ -3769,7 +3780,41 @@ impl Window {
     /// their insertion ranges through cached/deferred paint replay.
     pub(crate) fn observe_pointer_hover(&mut self) {
         self.invalidator.debug_assert_paint();
-        self.next_frame.pointer_hover_views.push(self.current_view());
+        let view = self.current_view();
+        self.next_frame
+            .pointer_hover_observers
+            .push(PointerHoverObserver { view, listener: None });
+    }
+
+    /// Register a hover notification independent of mouse-event propagation.
+    /// Notifications run during input, never while painting a view's model.
+    pub(crate) fn on_pointer_hover_change(
+        &mut self,
+        listener: impl Fn(&mut Window, &mut App) + 'static,
+    ) {
+        self.invalidator.debug_assert_paint();
+        let view = self.current_view();
+        self.next_frame
+            .pointer_hover_observers
+            .push(PointerHoverObserver {
+                view,
+                listener: Some(Box::new(listener)),
+            });
+    }
+
+    fn dispatch_pointer_hover(&mut self, cx: &mut App) {
+        let observers = mem::take(&mut self.rendered_frame.pointer_hover_observers);
+        let propagate = cx.propagate_event;
+        let default_prevented = self.default_prevented;
+        for observer in &observers {
+            if let Some(listener) = &observer.listener {
+                listener(self, cx);
+            }
+        }
+        // Hover notifications do not consume the active gesture's mouse event.
+        cx.propagate_event = propagate;
+        self.default_prevented = default_prevented;
+        self.rendered_frame.pointer_hover_observers = observers;
     }
 
     fn invalidate_pointer_hover(&self) {
@@ -3779,7 +3824,12 @@ impl Window {
         let mut invalidation = self.invalidator.inner.borrow_mut();
         invalidation
             .dirty_views
-            .extend(self.rendered_frame.pointer_hover_views.iter().copied());
+            .extend(
+                self.rendered_frame
+                    .pointer_hover_observers
+                    .iter()
+                    .map(|observer| observer.view),
+            );
         invalidation.dirty = true;
     }
 
@@ -3914,10 +3964,20 @@ impl Window {
             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
         };
 
+        let keyboard_hover_transition = event.keyboard_event().is_some()
+            && was_dragging != self.pointer_dragging;
+        if keyboard_hover_transition {
+            self.dispatch_pointer_hover(cx);
+        }
         if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(any_mouse_event, cx);
         } else if let Some(any_key_event) = event.keyboard_event() {
             self.dispatch_key_event(any_key_event, cx);
+        }
+
+        if keyboard_hover_transition {
+            self.dispatch_pointer_hover(cx);
+            self.invalidate_pointer_hover();
         }
 
         if let PlatformInput::MouseUp(up) = &event
@@ -3927,6 +3987,7 @@ impl Window {
             self.pointer_dragging = false;
             if was_dragging {
                 self.invalidate_pointer_hover();
+                self.dispatch_pointer_hover(cx);
             }
         }
 
@@ -3948,6 +4009,10 @@ impl Window {
             self.handle_inspector_mouse_event(event, cx);
             // When inspector is picking, all other mouse handling is skipped.
             return;
+        }
+
+        if event.is::<MouseMoveEvent>() {
+            self.dispatch_pointer_hover(cx);
         }
 
         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);

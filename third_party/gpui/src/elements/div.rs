@@ -2293,20 +2293,7 @@ impl Interactivity {
                     .get_or_insert_with(Default::default)
                     .clone();
 
-                // A capture listener may consume the move before this element
-                // receives it. Reconcile the held hover state during paint too.
-                let is_hovered = has_mouse_down.borrow().is_none()
-                    && !cx.has_active_drag()
-                    && !window.is_pointer_dragging()
-                    && hitbox.is_hovered(window);
-                if *was_hovered.borrow() != is_hovered {
-                    *was_hovered.borrow_mut() = is_hovered;
-                    hover_listener(&is_hovered, window, cx);
-                }
-                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Bubble {
-                        return;
-                    }
+                window.on_pointer_hover_change(move |window, cx| {
                     let is_hovered = has_mouse_down.borrow().is_none()
                         && !cx.has_active_drag()
                         && !window.is_pointer_dragging()

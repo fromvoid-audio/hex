@@ -13,6 +13,11 @@ impl Render for Fixture {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let hovered = self.hovered.clone();
         let tooltip_builds = self.tooltip_builds.clone();
+        let callback_color = if self.hovered.get() {
+            0xff0000
+        } else {
+            0x111111
+        };
         div()
             .size_full()
             .child(
@@ -44,6 +49,16 @@ impl Render for Fixture {
                         tooltip_builds.set(tooltip_builds.get() + 1);
                         cx.new(|_| TooltipFixture).into()
                     }),
+            )
+            .child(
+                div()
+                    .id("callback-target")
+                    .debug_selector(|| "callback-target".into())
+                    .absolute()
+                    .left(px(200.))
+                    .top(px(20.))
+                    .size(px(60.))
+                    .bg(rgb(callback_color)),
             )
     }
 }
@@ -85,6 +100,11 @@ fn consumed_drag_move_clears_hover_across_completed_repaints(cx: &mut TestAppCon
     assert!(
         !hovered.get(),
         "consumed move must retire the hover callback state"
+    );
+    assert_eq!(
+        visual.rendered_background("callback-target"),
+        Some(rgb(0x111111).into()),
+        "callback-derived paint must clear on the first completed drag frame"
     );
     visual
         .executor()

@@ -317,8 +317,9 @@ view replay, and ends on matching release, button loss, escape or window
 inactivation. Drag-state transitions invalidate only views with hover/tooltip paint
 dependencies. Their insertion ranges replay with cached/deferred paint; unrelated
 clip scenes and ordinary clicks retain their caches. Div suppresses ordinary/group hover styles and tooltip eligibility
-while this state is active, reconciling stored hover callbacks during paint when
-capture prevented their move listener from running. Already visible hoverable
+while this state is active. Stored hover callbacks run before mouse dispatch,
+independently of propagation, and reconcile at drag termination. They never
+mutate view state during paint. Already visible hoverable
 tooltips are hidden immediately, and pending tooltip builders do not run during
 the drag even when capture swallowed their cancellation event. Typed drag-over styles and
 drop handlers keep their existing hit testing and delivery. This is a bounded
