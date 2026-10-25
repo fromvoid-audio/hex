@@ -667,7 +667,10 @@ pub(super) fn prepare_waveform_geometry(
                     WaveformEnvelopeMode::Trace
                 },
                 trace_width: px(1.0),
-                centerline: Some(WaveformStroke {
+                // Coarse overview bins already show the signed envelope (or
+                // the DC/silence trace). Avoid another path per channel just
+                // for its zero-line guide; fine/detail views keep that guide.
+                centerline: (!grid.binned).then_some(WaveformStroke {
                     points: [
                         point(bounds.origin.x, bounds.origin.y + px(center)),
                         point(
