@@ -65,6 +65,102 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
             px(reverb_panel::FRAME_WIDTH + gain_meters::WIDTH)
         );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
+        assert!(
+            frame.size.width <= px(640.0),
+            "reverb keeps the compact reference footprint"
+        );
+        for label in [
+            "input filter",
+            "early reflections",
+            "diffusion network",
+            "smooth",
+            "density",
+        ] {
+            let slot = visual
+                .debug_bounds(Box::leak(
+                    format!("reverb-{}-title-slot-{label}", device.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            let text = visual
+                .debug_bounds(Box::leak(
+                    format!("reverb-{}-title-{label}", device.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            assert!(
+                text.top() >= slot.top() && text.bottom() <= slot.bottom(),
+                "{label} text fits its line"
+            );
+            assert!(
+                text.left() >= slot.left() && text.right() <= slot.right(),
+                "{label} stays on one unclipped line"
+            );
+        }
+        for kind in ["input", "decay"] {
+            let curve = visual
+                .debug_bounds(Box::leak(
+                    format!("reverb-{}-{kind}-curve", device.value()).into_boxed_str(),
+                ))
+                .expect("provider curve is mounted");
+            assert!(
+                curve.size.width >= px(100.0) && curve.size.height >= px(24.0),
+                "{kind} preview has visible drawing area: {curve:?}"
+            );
+        }
+        // Measure formatted glyphs, not only wrappers: fractional high-frequency
+        // values and their units must remain readable without horizontal clipping.
+        for (parameter, values) in [
+            (6, [20.0, 17_321.25, 20_000.0]),
+            (33, [f64::from(0.1_f32), 9.99, 10.0]),
+        ] {
+            let field = visual
+                .debug_bounds(Box::leak(
+                    format!("device-{}-parameter-{parameter}-value", device.value())
+                        .into_boxed_str(),
+                ))
+                .unwrap();
+            for value in values {
+                let text = visual.update(|_, cx| {
+                    let view = editor.read(cx);
+                    let ParameterControl::Float { entity, .. } = &view.device_panel.controls
+                        [&ParameterKey {
+                            device,
+                            parameter: hex_lattice_contract::ParameterId::from_static(parameter),
+                        }]
+                    else {
+                        panic!("numeric readout")
+                    };
+                    let gpui::AccessibilityValue::Number { text, .. } =
+                        entity.read(cx).accessibility_value(value).unwrap()
+                    else {
+                        panic!("numeric value")
+                    };
+                    text
+                });
+                let width = visual.update(|window, _| {
+                    window
+                        .text_system()
+                        .shape_line(
+                            text.clone(),
+                            px(theme::device_style(theme::DeviceStyleRole::Readout).font_size),
+                            &[gpui::TextRun {
+                                len: text.len(),
+                                font: gpui::font(theme::FONT_FAMILY),
+                                color: gpui::rgb(0xffffff).into(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            }],
+                            None,
+                        )
+                        .width
+                });
+                assert!(
+                    width + px(6.0) <= field.size.width,
+                    "full {text:?} and padding fit parameter {parameter}: {width:?} / {field:?}"
+                );
+            }
+        }
+        let mut controls = Vec::new();
         for parameter in 1..=33 {
             let control = visual
                 .debug_bounds(Box::leak(
@@ -75,10 +171,27 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
             assert!(control.origin.y >= body.origin.y);
             assert!(control.origin.x + control.size.width <= body.origin.x + body.size.width);
             assert!(control.origin.y + control.size.height <= body.origin.y + body.size.height);
+            controls.push((parameter, control));
+        }
+        for (index, (a, first)) in controls.iter().enumerate() {
+            for (b, second) in &controls[index + 1..] {
+                assert!(
+                    first.right() <= second.left()
+                        || second.right() <= first.left()
+                        || first.bottom() <= second.top()
+                        || second.bottom() <= first.top(),
+                    "parameters {a} and {b} overlap: {first:?} / {second:?}"
+                );
+            }
         }
         (frame, body)
     };
     let (track_frame, _) = assert_panel(&mut visual, device);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    assert_panel(&mut visual, device);
+    visual.simulate_resize(size(px(1920.0), px(1080.0)));
+    visual.run_until_parked();
     editor.update(cx, |view, cx| {
         view.focused_return = Some(return_track);
         cx.notify();
@@ -93,7 +206,12 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
             cx.notify();
         });
         visual.run_until_parked();
-        for (parameter, input, expected) in [(1, "2", 2.0), (2, "70", 70.0)] {
+        for (parameter, input, expected) in [
+            (1, "2", 2.0),
+            (2, "70", 70.0),
+            (6, "17321.25", 17321.25),
+            (33, "9.99", 9.99),
+        ] {
             visual.run_until_parked();
             let parameter = hex_lattice_contract::ParameterId::from_static(parameter);
             let selector = Box::leak(
