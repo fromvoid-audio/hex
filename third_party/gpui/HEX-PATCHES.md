@@ -314,7 +314,8 @@ alone is not navigation performance or native acceptance evidence.
 Window tracks pressed-pointer motion across the shared two-pixel drag threshold
 before mouse dispatch. This input state survives consumed move events and cached
 view replay, and ends on matching release, button loss, escape or window
-inactivation. Div suppresses ordinary/group hover styles and tooltip eligibility
+inactivation. Only drag-state transitions require a full-window refresh; ordinary
+clicks retain unrelated view caches. Div suppresses ordinary/group hover styles and tooltip eligibility
 while this state is active, reconciling stored hover callbacks during paint when
 capture prevented their move listener from running. Already visible hoverable
 tooltips are hidden immediately, and pending tooltip builders do not run during

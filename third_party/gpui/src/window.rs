@@ -3895,7 +3895,9 @@ impl Window {
         {
             self.pointer_press = None;
             self.pointer_dragging = false;
-            self.refresh();
+            if was_dragging {
+                self.refresh();
+            }
         }
 
         DispatchEventResult {

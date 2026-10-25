@@ -266,3 +266,42 @@ fn a_visible_hoverable_tooltip_is_hidden_on_drag_without_waiting_for_its_hide_de
         "drag suppression must bypass hoverable retention and hide delay"
     );
 }
+
+struct CachedContent(std::rc::Rc<std::cell::Cell<usize>>);
+impl Render for CachedContent {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.0.set(self.0.get() + 1);
+        div().size_full().bg(rgb(0x111111))
+    }
+}
+struct CacheRoot(gpui::Entity<CachedContent>);
+impl Render for CacheRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let mut layout = div().w(px(60.)).h(px(60.));
+        div()
+            .size_full()
+            .child(gpui::AnyView::from(self.0.clone()).cached(layout.style().clone()))
+    }
+}
+
+#[gpui::test]
+fn ordinary_pointer_click_preserves_unrelated_cached_content(cx: &mut TestAppContext) {
+    use gpui::AppContext;
+    let renders = std::rc::Rc::new(std::cell::Cell::new(0));
+    let content = cx.new(|_| CachedContent(renders.clone()));
+    let handle = cx.add_window(|_, _| CacheRoot(content));
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.simulate_resize(size(px(320.), px(120.)));
+    visual.run_until_parked();
+    let before = renders.get();
+    assert!(before > 0);
+    visual.simulate_click(point(px(200.), px(40.)), Modifiers::default());
+    // Exercise a completed parent repaint, rather than merely checking that
+    // a click produced no scene. The unrelated cached child should replay.
+    visual.update(|window, cx| {
+        let root = window.root::<CacheRoot>().unwrap().unwrap();
+        root.update(cx, |_, cx| cx.notify());
+    });
+    visual.run_until_parked();
+    assert_eq!(renders.get(), before);
+}

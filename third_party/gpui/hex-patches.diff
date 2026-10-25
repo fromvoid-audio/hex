@@ -4945,7 +4945,7 @@ diff --git a/src/window.rs b/src/window.rs
  
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
-@@ -3666,6 +3888,14 @@
+@@ -3666,6 +3888,16 @@
              self.dispatch_mouse_event(any_mouse_event, cx);
          } else if let Some(any_key_event) = event.keyboard_event() {
              self.dispatch_key_event(any_key_event, cx);
@@ -4956,7 +4956,9 @@ diff --git a/src/window.rs b/src/window.rs
 +        {
 +            self.pointer_press = None;
 +            self.pointer_dragging = false;
-+            self.refresh();
++            if was_dragging {
++                self.refresh();
++            }
          }
  
          DispatchEventResult {
