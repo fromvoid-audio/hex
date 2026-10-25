@@ -63,6 +63,28 @@ fn profile_interactive_start_against_song_prefix_preparation() -> Result<(), &'s
 }
 
 #[test]
+fn chased_mutable_note_keeps_pcm_and_note_off_through_an_ordinary_handoff() {
+    let (prepared, _) = mutable_checkpoint_fixture(1 << 32);
+    let mut source = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut oracle = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    for runtime in [&mut source, &mut oracle] {
+        runtime.play_from(12_000).unwrap();
+        runtime.render(&mut [[0.0; 2]; 127]).unwrap();
+    }
+    let mut successor = SessionPlayback::new(prepared).unwrap();
+    successor.try_inherit_state_from(&mut source).unwrap();
+    let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064);
+    let actual = render_checkpoint_partitioned(&mut successor, &[1, 7, 193], 12_064);
+    assert_eq!(actual, expected);
+    assert!(
+        actual[12_040..]
+            .iter()
+            .flatten()
+            .all(|sample| *sample == 0.0)
+    );
+}
+
+#[test]
 fn repeated_play_from_invalidates_a_projected_stream_action_at_the_same_clock() {
     let (prepared, _) = mutable_checkpoint_fixture(1 << 32);
     let mut runtime = SessionPlayback::new(prepared).unwrap();
