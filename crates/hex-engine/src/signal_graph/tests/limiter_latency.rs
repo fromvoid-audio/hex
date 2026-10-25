@@ -24,7 +24,17 @@ fn limiter_lookahead_is_reported_and_compensated_in_actual_rendering() {
         })
         .expect("insert limiter on the audio track");
 
-    let revision = prepare(&fixture).expect("prepare actual native limiter graph");
+    // Use the production registry; the surrounding delay fixture's prepare()
+    // helper deliberately registers only its synthetic delay provider.
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            fixture.editor.project(),
+            &fixture.media,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .expect("prepare actual registered native limiter graph"),
+    );
     let latency = revision.arrangement().main_latency_frames();
     assert_eq!(latency, 288);
 
