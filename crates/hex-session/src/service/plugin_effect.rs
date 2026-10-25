@@ -1,5 +1,6 @@
 //! Canonical worker's explicit plugin insertion request, not native custody.
 use super::*;
+pub use hex_lattice_contract::NativeDeviceState;
 use std::{path::Component, sync::atomic::AtomicU8};
 
 /// Copied catalog identity. Filesystem, helper and native class revalidation

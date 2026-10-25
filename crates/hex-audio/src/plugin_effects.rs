@@ -21,6 +21,7 @@ mod definition;
 mod tail;
 pub use definition::NativeEffectDefinition;
 mod hosting;
+pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
 pub use hosting::{EffectPresentation, EffectSelection, Hosting};
 mod control;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};

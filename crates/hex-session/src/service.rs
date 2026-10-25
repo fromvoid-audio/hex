@@ -38,10 +38,10 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, ResidentFileInput, ResidentFileMetadata, ResidentFilePublication,
-    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
-    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
+    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -50,8 +50,9 @@ mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
 pub use plugin_effect::{
-    PluginEffectCompletion, PluginEffectControl, PluginEffectDestination, PluginEffectInsertion,
-    PluginEffectPreparation, PluginEffectPreparationState, PluginEffectSelection,
+    NativeDeviceState, PluginEffectCompletion, PluginEffectControl, PluginEffectDestination,
+    PluginEffectInsertion, PluginEffectPreparation, PluginEffectPreparationState,
+    PluginEffectSelection,
 };
 #[cfg(test)]
 mod effect_bus_tests;

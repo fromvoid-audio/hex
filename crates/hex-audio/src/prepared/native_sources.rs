@@ -14,6 +14,23 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Nondefault deterministic fixture control: original worker's observed
+    /// completion prefix. Neither queueing, readiness nor custody authority.
+    #[cfg(feature = "allocation-probe")]
+    pub fn native_source_completed_blocks(&self, binding: Binding) -> Option<u64> {
+        self.candidate_root.native_source_completed_blocks(binding)
+    }
+    /// Nonblocking actual source-pair observation: (endpoint loan outstanding,
+    /// transport live). A queued loan stays outstanding until actual control
+    /// ingestion; a returned/revoked pair is not made live by querying it.
+    /// None includes contention/stale/retiring/closed sources. This is not
+    /// endpoint installation, graph admission, or callback readiness authority.
+    pub fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root.native_source_endpoint_status(binding)
+    }
     /// Nonblocking observation of this original endpoint's actual callback
     /// installation, independent of queue admission. None includes a stale,
     /// retiring/closed source or control contention. True grants neither graph

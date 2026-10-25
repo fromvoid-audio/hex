@@ -12,6 +12,44 @@ pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
 };
 
+/// Synchronous read-only identities in the exact candidate project. Native
+/// state validation stays in the borrowed compiler; consumers receive neither
+/// project editing access nor a registry or native owner.
+pub struct ResidentEffectPreparation<'a> {
+    pub(in crate::service) project: &'a Project,
+}
+impl ResidentEffectPreparation<'_> {
+    pub fn visit_plugin_effects(
+        &self,
+        mut visit: impl FnMut(hex_engine::ProcessorChainOwner, u64) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut chain = |owner, devices: &[hex_project::Device]| {
+            for device in devices.iter().filter(|d| {
+                d.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+            }) {
+                visit(owner, device.id().value())?;
+            }
+            Ok(())
+        };
+        for track in self.project.tracks() {
+            chain(
+                hex_engine::ProcessorChainOwner::Track(track.id().value()),
+                track.devices(),
+            )?;
+        }
+        for bus in self.project.return_tracks() {
+            chain(
+                hex_engine::ProcessorChainOwner::Return(bus.id().value()),
+                bus.devices(),
+            )?;
+        }
+        chain(
+            hex_engine::ProcessorChainOwner::Main,
+            self.project.main_devices(),
+        )
+    }
+}
+
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
 /// nor a requested freshness fence grants source custody or acknowledges callback application.
 #[derive(Clone, Copy, Debug)]
@@ -142,7 +180,7 @@ pub trait WorkerAudioSink: Send {
     /// A returned revision is compilation only, never native admission or ACK.
     fn prepare_resident_effects(
         &mut self,
-        _project: &Project,
+        _input: ResidentEffectPreparation<'_>,
         _prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         )

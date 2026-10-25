@@ -22,6 +22,32 @@ struct ResidentSink {
     pending_observation_generation: Arc<AtomicU64>,
 }
 impl WorkerAudioSink for ResidentSink {
+    fn prepare_plugin_effect(
+        &mut self,
+        input: hex_session::service::PluginEffectPreparation<'_>,
+    ) -> Result<hex_session::service::PluginEffectPreparationState, String> {
+        self.inner.prepare_plugin_effect(input)
+    }
+    fn plugin_effect_ready(&self) -> bool {
+        self.inner.plugin_effect_ready()
+    }
+    fn finish_plugin_effect(
+        &mut self,
+        control: &Arc<hex_session::service::PluginEffectControl>,
+        accepted: bool,
+    ) {
+        self.inner.finish_plugin_effect(control, accepted);
+    }
+    fn prepare_resident_effects(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        self.inner.prepare_resident_effects(input, prepare)
+    }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         self.inner.ordinary_source_reservation()
     }
@@ -237,6 +263,10 @@ pub(super) struct ResidentHarness {
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
+    native_plugins: bool,
+    pub(super) plugin_completed: Arc<AtomicU64>,
+    pub(super) plugin_queued: Arc<AtomicBool>,
+    pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl ResidentHarness {
     pub(super) fn new() -> Self {
@@ -264,11 +294,45 @@ impl ResidentHarness {
         capacity: usize,
         rate: u32,
     ) -> Self {
+        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None)
+    }
+    pub(super) fn with_plugins(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some((host, presentation)),
+        )
+    }
+    fn with_plugin_fixture(
+        frame_limit: u64,
+        gate: Arc<AtomicBool>,
+        capacity: usize,
+        rate: u32,
+        plugin: Option<(
+            hex_audio::plugin_effects::Hosting,
+            Option<hex_audio::plugin_effects::EffectPresentation>,
+        )>,
+    ) -> Self {
+        let native_plugins = plugin.is_some();
         let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(capacity);
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
         let mut inner = NativeAudioSink::new(sender);
+        let plugin_completed = Arc::new(AtomicU64::new(0));
+        let plugin_queued = Arc::new(AtomicBool::new(false));
+        let plugin_records = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        if let Some((host, presentation)) = plugin {
+            inner.plugins = plugins::Plugins::with_fixture(host, presentation);
+            inner.plugins.completed = Some(Arc::clone(&plugin_completed));
+            inner.plugins.queued = Some(Arc::clone(&plugin_queued));
+            inner.plugins.records = Some(Arc::clone(&plugin_records));
+        }
         assert!(
             inner.worker_owned_resident_graphs,
             "production resident publication default"
@@ -328,6 +392,10 @@ impl ResidentHarness {
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
             constructor_submitted: None,
+            native_plugins,
+            plugin_completed,
+            plugin_queued,
+            plugin_records,
         }
     }
     pub(super) fn pump(&mut self) {
@@ -439,7 +507,14 @@ impl ResidentHarness {
         let mut pcm = [[0.0; 2]; 64];
         let mut slot = self.callback.lock().unwrap();
         let callback = slot.as_mut().unwrap();
-        let allocations = allocation_counter::measure(|| callback.render(&mut pcm).unwrap());
+        let mut host = [0.0; 128];
+        let allocations = allocation_counter::measure(|| {
+            if self.native_plugins {
+                callback.render_native_direct(&mut pcm, &mut host).unwrap();
+            } else {
+                callback.render(&mut pcm).unwrap();
+            }
+        });
         assert_eq!(
             (
                 allocations.count_total,
@@ -449,6 +524,26 @@ impl ResidentHarness {
             ),
             (0, 0, 0, 0)
         );
+        pcm
+    }
+    pub(super) fn render_plugin_block(&self) -> [hex_engine::Frame; 256] {
+        let mut pcm = [[0.0; 2]; 256];
+        let mut host = [0.0; 512];
+        let mut slot = self.callback.lock().unwrap();
+        let callback = slot.as_mut().unwrap();
+        let counts = allocation_counter::measure(|| {
+            callback.render_native_direct(&mut pcm, &mut host).unwrap()
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(host.chunks_exact(2).zip(&pcm).all(|(h, p)| h == p));
         pcm
     }
     pub(super) fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {

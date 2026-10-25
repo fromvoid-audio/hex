@@ -53,6 +53,34 @@ pub struct Hosting {
     limits: native::Limits,
 }
 impl Hosting {
+    /// Listed retained helper provenance, inline host metadata and one bounded
+    /// captured state payload for the pending consumer response. Inventory
+    /// map-node/allocator backing remains an opaque bounded obligation as in
+    /// InstanceBuild; this is not a process-memory measurement.
+    pub fn control_data_bytes(&self) -> Option<usize> {
+        self.build
+            .retained_storage()?
+            .data_bytes
+            .checked_add(std::mem::size_of::<Self>())?
+            .checked_add(hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)
+    }
+    /// Initial finite source profile. Listed control/transport DATA is capped
+    /// at4MiB per source; opaque plugin/OS memory is not an RSS claim. Reserve
+    /// both bounded helper/source file workspaces and protocol work before any
+    /// load. Root compares actual source-specific quotes against these limits.
+    pub fn source_data_reservation() -> Result<crate::NativeSourceDataReservation, String> {
+        let retained = 4_usize * 1024 * 1024;
+        let peak = usize::try_from(hex_plugin_scan::MAX_BINARY)
+            .ok()
+            .and_then(|file| file.checked_mul(2))
+            .and_then(|files| retained.checked_add(files))
+            .and_then(|bytes| bytes.checked_add(hex_plugin_host::protocol::MAX_WORKING_DATA_BYTES))
+            .ok_or("native source reservation overflow")?;
+        Ok(crate::NativeSourceDataReservation {
+            max_retained_data_bytes: retained,
+            max_construction_peak_data_bytes: peak,
+        })
+    }
     /// Enable production hosting only from the qualified fixed running app.
     /// No raw executable, environment, checkout or SDK fallback starts code.
     pub fn current_on_control() -> Result<Self, String> {
@@ -62,6 +90,36 @@ impl Hosting {
     /// retaining the running app's fixed layout and inventory requirements.
     pub fn inspect_package_on_control(app: &Path) -> Result<Self, String> {
         Ok(Self::from_package(InstancePackage::inspect(app)?))
+    }
+    /// Nondefault headless integration control. Explicit original fixture
+    /// receipts retain normal InstanceBuild validation; production discovery
+    /// never calls this or falls back from its fixed running-app package.
+    #[cfg(feature = "allocation-probe")]
+    pub fn inspect_fixture_on_control(receipt: &Path) -> Result<Self, String> {
+        Ok(Self {
+            build: InstanceBuild::inspect(receipt)?,
+            limits: native::Limits {
+                startup: Duration::from_secs(3),
+                exchange: Duration::from_secs(1),
+                retirement: Duration::from_secs(3),
+            },
+        })
+    }
+    /// Explicit headless fixture metadata, read without native execution.
+    #[cfg(feature = "allocation-probe")]
+    pub fn inspect_fixture_binary(
+        path: &Path,
+        executable: &str,
+        cid: [u8; 16],
+    ) -> Result<([u8; 32], [u8; 32]), String> {
+        let source = native::Source::inspect_on_control(
+            path,
+            executable,
+            ClassId::new(cid).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let binary = source.identity().binary;
+        Ok((binary.executable_sha256, binary.info_sha256))
     }
     fn from_package(package: InstancePackage) -> Self {
         Self {

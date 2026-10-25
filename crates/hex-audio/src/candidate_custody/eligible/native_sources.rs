@@ -4,6 +4,7 @@
 //! loans, actual node matching and original graph references close that witness.
 //! Source reports retain custody through native disposal and recovery.
 use super::*;
+use crate::plugin_effects::NativeEffectReference;
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
 use hex_plugin_host::native::{
@@ -60,6 +61,22 @@ pub struct NativeSourceDataReservation {
     pub max_construction_peak_data_bytes: usize,
 }
 impl NativeSourceDataReservation {
+    /// Whole fixed pool's listed metadata and per-source DATA allowances.
+    /// These are reserved capacities, not actual allocations or opaque native
+    /// RSS. The output owner adds them to its existing domain reservation before
+    /// configuration; Root still checks actual construction and every admission.
+    pub fn pool_data_bytes(self, capacity: usize) -> Option<(usize, usize)> {
+        self.validate().ok()?;
+        if capacity == 0 || capacity > MAX_SOURCES {
+            return None;
+        }
+        let metadata =
+            capacity.checked_mul(std::mem::size_of::<Slot>() + std::mem::size_of::<Execution>())?;
+        Some((
+            metadata.checked_add(capacity.checked_mul(self.max_retained_data_bytes)?)?,
+            metadata.checked_add(capacity.checked_mul(self.max_construction_peak_data_bytes)?)?,
+        ))
+    }
     fn validate(self) -> Result<(), &'static str> {
         let file = usize::try_from(hex_plugin_scan::MAX_BINARY)
             .map_err(|_| "native validation file bound overflow")?;
@@ -286,11 +303,8 @@ impl Custody {
         let peak = capacity
             .checked_mul(limits.max_construction_peak_data_bytes)
             .ok_or("native source reservation overflow")?;
-        let retained_quote = quote
-            .checked_add(retained)
-            .ok_or("native source reservation overflow")?;
-        let peak_quote = quote
-            .checked_add(peak)
+        let (retained_quote, peak_quote) = limits
+            .pool_data_bytes(capacity)
             .ok_or("native source reservation overflow")?;
         {
             let bank = lock(&self.bank);
@@ -854,6 +868,45 @@ impl CandidateRoot {
                     .as_ref()
                     .is_some_and(|signal| signal.installed.load(Ordering::Acquire)),
         )
+    }
+    pub(crate) fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
+        let work = self.0.eligible.work.try_lock().ok()?;
+        let bank = self.0.eligible.bank.try_lock().ok()?;
+        let index = bank.sources.index(binding)?;
+        let slot = bank.sources.slots.get(index)?;
+        if bank.closing
+            || slot.phase != Phase::Accepted
+            || slot.retiring
+            || slot.starting
+            || slot.cancellation_requested
+        {
+            return None;
+        }
+        let live = match work.sources.cells.get(index)?.owner.as_ref()? {
+            Owner::Effect(effect) => {
+                NativeEffectReference::Unsplit(effect).transport_is_live_on_control()
+            }
+            Owner::Loaned(control) => {
+                NativeEffectReference::Loaned(control).transport_is_live_on_control()
+            }
+            _ => return None,
+        };
+        Some((slot.endpoint_loaned, live))
+    }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_source_completed_blocks(&self, binding: Binding) -> Option<u64> {
+        let work = self.0.eligible.work.try_lock().ok()?;
+        let bank = self.0.eligible.bank.try_lock().ok()?;
+        let index = bank.sources.index(binding)?;
+        match work.sources.cells.get(index)?.owner.as_ref()? {
+            Owner::Effect(effect) => {
+                Some(NativeEffectReference::Unsplit(effect).completed_blocks_on_control())
+            }
+            Owner::Loaned(control) => {
+                Some(NativeEffectReference::Loaned(control).completed_blocks_on_control())
+            }
+            _ => None,
+        }
     }
     pub(crate) fn retire_native_source_preparation(&self, binding: Binding) -> bool {
         let accepted = self.0.eligible.retire_native_source(binding);

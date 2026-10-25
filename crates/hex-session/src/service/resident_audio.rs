@@ -220,7 +220,7 @@ impl Inputs<'_> {
         };
         let mut invoked = false;
         let hosted = sink
-            .prepare_resident_effects(project, &mut |effects| {
+            .prepare_resident_effects(ResidentEffectPreparation { project }, &mut |effects| {
                 if invoked {
                     return Err(hex_engine::Invalid(
                         "host effect compiler was invoked more than once",
@@ -1936,7 +1936,7 @@ mod tests {
         }
         fn prepare_resident_effects(
             &mut self,
-            _project: &Project,
+            _input: ResidentEffectPreparation<'_>,
             prepare: &mut dyn FnMut(
                 &hex_engine::AudioCandidateEffects<'_, '_>,
             ) -> Result<PreparedRevision, hex_engine::Invalid>,

@@ -85,6 +85,49 @@ impl HeadlessBackend {
             .and_then(Guard::owner_ref)
             .map(NativeCallbackOwner::borrowed_status)
     }
+    /// One caller-supplied physical callback through actual foreign processing
+    /// and final stereo host acceptance. No device/physical-latency claim. The
+    /// existing callback validates the real extent against its bound quantum.
+    pub fn render_native_direct(
+        &mut self,
+        frames: &mut [hex_engine::Frame],
+        host: &mut [f32],
+    ) -> Result<(), hex_engine::Invalid> {
+        if frames.len().checked_mul(2) != Some(host.len()) {
+            return Err(hex_engine::Invalid(
+                "headless stereo host extent is invalid",
+            ));
+        }
+        let owner = self
+            .data
+            .as_mut()
+            .and_then(Guard::owner_mut)
+            .ok_or(hex_engine::Invalid("headless backend is closed"))?;
+        let mut result = Ok(());
+        owner.run(|callback, status| {
+            callback.begin_block();
+            if let Err(error) = callback.begin_native_effect_callback(frames.len()) {
+                result = Err(error);
+                return;
+            }
+            let start = status.position.load(std::sync::atomic::Ordering::Relaxed);
+            let rendered = callback.render(frames);
+            if !crate::device::finish_host_chunk(
+                callback,
+                host,
+                frames,
+                2,
+                &rendered,
+                start,
+                std::time::Instant::now(),
+            ) {
+                result = Err(rendered
+                    .err()
+                    .unwrap_or(hex_engine::Invalid("headless native sink refused output")));
+            }
+        });
+        result
+    }
     /// Test-backend stop request only, never a stop/dispose or retirement ACK.
     /// The fixture must actually close both carriers and await the real output
     /// lease before a replacement can open, just like the existing close path.
