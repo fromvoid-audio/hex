@@ -114,7 +114,6 @@ enum EntryKey {
     Group {
         root_only: bool,
         edit: AudioClipEdit,
-        start: u64,
         duration: u64,
         sources: Vec<(Audio, u32, u32)>,
     },
@@ -124,6 +123,23 @@ enum EntryKey {
         start: u64,
         duration: u64,
     },
+}
+impl EntryKey {
+    /// Frame-clock output is defined by its source program and finite view,
+    /// independent of destination onset or the current project tempo. Musical
+    /// views retain both because their sample projection can differ there.
+    fn matches_view(
+        &self,
+        edit: &AudioClipEdit,
+        tempo_map: &hex_project::TempoMap,
+        start: u64,
+        duration: u64,
+    ) -> bool {
+        matches!(self, Self::View { edit: retained, tempo, start: at, duration: length }
+            if retained == edit && *length == duration
+                && (matches!(edit.domain.clock, hex_project::AudioDomainClock::Frames(_))
+                    || (*at == start && tempo.as_ref() == tempo_map)))
+    }
 }
 struct Cache {
     entries: VecDeque<Entry>,
