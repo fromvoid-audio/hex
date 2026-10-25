@@ -5,6 +5,8 @@
 //! Uses hex-ui/GPUI, hex-session, hex-audio, hex-engine, hex-stream, hex-media, hex-diagnostics,
 //! hex-midi and hex-mts at their existing boundaries. Injects hex-export
 //! with independently verified control-worker stream pages for offline output.
+//! Reads hex-plugin-catalog's copied source metadata at hex-preferences' existing
+//! application-support location; neither grants native source admission.
 //!
 //! # Does not own
 //! Does not implement project edits, codecs or musical DSP. Native source/publication adapters

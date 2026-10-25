@@ -5,13 +5,13 @@ use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use std::path::Path;
 
-fn repaint(cx: &mut TestAppContext, visual: &mut VisualTestContext) {
+pub(super) fn repaint(cx: &mut TestAppContext, visual: &mut VisualTestContext) {
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
     visual.run_until_parked();
 }
 
-fn click(visual: &mut VisualTestContext, selector: &'static str) {
+pub(super) fn click(visual: &mut VisualTestContext, selector: &'static str) {
     let bounds = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing painted {selector}"));
@@ -26,7 +26,7 @@ fn click(visual: &mut VisualTestContext, selector: &'static str) {
     visual.run_until_parked();
 }
 
-fn until(label: &str, mut ready: impl FnMut() -> bool) {
+pub(super) fn until(label: &str, mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !ready() {
         assert!(Instant::now() < deadline, "{label}");
@@ -60,7 +60,7 @@ fn open_browser(
     open_browser_metadata(cx, location, presentation, "Fx", 0)
 }
 
-fn copy_original_module(source: &Path, target: &Path) {
+pub(super) fn copy_original_module(source: &Path, target: &Path) {
     fs::create_dir(target).unwrap();
     for entry in fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();

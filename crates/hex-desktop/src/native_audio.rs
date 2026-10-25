@@ -844,6 +844,17 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
+        self.plugins.reopen_ready()
+    }
+    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
+        if self.plugins.finish_reopen(context, accepted) && accepted {
+            // The exact replacement graph was admitted with this unpublished
+            // owner still inventoried. Retire it on control only after success.
+            self.resident
+                .discard_obsolete_pending_after_restore(context);
+        }
+    }
     fn prepare_stopped_playback_restore(
         &mut self,
         context: AudioSourceContext,
@@ -1013,6 +1024,15 @@ impl WorkerAudioSink for NativeAudioSink {
         hex_session::service::ResidentPublicationAcceptance,
         hex_session::service::ResidentPublicationRefusal,
     > {
+        if let Err(error) = self.plugins.check_reopen_publication(
+            metadata.context,
+            matches!(
+                policy,
+                hex_session::service::ResidentPublicationPolicy::RestorePluginState
+            ),
+        ) {
+            return Err(hex_session::service::ResidentPublicationRefusal { playback, error });
+        }
         if let Some(files) = files.as_ref() {
             // Authoring aliases can advance the canonical revision while
             // retaining this exact compiler/source set. File capture counters
@@ -1150,6 +1170,9 @@ impl WorkerAudioSink for NativeAudioSink {
             self.relinquish_output();
             self.request_open(Some(source.sample_rate()), None);
         }
+        if previous != Some(generation) {
+            self.plugins.request_reopen(&source);
+        }
         self.desired = Some(source);
     }
     fn restart_audio(&mut self, generation: u64, request_id: u64) -> Result<(), String> {
@@ -1157,6 +1180,7 @@ impl WorkerAudioSink for NativeAudioSink {
             .desired
             .as_ref()
             .filter(|s| s.context().project_generation == generation)
+            .cloned()
             .ok_or("audio document changed")?;
         let rate = snapshot.sample_rate();
         let incomplete = snapshot.audio_mode() == DocumentAudioMode::VerifiedStreaming
@@ -1179,6 +1203,7 @@ impl WorkerAudioSink for NativeAudioSink {
             return Ok(());
         }
         self.request_open(Some(rate), Some(request_id));
+        self.plugins.request_reopen(&snapshot);
         Ok(())
     }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
@@ -1291,6 +1316,8 @@ impl WorkerAudioSink for NativeAudioSink {
                     control.reclaim();
                     control.poll_resident_publication();
                 }
+                self.plugins
+                    .poll_reopen(&mut output, self.desired.as_deref());
                 self.plugins.poll(
                     &mut output,
                     self.desired.as_ref().map(|source| source.context()),

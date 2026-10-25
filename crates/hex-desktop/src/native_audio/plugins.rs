@@ -13,13 +13,15 @@ use hex_session::service::{
 };
 mod restore;
 use restore::Restore;
+mod reopen;
+use reopen::Reopen;
 
 struct Source {
     binding: Binding,
     owner: ProcessorChainOwner,
     device: u64,
     project_generation: u64,
-    operation: Arc<PluginEffectControl>,
+    operation: Option<Arc<PluginEffectControl>>,
     accepted: bool,
     retiring: bool,
     queued: bool,
@@ -79,6 +81,7 @@ pub(super) struct PreparationObservation {
     pub(super) retiring: bool,
     pub(super) native: Option<Progress>,
     pub(super) attempts: u64,
+    pub(super) restore_refused: bool,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -105,6 +108,8 @@ pub(super) struct Plugins {
     sources: Vec<Source>,
     pending: Option<Pending>,
     restore: Option<Restore>,
+    reopen: Option<Reopen>,
+    pub(super) catalog: Option<std::path::PathBuf>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -136,6 +141,12 @@ impl Plugins {
             return;
         }
         self.initialized = true;
+        self.catalog = std::env::var_os("HOME")
+            .map(|home| {
+                hex_preferences::browser_places_path(std::path::Path::new(&home))
+                    .with_file_name("plugin-catalog.json")
+            })
+            .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
         match Hosting::current_on_control() {
             Ok(host) => self.host = Some(host),
             Err(error) => self.unavailable = Some(error),
@@ -200,6 +211,13 @@ impl Plugins {
             .checked_mul(std::mem::size_of::<Source>())
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .and_then(|n| n.checked_add(self.host.as_ref()?.control_data_bytes()?))
+            .and_then(|n| {
+                n.checked_add(
+                    self.catalog
+                        .as_ref()
+                        .map_or(0, std::path::PathBuf::capacity),
+                )
+            })
             .and_then(|n| n.checked_add(8192))
             .ok_or("vst3 control data overflow")?;
         if control_bytes > crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES {
@@ -227,8 +245,8 @@ impl Plugins {
                 return Err("another vst3 source operation is pending".into());
             }
         } else {
-            if self.restore.is_some() {
-                return Err("stopped vst3 restoration is pending".into());
+            if self.restore.is_some() || self.reopen.is_some() {
+                return Err("vst3 restoration is pending".into());
             }
             if !self.configured {
                 return Err(self
@@ -282,7 +300,7 @@ impl Plugins {
                 owner,
                 device: input.device_id,
                 project_generation: input.insertion.context.project_generation,
-                operation: Arc::clone(&input.insertion.control),
+                operation: Some(Arc::clone(&input.insertion.control)),
                 accepted: false,
                 retiring: false,
                 queued: false,
@@ -318,11 +336,11 @@ impl Plugins {
         {
             self.facts_gate = None;
         }
-        if let Some(source) = self
-            .sources
-            .iter_mut()
-            .find(|s| Arc::ptr_eq(&s.operation, operation))
-        {
+        if let Some(source) = self.sources.iter_mut().find(|s| {
+            s.operation
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, operation))
+        }) {
             source.accepted = accepted
                 && pending
                     .as_ref()
@@ -432,6 +450,7 @@ impl Plugins {
                 && let Ok(mut observed) = observed.try_lock()
             {
                 let source = self.sources.first();
+                let restore_refused = observed.restore_refused;
                 *observed = PreparationObservation {
                     output: control.output_identity(),
                     binding: source.map(|source| source.binding),
@@ -442,6 +461,7 @@ impl Plugins {
                     native: source.and_then(|source| {
                         control.native_source_preparation_progress(source.binding)
                     }),
+                    restore_refused,
                 };
             }
             if let Some(queued) = &self.queued {
@@ -464,6 +484,14 @@ impl Plugins {
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<PreparedRevision>, String> {
+        if self.reopen.as_ref().is_some_and(|restore| {
+            restore.context.project_generation == input.context().project_generation
+                && (!restore.ready
+                    || restore.context != input.context()
+                    || !input.restoring_plugin_state())
+        }) {
+            return Err("vst3 state restoration is pending".into());
+        }
         let mut bindings = Vec::new();
         bindings
             .try_reserve_exact(self.sources.len())

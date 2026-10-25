@@ -523,6 +523,8 @@ pub enum Request {
     InsertPluginEffect(PluginEffectInsertion),
     /// Worker-internal wakeup; never a FIFO request completion.
     ContinuePluginEffect,
+    /// Internal fresh-output state restoration; no authored edit or revision.
+    ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
     InsertEffectBusDevice {
         project_generation: u64,
@@ -2059,6 +2061,7 @@ fn run_worker(
             &request,
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
+                | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
@@ -2729,6 +2732,7 @@ fn run_worker(
                     | Request::ContinueSamplerEdit
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
+                    | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
@@ -5598,6 +5602,43 @@ fn run_worker(
                                 path,
                                 result: Err(reason),
                             })
+                        }
+                    }
+                }
+                Request::ContinuePluginStateRestore => {
+                    if let Some(sink) = events.resident_audio()
+                        && let Some(context) = sink.plugin_state_restore_ready()
+                    {
+                        // Metadata-only A/B edits retain this exact preparation source through
+                        // the sealed comparison binding. Keep its original native correlation;
+                        // a literal authored-revision match would discard a valid restore.
+                        let result = if context.project_generation != project_generation
+                            || state.audio_authoring_revision(context) != Some(revision)
+                        {
+                            Err(SessionError::Invalid(
+                                "vst3 state restoration source changed",
+                            ))
+                        } else if device_gesture.snapshot().is_some()
+                            || tuning_gesture.snapshot().is_some()
+                        {
+                            Err(SessionError::Invalid(
+                                "finish the active gesture before restoring vst3 state",
+                            ))
+                        } else {
+                            session.restore_plugin_state_snapshot(
+                                context, sink,
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None),
+                                resident_snapshot.as_ref(),
+                            )
+                        };
+                        sink.finish_plugin_state_restore(context, result.is_ok());
+                        match result {
+                            Ok(snapshot) => {
+                                compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                                resident_snapshot = Some(snapshot);
+                                status = Some("vst3 playback prepared".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string()),
                         }
                     }
                 }

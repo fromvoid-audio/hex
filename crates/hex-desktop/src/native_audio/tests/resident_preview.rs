@@ -22,6 +22,12 @@ struct ResidentSink {
     pending_observation_generation: Arc<AtomicU64>,
 }
 impl WorkerAudioSink for ResidentSink {
+    fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
+        self.inner.plugin_state_restore_ready()
+    }
+    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
+        self.inner.finish_plugin_state_restore(context, accepted);
+    }
     fn prepare_stopped_playback_restore(
         &mut self,
         context: AudioSourceContext,
@@ -309,7 +315,7 @@ impl ResidentHarness {
         capacity: usize,
         rate: u32,
     ) -> Self {
-        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None)
+        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None)
     }
     pub(super) fn with_plugins(
         host: hex_audio::plugin_effects::Hosting,
@@ -321,6 +327,7 @@ impl ResidentHarness {
             4,
             48_000,
             Some((host, presentation)),
+            None,
             None,
         )
     }
@@ -336,6 +343,22 @@ impl ResidentHarness {
             48_000,
             Some((host, presentation)),
             Some(facts),
+            None,
+        )
+    }
+    pub(super) fn with_plugins_and_catalog(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        catalog: PathBuf,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some((host, presentation)),
+            None,
+            Some(catalog),
         )
     }
     fn with_plugin_fixture(
@@ -348,6 +371,7 @@ impl ResidentHarness {
             Option<hex_audio::plugin_effects::EffectPresentation>,
         )>,
         facts_gate: Option<crate::native_audio::plugins::FactsGate>,
+        catalog: Option<PathBuf>,
     ) -> Self {
         let native_plugins = plugin.is_some();
         let allow_unavailable = !gate.load(Acquire);
@@ -363,6 +387,7 @@ impl ResidentHarness {
         ));
         if let Some((host, presentation)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
+            inner.plugins.catalog = catalog;
             inner.plugins.facts_gate = facts_gate;
             inner.plugins.progress = Some(Arc::clone(&plugin_progress));
             inner.plugins.completed = Some(Arc::clone(&plugin_completed));

@@ -18,10 +18,16 @@ pub use native_sampler::{
 pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) project: &'a Project,
     pub(in crate::service) context: hex_engine::AudioSourceContext,
+    pub(in crate::service) restoring_plugin_state: bool,
 }
 impl<'a> ResidentEffectPreparation<'a> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
+    }
+    /// Only the unchanged canonical fresh-output continuation sets this bit.
+    /// Ordinary edits and transient audition requests cannot consume its sources.
+    pub fn restoring_plugin_state(&self) -> bool {
+        self.restoring_plugin_state
     }
     pub fn visit_plugin_effects(
         &self,
@@ -127,6 +133,9 @@ pub enum ResidentPublicationPolicy {
     ArrangementEdit,
     /// Existing explicit fresh installation used after priority Stop restoration.
     InstallFreshRuntime,
+    /// Only the same-context fresh-output plugin continuation may replace its
+    /// admitted unpublished graph after actual native/endpoint readiness.
+    RestorePluginState,
     /// New/Open only: admit one exact pending owner before canonical generation replacement.
     /// Acceptance is OfflineRetained; existing teardown/open then queues it on the fresh output.
     /// This never converts ordinary queue pressure into offline acceptance.
@@ -164,6 +173,20 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// A fresh-output owner has restored the unchanged canonical plugin state
+    /// through its actual native/endpoint ACKs. The worker may now recompile
+    /// that exact context; this scalar transfers no source or graph custody.
+    fn plugin_state_restore_ready(&self) -> Option<hex_engine::AudioSourceContext> {
+        None
+    }
+    /// Exact same-context recompilation terminal. Before acceptance, the sink
+    /// retains its admitted unpublished document graph and original resources.
+    fn finish_plugin_state_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: bool,
+    ) {
+    }
     /// Renew stopped native sources through their original output owner. None
     /// keeps the ordinary restore path; Some(false) retains the operation until
     /// its exact callback returns and fresh endpoint ACKs, Some(true) requests
@@ -634,6 +657,13 @@ impl WorkerEvents {
                 .is_some_and(|a| a.sampler_edit_ready().is_some())
             {
                 return Some(Request::ContinueSamplerEdit);
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_state_restore_ready().is_some())
+            {
+                return Some(Request::ContinuePluginStateRestore);
             }
             if plugin_effect.is_some_and(|insertion| {
                 insertion.context != context

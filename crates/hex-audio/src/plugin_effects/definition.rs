@@ -127,68 +127,6 @@ impl<'a> NativeEffectDefinition<'a> {
     }
 }
 
-#[cfg(test)]
-mod unavailable_tests {
-    use super::*;
-
-    #[test]
-    fn unavailable_effect_is_exact_preserved_metadata_not_a_foreign_factory() {
-        let state = hex_plugin_state::encode(hex_plugin_state::State {
-            identity: hex_plugin_state::Identity {
-                class: hex_plugin_state::ClassId::new([1; 16]).unwrap(),
-                binary: hex_plugin_state::BinaryIdentity {
-                    executable_sha256: [2; 32],
-                    info_sha256: [3; 32],
-                },
-            },
-            component: Some(&[4, 5]),
-            controller: Some(&[]),
-        })
-        .unwrap();
-        let original = state.clone();
-        let owner = hex_lattice::ProcessorChainOwner::Main;
-        let definition = NativeEffectDefinition::unavailable(&[UnavailableEffect {
-            owner,
-            device_id: 7,
-            state: &state,
-        }])
-        .unwrap();
-        let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
-        let registry = hex_lattice::NativeDeviceRegistry::new(&definitions).unwrap();
-        let context = DevicePreparationContext {
-            sample_rate: 48_000,
-            tuning: &hex_lattice::TuningTable::default(),
-            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        };
-        let identity = ProcessorInstanceIdentity::new(owner, 7).unwrap();
-        let prepared = registry
-            .prepare_runtime_instance(identity, &state, &context)
-            .unwrap();
-        assert!(prepared.matrix.is_identity() && prepared.processor.is_none());
-        assert_eq!(registry.migrate_state(&state).unwrap(), original);
-        assert!(
-            registry
-                .prepare_runtime_instance(
-                    ProcessorInstanceIdentity::new(owner, 8).unwrap(),
-                    &state,
-                    &context,
-                )
-                .is_err()
-        );
-        assert!(registry.prepare_runtime_device(&state, &context).is_err());
-        let unsupported =
-            NativeDeviceState::new(hex_plugin_state::TYPE_ID, 2, state.payload().to_vec()).unwrap();
-        assert!(
-            NativeEffectDefinition::unavailable(&[UnavailableEffect {
-                owner,
-                device_id: 7,
-                state: &unsupported
-            },])
-            .is_err()
-        );
-        assert_eq!(state, original);
-    }
-}
 impl NativeDeviceMetadata for NativeEffectDefinition<'_> {
     fn type_id(&self) -> DeviceTypeId {
         hex_plugin_state::TYPE_ID
@@ -284,5 +222,68 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
         Ok(Some(PreparedProcessorFactory::Foreign(effect.prepared)))
+    }
+}
+
+#[cfg(test)]
+mod unavailable_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_effect_is_exact_preserved_metadata_not_a_foreign_factory() {
+        let state = hex_plugin_state::encode(hex_plugin_state::State {
+            identity: hex_plugin_state::Identity {
+                class: hex_plugin_state::ClassId::new([1; 16]).unwrap(),
+                binary: hex_plugin_state::BinaryIdentity {
+                    executable_sha256: [2; 32],
+                    info_sha256: [3; 32],
+                },
+            },
+            component: Some(&[4, 5]),
+            controller: Some(&[]),
+        })
+        .unwrap();
+        let original = state.clone();
+        let owner = hex_lattice::ProcessorChainOwner::Main;
+        let definition = NativeEffectDefinition::unavailable(&[UnavailableEffect {
+            owner,
+            device_id: 7,
+            state: &state,
+        }])
+        .unwrap();
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+        let registry = hex_lattice::NativeDeviceRegistry::new(&definitions).unwrap();
+        let context = DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        };
+        let identity = ProcessorInstanceIdentity::new(owner, 7).unwrap();
+        let prepared = registry
+            .prepare_runtime_instance(identity, &state, &context)
+            .unwrap();
+        assert!(prepared.matrix.is_identity() && prepared.processor.is_none());
+        assert_eq!(registry.migrate_state(&state).unwrap(), original);
+        assert!(
+            registry
+                .prepare_runtime_instance(
+                    ProcessorInstanceIdentity::new(owner, 8).unwrap(),
+                    &state,
+                    &context,
+                )
+                .is_err()
+        );
+        assert!(registry.prepare_runtime_device(&state, &context).is_err());
+        let unsupported =
+            NativeDeviceState::new(hex_plugin_state::TYPE_ID, 2, state.payload().to_vec()).unwrap();
+        assert!(
+            NativeEffectDefinition::unavailable(&[UnavailableEffect {
+                owner,
+                device_id: 7,
+                state: &unsupported
+            },])
+            .is_err()
+        );
+        assert_eq!(state, original);
     }
 }

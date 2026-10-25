@@ -53,6 +53,15 @@ pub struct Hosting {
     limits: native::Limits,
 }
 impl Hosting {
+    /// Inspect the saved envelope's copied class/binary identity. This resolves
+    /// no file, grants no native source and never replaces opaque state.
+    pub fn saved_identity_on_control(
+        state: &NativeDeviceState,
+    ) -> Result<hex_plugin_state::Identity, String> {
+        hex_plugin_state::decode(state)
+            .map(|state| state.identity)
+            .map_err(|error| error.to_string())
+    }
     /// Listed retained helper provenance, inline host metadata and one bounded
     /// captured state payload for the pending consumer response. Inventory
     /// map-node/allocator backing remains an opaque bounded obligation as in
@@ -135,7 +144,9 @@ impl Hosting {
     pub(crate) fn from_test_build(build: InstanceBuild, limits: native::Limits) -> Self {
         Self { build, limits }
     }
-    /// Begin an explicit user-selected effect on an already configured output.
+    /// Begin an explicit user-selected effect, including restoration of its
+    /// saved identity from a user-opened project, on a configured output.
+    /// A catalog match remains copied metadata; this revalidates the files.
     /// Quantum comes from that output, never the UI. Root allocates the actual
     /// binding/cancellation for the captured owner/planned canonical device.
     #[allow(clippy::too_many_arguments)] // Complete selected source and destination.

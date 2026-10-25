@@ -30,6 +30,15 @@ pub(super) struct Resident {
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
+    pub(super) fn discard_obsolete_pending_after_restore(&mut self, context: AudioSourceContext) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.metadata.context == context)
+        {
+            self.pending = None;
+        }
+    }
     /// A successfully adopted non-resident document supersedes only unpublished old-generation
     /// custody. Actual callback obligations remain in the active/retired book until teardown.
     pub(super) fn discard_obsolete_pending(&mut self, context: hex_engine::AudioSourceContext) {
@@ -233,6 +242,12 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        if let Err(error) = self.plugins.check_reopen_publication(
+            metadata.context,
+            matches!(policy, ResidentPublicationPolicy::RestorePluginState),
+        ) {
+            return Err(ResidentPublicationRefusal { playback, error });
+        }
         self.remember_applied_loop();
         self.poll_section_edit();
         // A request can wake the Session worker directly after the callback's
@@ -374,6 +389,9 @@ impl NativeAudioSink {
                         }
                         Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
                     }
+                }
+                ResidentPublicationPolicy::RestorePluginState => {
+                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::ReplaceDocument => {
                     return Err(ResidentPublicationRefusal {
@@ -539,6 +557,14 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) {
         if self.output.is_none() {
+            return;
+        }
+        if self
+            .resident
+            .pending
+            .as_ref()
+            .is_some_and(|pending| self.plugins.hold_reopen(pending.metadata.context))
+        {
             return;
         }
         let Some(pending) = self.resident.pending.take() else {

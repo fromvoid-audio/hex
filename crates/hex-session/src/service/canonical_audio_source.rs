@@ -108,6 +108,7 @@ impl CanonicalAudioSourceSnapshot {
         ResidentEffectPreparation {
             project: &self.project,
             context: self.context,
+            restoring_plugin_state: false,
         }
     }
     /// Prepare inside the native host's reserved cell without extracting its
