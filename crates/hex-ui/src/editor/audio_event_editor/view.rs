@@ -1,7 +1,9 @@
 use super::super::waveform;
 use super::*;
 use crate::theme;
-use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb};
+use gpui::{
+    Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
+};
 use hex_widgets::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 
 const EVENT_RULER_HEIGHT: f32 = 22.0;
@@ -377,6 +379,48 @@ pub(in crate::editor) fn view(
                 .left(relative(frame_to_x(cursor)))
                 .w(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Primary))),
+        );
+    }
+    // A fixed playback-source cursor, separate from both the edit cursor and
+    // loop brace. The canonical projection owns crop, repeat and directed reads.
+    if let Some(position) = hex_project::AudioViewProjection::new(&clip, state.project.tempo_map())
+        .ok()
+        .and_then(|projection| projection.play_start_position().ok().flatten())
+        .and_then(frame_at)
+        .filter(|frame| (first + local.start..=first + local.start + local.length).contains(frame))
+    {
+        let color = theme::color(theme::PaletteRole::Text);
+        body = body.child(
+            div()
+                .debug_selector(|| "audio-play-start-marker".into())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(relative(frame_to_x(position)))
+                .w(px(1.0))
+                .bg(rgb(color))
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            let x = bounds.left();
+                            let y = bounds.top();
+                            let mut arrow = PathBuilder::fill();
+                            arrow.move_to(point(x, y));
+                            arrow.line_to(point(x + px(7.0), y + px(4.0)));
+                            arrow.line_to(point(x, y + px(8.0)));
+                            arrow.close();
+                            if let Ok(arrow) = arrow.build() {
+                                window.paint_path(arrow, rgb(color));
+                            }
+                        },
+                    )
+                    .absolute()
+                    .top(px(2.0))
+                    .left_0()
+                    .w(px(7.0))
+                    .h(px(8.0)),
+                ),
         );
     }
     let entity = cx.entity();
