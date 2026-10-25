@@ -11,7 +11,7 @@ use crate::{
 use std::{
     fmt::Debug,
     iter::Peekable,
-    ops::{Add, Range, Sub},
+    ops::{Add, Deref, Range, Sub},
     slice,
     sync::Arc,
 };
@@ -822,6 +822,36 @@ impl From<PaintSurface> for Primitive {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PathId(pub(crate) usize);
 
+/// Mutable construction keeps a directly owned Vec; only finished scaled meshes
+/// pay for sharing. Metadata remains in Path, separate from immutable vertex bytes.
+#[derive(Clone)]
+pub(crate) enum PathVertices<P: Clone + Debug + Default + PartialEq> {
+    Owned(Vec<PathVertex<P>>),
+    Shared(Arc<Vec<PathVertex<P>>>),
+}
+impl<P: Clone + Debug + Default + PartialEq> Deref for PathVertices<P> {
+    type Target = [PathVertex<P>];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(vertices) => vertices.as_slice(),
+            Self::Shared(vertices) => vertices.as_slice(),
+        }
+    }
+}
+impl<P: Clone + Debug + Default + PartialEq> Debug for PathVertices<P> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.deref().fmt(formatter)
+    }
+}
+impl<P: Clone + Debug + Default + PartialEq> PathVertices<P> {
+    fn make_mut(&mut self) -> &mut Vec<PathVertex<P>> {
+        match self {
+            Self::Owned(vertices) => vertices,
+            Self::Shared(vertices) => Arc::make_mut(vertices),
+        }
+    }
+}
+
 /// A line made up of a series of vertices and control points.
 #[derive(Clone, Debug)]
 pub struct Path<P: Clone + Debug + Default + PartialEq> {
@@ -829,9 +859,8 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub(crate) order: DrawOrder,
     pub(crate) bounds: Bounds<P>,
     pub(crate) content_mask: ContentMask<P>,
-    // Immutable clones share mesh bytes; public path construction remains
-    // value-like through copy-on-write in push_triangle. Renderer uploads borrow.
-    pub(crate) vertices: Arc<Vec<PathVertex<P>>>,
+    // Scaled Scene clones share mesh bytes; mutable construction stays owned.
+    pub(crate) vertices: PathVertices<P>,
     pub(crate) color: Background,
     start: Point<P>,
     current: Point<P>,
@@ -844,7 +873,7 @@ impl Path<Pixels> {
         Self {
             id: PathId(0),
             order: DrawOrder::default(),
-            vertices: Arc::new(Vec::new()),
+            vertices: PathVertices::Owned(Vec::new()),
             start,
             current: start,
             bounds: Bounds {
@@ -864,12 +893,8 @@ impl Path<Pixels> {
             order: self.order,
             bounds: self.bounds.scale(factor),
             content_mask: self.content_mask.scale(factor),
-            vertices: self
-                .vertices
-                .iter()
-                .map(|vertex| vertex.scale(factor))
-                .collect::<Vec<_>>()
-                .into(),
+            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
+                .map(|vertex| vertex.scale(factor)).collect())),
             start: self.start.map(|start| start.scale(factor)),
             current: self.current.scale(factor),
             contour_count: self.contour_count,
@@ -934,7 +959,7 @@ impl Path<Pixels> {
                 size: Default::default(),
             });
 
-        let vertices = Arc::make_mut(&mut self.vertices);
+        let vertices = self.vertices.make_mut();
         vertices.push(PathVertex {
             xy_position: xy.0,
             st_position: st.0,
@@ -1052,11 +1077,11 @@ mod replay_verification {
                 order: 0,
                 bounds,
                 content_mask: content_mask.clone(),
-                vertices: vec![PathVertex {
+                vertices: PathVertices::Shared(Arc::new(vec![PathVertex {
                     xy_position: bounds.origin,
                     st_position: point(0.0, 0.0),
                     content_mask,
-                }].into(),
+                }])),
                 color: color.into(),
                 start: bounds.origin,
                 current: bounds.bottom_right(),
@@ -1361,10 +1386,6 @@ mod replay_verification {
         let before = bits(&original.vertices, |v| v.0);
         let before_bounds = original.bounds;
         let mut edited = original.clone();
-        require(
-            std::ptr::eq(original.vertices.as_ptr(), edited.vertices.as_ptr()),
-            "immutable path clone copied mesh storage",
-        )?;
         edited.line_to(point(Pixels(123.0), Pixels(456.0)));
         require(
             bits(&original.vertices, |v| v.0) == before && original.bounds == before_bounds,
@@ -1375,6 +1396,12 @@ mod replay_verification {
                 && !std::ptr::eq(original.vertices.as_ptr(), edited.vertices.as_ptr()),
             "clone append did not detach mesh storage",
         )?;
+        let mut shared_edit = original.clone();
+        shared_edit.vertices = PathVertices::Shared(Arc::new(shared_edit.vertices.to_vec()));
+        let shared_before = shared_edit.clone();
+        shared_edit.line_to(point(Pixels(77.0), Pixels(88.0)));
+        require(bits(&shared_before.vertices, |v| v.0) == before,
+                "shared path mutation changed retained mesh")?;
         let retained = original.clone();
         original.line_to(point(Pixels(-70.0), Pixels(-80.0)));
         require(

@@ -272,18 +272,17 @@ the cumulative patch are regenerated from the verified original archive. Native
 hover selection is checked headlessly; actual cursor appearance remains a user
 interaction acceptance item on the optimized macOS app.
 
-25 October immutable path mesh sharing: Path retains vertex arrays in private
-Arc<Vec<_>> storage. Clones retain immutable mesh bytes while order, PathId,
-mask, color, bounds and contour state remain independent values. Public path
-construction detaches once per triangle through Arc::make_mut; scaling retains
-its original per-vertex arithmetic/order and creates a fresh transformed array.
-The existing metal, blade and directx upload iterators still copy vertex values
-into their renderer-owned uploads; no borrowed GPU lifetime, native/unsafe call,
-new dependency or public path method is introduced. The root-locked scene oracle
-checks real shared storage, independent clone/original edits and exact scaled
-xy/ST/mask bits alongside mixed-alpha painter/order/refusal and repeated replay.
-Additional Arc construction/reference-count work is included in complete arranger
-navigation profiles, with process RSS/tails separate from native GPU acceptance.
-Published baseline/license, source hashes and unrelated cumulative diff blocks
-remain; the changed scene block is replayed against verified original bytes and
-the offline full cumulative-patch guard checks exact reproduction.
+25 October immutable scaled path mesh sharing: Path uses a private owned/shared
+vertex store. Mutable logical-pixel construction retains its directly owned Vec,
+while scaling keeps original arithmetic/order and publishes a fresh shared
+Arc<Vec<_>> array. Cloned scaled Scene paths retain immutable mesh bytes; order,
+PathId, mask, color, bounds and contour state remain independent values. Editing
+a shared path detaches through Arc::make_mut; normal construction avoids that
+atomic work. Existing metal/blade/directx iterators still copy vertex values into
+renderer-owned uploads; no borrowed GPU lifetime, native/unsafe call, dependency
+or public method change. The root-locked oracle checks clone/original edits,
+shared mutation and exact scaled xy/ST/mask bits with retained mixed-alpha/order/
+refusal/repeated replay coverage. Full navigation profiles include construction,
+sharing and metadata costs, and retain RSS/tails separately from native GPU
+acceptance. Published archive/license and unrelated cumulative blocks remain;
+changed scene bytes are reproduced by original-archive and offline full guards.
