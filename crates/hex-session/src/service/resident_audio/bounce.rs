@@ -127,7 +127,8 @@ pub(in crate::service) fn bounce_arrangement(
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
 ) -> Result<(Created, Arc<PreparedRevision>), String> {
-    if in_place
+    let replaces_devices = target.bakes_devices(in_place);
+    if replaces_devices
         && current.as_ref().is_some_and(|s| {
             s.inputs.keyboard.is_some()
                 || s.inputs.audition.is_some()
@@ -138,7 +139,7 @@ pub(in crate::service) fn bounce_arrangement(
     }
     // Reuse the native stopped fence, never inherit outgoing voices that are
     // now represented by the baked PCM. Command-B retains original ownership.
-    let stopped = if in_place {
+    let stopped = if replaces_devices {
         Some(
             crate::service::stopped_arrangement::acquire(
                 sink,
