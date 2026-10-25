@@ -23,6 +23,11 @@ pub enum Command {
         devices: Vec<hex_lattice_contract::NativeDeviceState>,
         instrument_index: usize,
     },
+    /// Assign an existing singleton source, or unlink without deleting it.
+    BindTrackSource {
+        track: TrackId,
+        source: Option<crate::SourceId>,
+    },
     RenameNativeSource {
         source: crate::SourceId,
         name: String,
@@ -1648,6 +1653,7 @@ impl Project {
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
             source_command @ (Command::CreateNativeSource { .. }
+            | Command::BindTrackSource { .. }
             | Command::RenameNativeSource { .. }
             | Command::RemoveNativeSource(_)) => crate::native_sources::apply(self, source_command),
             Command::CommitArrangementBounce {

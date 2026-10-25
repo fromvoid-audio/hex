@@ -1229,3 +1229,138 @@ fn retained_native_sources_survive_session_history_track_removal_and_media_reope
         "missing files do not erase authored references"
     );
 }
+
+#[test]
+fn bound_synth_preserves_local_prefix_suffix_audio_mix_through_save_reopen_and_unlink() {
+    fn add_note(session: &mut Session, track: TrackId) {
+        let Created::Clip(clip) = session
+            .command(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ONE,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        session
+            .command(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 69,
+                channel: 0,
+                velocity: 110,
+            })
+            .unwrap();
+    }
+    fn render(session: &Session) -> Vec<[f32; 2]> {
+        let graph = session.compile().unwrap();
+        let mut renderer = hex_engine::Renderer::new(&graph);
+        renderer.play();
+        let mut output = vec![[0.0; 2]; 24512];
+        renderer.render(&mut output).unwrap();
+        output
+    }
+    let directory = TempDir::new();
+    let mut session = Session::new(48000, 32, 64).unwrap();
+    let (track, asset, _) = imported_ids(
+        session
+            .import(prepare(&directory, "audio.wav", 48000, &[[8192, -4096]; 8]))
+            .unwrap(),
+    );
+    let Created::Device(instrument) = session
+        .command(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument")
+    };
+    let source = session.project().track(track).unwrap().source_id().unwrap();
+    let utility = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: Some(instrument),
+            state: utility.clone().with_input_gain_millidb(-6000).unwrap(),
+        })
+        .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: utility.with_input_gain_millidb(3000).unwrap(),
+        })
+        .unwrap();
+    session.command(Command::Gain { track, gain: 0.7 }).unwrap();
+    add_note(&mut session, track);
+    let mut reference = Session::new(48000, 8, 0).unwrap();
+    let Created::Track(reference_track) = reference
+        .command(Command::InsertTrackWithDevice {
+            name: "sine oracle".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("reference track")
+    };
+    add_note(&mut reference, reference_track);
+    let sine = render(&reference);
+    assert!(sine[24000..].iter().any(|f| f[0].abs() > 0.001));
+    let actual = render(&session);
+    let prefix = 10.0_f32.powf(-6.0 / 20.0);
+    let suffix = 10.0_f32.powf(3.0 / 20.0);
+    for (frame, (actual, tone)) in actual.iter().zip(&sine).enumerate() {
+        for channel in 0..2 {
+            let audio = if frame < 8 {
+                [0.25_f32, -0.125][channel]
+            } else {
+                0.0
+            };
+            let expected = (audio * prefix + tone[channel]) * suffix * 0.7;
+            assert!(
+                (actual[channel] - expected).abs() < 2.0e-6,
+                "frame{frame}/channel{channel}: {} vs {expected}",
+                actual[channel]
+            );
+        }
+    }
+    let saved = directory.path().join("bound.hex");
+    hex_storage::save_new(&saved, session.project()).unwrap();
+    let restored = hex_storage::load(&saved).unwrap();
+    assert_eq!(restored.track(track).unwrap().source_id(), Some(source));
+    assert_eq!(
+        restored.track(track).unwrap().instrument_position(),
+        Some(1)
+    );
+    let pcm = decode_wav_file(directory.path().join("audio.wav"), Limits::new(4096, 64)).unwrap();
+    let mut reopened = Session::from_loaded(restored, 32, 64, vec![(asset, pcm)]).unwrap();
+    assert_eq!(render(&reopened), actual);
+    let definition = reopened.project().native_source(source).unwrap().clone();
+    reopened
+        .command(Command::BindTrackSource {
+            track,
+            source: None,
+        })
+        .unwrap();
+    assert_eq!(reopened.project().native_source(source), Some(&definition));
+    let detached = render(&reopened);
+    assert_eq!(
+        &detached[..8],
+        &actual[..8],
+        "local audio processing is unchanged by unlink"
+    );
+    assert!(detached[8..].iter().all(|f| *f == [0.0; 2]));
+    assert!(reopened.undo());
+    assert_eq!(render(&reopened), actual);
+    assert!(reopened.redo());
+    assert_eq!(render(&reopened), detached);
+}

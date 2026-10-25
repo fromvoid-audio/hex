@@ -4152,7 +4152,7 @@ mod tests {
             state = settings.encode().unwrap();
             return_state = state.clone();
         }
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
@@ -4322,7 +4322,7 @@ mod tests {
         const RETURN_DEVICE_ID: u64 = 8;
         const FRAMES: u64 = 512;
         let make_state = || state.clone();
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -4452,7 +4452,7 @@ mod tests {
             )
             .expect("compressor threshold")
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -4594,7 +4594,7 @@ mod tests {
             )
             .expect("gate floor")
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -7676,7 +7676,7 @@ mod tests {
             SessionCellContentSnapshot, SessionCellSnapshot, SessionSnapshot, Snapshot, Tempo,
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -8186,7 +8186,7 @@ mod tests {
             Project as CanonicalProject, SessionSnapshot, Snapshot, Tempo, TempoPoint,
             TrackContentSnapshot, TrackSnapshot,
         };
-        let project = CanonicalProject::from_snapshot(Snapshot {
+        let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),

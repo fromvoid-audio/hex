@@ -21,7 +21,7 @@ const BED_TRACK: u64 = 5;
 const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
-    Project::from_snapshot(Snapshot {
+    Project::from_legacy_snapshot(Snapshot {
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
