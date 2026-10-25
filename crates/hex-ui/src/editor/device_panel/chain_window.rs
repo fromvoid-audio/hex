@@ -133,14 +133,18 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>) -> Div {
     let expected_offset = scroll.offset();
     // Observe the already-laid-out rail without introducing a child that
     // could change its scroll extent, padding, order or drop geometry.
-    let rail = div().on_children_prepainted(move |_, _, cx| {
-        let measured = f32::from(scroll.bounds().size.width);
-        let resized = measured.is_finite() && measured > 0.0 && width.replace(measured) != measured;
-        if resized || scroll.offset() != expected_offset {
-            let entity = entity.clone();
-            cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
-        }
-    });
+    // The shared track/Return/Main rail is recessed behind neutral device panels.
+    let rail = div()
+        .bg(rgb(theme::color(theme::PaletteRole::Border)))
+        .on_children_prepainted(move |_, _, cx| {
+            let measured = f32::from(scroll.bounds().size.width);
+            let resized =
+                measured.is_finite() && measured > 0.0 && width.replace(measured) != measured;
+            if resized || scroll.offset() != expected_offset {
+                let entity = entity.clone();
+                cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+            }
+        });
     super::keyboard::rail(view, cx, rail)
 }
 
