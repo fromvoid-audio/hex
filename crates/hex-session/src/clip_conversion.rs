@@ -13,7 +13,8 @@ const MAX_BOUNCE_FRAMES: u64 = hex_engine::session_playback::MAX_FINITE_BOUNCE_F
 static NEXT_BOUNCE: AtomicU64 = AtomicU64::new(0);
 
 impl Session {
-    /// Bounce only this clip's instrument, before retained track effects/mix.
+    /// Bounce only this clip's instrument, before retained track effects/mix
+    /// and Main processing. Those live processors must apply exactly once.
     /// Arrangement length is preserved exactly; tails beyond the clip are cut.
     /// Session bounces one initial source pass, since audio cells are one-shots.
     pub fn bounce_midi_clip(
@@ -280,6 +281,9 @@ fn isolated_source(
     snapshot.assets.retain(|asset| required.contains(&asset.id));
     snapshot.session = Default::default();
     snapshot.return_tracks.clear();
+    // The converted clip still passes through the canonical Main chain.
+    // Exclude it only from this disposable instrument-source render.
+    snapshot.main_devices.clear();
     snapshot.audio_feeds.clear();
     snapshot.midi_routes.clear();
     snapshot.return_feeds.clear();
