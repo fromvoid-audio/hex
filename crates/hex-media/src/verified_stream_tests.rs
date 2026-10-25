@@ -3,6 +3,8 @@ use crate::{
     decode_wav,
 };
 use hex_engine::Frame;
+use sha2::{Digest, Sha256};
+use sha2_legacy::{Digest as LegacyDigest, Sha256 as LegacySha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
@@ -548,4 +550,45 @@ fn sparse_seventeen_million_frame_file_supports_far_verified_conversion() {
     plan.render_window(required_start, &local_frames, output_start, &mut expected)
         .expect("local conversion oracle");
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn sha256_backend_preserves_legacy_bytes_and_hex_across_padding_and_page_boundaries() {
+    for (input, expected) in [
+        (
+            b"".as_slice(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            b"abc".as_slice(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+    ] {
+        let actual: [u8; 32] = Sha256::digest(input).into();
+        assert_eq!(hex(&actual), expected);
+    }
+    let lengths = (0..=130).chain([
+        255, 256, 257, 511, 512, 513, 8191, 8192, 8193, 65535, 65536, 65537, 262147,
+    ]);
+    for length in lengths {
+        let input: Vec<u8> = (0..length)
+            .map(|i| ((i * 37 + i / 3) & 255) as u8)
+            .collect();
+        let expected: [u8; 32] = LegacySha256::digest(&input).into();
+        let actual: [u8; 32] = Sha256::digest(&input).into();
+        assert_eq!(actual, expected, "whole input length {length}");
+        assert_eq!(hex(&actual), format!("{:x}", LegacySha256::digest(&input)));
+        for width in [1, 3, 4, 17, 63, 64, 65, 4096, 65536] {
+            let mut legacy = LegacySha256::new();
+            let mut current = Sha256::new();
+            for chunk in input.chunks(width) {
+                legacy.update(chunk);
+                current.update(chunk);
+            }
+            let legacy: [u8; 32] = legacy.finalize().into();
+            let current: [u8; 32] = current.finalize().into();
+            assert_eq!(legacy, expected, "legacy length {length}, chunk {width}");
+            assert_eq!(current, expected, "current length {length}, chunk {width}");
+        }
+    }
 }

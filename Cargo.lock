@@ -2591,7 +2591,7 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "signal-hook",
 ]
 
@@ -2654,7 +2654,7 @@ dependencies = [
  "hex-project",
  "hex-tuning",
  "hex-warp",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2696,6 +2696,7 @@ dependencies = [
  "hex-lattice-contract",
  "hex-project",
  "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2742,7 +2743,7 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "signal-hook",
 ]
 
@@ -2806,7 +2807,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "rtrb",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]

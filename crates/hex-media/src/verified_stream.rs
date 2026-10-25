@@ -33,6 +33,8 @@ impl VerifiedWavReaderLimits {
 }
 
 /// WAV reader backed by an ordered SHA-256 manifest of the opened descriptor.
+/// Fingerprints are durable bytes; changing a library/backend must preserve
+/// complete-file/page digests, rather than change source identities or schemas.
 ///
 /// Opening hashes the complete file once. It is not an atomic filesystem
 /// snapshot: concurrent writes with restored metadata can produce a hybrid
