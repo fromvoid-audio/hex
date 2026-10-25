@@ -29,6 +29,29 @@ impl SharedSourceHandoff {
         };
         let old_routing = previous.revision.source_routing();
         let new_routing = candidate.revision.source_routing();
+        // Disabled/unlinked source kernels retain their finite tail custody.
+        // Re-enabling the same device cannot create a concurrent second pair.
+        for track in candidate
+            .revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio() && track.instrument_slot_enabled())
+        {
+            if track.instrument_id.is_some_and(|device| {
+                previous
+                    .tail_mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|tail| {
+                        tail.runtime.expression_identity == Some(device)
+                            && (!tail.runtime.committed_is_quiescent()
+                                || tail.runtime.has_committed_live_occurrences())
+                    })
+            }) {
+                return Err(SessionPlaybackError::MutableInstrumentActive);
+            }
+        }
         for (old_index, old_runtime) in previous.mutable_instruments.iter().enumerate() {
             let Some(old_runtime) = old_runtime else {
                 continue;
@@ -55,15 +78,21 @@ impl SharedSourceHandoff {
             {
                 continue;
             }
+            let shared = old_routing.is_shared(old_index) || new_routing.is_shared(new_index);
             let Some(new_runtime) = candidate
                 .mutable_instruments
                 .get(new_index)
                 .and_then(Option::as_ref)
             else {
-                if !old_runtime.committed_is_quiescent() {
-                    return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                        "shared source processing class changed while notes are active",
-                    ));
+                let same_device = old_runtime.expression_identity.is_some()
+                    && old_runtime.expression_identity
+                        == candidate.revision.arrangement().tracks()[new_index].instrument_id;
+                if (shared || same_device || old_runtime.has_committed_live_occurrences())
+                    && candidate.revision.arrangement().tracks()[new_index]
+                        .instrument_slot_enabled()
+                    && !old_runtime.committed_is_quiescent()
+                {
+                    return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
                 continue;
             };
@@ -82,10 +111,18 @@ impl SharedSourceHandoff {
                     .mutable_history_retarget(new_receiver)
                     .is_some_and(|proof| new_runtime.can_retarget_from(old_runtime, proof));
             if !exact && !retarget {
-                if !old_runtime.committed_is_quiescent() {
-                    return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                        "shared source configuration changed while notes are active",
-                    ));
+                let same_device = old_runtime.expression_identity.is_some()
+                    && old_runtime.expression_identity == new_runtime.expression_identity;
+                if ((shared || same_device) && !old_runtime.committed_is_quiescent())
+                    || old_runtime.has_committed_live_occurrences()
+                {
+                    return Err(if shared {
+                        SessionPlaybackError::MutableInstrumentDiagnostic(
+                            "shared source configuration changed while notes are active",
+                        )
+                    } else {
+                        SessionPlaybackError::DeviceRuntime
+                    });
                 }
                 continue;
             }
@@ -94,53 +131,9 @@ impl SharedSourceHandoff {
                     "shared source runtime or original resources are incompatible",
                 ));
             }
-            // Existing contributors keep their exact authored source law. A
-            // removed/unbound contributor instead releases only its owned IDs
-            // after every handoff preflight has succeeded.
-            for &contributor in old_routing.contributors(old_index) {
-                let old_contributor = usize::from(contributor);
-                let track = previous.routes[old_contributor].id;
-                let Some(_new_contributor) = candidate
-                    .routes
-                    .iter()
-                    .position(|route| route.id == track)
-                    .filter(|index| new_routing.source(*index) == Some(source))
-                else {
-                    continue;
-                };
-                let old_route =
-                    effective_midi_route(&previous.revision, &previous.routes, old_contributor)?;
-                let unchanged = match old_route.owner {
-                    RouteOwner::Arrangement => previous
-                        .revision
-                        .mutable_arrangement_sources_match(&candidate.revision, track),
-                    RouteOwner::Session { clip, .. } => {
-                        crate::session_inventory::EffectiveSessionMidi::new(
-                            previous.revision.session(),
-                            previous.midi_admission.as_ref(),
-                        )
-                        .midi_clip_for_track(clip, track)
-                        .zip(
-                            crate::session_inventory::EffectiveSessionMidi::new(
-                                candidate.revision.session(),
-                                candidate.midi_admission.as_ref(),
-                            )
-                            .midi_clip_for_track(clip, track),
-                        )
-                        .is_some_and(|(old, new)| old.source_content_matches(&new))
-                    }
-                    RouteOwner::SessionAudio { .. } | RouteOwner::Silence => true,
-                };
-                if !unchanged
-                    && old_runtime
-                        .proofs()
-                        .any(|proof| proof.signature.key().track == track && !proof.note_off_sent)
-                {
-                    return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                        "shared contributor source changed while its notes are active",
-                    ));
-                }
-            }
+            // Authored content is validated occurrence by occurrence by the
+            // common handoff planner, including canonical new-note/prefix
+            // evidence. Source continuity alone never authorizes a note chase.
             // Incoming pre-cut occurrences are not chased: the source collector
             // admits only future onsets. Existing source kernels and unrelated
             // held contributors keep their dispatched proofs.
@@ -1048,6 +1041,217 @@ mod tests {
         });
     }
 
+    #[test]
+    fn singleton_clip_activation_and_effect_edit_keep_live_source_phase_and_key_off() {
+        on_control(|| {
+            use crate::playback::PlaybackCommand;
+            let mut f = fixture();
+            f.editor.execute(Command::RemoveTrack(f.receiver)).unwrap();
+            f.editor
+                .execute(Command::SetNativeSourceReceiver {
+                    source: f.source,
+                    track: Some(f.contributor),
+                })
+                .unwrap();
+            f.editor
+                .execute(Command::Gain {
+                    track: f.contributor,
+                    gain: 0.25,
+                })
+                .unwrap();
+            let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 127, 1))).unwrap();
+            let (mut previous, _) = live_playback(&f, &input);
+            previous.apply(PlaybackCommand::Play);
+            let mut prefix = [[0.0; 2]; 7];
+            previous.render(&mut prefix).unwrap();
+            for (index, frame) in prefix.iter().enumerate() {
+                for channel in 0..2 {
+                    assert!((frame[channel] - PCM[index % 4][channel] * 0.5).abs() < 0.000_002);
+                }
+            }
+            let clip = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .midi_clips()[0]
+                .id();
+            f.editor
+                .execute(Command::SetClipActive {
+                    clip,
+                    active: false,
+                })
+                .unwrap();
+            let (mut muted, _) = live_playback(&f, &input);
+            muted
+                .try_inherit_runtime_in_control_context(&mut previous, Some(19), Some(19))
+                .unwrap();
+            let mut after_cut = [[0.0; 2]; 5];
+            muted.render(&mut after_cut).unwrap();
+            for (index, frame) in after_cut.iter().enumerate() {
+                for channel in 0..2 {
+                    assert!(
+                        (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs() < 0.000_002
+                    );
+                }
+            }
+            let state = crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Effect,
+                hex_devices::utility::UTILITY_TYPE_ID,
+            )
+            .unwrap();
+            let state = crate::patch_native_device_parameter_for_class(
+                crate::NativeDeviceClass::Effect,
+                &state,
+                hex_devices::utility::parameter::GAIN,
+                hex_lattice_contract::ParameterValue::Float(0.5),
+            )
+            .unwrap();
+            f.editor
+                .execute(Command::InsertDevice {
+                    track: f.contributor,
+                    before: None,
+                    state,
+                })
+                .unwrap();
+            let (mut effected, _) = live_playback(&f, &input);
+            effected
+                .try_inherit_runtime_in_control_context(&mut muted, Some(19), Some(19))
+                .unwrap();
+            let runtime = effected.session_runtime_mut_for_stream_action().unwrap();
+            assert_eq!(runtime.mutable_instruments.iter().flatten().count(), 1);
+            assert!(runtime.tail_mutable_instruments.iter().all(Option::is_none));
+            assert!(
+                runtime.mutable_instruments[0]
+                    .as_ref()
+                    .unwrap()
+                    .has_committed_live_occurrences()
+            );
+            let mut after_effect = [[0.0; 2]; 11];
+            effected.render(&mut after_effect).unwrap();
+            let gain = 0.25 * 0.5;
+            for (index, frame) in after_effect.iter().enumerate() {
+                for channel in 0..2 {
+                    assert!(
+                        (frame[channel] - PCM[(12 + index) % 4][channel] * gain).abs() < 0.000_002
+                    );
+                }
+            }
+            // An unsupported source-state edit cannot retire a still-held
+            // live generation into a concurrent second source kernel.
+            let device = f
+                .editor
+                .project()
+                .track(f.contributor)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.gain = 0.5;
+            let state = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device.id(),
+                    state,
+                })
+                .unwrap();
+            let (mut unsupported, _) = live_playback(&f, &input);
+            assert!(
+                unsupported
+                    .try_inherit_runtime_in_control_context(&mut effected, Some(19), Some(19))
+                    .is_err()
+            );
+            let mut after_refusal = [[0.0; 2]; 5];
+            effected.render(&mut after_refusal).unwrap();
+            for (index, frame) in after_refusal.iter().enumerate() {
+                for channel in 0..2 {
+                    assert!(
+                        (frame[channel] - PCM[(23 + index) % 4][channel] * gain).abs() < 0.000_002
+                    );
+                }
+            }
+            input.set_key(0, None).unwrap();
+            let mut stopped = [[1.0; 2]; 32];
+            effected.render(&mut stopped).unwrap();
+            assert_eq!(stopped, [[0.0; 2]; 32]);
+        });
+    }
+
+    #[test]
+    fn reenable_refuses_a_second_source_kernel_until_retired_tail_is_quiet() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(device.state()).unwrap();
+            state.envelope.release_seconds = 0.001;
+            let state = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(device.state().asset_references().to_vec())
+                .unwrap();
+            let device = device.id();
+            f.editor
+                .execute(Command::ReplaceDeviceState { device, state })
+                .unwrap();
+            let mut old = started(&f);
+            let mut reference = started(&f);
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: true,
+                })
+                .unwrap();
+            let mut disabled = playback(&f);
+            let mut oracle = playback(&f);
+            disabled.try_inherit_state_from(&mut old).unwrap();
+            oracle.try_inherit_state_from(&mut reference).unwrap();
+            assert!(disabled.mutable_instruments.iter().all(Option::is_none));
+            assert_eq!(
+                disabled.tail_mutable_instruments.iter().flatten().count(),
+                1
+            );
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: false,
+                })
+                .unwrap();
+            let mut reenabled = playback(&f);
+            assert_eq!(
+                reenabled.try_inherit_state_from(&mut disabled),
+                Err(SessionPlaybackError::MutableInstrumentActive)
+            );
+            let mut actual = [[0.0; 2]; 32];
+            let mut expected = actual;
+            disabled.render(&mut actual).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(
+                actual, expected,
+                "refusal preserves the only original tail owner"
+            );
+            assert!(
+                actual[..8]
+                    .iter()
+                    .flatten()
+                    .any(|sample| sample.abs() > 0.001)
+            );
+            assert_eq!(actual[16..], [[0.0; 2]; 16]);
+        });
+    }
+
     fn playback(f: &Fixture) -> SessionPlayback {
         let cancel = AtomicBool::new(false);
         let resources = PreparedDeviceResources::prepare_on_control(
@@ -1260,7 +1464,11 @@ pub(super) fn track_has_analytic_source(revision: &PreparedRevision, index: usiz
     track.has_instrument_source()
         && track.source_input_enabled()
         && if track.source_id().is_some() {
-            revision.source_routing().receiver_index(index).is_some()
+            revision
+                .source_routing()
+                .receiver_index(index)
+                .and_then(|receiver| revision.arrangement().tracks().get(receiver))
+                .is_some_and(crate::Track::instrument_slot_enabled)
         } else {
             track.instrument_enabled()
         }

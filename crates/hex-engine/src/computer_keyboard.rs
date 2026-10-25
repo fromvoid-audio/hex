@@ -2018,9 +2018,12 @@ mod tests {
     }
 
     #[test]
-    fn computer_keyboard_voice_pressure_cancels_only_live_pool_and_does_not_stick() {
+    fn computer_keyboard_voice_pressure_rejects_held_press_until_new_press_without_sticking() {
         let (project, track) = fixture();
         let input = Arc::new(ComputerKeyboardInput::default());
+        let release = ComputerKeyboardRuntime::prepare(&project, track, Arc::clone(&input))
+            .unwrap()
+            .release_frames;
         let mut playback = playback(&project, track, &input);
         for token in 1..=80 {
             input.set_key(0, Some((60, 100, token))).unwrap();
@@ -2028,7 +2031,29 @@ mod tests {
         }
         assert!(input.rejected());
         let mut output = [[1.0; 2]; 256];
+        // Voice pressure rejects this physical press, while already admitted
+        // releases finish normally through the source instead of resetting it.
+        for _ in 0..release.div_ceil(256) + 1 {
+            playback.render(&mut output).unwrap();
+        }
+        assert_eq!(
+            output, [[0.0; 2]; 256],
+            "a held rejected press cannot start later"
+        );
+        input.set_key(0, None).unwrap();
         playback.render(&mut output).unwrap();
+        input.set_key(0, Some((60, 100, 81))).unwrap();
+        playback.render(&mut output).unwrap();
+        assert!(
+            output
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 0.000_001)
+        );
+        input.set_key(0, None).unwrap();
+        for _ in 0..release.div_ceil(256) + 1 {
+            playback.render(&mut output).unwrap();
+        }
         assert_eq!(output, [[0.0; 2]; 256]);
     }
     #[test]

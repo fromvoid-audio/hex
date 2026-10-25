@@ -398,7 +398,9 @@ impl MutableInstrumentTrackRuntime {
     }
 
     pub(crate) fn committed_is_quiescent(&self) -> bool {
-        self.primary.is_empty() && self.pair.committed_is_quiescent()
+        self.primary.is_empty()
+            && !self.has_committed_live_occurrences()
+            && self.pair.committed_is_quiescent()
     }
 
     pub(crate) fn committed_state_available(&self) -> bool {
@@ -591,7 +593,11 @@ impl MutableInstrumentTrackRuntime {
     }
 
     pub(crate) fn speculative_is_quiescent(&self) -> bool {
-        self.pair.speculative_is_quiescent()
+        // Logical live origins still owe scoped terminal processing even when
+        // a one-shot provider has already become acoustically quiet.
+        self.live.as_ref().is_none_or(|ledger| {
+            ledger.pending_len == 0 && ledger.scratch.iter().all(Option::is_none)
+        }) && self.pair.speculative_is_quiescent()
     }
 
     pub(crate) fn declared_pair_bytes(&self) -> usize {

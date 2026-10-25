@@ -2,8 +2,10 @@
 //! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
 //! transactional history. Native source definitions retain complete authored
 //! device chains and media references independently of track/history lifetime.
-//! Tracks bind immutable singleton source views; engine admission still owns DSP.
-//! Concurrent source bindings are not admitted yet. Main-lane song sections are stable named/color/range
+//! Tracks bind immutable views of retained sources and may share one source.
+//! Each source names one optional bound audio receiver; other bindings contribute
+//! MIDI while keeping local processing separate. Engine admission owns DSP and
+//! enforces simultaneous playback capacity. Main-lane song sections are stable named/color/range
 //! objects, separate from DSP clips. Structural reorder permutes complete
 //! supported song content atomically through retained source/history contracts.
 //! Clip-local MIDI volume has independent immutable identity

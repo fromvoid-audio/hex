@@ -226,15 +226,14 @@ impl ComputerKeyboardRuntime {
 mod tests {
     use super::*;
     use crate::playback::Playback;
-    use hex_lattice_contract::{DeviceTypeId, ParameterValue};
+    use hex_lattice_contract::ParameterValue;
     use hex_project::{Command, Editor};
 
-    #[test]
-    fn replacing_input_on_one_playback_releases_only_the_old_source_generation() {
+    fn short_operator_project() -> (hex_project::Project, hex_project::TrackId) {
         let (project, track) = crate::computer_keyboard::tests::fixture();
         let registry = hex_devices::native_instrument_registry().unwrap();
         let mut state = registry
-            .default_state(DeviceTypeId::from_static("hex.operator"))
+            .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)
             .unwrap();
         for operator in 1..=4 {
             state = registry
@@ -253,7 +252,13 @@ mod tests {
         editor
             .execute(Command::ReplaceDeviceState { device, state })
             .unwrap();
-        let project = editor.project();
+        (editor.project().clone(), track)
+    }
+
+    #[test]
+    fn replacing_input_on_one_playback_releases_only_the_old_source_generation() {
+        let (project, track) = short_operator_project();
+        let project = &project;
         let revision = crate::computer_keyboard::tests::prepared(project);
         let tail = revision
             .session()
@@ -301,5 +306,70 @@ mod tests {
                 .flatten()
                 .all(|sample| sample.abs() < 0.000_001)
         );
+    }
+    #[test]
+    fn stopped_preroll_freezes_until_live_activation_then_releases_clips_once() {
+        use crate::playback::PlaybackCommand;
+        use hex_project::{BeatTime, Created};
+        let (project, track) = short_operator_project();
+        let mut editor = Editor::new(project, 8).unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(3).unwrap(),
+                pitch: 60,
+                velocity: 100,
+                channel: 0,
+            })
+            .unwrap();
+        let project = editor.project();
+        let revision = crate::computer_keyboard::tests::prepared(project);
+        let primed = crate::SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+            Arc::clone(&revision),
+            512,
+            512,
+            false,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let mut actual = Playback::from_interactive_arrangement_preroll(primed).unwrap();
+        let mut frozen = [[1.0; 2]; 19];
+        actual.render(&mut frozen).unwrap();
+        assert_eq!(frozen, [[0.0; 2]; 19]);
+        let mut expected = Playback::from_prepared(revision);
+        expected.apply(PlaybackCommand::Play);
+        expected.render(&mut [[0.0; 2]; 512]).unwrap();
+        expected.apply(PlaybackCommand::Pause);
+        let input = Arc::new(ComputerKeyboardInput::default());
+        let reference = Arc::new(ComputerKeyboardInput::default());
+        input.set_key(0, Some((64, 100, 1))).unwrap();
+        reference.set_key(0, Some((64, 100, 1))).unwrap();
+        actual
+            .prepare_computer_keyboard(project, track, input)
+            .unwrap();
+        expected
+            .prepare_computer_keyboard(project, track, reference)
+            .unwrap();
+        let mut a = [[0.0; 2]; 512];
+        let mut b = a;
+        actual.render(&mut a).unwrap();
+        expected.render(&mut b).unwrap();
+        assert_eq!(
+            a, b,
+            "live activation releases the frozen clip through the same kernel"
+        );
+        assert_eq!(actual.performance_frame(), 512);
+        assert_eq!(expected.performance_frame(), 512);
     }
 }

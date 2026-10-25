@@ -3,9 +3,6 @@ use super::*;
 use std::sync::Arc;
 impl SessionPlayback {
     pub(super) fn pause_analytic_sources(&mut self) -> Result<(), SessionPlaybackError> {
-        if !self.playing {
-            return Ok(());
-        }
         let revision = Arc::clone(&self.revision);
         self.route_scratch.copy_from_slice(&self.routes);
         self.release_scratch.clear();
@@ -20,6 +17,25 @@ impl SessionPlayback {
         self.suppression_scratch
             .extend_from_slice(&self.suppressions);
         let performance = self.performance_frame;
+        // Historical onsets may already live in the retained release bank
+        // after tempo/source handoff. They cannot be queried again under the
+        // new clock, but their held gates still belong to clips and Pause must
+        // release them at the existing source age.
+        let mut index = 0;
+        while index < self.release_scratch.len() {
+            let entry = &mut self.release_scratch[index];
+            let cut = entry.sample_frame(performance)?;
+            if let Some(voice) = entry
+                .voice
+                .reconcile_at(cut, None)
+                .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
+            {
+                entry.voice = voice;
+                index += 1;
+            } else {
+                self.release_scratch.remove(index);
+            }
+        }
         let end = performance
             .checked_add(1)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
@@ -41,9 +57,12 @@ impl SessionPlayback {
                     )
                     .midi_clip_for_track(clip, route.id)
                     .is_some_and(|clip| {
-                        track.has_instrument_source()
-                            && (track.source_id().is_none()
-                                || revision.source_routing().receiver_index(index).is_some())
+                        (clip.instrument_enabled()
+                            || revision
+                                .source_routing()
+                                .receiver_index(index)
+                                .and_then(|receiver| revision.arrangement().tracks().get(receiver))
+                                .is_some_and(crate::Track::instrument_slot_enabled))
                             && !clip.instrument_template().is_event_source()
                     })
                 }
@@ -52,7 +71,13 @@ impl SessionPlayback {
             if !analytic {
                 continue;
             }
-            self.capture_outgoing(index, route.owner, self.arrangement_frame, performance)?;
+            self.capture_outgoing_with_source_binding(
+                index,
+                route.owner,
+                self.arrangement_frame,
+                performance,
+                true,
+            )?;
             match route.owner {
                 RouteOwner::Arrangement => {
                     let mut failure = None;
@@ -109,10 +134,26 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::UnknownClip)?;
                     let timing =
                         timing_view_for(revision.session(), self.periodic_tempo(), self.anchor);
-                    prepared
-                        .instrument_template()
-                        .query_with_origin(origin, &timing, performance, end, &mut self.spans)
-                        .map_err(SessionPlaybackError::Midi)?;
+                    let template = prepared.instrument_template();
+                    if let Some(floor) = self.historical_floor_for(index) {
+                        template.query_after_onset_with_origin(
+                            origin,
+                            &timing,
+                            performance,
+                            end,
+                            &mut self.spans,
+                            floor,
+                        )
+                    } else {
+                        template.query_with_origin(
+                            origin,
+                            &timing,
+                            performance,
+                            end,
+                            &mut self.spans,
+                        )
+                    }
+                    .map_err(SessionPlaybackError::Midi)?;
                     for span in self.spans.spans() {
                         if span.start_frame < performance {
                             pause_suppress(

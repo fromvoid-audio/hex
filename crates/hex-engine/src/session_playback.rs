@@ -480,6 +480,9 @@ pub struct SessionPlayback {
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
     playing: bool,
+    // Explicit Pause drains source notes/FX; a stopped seek/preroll keeps its
+    // prepared authored history frozen until Play or live input activation.
+    monitor_source_releases: bool,
     linear_arrangement_export: bool,
     current_sampler_console: bool,
     route_state_generation: u64,
@@ -852,6 +855,7 @@ impl SessionPlayback {
             arrangement_frame: _,
             arrangement_loop_pass: _,
             playing: _,
+            monitor_source_releases: _,
             linear_arrangement_export: _,
             current_sampler_console: _,
             route_state_generation: _,
@@ -1825,6 +1829,7 @@ impl SessionPlayback {
             arrangement_frame: 0,
             arrangement_loop_pass: 0,
             playing: false,
+            monitor_source_releases: false,
             linear_arrangement_export,
             current_sampler_console: false,
             route_state_generation: 0,

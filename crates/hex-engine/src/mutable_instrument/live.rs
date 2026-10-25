@@ -101,25 +101,50 @@ pub(crate) struct SourceMonitorClock {
     sample_rate: u32,
 }
 impl hex_lattice::NativeInstrumentClock for SourceMonitorClock {
-    fn tempo_micro_bpm_at_offset(&self, _: usize) -> Option<u32> { Some(self.micro_bpm) }
-    fn transport_is_running(&self) -> Option<bool> { Some(false) }
+    fn tempo_micro_bpm_at_offset(&self, _: usize) -> Option<u32> {
+        Some(self.micro_bpm)
+    }
+    fn transport_is_running(&self) -> Option<bool> {
+        Some(false)
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         let frames = self.elapsed.checked_add(u64::try_from(offset).ok()?)?;
-        let numerator = u128::from(frames).checked_mul(u128::from(self.micro_bpm))?.checked_mul(1u128 << 32)?;
+        let numerator = u128::from(frames)
+            .checked_mul(u128::from(self.micro_bpm))?
+            .checked_mul(1u128 << 32)?;
         let divisor = u128::from(self.sample_rate).checked_mul(60_000_000)?;
-        self.beat.checked_add(u64::try_from(numerator.checked_div(divisor)?).ok()?)
+        self.beat
+            .checked_add(u64::try_from(numerator.checked_div(divisor)?).ok()?)
     }
 }
 
 impl MutableInstrumentTrackRuntime {
     pub(crate) fn source_monitor_clock(
-        &mut self, beat: u64, micro_bpm: u32, sample_rate: u32,
+        &mut self,
+        beat: u64,
+        micro_bpm: u32,
+        sample_rate: u32,
     ) -> Result<SourceMonitorClock, MutableInstrumentRuntimeError> {
-        if micro_bpm == 0 || !(8_000..=192_000).contains(&sample_rate) { return Err(MutableInstrumentRuntimeError::Arithmetic); }
-        let live = self.live.as_mut().ok_or(MutableInstrumentRuntimeError::Budget)?;
-        let (age, beat, micro_bpm) = *live.scratch_monitor_anchor.get_or_insert((live.scratch_age, beat, micro_bpm));
-        Ok(SourceMonitorClock { beat, micro_bpm, sample_rate,
-            elapsed: live.scratch_age.checked_sub(age).ok_or(MutableInstrumentRuntimeError::Arithmetic)? })
+        if micro_bpm == 0 || sample_rate == 0 {
+            return Err(MutableInstrumentRuntimeError::Arithmetic);
+        }
+        let live = self
+            .live
+            .as_mut()
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        let (age, beat, micro_bpm) =
+            *live
+                .scratch_monitor_anchor
+                .get_or_insert((live.scratch_age, beat, micro_bpm));
+        Ok(SourceMonitorClock {
+            beat,
+            micro_bpm,
+            sample_rate,
+            elapsed: live
+                .scratch_age
+                .checked_sub(age)
+                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?,
+        })
     }
 
     pub(crate) fn source_live_storage_upper_bound() -> usize {
@@ -135,8 +160,16 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn is_source_owner(&self) -> bool {
         self.live.is_some()
     }
+    pub(crate) fn has_committed_live_occurrences(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|ledger| ledger.primary.iter().any(Option::is_some))
+    }
 
     pub(crate) fn validates_live_note(&self, pitch: u8, velocity: u8) -> bool {
+        let Some(occurrence_id) = self.next_id.checked_add(1) else {
+            return false;
+        };
         let resources = self.resources.as_ref().map_or(
             &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
             crate::native_device_resources::PreparedDeviceResourceLease::resources,
@@ -145,7 +178,7 @@ impl MutableInstrumentTrackRuntime {
             .preflight_event_batch(
                 &[NativeInstrumentEvent::NoteOn {
                     frame_offset: 0,
-                    occurrence_id: self.next_id.checked_add(1).unwrap_or(0),
+                    occurrence_id,
                     pitch,
                     velocity,
                 }],
@@ -388,6 +421,7 @@ impl MutableInstrumentTrackRuntime {
         if let Some(ledger) = &mut self.live {
             ledger.primary.fill(None);
             ledger.age = 0;
+            ledger.monitor_anchor = None;
             for (index, (origin, voice)) in live.iter().zip(history.voices).enumerate() {
                 if let Some(origin) = origin {
                     ledger.primary[index] = Some(LiveOccurrence {

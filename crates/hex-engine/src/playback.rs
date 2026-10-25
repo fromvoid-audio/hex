@@ -638,6 +638,15 @@ impl Playback {
             runtime.computer_keyboard = previous;
             return Err(Invalid("computer keyboard exceeds graph storage budget"));
         }
+        if runtime
+            .computer_keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.is_source_input())
+            && runtime.activate_source_monitor_on_control().is_err()
+        {
+            runtime.computer_keyboard = previous;
+            return Err(Invalid("source monitoring could not release clip notes"));
+        }
         if let Some(input) = previous
             .as_ref()
             .and_then(|keyboard| keyboard.source_input_id())

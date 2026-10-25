@@ -577,6 +577,12 @@ impl Project {
         if snapshot.next_id <= max_id {
             return Err(Invalid("next project id must exceed all existing ids"));
         }
+        // Historical inline formats did not carry a receiver. Reconstruct it
+        // from their authoritative singleton binding, including removed/moved
+        // inline instruments between frozen migration layers.
+        for source in &mut snapshot.native_sources {
+            source.receiver = None;
+        }
         let mut legacy_bindings = BTreeSet::new();
         for track in &snapshot.tracks {
             let Some(instrument) = &track.instrument else {

@@ -262,6 +262,12 @@ pub(crate) fn commit(
                     return Err(Invalid("audio grouping plan was not resolved"));
                 }
             }
+            if project
+                .track(item.track)
+                .is_some_and(|owner| owner.instrument().is_some())
+            {
+                project.apply(Command::RemoveInstrument { track: item.track })?;
+            }
             let owner = project
                 .tracks
                 .iter_mut()
@@ -339,6 +345,84 @@ fn midi_frames(project: &Project, clip: &crate::MidiClip) -> Result<(u64, u64), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BeatTime, TrackDeviceSlot, default_instrument_state};
+
+    #[test]
+    fn in_place_bounce_unlinks_receiver_but_retains_source_across_history() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "source".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state: default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("source track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ONE,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("midi clip")
+        };
+        let source = editor.project().track(track).unwrap().source_id().unwrap();
+        let instrument = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+        let original = editor.project().clone();
+        let item = original
+            .plan_arrangement_bounce(&BounceTarget::Clips(vec![clip]), true)
+            .unwrap()
+            .remove(0);
+        let after_command = Command::CommitArrangementBounce {
+            target: BounceTarget::Clips(vec![clip]),
+            in_place: true,
+            files: vec![BounceFile {
+                track,
+                start: item.start,
+                frames: item.end - item.start,
+                path: "bounced.wav".into(),
+            }],
+        };
+
+        editor.execute(after_command).unwrap();
+        let after = editor.project().clone();
+        assert!(after.track(track).unwrap().instrument().is_none());
+        let retained = after.native_source(source).unwrap();
+        assert_eq!(retained.instrument().id(), instrument);
+        assert_eq!(retained.receiver(), None);
+        assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+
+        assert!(editor.undo());
+        let mut restored = editor.project().snapshot();
+        restored.next_id = original.snapshot().next_id;
+        assert_eq!(restored, original.snapshot());
+        assert_eq!(
+            editor.project().native_source(source).unwrap().receiver(),
+            Some(track)
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+        assert_eq!(
+            editor
+                .project()
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .id(),
+            instrument
+        );
+    }
+
     #[test]
     fn tail_overlap_and_wrong_exact_range_refuse_without_history_mutation() {
         let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

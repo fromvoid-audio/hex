@@ -65,6 +65,7 @@ impl SessionPlayback {
             arrangement_frame: _,
             arrangement_loop_pass: _,
             playing: _,
+            monitor_source_releases: _,
             linear_arrangement_export,
             current_sampler_console: _,
             route_state_generation: _,

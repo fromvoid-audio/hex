@@ -56,10 +56,18 @@ pub(super) fn render_source_live_input(
             .map_err(|error| error.render_error())?;
         if !playing {
             onsets.clear();
-            let source_clock = source.source_monitor_clock(
-                timing.frame_to_beat(performance).map_err(|_| SessionPlaybackError::TempoConversion)?.raw(),
-                timing.tempo_micro_bpm_at_frame(performance).ok_or(SessionPlaybackError::TempoConversion)?, timing.sample_rate(),
-            ).map_err(|error| error.render_error())?;
+            let source_clock = source
+                .source_monitor_clock(
+                    timing
+                        .frame_to_beat(performance)
+                        .map_err(|_| SessionPlaybackError::TempoConversion)?
+                        .raw(),
+                    timing
+                        .tempo_micro_bpm_at_frame(performance)
+                        .ok_or(SessionPlaybackError::TempoConversion)?,
+                    timing.sample_rate(),
+                )
+                .map_err(|error| error.render_error())?;
             source
                 .process_source_segment(
                     performance,

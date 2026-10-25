@@ -123,6 +123,13 @@ fn mutable_prefix_shortening(
         .routes
         .iter()
         .position(|route| route.id == key.track)
+        .map(|index| {
+            previous
+                .revision
+                .source_routing()
+                .receiver_index(index)
+                .unwrap_or(index)
+        })
         .and_then(|index| previous.mutable_instruments.get(index))
         .and_then(Option::as_ref)
         .is_some_and(|runtime| runtime.proofs().any(matches))
@@ -130,7 +137,6 @@ fn mutable_prefix_shortening(
             .tail_mutable_instruments
             .iter()
             .flatten()
-            .filter(|tail| tail.track_id == key.track)
             .any(|tail| tail.runtime.proofs().any(matches));
     actual
         .then(|| {
@@ -242,7 +248,10 @@ impl SessionPlayback {
                 let Some(prepared) = midi.midi_clip_for_track(clip, track_id) else {
                     return Ok((candidates, 0, frame));
                 };
-                if prepared.track != track_id || !prepared.instrument_enabled() {
+                if prepared.track != track_id
+                    || (!prepared.instrument_enabled()
+                        && !revision.source_routing().is_shared(track_index))
+                {
                     return Ok((candidates, 0, frame));
                 }
                 prepared
@@ -261,7 +270,15 @@ impl SessionPlayback {
                                     span.clip,
                                     span.note,
                                     span.iteration,
-                                    0,
+                                    if revision.source_routing().source(track_index).is_some() {
+                                        previous
+                                            .routes
+                                            .iter()
+                                            .find(|route| route.id == track_id)
+                                            .map_or(0, |route| route.current_incarnation)
+                                    } else {
+                                        0
+                                    },
                                 ),
                                 span.onset_beat,
                                 span.gate_end_beat,
@@ -1214,13 +1231,35 @@ impl SessionPlayback {
         let mut newly_authored_notes = [false; MAX_TRACKS];
         // A mutable candidate may retain only occurrences proven to have been dispatched under
         // the old law. The fresh-install exception only supplies bounded suppression below.
-        for (new_index, runtime) in self.mutable_instruments.iter().enumerate() {
-            if source_handoff.handles_new(new_index)
-                || analytic_import_new_for_old.contains(&new_index)
-            {
+        for new_index in 0..self.routes.len() {
+            let receiver = self
+                .revision
+                .source_routing()
+                .receiver_index(new_index)
+                .unwrap_or(new_index);
+            let source_carried = source_handoff.handles_new(receiver);
+            if analytic_import_new_for_old.contains(&receiver) {
                 continue;
             }
+            let runtime = self
+                .mutable_instruments
+                .get(receiver)
+                .and_then(Option::as_ref);
             if runtime.is_none() {
+                continue;
+            }
+            // A newly bound contributor supplies future onsets only. Existing
+            // contributor edits still require the canonical occurrence proof.
+            if source_carried
+                && previous
+                    .routes
+                    .iter()
+                    .position(|route| route.id == self.routes[new_index].id)
+                    .is_none_or(|old| {
+                        previous.revision.source_routing().source(old)
+                            != self.revision.source_routing().source(new_index)
+                    })
+            {
                 continue;
             }
             let new_route = self
@@ -1231,11 +1270,13 @@ impl SessionPlayback {
                 .routes
                 .iter()
                 .position(|route| route.id == new_route.id);
-            if old_index.is_some_and(|old_index| {
-                mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
-                    || analytic_import_new_for_old.get(old_index) == Some(&new_index)
-                    || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
-            }) {
+            if !source_carried
+                && old_index.is_some_and(|old_index| {
+                    mutable_continuity_new_for_old.get(old_index) == Some(&new_index)
+                        || analytic_import_new_for_old.get(old_index) == Some(&new_index)
+                        || mutable_retarget_new_for_old.get(old_index) == Some(&new_index)
+                })
+            {
                 continue;
             }
             let old_route = old_index
@@ -1356,9 +1397,7 @@ impl SessionPlayback {
                         previous,
                         &self.revision,
                         candidate,
-                        runtime
-                            .as_ref()
-                            .map_or(0, |runtime| runtime.max_release_tail_frames()),
+                        runtime.map_or(0, |runtime| runtime.max_release_tail_frames()),
                     )
                 })
                 .flatten();
@@ -1529,8 +1568,12 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::RevisionTrackMismatch);
             };
             *mapped_index = new_index;
-            if previous.revision.source_routing().is_shared(old_index)
-                || self.revision.source_routing().is_shared(new_index)
+            if previous
+                .revision
+                .source_routing()
+                .source(old_index)
+                .is_some()
+                || self.revision.source_routing().source(new_index).is_some()
             {
                 route.current_incarnation = old_route.current_incarnation;
                 route.current_first_frame = old_route.current_first_frame;
@@ -2067,14 +2110,17 @@ impl SessionPlayback {
             .enumerate()
             .take(self.routes.len())
         {
-            if source_handoff.handles_new(new_index)
-                || analytic_import_new_for_old.contains(&new_index)
-            {
+            let receiver = self
+                .revision
+                .source_routing()
+                .receiver_index(new_index)
+                .unwrap_or(new_index);
+            if analytic_import_new_for_old.contains(&receiver) {
                 continue;
             }
             if self
                 .mutable_instruments
-                .get(new_index)
+                .get(receiver)
                 .is_none_or(Option::is_none)
             {
                 continue;
@@ -2107,7 +2153,7 @@ impl SessionPlayback {
                         previous,
                         &self.revision,
                         candidate,
-                        self.mutable_instruments[new_index]
+                        self.mutable_instruments[receiver]
                             .as_ref()
                             .map_or(0, |runtime| runtime.max_release_tail_frames()),
                     )
@@ -2203,11 +2249,15 @@ impl SessionPlayback {
             let new_index = old_index
                 .and_then(|index| track_map.get(index).copied())
                 .filter(|index| *index != usize::MAX);
-            if let Some(index) = new_index {
-                copied.location = ReleaseLocation::new(index, copied.location.tail_group())?;
+            // A captured suffix is an independent audio owner even when its
+            // contributor still exists. Contributor identity only maps MIDI;
+            // it must never move a retired group back into a current-track row.
+            let audio_index = if copied.location.tail_group().is_some() {
+                usize::MAX
             } else {
-                copied.location = ReleaseLocation::new(usize::MAX, copied.location.tail_group())?;
-            }
+                new_index.unwrap_or(usize::MAX)
+            };
+            copied.location = ReleaseLocation::new(audio_index, copied.location.tail_group())?;
             self.release_scratch.push(copied);
             if route_changed && let Some(continuation) = copied.continuation {
                 if self.suppression_scratch.len() >= self.release_capacity {
@@ -3617,6 +3667,7 @@ impl SessionPlayback {
         self.arrangement_frame = previous.arrangement_frame;
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
         self.playing = previous.playing;
+        self.monitor_source_releases = previous.monitor_source_releases;
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;
@@ -3923,6 +3974,11 @@ fn mutable_proof_deadline(
 ) -> Option<u64> {
     let mut deadline = None;
     if let Some(index) = playback.routes.iter().position(|route| route.id == track) {
+        let index = playback
+            .revision
+            .source_routing()
+            .receiver_index(index)
+            .unwrap_or(index);
         for proof in playback
             .mutable_instruments
             .get(index)
@@ -3940,12 +3996,7 @@ fn mutable_proof_deadline(
             }
         }
     }
-    for tail in playback
-        .tail_mutable_instruments
-        .iter()
-        .flatten()
-        .filter(|tail| tail.track_id == track)
-    {
+    for tail in playback.tail_mutable_instruments.iter().flatten() {
         for proof in tail.runtime.proofs() {
             if proof.signature == signature
                 && proof.onset_frame < playback.performance_frame
@@ -3974,6 +4025,13 @@ fn mutable_key_has_live_proof(
         .routes
         .iter()
         .position(|route| route.id == track)
+        .map(|index| {
+            playback
+                .revision
+                .source_routing()
+                .receiver_index(index)
+                .unwrap_or(index)
+        })
         .and_then(|index| playback.mutable_instruments.get(index))
         .and_then(Option::as_ref)
         .is_some_and(|runtime| runtime.proofs().any(matches_key))
@@ -3981,7 +4039,6 @@ fn mutable_key_has_live_proof(
             .tail_mutable_instruments
             .iter()
             .flatten()
-            .filter(|tail| tail.track_id == track)
             .any(|tail| tail.runtime.proofs().any(matches_key))
 }
 

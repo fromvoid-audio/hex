@@ -362,6 +362,10 @@ impl SessionPlayback {
         output.fill([0.0; 2]);
         if output.is_empty()
             || (!self.playing
+                && !self.monitor_source_releases
+                && self.computer_keyboard.is_none()
+                && self.current_sampler_keyboards.is_empty())
+            || (!self.playing
                 && self.computer_keyboard.is_none()
                 && self.current_sampler_keyboards.is_empty()
                 && self
@@ -397,9 +401,18 @@ impl SessionPlayback {
             .live_expression
             .as_ref()
             .map(|input| (input.track, input.instrument, input.snapshot()));
+        let source_selected = self.live_expression.as_ref().and_then(|input| {
+            input
+                .published_snapshot()
+                .map(|snapshot| (input.track, input.instrument, snapshot))
+        });
         for (route, runtime) in self.routes.iter().zip(self.mutable_instruments.iter_mut()) {
             if let Some(runtime) = runtime {
-                runtime.expression = match selected {
+                runtime.expression = match if runtime.is_source_owner() {
+                    source_selected
+                } else {
+                    selected
+                } {
                     Some((track, instrument, snapshot))
                         if (track == route.id
                             || self.revision.source_routing().receiver(track)
@@ -413,7 +426,11 @@ impl SessionPlayback {
             }
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
-            tail.runtime.expression = match selected {
+            tail.runtime.expression = match if tail.runtime.is_source_owner() {
+                source_selected
+            } else {
+                selected
+            } {
                 Some((track, instrument, snapshot))
                     if track == tail.track_id
                         && tail.runtime.expression_identity == Some(instrument) =>
@@ -1075,6 +1092,7 @@ impl SessionPlayback {
                                 &self.retained_contexts,
                                 &self.analytic_continuations,
                                 performance_frame,
+                                self.playing,
                                 render_output,
                             )?;
                         }
@@ -1235,6 +1253,7 @@ impl SessionPlayback {
                                     &self.retained_contexts,
                                     &self.analytic_continuations,
                                     performance_frame,
+                                    self.playing,
                                     render_output,
                                     None,
                                 )?;
@@ -1247,6 +1266,7 @@ impl SessionPlayback {
                                 &self.retained_contexts,
                                 &self.analytic_continuations,
                                 performance_frame,
+                                self.playing,
                                 render_output,
                             )?;
                         }
@@ -1409,6 +1429,7 @@ impl SessionPlayback {
                                 &self.retained_contexts,
                                 &self.analytic_continuations,
                                 performance_frame,
+                                self.playing,
                                 output,
                                 Some(&mut captured[..output.len()]),
                             )?;
@@ -1441,6 +1462,7 @@ impl SessionPlayback {
                             &self.retained_contexts,
                             &self.analytic_continuations,
                             performance_frame,
+                            self.playing,
                             output,
                             None,
                         )?;
@@ -1676,6 +1698,7 @@ impl SessionPlayback {
                     &self.retained_contexts,
                     &self.analytic_continuations,
                     performance_frame,
+                    self.playing,
                     output,
                     capture
                         .as_ref()
@@ -1718,6 +1741,7 @@ impl SessionPlayback {
                     &self.retained_contexts,
                     &self.analytic_continuations,
                     performance_frame,
+                    self.playing,
                     tail_output,
                 )?;
             }
@@ -1738,6 +1762,7 @@ impl SessionPlayback {
                         performance_frame,
                         tail_output,
                         &timing,
+                        self.playing,
                     )?;
                 }
             }
@@ -1812,6 +1837,7 @@ impl SessionPlayback {
                 performance_frame,
                 tail_output,
                 &timing,
+                self.playing,
             )?;
             let chain = self
                 .tail_groups
@@ -1938,8 +1964,37 @@ fn process_mutable_tail<T: MidiTiming + ?Sized>(
     performance_frame: u64,
     output: &mut [Frame],
     timing: &T,
+    playing: bool,
 ) -> Result<(), SessionPlaybackError> {
     onsets.clear();
+    if !playing && tail.runtime.is_source_owner() {
+        let clock = tail
+            .runtime
+            .source_monitor_clock(
+                timing
+                    .frame_to_beat(performance_frame)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?
+                    .raw(),
+                timing
+                    .tempo_micro_bpm_at_frame(performance_frame)
+                    .ok_or(SessionPlaybackError::TempoConversion)?,
+                timing.sample_rate(),
+            )
+            .map_err(|error| error.render_error())?;
+        return tail
+            .runtime
+            .process_source_segment(
+                performance_frame,
+                output,
+                onsets,
+                &[],
+                events,
+                Some(&clock),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                None,
+            )
+            .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
+    }
     tail.runtime
         .process_segment_with_clock(
             tail.track_id,
@@ -2593,6 +2648,7 @@ fn render_release_captured(
     retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
     continuations: &[Option<hex_lattice::AnalyticContinuation>],
     performance_frame: u64,
+    parameters_running: bool,
     output: &mut [Frame],
     mut capture: Option<&mut [Frame]>,
 ) -> Result<(), SessionPlaybackError> {
@@ -2603,11 +2659,23 @@ fn render_release_captured(
             .sample_frame(performance_frame)?
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        if let Some(sample) = release
-            .voice
-            .sample_at_with_continuation(absolute, contexts, retained, continuations)
-            .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
-        {
+        let sample = if parameters_running && release.monitor_offset == 0 {
+            release
+                .voice
+                .sample_at_with_continuation(absolute, contexts, retained, continuations)
+        } else {
+            release.voice.sample_at_with_clock(
+                absolute,
+                performance_frame
+                    .checked_add(if parameters_running { relative } else { 0 })
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                contexts,
+                retained,
+                continuations,
+            )
+        }
+        .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?;
+        if let Some(sample) = sample {
             let sample = sample.map(|v| (f64::from(v) * release.clip_gain) as f32);
             let contribution = release.mix.apply_frame(sample);
             frame[0] += contribution[0];
@@ -2632,6 +2700,7 @@ fn render_release_raw(
     retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
     continuations: &[Option<hex_lattice::AnalyticContinuation>],
     performance_frame: u64,
+    parameters_running: bool,
     output: &mut [Frame],
 ) -> Result<(), SessionPlaybackError> {
     for (offset, frame) in output.iter_mut().enumerate() {
@@ -2641,11 +2710,23 @@ fn render_release_raw(
             .sample_frame(performance_frame)?
             .checked_add(relative)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        if let Some(sample) = release
-            .voice
-            .sample_at_with_continuation(absolute, contexts, retained, continuations)
-            .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
-        {
+        let sample = if parameters_running && release.monitor_offset == 0 {
+            release
+                .voice
+                .sample_at_with_continuation(absolute, contexts, retained, continuations)
+        } else {
+            release.voice.sample_at_with_clock(
+                absolute,
+                performance_frame
+                    .checked_add(if parameters_running { relative } else { 0 })
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                contexts,
+                retained,
+                continuations,
+            )
+        }
+        .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?;
+        if let Some(sample) = sample {
             frame[0] += (f64::from(sample[0]) * release.clip_gain) as f32;
             frame[1] += (f64::from(sample[1]) * release.clip_gain) as f32;
         }

@@ -385,6 +385,41 @@ fn legacy_inline_instruments_gain_source_identity_without_losing_devices_or_loca
     assert!(Project::from_legacy_snapshot(exhausted).is_err());
 }
 #[test]
+fn legacy_inline_receiver_is_rebuilt_after_owner_removal_or_instrument_move() {
+    let mut e = editor();
+    let a = track(&mut e, "a");
+    let b = track(&mut e, "b");
+    instrument(&mut e, a);
+    let source = e.project().track(a).unwrap().source_id().unwrap();
+    let mut removed = e.project().snapshot();
+    removed.tracks.retain(|track| track.id != a.value());
+    assert!(Project::from_snapshot(removed.clone()).is_err());
+    let recovered = Project::from_legacy_snapshot(removed).unwrap();
+    assert_eq!(recovered.native_source(source).unwrap().receiver(), None);
+    assert_eq!(recovered.native_sources().len(), 1);
+
+    let mut moved = e.project().snapshot();
+    let old_track = moved
+        .tracks
+        .iter_mut()
+        .find(|track| track.id == a.value())
+        .unwrap();
+    old_track.instrument_position = None;
+    let instrument = old_track.instrument.take();
+    let new_track = moved
+        .tracks
+        .iter_mut()
+        .find(|track| track.id == b.value())
+        .unwrap();
+    new_track.instrument = instrument;
+    new_track.instrument_position = Some(0);
+    assert!(Project::from_snapshot(moved.clone()).is_err());
+    let recovered = Project::from_legacy_snapshot(moved).unwrap();
+    assert_eq!(recovered.native_source(source).unwrap().receiver(), Some(b));
+    assert_eq!(recovered.track(b).unwrap().source_id(), Some(source));
+}
+
+#[test]
 fn explicit_track_duplication_copies_source_but_instrument_move_preserves_its_identity() {
     let mut e = editor();
     let a = track(&mut e, "a");

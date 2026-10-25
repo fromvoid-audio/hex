@@ -155,6 +155,18 @@ impl SessionPlayback {
                     .filter(|runtime| runtime.is_source_owner())
                 {
                     self.mutable_onsets.clear();
+                    let source_clock = runtime
+                        .source_monitor_clock(
+                            timing
+                                .frame_to_beat(self.performance_frame)
+                                .map_err(|_| SessionPlaybackError::TempoConversion)?
+                                .raw(),
+                            timing
+                                .tempo_micro_bpm_at_frame(self.performance_frame)
+                                .ok_or(SessionPlaybackError::TempoConversion)?,
+                            timing.sample_rate(),
+                        )
+                        .map_err(|error| error.render_error())?;
                     runtime
                         .process_source_segment(
                             self.performance_frame,
@@ -162,7 +174,7 @@ impl SessionPlayback {
                             &mut self.mutable_onsets,
                             &[],
                             &mut self.mutable_events,
-                            None,
+                            Some(&source_clock),
                             &hex_lattice::EMPTY_DEVICE_RESOURCES,
                             None,
                         )
@@ -203,6 +215,7 @@ impl SessionPlayback {
                         &self.retained_contexts,
                         &self.analytic_continuations,
                         self.performance_frame,
+                        self.playing,
                         frames,
                     )?;
                 }

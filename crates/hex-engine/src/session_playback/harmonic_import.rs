@@ -320,7 +320,7 @@ fn append_track(
                 out.push(
                     previous,
                     route,
-                    if previous.revision.source_routing().is_shared(index) {
+                    if previous.revision.source_routing().source(index).is_some() {
                         route.current_incarnation
                     } else {
                         0
@@ -362,7 +362,7 @@ fn append_track(
             route,
             match route.owner {
                 RouteOwner::Arrangement => previous.arrangement_loop_pass,
-                _ if previous.revision.source_routing().is_shared(index) => {
+                _ if previous.revision.source_routing().source(index).is_some() => {
                     route.current_incarnation
                 }
                 _ => 0,

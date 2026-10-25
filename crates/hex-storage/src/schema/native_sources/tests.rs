@@ -621,6 +621,30 @@ fn saved_unassigned_source_reopens_without_history_and_failed_publication_preser
     assert!(editor.undo());
     assert_eq!(editor.project().native_sources(), project.native_sources());
     assert!(editor.redo());
+    let first = editor.project().tracks()[0].id();
+    let second = editor.project().tracks()[1].id();
+    let shared = editor.project().track(first).unwrap().source_id().unwrap();
+    editor
+        .execute(Command::BindTrackSource {
+            track: second,
+            source: Some(shared),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source: shared,
+            track: Some(second),
+        })
+        .unwrap();
+    let after = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(
+        editor.project().native_source(shared).unwrap().receiver(),
+        Some(first)
+    );
+    assert_eq!(editor.project().source_contributors(shared).count(), 2);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
     let copy = dir.join("edited.hex");
     save_new(&copy, editor.project()).unwrap();
     assert_eq!(&load(&copy).unwrap(), editor.project());
