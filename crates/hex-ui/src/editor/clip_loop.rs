@@ -32,6 +32,9 @@ enum AudioEdit {
     Toggle(bool),
 }
 impl EditorView {
+    pub(super) fn clip_loop_held(&self) -> bool {
+        self.clip_loop.audio_gesture.is_some()
+    }
     /// Consume clip-editor context even when no edit is possible; it must never
     /// fall through to the Arrangement transport-loop action.
     pub(super) fn clip_loop_key(&mut self, window: &gpui::Window) -> bool {
