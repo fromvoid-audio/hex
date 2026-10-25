@@ -34,9 +34,10 @@ impl AudioTransformPreparation {
             ));
         };
         let tempo = self.shared_tempo(tempo_map)?;
-        if let Some(audio)=self.lookup_key(source,asset,|key|matches!(key,EntryKey::View {edit:retained,tempo,start,duration}
-            if retained==edit&&tempo.as_ref()==tempo_map&&*start==clip.start()&&*duration==clip.duration()))? {
-            return super::view::placed_clip(audio,clip);
+        if let Some(audio) = self.lookup_key(source, asset, |key| {
+            key.matches_view(edit, tempo_map, clip.start(), clip.duration())
+        })? {
+            return super::view::placed_clip(audio, clip);
         }
         let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
         let map_bytes = (2 * hex_project::MAX_TEMPO_POINTS + 2)

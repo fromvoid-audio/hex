@@ -755,3 +755,91 @@ fn clip_loop_resize_publishes_native_pcm_with_retained_preview_root_and_exact_hi
         assert!(h.publication_refusals.is_empty());
     }
 }
+
+#[test]
+fn copied_frame_groups_share_audio_under_tight_admission_and_survive_history_reopen() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(256);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 16)));
+    let track = imported.state.project.tracks()[0].id();
+    let first = imported.state.project.tracks()[0].clips()[0].id();
+    (applied, _) = h.applied(applied);
+    let duplicated = h.run(Request::Edit(Command::DuplicateClip(first)));
+    let Some(Created::Clip(second)) = duplicated.created else {
+        panic!("duplicate");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::GroupClips(vec![first, second])));
+    (applied, _) = h.applied(applied);
+    h.run(Request::CopyTimeRange(
+        hex_project::TimeRange::new(vec![track], 0, 32).unwrap(),
+    ));
+    for index in 1..=8 {
+        h.run(Request::PasteTimeRange {
+            track,
+            frame: index * 32,
+        });
+        (applied, _) = h.applied(applied);
+    }
+    for (command, frames) in [
+        (None, 288),
+        (Some(Request::Undo), 256),
+        (Some(Request::Redo), 288),
+    ] {
+        if let Some(command) = command {
+            h.run(command);
+            (applied, _) = h.applied(applied);
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let pcm: Vec<_> = (0..5).flat_map(|_| h.render()).collect();
+        assert!(pcm[..frames].iter().all(|frame| *frame == [0.25; 2]));
+        assert!(pcm[frames..].iter().all(|frame| *frame == [0.0; 2]));
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render();
+    }
+    let path = files.0.join("shared-clips.hex");
+    let saved = h.run(Request::SaveNew(path.clone()));
+    assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+    assert!(h.publication_refusals.is_empty());
+    drop(h);
+    let mut reopened = ResidentHarness::with_frame_limit(256);
+    assert!(reopened.next().error.is_none());
+    reopened.applied(0);
+    let old_output = reopened
+        .audio
+        .as_ref()
+        .unwrap()
+        .control
+        .output_identity()
+        .unwrap();
+    let opened = reopened.run(Request::Open(path));
+    assert_eq!(opened.state.project, saved.state.project);
+    reopened.release_relinquished_output();
+    reopened.wait_fresh_output(old_output);
+    reopened.applied(0);
+    reopened
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let pcm: Vec<_> = (0..5).flat_map(|_| reopened.render()).collect();
+    assert!(pcm[..288].iter().all(|frame| *frame == [0.25; 2]));
+    assert!(pcm[288..].iter().all(|frame| *frame == [0.0; 2]));
+    // The actual worker publishes all candidates before canonical commit;
+    // every render also checks zero total and signed-net callback allocations.
+}
