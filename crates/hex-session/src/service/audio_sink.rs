@@ -19,10 +19,16 @@ pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) project: &'a Project,
     pub(in crate::service) context: hex_engine::AudioSourceContext,
     pub(in crate::service) restoring_plugin_state: bool,
+    pub(in crate::service) preparing_edit: bool,
 }
 impl<'a> ResidentEffectPreparation<'a> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
+    }
+    /// Only the canonical Editor's prepared transition enables native source
+    /// changes. Preview, seek and document-restoration queries cannot do so.
+    pub fn preparing_edit(&self) -> bool {
+        self.preparing_edit
     }
     /// Only the unchanged canonical fresh-output continuation sets this bit.
     /// Ordinary edits and transient audition requests cannot consume its sources.
@@ -173,6 +179,19 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Current ordered worker request's read-only shutdown/document-intent
+    /// cancellation. Hosts may poll it during bounded native preparation; it
+    /// never authorizes an edit or changes ordinary FIFO completion order.
+    fn begin_request(&mut self, _cancellation: RequestCancellation) {}
+    /// Exact prepared canonical transition terminal, including compilation or
+    /// publication refusal. Native custody remains with the sink's Root.
+    fn finish_resident_effect_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: bool,
+    ) {
+    }
+
     /// A fresh-output owner has restored the unchanged canonical plugin state
     /// through its actual native/endpoint ACKs. The worker may now recompile
     /// that exact context; this scalar transfers no source or graph custody.
@@ -456,6 +475,19 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    pub(super) fn begin_request(
+        &mut self,
+        document_intent: &Arc<std::sync::atomic::AtomicU64>,
+        expected_intent: u64,
+    ) {
+        if let Some(audio) = self.audio.as_mut() {
+            audio.begin_request(RequestCancellation::new(
+                Arc::clone(&self.shutdown),
+                Arc::clone(document_intent),
+                expected_intent,
+            ));
+        }
+    }
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
         self.audio
             .as_ref()
@@ -611,15 +643,17 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    #[allow(clippy::too_many_arguments)] // Existing FIFO/control wakeups plus accepted source-intent cancellation.
     pub(super) fn next_request_with_control_poll(
         &mut self,
-        requests: &Receiver<Request>,
+        requests: &Receiver<QueuedRequest>,
+        document_intent: &Arc<std::sync::atomic::AtomicU64>,
         bounded: bool,
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
-    ) -> Option<Request> {
+    ) -> Option<QueuedRequest> {
         control_poll(
             self.audio
                 .as_mut()
@@ -656,14 +690,20 @@ impl WorkerEvents {
                 .as_mut()
                 .is_some_and(|a| a.sampler_edit_ready().is_some())
             {
-                return Some(Request::ContinueSamplerEdit);
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueSamplerEdit,
+                    document_intent,
+                ));
             }
             if self
                 .audio
                 .as_ref()
                 .is_some_and(|audio| audio.plugin_state_restore_ready().is_some())
             {
-                return Some(Request::ContinuePluginStateRestore);
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginStateRestore,
+                    document_intent,
+                ));
             }
             if plugin_effect.is_some_and(|insertion| {
                 insertion.context != context
@@ -673,7 +713,10 @@ impl WorkerEvents {
                         .as_ref()
                         .is_some_and(|audio| audio.plugin_effect_ready())
             }) {
-                return Some(Request::ContinuePluginEffect);
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEffect,
+                    document_intent,
+                ));
             }
             if stopped_restore.is_some_and(|captured| {
                 captured != context
@@ -682,7 +725,10 @@ impl WorkerEvents {
                         .as_ref()
                         .is_some_and(|audio| audio.stopped_playback_restore_ready())
             }) {
-                return Some(Request::ContinueStoppedPlaybackRestore);
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueStoppedPlaybackRestore,
+                    document_intent,
+                ));
             }
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {

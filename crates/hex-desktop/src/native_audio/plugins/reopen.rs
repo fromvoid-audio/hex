@@ -85,7 +85,7 @@ impl Plugins {
             restore.cleanup = true;
             for source in &mut self.sources {
                 if source.project_generation == context.project_generation
-                    && source.operation.is_none()
+                    && source.operation.is_reopen()
                 {
                     source.retiring = true;
                 }
@@ -105,7 +105,7 @@ impl Plugins {
         else {
             for source in &mut self.sources {
                 if source.project_generation == restore.context.project_generation
-                    && source.operation.is_none()
+                    && source.operation.is_reopen()
                 {
                     source.retiring = true;
                 }
@@ -130,11 +130,15 @@ impl Plugins {
         restore.output = Some(identity);
         if restore.cleanup {
             for source in &mut self.sources {
-                if source.operation.is_none() {
+                if source.operation.is_reopen() {
                     source.retiring = true;
                 }
             }
-            if self.sources.iter().any(|source| source.operation.is_none()) {
+            if self
+                .sources
+                .iter()
+                .any(|source| source.operation.is_reopen())
+            {
                 self.reopen = Some(restore);
             }
             return;
@@ -162,7 +166,7 @@ impl Plugins {
             } else if self
                 .sources
                 .iter()
-                .any(|source| source.accepted && source.operation.is_none())
+                .any(|source| source.accepted && source.operation.is_reopen())
             {
                 restore.ready = true;
                 self.reopen = Some(restore);
@@ -261,7 +265,7 @@ impl Plugins {
                     owner,
                     device,
                     project_generation: restore.context.project_generation,
-                    operation: None,
+                    operation: SourceOperation::Reopen,
                     accepted: false,
                     retiring: false,
                     queued: false,

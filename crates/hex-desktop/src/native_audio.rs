@@ -69,6 +69,7 @@ struct Preparation {
 }
 pub(super) struct NativeAudioSink {
     plugins: plugins::Plugins,
+    request_cancellation: Option<hex_session::service::RequestCancellation>,
     policy: Result<AudioPolicy, String>,
     resident: resident::Resident,
     // Selected before initialization; applies to every resident graph, including an empty project.
@@ -117,6 +118,7 @@ impl NativeAudioSink {
     fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
             plugins: plugins::Plugins::default(),
+            request_cancellation: None,
             policy: AudioPolicy::new(),
             resident: resident::Resident::default(),
             worker_owned_resident_graphs: true,
@@ -844,6 +846,12 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
+        self.request_cancellation = Some(cancellation);
+    }
+    fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
+        self.plugins.finish_edit(context, accepted);
+    }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.plugins.reopen_ready()
     }
@@ -903,6 +911,7 @@ impl WorkerAudioSink for NativeAudioSink {
             self.output.as_mut(),
             input,
             self.desired.as_deref(),
+            self.request_cancellation.as_ref(),
             prepare,
         )
     }
@@ -1068,6 +1077,10 @@ impl WorkerAudioSink for NativeAudioSink {
                 loop {
                     if files.shutdown.load(Acquire)
                         || files.cancel.is_some_and(|cancel| cancel.load(Acquire))
+                        || (self.plugins.preparing_edit(metadata.context)
+                            && self.request_cancellation.as_ref().is_some_and(
+                                hex_session::service::RequestCancellation::is_cancelled,
+                            ))
                     {
                         self.retire_resident_files(files.sources);
                         return Err(hex_session::service::ResidentPublicationRefusal {

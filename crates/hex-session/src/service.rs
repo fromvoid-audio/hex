@@ -49,11 +49,14 @@ pub use sampler_parameter::SamplerEdit;
 mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
+mod request_cancellation;
 pub use plugin_effect::{
     NativeDeviceState, PluginEffectCompletion, PluginEffectControl, PluginEffectDestination,
     PluginEffectInsertion, PluginEffectPreparation, PluginEffectPreparationState,
     PluginEffectSelection,
 };
+use request_cancellation::QueuedRequest;
+pub use request_cancellation::RequestCancellation;
 #[cfg(test)]
 mod effect_bus_tests;
 #[cfg(test)]
@@ -861,7 +864,7 @@ type ExportTestHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 pub struct Service {
     #[cfg(test)]
     export_test_hook: ExportTestHook,
-    requests: SyncSender<Request>,
+    requests: request_cancellation::Sender,
     events: Receiver<Event>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
@@ -1119,6 +1122,8 @@ impl Service {
             (Some(arrangement_seek), None)
         };
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
+        let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
@@ -1203,6 +1208,7 @@ impl Service {
                     session,
                     history_capacity,
                     request_rx,
+                    worker_document_intent,
                     events,
                     ExportLane::new(export_work_tx, finished_rx, export_worker),
                     actor_export_events,
@@ -1214,7 +1220,7 @@ impl Service {
         Ok(Self {
             #[cfg(test)]
             export_test_hook,
-            requests: request_tx,
+            requests: request_cancellation::Sender::new(request_tx, document_intent),
             events: event_rx,
             export_events: export_event_rx,
             export_busy,
@@ -1370,12 +1376,8 @@ impl Service {
 }
 
 #[allow(clippy::result_large_err)] // Preserve the exact bounded request on queue refusal.
-fn try_submit(sender: &SyncSender<Request>, request: Request) -> Result<(), SubmitError> {
-    match sender.try_send(request) {
-        Ok(()) => Ok(()),
-        Err(TrySendError::Full(request)) => Err(SubmitError::Full(request)),
-        Err(TrySendError::Disconnected(request)) => Err(SubmitError::Closed(request)),
-    }
+fn try_submit(sender: &request_cancellation::Sender, request: Request) -> Result<(), SubmitError> {
+    sender.submit(request)
 }
 
 fn view_state(
@@ -1737,7 +1739,8 @@ fn run_tuning_library_operation_in_using(
 fn run_worker(
     mut session: Session,
     history_capacity: usize,
-    requests: Receiver<Request>,
+    requests: Receiver<QueuedRequest>,
+    document_intent: Arc<std::sync::atomic::AtomicU64>,
     mut events: WorkerEvents,
     mut export_lane: ExportLane,
     export_events: SyncSender<ExportEvent>,
@@ -1982,8 +1985,9 @@ fn run_worker(
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
     let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
     let mut pending_stopped_restore = None;
-    while let Some(request) = events.next_request_with_control_poll(
+    while let Some(queued) = events.next_request_with_control_poll(
         &requests,
+        &document_intent,
         session.native_reservation.is_some(),
         pending_plugin_effect
             .as_ref()
@@ -2052,6 +2056,8 @@ fn run_worker(
             )
         },
     ) {
+        events.begin_request(&document_intent, queued.document_intent);
+        let request = queued.request;
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
@@ -10610,7 +10616,10 @@ mod service_tests {
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let service = Service {
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
-            requests,
+            requests: request_cancellation::Sender::new(
+                requests,
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ),
             events,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),

@@ -242,6 +242,26 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        let edit_cancellation = self
+            .plugins
+            .preparing_edit(metadata.context)
+            .then(|| self.request_cancellation.clone())
+            .flatten();
+        let mut edit_admitted = false;
+        let mut guarded_admit = |resources: &[DeviceResourceAdmission<'_>]| {
+            if !edit_admitted
+                && edit_cancellation
+                    .as_ref()
+                    .is_some_and(hex_session::service::RequestCancellation::is_cancelled)
+            {
+                return Err("vst3 edit cancelled before admission".into());
+            }
+            admit(resources)?;
+            edit_admitted = true;
+            Ok(())
+        };
+        let admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String> =
+            &mut guarded_admit;
         if let Err(error) = self.plugins.check_reopen_publication(
             metadata.context,
             matches!(policy, ResidentPublicationPolicy::RestorePluginState),

@@ -3,6 +3,7 @@
 //! fresh-default instance or prevent recovery of the saved project bytes.
 use super::*;
 use hex_session::service::NativeDeviceState;
+mod edits;
 
 struct SavedEffectFixture {
     files: Files,

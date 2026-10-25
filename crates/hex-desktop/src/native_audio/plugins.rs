@@ -13,15 +13,32 @@ use hex_session::service::{
 };
 mod restore;
 use restore::Restore;
+mod edits;
 mod reopen;
 use reopen::Reopen;
 
+enum SourceOperation {
+    Insertion(Arc<PluginEffectControl>),
+    Reopen,
+    Edit(AudioSourceContext),
+}
+impl SourceOperation {
+    fn insertion(&self) -> Option<&Arc<PluginEffectControl>> {
+        match self {
+            Self::Insertion(control) => Some(control),
+            _ => None,
+        }
+    }
+    fn is_reopen(&self) -> bool {
+        matches!(self, Self::Reopen)
+    }
+}
 struct Source {
     binding: Binding,
     owner: ProcessorChainOwner,
     device: u64,
     project_generation: u64,
-    operation: Option<Arc<PluginEffectControl>>,
+    operation: SourceOperation,
     accepted: bool,
     retiring: bool,
     queued: bool,
@@ -109,6 +126,7 @@ pub(super) struct Plugins {
     pending: Option<Pending>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
+    edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -219,6 +237,9 @@ impl Plugins {
                 )
             })
             .and_then(|n| n.checked_add(8192))
+            .and_then(|n| {
+                n.checked_add(hex_audio::plugin_effects::EffectSourceMetadata::MAX_DATA_BYTES)
+            })
             .ok_or("vst3 control data overflow")?;
         if control_bytes > crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES {
             return Err("vst3 control data reservation exceeded".into());
@@ -300,7 +321,7 @@ impl Plugins {
                 owner,
                 device: input.device_id,
                 project_generation: input.insertion.context.project_generation,
-                operation: Some(Arc::clone(&input.insertion.control)),
+                operation: SourceOperation::Insertion(Arc::clone(&input.insertion.control)),
                 accepted: false,
                 retiring: false,
                 queued: false,
@@ -338,7 +359,7 @@ impl Plugins {
         }
         if let Some(source) = self.sources.iter_mut().find(|s| {
             s.operation
-                .as_ref()
+                .insertion()
                 .is_some_and(|current| Arc::ptr_eq(current, operation))
         }) {
             source.accepted = accepted
@@ -476,10 +497,11 @@ impl Plugins {
         }
     }
     pub fn compile(
-        &self,
+        &mut self,
         output: Option<&mut WorkerPreparedOutput>,
         input: ResidentEffectPreparation<'_>,
         desired: Option<&CanonicalAudioSourceSnapshot>,
+        cancellation: Option<&hex_session::service::RequestCancellation>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
@@ -492,6 +514,21 @@ impl Plugins {
         }) {
             return Err("vst3 state restoration is pending".into());
         }
+        let mut output = output;
+        if input.preparing_edit() {
+            input.visit_plugin_effects(|owner, device, state| {
+                self.prepare_edit_source(
+                    output.as_deref_mut().ok_or("native output closed")?,
+                    &input,
+                    owner,
+                    device,
+                    state,
+                    desired,
+                    cancellation,
+                )
+                .map_err(bounded_error)
+            })?;
+        }
         let mut bindings = Vec::new();
         bindings
             .try_reserve_exact(self.sources.len())
@@ -499,14 +536,23 @@ impl Plugins {
         let context = input.context();
         let mut unavailable = Vec::new();
         input.visit_plugin_effects(|owner, device, state| {
-            let source = self.sources.iter().find(|s| {
-                s.project_generation == context.project_generation
-                    && s.owner == owner
-                    && s.device == device
-                    && !s.retiring
-            });
-            if let Some(source) = source {
-                bindings.push(source.binding);
+            let source = match output
+                .as_deref_mut()
+                .and_then(|output| output.publication.control())
+            {
+                Some(control) => self.matching_edit_source(
+                    control,
+                    &input,
+                    owner,
+                    device,
+                    state,
+                    desired,
+                    cancellation,
+                )?,
+                None => None,
+            };
+            if let Some(binding) = source {
+                bindings.push(binding);
                 return Ok(());
             }
             // A staged document can preserve unresolved state, as can later
@@ -524,6 +570,7 @@ impl Plugins {
                         preserved |= old_owner == owner
                             && old_device == device
                             && old_state.processing_eq(state);
+                        preserved |= input.preparing_edit() && old_state.processing_eq(state);
                         Ok(())
                     },
                 )?;
