@@ -236,15 +236,8 @@ fn play_from_resets_active_mutable_state_and_repeated_starts_are_identical() {
 
 #[test]
 fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs() {
-    fn shared(
-        start: u64,
-        duration: u64,
-        limiter: Option<bool>,
-        pitch: u8,
-    ) -> Arc<PreparedRevision> {
+    fn shared(start: u64, duration: u64, limiter: Option<bool>, pitch: u8) -> Project {
         let definition = super::source_loop_tests::mutable_definition();
-        let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
-        let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
         let project =
             with_test_instrument(&project(1.0, start, duration), definition.metadata.id, 0);
         let receiver = project.tracks()[0].id();
@@ -299,20 +292,20 @@ fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs
                 snapshot.tracks[0].devices.push(device);
             }
         }
-        revision_with_instrument_registry(
-            &Project::from_snapshot(snapshot).unwrap(),
-            Arc::new(hex_devices::SineTable::new()),
-            &registry,
-        )
+        Project::from_snapshot(snapshot).unwrap()
     }
+    let definition = super::source_loop_tests::mutable_definition();
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
     for (limiter, first) in [None, Some(false), Some(true)]
         .into_iter()
         .flat_map(|limiter| [0, 127].map(|first| (limiter, first)))
     {
-        let revision = shared(0, 1 << 32, limiter, 67);
-        let latency = revision.arrangement().main_latency_frames() as usize;
-        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-        let mut oracle = SessionPlayback::new(shared(1 << 31, 1 << 31, limiter, 67)).unwrap();
+        let project = shared(0, 1 << 32, limiter, 67);
+        let mut runtime = ordinary_mutable_playback(&project, &registry);
+        let latency = runtime.revision.arrangement().main_latency_frames() as usize;
+        let mut oracle =
+            ordinary_mutable_playback(&shared(1 << 31, 1 << 31, limiter, 67), &registry);
         oracle.apply(SessionPlaybackCommand::Play).unwrap();
         assert!(
             render_checkpoint_prefix(&mut oracle, 12_000)
@@ -322,7 +315,8 @@ fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs
         );
         runtime.play_from(12_000).unwrap();
         if first == 0 {
-            let mut changed = SessionPlayback::new(shared(0, 1 << 32, limiter, 68)).unwrap();
+            let mut changed =
+                ordinary_mutable_playback(&shared(0, 1 << 32, limiter, 68), &registry);
             assert_eq!(
                 changed.try_inherit_state_from(&mut runtime),
                 Err(SessionPlaybackError::MutableInstrumentChase)
@@ -332,10 +326,10 @@ fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs
         }
         let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064 + latency);
         let mut actual = render_checkpoint_partitioned(&mut runtime, &[1, 7, 193], first);
-        let mut successor = SessionPlayback::new(revision).unwrap();
+        let mut successor = ordinary_mutable_playback(&project, &registry);
         successor
-            .preview_stream_handoff(&mut runtime, 32, None, &mut |_| Ok(()))
-            .unwrap();
+            .preview_stream_handoff_with_scope(&mut runtime, 32, None, &mut |_| Ok(()), true)
+            .unwrap_or_else(|error| panic!("preview limiter={limiter:?} first={first}: {error:?}"));
         successor.try_inherit_state_from(&mut runtime).unwrap();
         actual.extend(render_checkpoint_partitioned(
             &mut successor,

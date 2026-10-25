@@ -300,7 +300,7 @@ fn section_duplicate_undo_restores_prefix_without_chasing_a_past_gate() {
                 let mut conflicting = editor.project().snapshot();
                 arrangement(&mut conflicting)[0].notes[0].pitch += 1;
                 let mut refused = ordinary_mutable_playback(
-                    &Project::from_legacy_snapshot(conflicting).unwrap(),
+                    &Project::from_snapshot(conflicting).unwrap(),
                     registry,
                 );
                 assert_eq!(
