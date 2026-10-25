@@ -330,3 +330,105 @@ fn section_duplicate_undo_restores_prefix_without_chasing_a_past_gate() {
         }
     });
 }
+
+#[test]
+fn live_section_midi_guard_distinguishes_prefixes_from_relocation_and_exposed_onsets() {
+    registry_test(|registry, id| {
+        for later_note in [false, true] {
+            let base = with_test_instrument(&project(1.0, 0, 6 << 32), id, 0);
+            let clip = base.tracks()[0].midi_clips()[0].id();
+            let mut editor = Editor::new(base, 16).unwrap();
+            if later_note {
+                editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_quarters(3).unwrap(),
+                        duration: BeatTime::from_quarters(1).unwrap(),
+                        pitch: 64,
+                        channel: 0,
+                        velocity: 100,
+                    })
+                    .unwrap();
+            }
+            let Created::ArrangementSection(intro) = editor
+                .execute(Command::AddArrangementSection {
+                    name: "intro".into(),
+                    color: hex_project::ElementColor::Cyan,
+                    start: BeatTime::ZERO,
+                    end: BeatTime::from_quarters(2).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            let Created::ArrangementSection(chorus) = editor
+                .execute(Command::AddArrangementSection {
+                    name: "chorus".into(),
+                    color: hex_project::ElementColor::Rose,
+                    start: BeatTime::from_quarters(4).unwrap(),
+                    end: BeatTime::from_quarters(7).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            let full = ordinary_mutable_playback(editor.project(), registry);
+            let legacy = SessionPlayback::new(revision_with_instrument_registry(
+                editor.project(),
+                Arc::new(hex_devices::SineTable::new()),
+                registry,
+            ))
+            .unwrap();
+            assert!(
+                legacy
+                    .revision
+                    .section_midi_relocation_requires_stop(&full.revision)
+            );
+            editor
+                .execute(Command::RenameArrangementSection {
+                    section: intro,
+                    name: "renamed".into(),
+                })
+                .unwrap();
+            let metadata = ordinary_mutable_playback(editor.project(), registry);
+            assert!(
+                !full
+                    .revision
+                    .section_midi_relocation_requires_stop(&metadata.revision)
+            );
+            editor
+                .execute(Command::DuplicateArrangementSection(intro))
+                .unwrap();
+            let prefix = ordinary_mutable_playback(editor.project(), registry);
+            assert!(
+                !metadata
+                    .revision
+                    .section_midi_relocation_requires_stop(&prefix.revision)
+            );
+            assert_eq!(
+                prefix
+                    .revision
+                    .section_midi_relocation_requires_stop(&metadata.revision),
+                later_note
+            );
+            assert!(editor.undo());
+            editor
+                .execute(Command::ReorderSectionAfter {
+                    section: intro,
+                    after: chorus,
+                })
+                .unwrap();
+            let moved = ordinary_mutable_playback(editor.project(), registry);
+            assert!(
+                metadata
+                    .revision
+                    .section_midi_relocation_requires_stop(&moved.revision)
+            );
+            assert!(
+                moved
+                    .revision
+                    .section_midi_relocation_requires_stop(&metadata.revision)
+            );
+        }
+    });
+}
