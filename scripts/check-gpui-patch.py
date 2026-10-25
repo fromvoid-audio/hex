@@ -48,9 +48,15 @@ def verify_cumulative_patch(vendor, manifest):
                     + result.stderr.strip()[:2000]]
         for name in manifest["patched_files"]:
             path = restored / name
-            if (not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()
+            if (path.is_symlink() or not path.is_file()
+                    or hashlib.sha256(path.read_bytes()).hexdigest()
                     != manifest["original_files"][name]):
                 errors.append(f"GPUI cumulative patch does not restore original source: {name}")
+        actual = {str(path.relative_to(restored)) for path in restored.rglob("*")
+                  if path.is_file() or path.is_symlink()}
+        unexpected = actual - set(manifest["patched_files"])
+        if unexpected:
+            errors.append(f"GPUI cumulative patch restores undeclared sources: {sorted(unexpected)}")
         for name in manifest.get("added_files", {}):
             if (restored / name).exists():
                 errors.append(f"GPUI cumulative patch does not remove added source: {name}")
