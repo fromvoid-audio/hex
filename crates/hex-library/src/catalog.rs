@@ -253,3 +253,6 @@ fn visit(
         }
     }
 }
+
+#[cfg(test)]
+mod profile_test;
