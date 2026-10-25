@@ -1,4 +1,7 @@
-"""GPUI provenance must tolerate Finder metadata while detecting source changes."""
+"""GPUI source integrity and offline cumulative patch sensitivity."""
+import difflib
+import hashlib
+import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -6,8 +9,11 @@ import sys
 import tempfile
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts/check-gpui-patch.py"
+SPEC = importlib.util.spec_from_file_location("gpui_patch_check", SCRIPT)
+CHECK = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CHECK)
 
 
 class GpuiPatchTests(unittest.TestCase):
@@ -73,19 +79,6 @@ class GpuiPatchTests(unittest.TestCase):
 
 
 
-import difflib
-import hashlib
-import importlib.util
-from pathlib import Path
-import tempfile
-import unittest
-
-SCRIPT = Path(__file__).resolve().parents[1] / "check-gpui-patch.py"
-SPEC = importlib.util.spec_from_file_location("gpui_patch_check", SCRIPT)
-CHECK = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(CHECK)
-
-
 class CumulativePatchTests(unittest.TestCase):
     def fixture(self, root, omit=None):
         original = {"src/first.rs": b"one\nold\n", "src/second.rs": b"two\nold\n"}
@@ -131,6 +124,7 @@ class CumulativePatchTests(unittest.TestCase):
                 manifest = self.fixture(root, omit=omitted)
                 errors = CHECK.verify_cumulative_patch(root, manifest)
                 self.assertTrue(any(omitted in error for error in errors), errors)
+
 
 
 if __name__ == "__main__":
