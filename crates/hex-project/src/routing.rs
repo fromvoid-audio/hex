@@ -217,6 +217,21 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_routing_guard_rejects_return_only_cycle_without_playable_routes() {
+        let (editor, _, _) = fixture();
+        let mut candidate = editor.project().clone();
+        candidate.audio_feeds.clear();
+        assert!(candidate.midi_routes.is_empty());
+        matches_snapshot_guard(&candidate, Ok(()));
+        let mut reverse = candidate.routing[0];
+        std::mem::swap(&mut reverse.source, &mut reverse.destination);
+        reverse.id = crate::RouteId(candidate.next_id);
+        candidate.next_id += 1;
+        candidate.routing.push(reverse);
+        matches_snapshot_guard(&candidate, Err(Invalid("routing cycles are unsupported")));
+    }
+
+    #[test]
     fn borrowed_routing_guard_rejects_combined_cycle_and_accepts_repaired_candidate() {
         let (editor, track, return_track) = fixture();
         let mut candidate = editor.project().clone();
