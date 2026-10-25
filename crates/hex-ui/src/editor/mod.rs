@@ -38,6 +38,10 @@ mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use plugin_effect::fixture_catalog as plugin_effect_fixture_catalog;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use plugin_effect::fixture_view as plugin_effect_fixture_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
@@ -635,7 +639,13 @@ pub(crate) fn sampler_load_fixture(
     }
     let home = root.join("home");
     std::fs::create_dir_all(home.join("Music")).map_err(|e| e.to_string())?;
-    let preferences = root.join("browser.json");
+    // Catalog publication refuses linked ancestors, including macOS's /var
+    // temporary alias. Keep library paths as supplied, but use the physical
+    // owned root for preference/catalog persistence.
+    let preferences = root
+        .canonicalize()
+        .map_err(|error| error.to_string())?
+        .join("browser.json");
     let places =
         hex_preferences::BrowserPlaces::new(vec![directory.clone()]).map_err(|e| e.to_string())?;
     hex_preferences::save(&preferences, &places).map_err(|e| e.to_string())?;

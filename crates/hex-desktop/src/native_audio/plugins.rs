@@ -55,6 +55,8 @@ pub(super) struct Plugins {
     pub(super) records: Option<Arc<std::sync::atomic::AtomicUsize>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) facts_gate: Option<FactsGate>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) progress: Option<Arc<std::sync::Mutex<Option<Progress>>>>,
 }
 impl Plugins {
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -345,6 +347,13 @@ impl Plugins {
         }
         #[cfg(all(test, feature = "allocation-probe"))]
         {
+            if let Some(observed) = &self.progress
+                && let Ok(mut observed) = observed.try_lock()
+            {
+                *observed = self.pending.as_ref().and_then(|pending| {
+                    control.native_source_preparation_progress(pending.binding)
+                });
+            }
             if let Some(queued) = &self.queued {
                 queued.store(
                     self.sources.iter().any(|s| s.queued && !s.accepted),

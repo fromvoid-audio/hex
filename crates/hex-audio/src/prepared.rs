@@ -39,6 +39,15 @@ use std::time::Instant;
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
 // is needed when a later post-cut ticket remains queued.
 const COMMANDS: usize = 32;
+
+#[cfg(feature = "allocation-probe")]
+impl Callback {
+    /// Read-only headless control observation while the callback is quiescent.
+    /// Empty is queue state, not graph/source application or native readiness.
+    pub(crate) fn publication_queue_empty_on_control(&self) -> bool {
+        self.publications.is_empty()
+    }
+}
 mod admission;
 mod eligible_publication;
 mod endpoints;

@@ -261,10 +261,12 @@ impl WorkerAudioSink for ResidentSink {
 
 pub(super) struct ResidentHarness {
     pub(super) service: Service,
+    event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
-    callback: Arc<Mutex<Option<HeadlessBackend>>>,
+    pub(super) callback: Arc<Mutex<Option<HeadlessBackend>>>,
     pub(super) audio: Option<EditorAudio>,
     pub(super) submitted: Option<(u64, ResidentPublicationMetadata)>,
+    submitted_observation: Option<Arc<PreparedPlaybackObservation>>,
     pub(super) refuse: Arc<AtomicBool>,
     pub(super) budget_refuse: Arc<AtomicBool>,
     pub(super) loop_witness_fault: Arc<AtomicU8>,
@@ -279,6 +281,7 @@ pub(super) struct ResidentHarness {
     pub(super) plugin_completed: Arc<AtomicU64>,
     pub(super) plugin_queued: Arc<AtomicBool>,
     pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) plugin_progress: Arc<Mutex<Option<hex_audio::NativeSourcePreparationProgress>>>,
 }
 impl ResidentHarness {
     pub(super) fn new() -> Self {
@@ -351,13 +354,15 @@ impl ResidentHarness {
         let (sender, events) = mpsc::sync_channel(capacity);
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
-        let mut inner = NativeAudioSink::new(sender);
+        let mut inner = NativeAudioSink::new(sender.clone());
         let plugin_completed = Arc::new(AtomicU64::new(0));
         let plugin_queued = Arc::new(AtomicBool::new(false));
         let plugin_records = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let plugin_progress = Arc::new(Mutex::new(None));
         if let Some((host, presentation)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
             inner.plugins.facts_gate = facts_gate;
+            inner.plugins.progress = Some(Arc::clone(&plugin_progress));
             inner.plugins.completed = Some(Arc::clone(&plugin_completed));
             inner.plugins.queued = Some(Arc::clone(&plugin_queued));
             inner.plugins.records = Some(Arc::clone(&plugin_records));
@@ -407,10 +412,12 @@ impl ResidentHarness {
         .unwrap();
         Self {
             service,
+            event_sender: sender,
             events,
             callback,
             audio: None,
             submitted: None,
+            submitted_observation: None,
             refuse,
             budget_refuse,
             loop_witness_fault,
@@ -425,8 +432,45 @@ impl ResidentHarness {
             plugin_completed,
             plugin_queued,
             plugin_records,
+            plugin_progress,
         }
     }
+    /// Attach the actual already-open output and latest submission observation
+    /// to a rendered view. These are original events, never manufactured ACKs;
+    /// the simulated callback and publication owner stay in their usual custody.
+    pub(super) fn into_plugin_ui_backend(mut self) -> EditorBackend {
+        let audio = self.audio.take().expect("actual opened output");
+        let output_identity = audio.control.output_identity().unwrap();
+        let (audio_revision, metadata) = self.submitted.unwrap();
+        assert_eq!(
+            audio.status().unwrap().applied_revision.load(Acquire),
+            audio_revision
+        );
+        self.event_sender
+            .try_send(EditorAudioEvent::Opened {
+                project_generation: metadata.context.project_generation,
+                restart_request: None,
+                audio,
+            })
+            .unwrap_or_else(|_| panic!("actual opened event handoff"));
+        self.event_sender
+            .try_send(EditorAudioEvent::Publication {
+                context: metadata.context,
+                output_identity,
+                state: EditorPublicationState::ResidentSubmitted {
+                    audio_revision,
+                    metadata,
+                    observation: self.submitted_observation.take().unwrap(),
+                },
+            })
+            .unwrap_or_else(|_| panic!("actual submission event handoff"));
+        EditorBackend {
+            service: self.service,
+            audio_events: self.events,
+            source_reservation: AudioPolicy::source_reservation(),
+        }
+    }
+
     pub(super) fn pump(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -436,10 +480,13 @@ impl ResidentHarness {
                         EditorPublicationState::ResidentSubmitted {
                             audio_revision,
                             metadata,
-                            ..
+                            observation,
                         },
                     ..
-                } => self.submitted = Some((audio_revision, metadata)),
+                } => {
+                    self.submitted = Some((audio_revision, metadata));
+                    self.submitted_observation = Some(observation);
+                }
                 EditorAudioEvent::Unavailable { error, .. } => {
                     assert!(self.allow_unavailable, "{error}");
                     self.unavailable.push(error);

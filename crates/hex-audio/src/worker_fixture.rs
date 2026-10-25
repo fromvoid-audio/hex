@@ -85,6 +85,15 @@ impl HeadlessBackend {
             .and_then(Guard::owner_ref)
             .map(NativeCallbackOwner::borrowed_status)
     }
+
+    /// Observe the real publication queue on headless control, outside render
+    /// probes. This never consumes an entry or acknowledges installation.
+    pub fn publication_queue_empty_on_control(&mut self) -> Option<bool> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut empty = None;
+        owner.run(|callback, _| empty = Some(callback.publication_queue_empty_on_control()));
+        empty
+    }
     /// Observe actual completion of all committed copied requests while the
     /// headless callback is quiescent on the test control thread. Never use a
     /// Session worker's polling cadence as the native worker's clock. None is

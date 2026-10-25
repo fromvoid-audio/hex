@@ -90,6 +90,36 @@ pub fn open_sampler_load_test_backend(
     editor::sampler_load_fixture(cx, backend, root, directory)
 }
 
+/// Read-only browser insertion evidence. Neither the view nor this query owns
+/// a native endpoint, and a pending request alone grants no applied source.
+#[cfg(feature = "ui-test-support")]
+pub struct PluginEffectTestView {
+    pub state: Option<std::sync::Arc<hex_session::service::ViewState>>,
+    pub pending: bool,
+    pub error: Option<String>,
+    pub selected_owner: Option<hex_session::service::PluginEffectDestination>,
+    pub status: String,
+    pub applied: Option<hex_audio::prepared::AppliedAudioSource>,
+}
+
+#[cfg(feature = "ui-test-support")]
+pub fn plugin_effect_test_view(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<PluginEffectTestView, String> {
+    editor::plugin_effect_fixture_view(window, cx)
+}
+
+/// Seed metadata for the original native-effect integration fixture beneath
+/// its owned temporary root. This does not scan, prepare or acknowledge a source.
+#[cfg(feature = "ui-test-support")]
+pub fn write_plugin_effect_test_catalog(
+    root: &std::path::Path,
+    selection: &hex_session::service::PluginEffectSelection,
+) -> Result<(), String> {
+    editor::plugin_effect_fixture_catalog(root, selection)
+}
+
 /// Read-only headless source metadata and peak-only table; no native owner.
 #[cfg(feature = "ui-test-support")]
 pub struct SamplerSourceTestView {
