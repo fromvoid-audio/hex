@@ -1,6 +1,11 @@
 //! Bounded float WAV source bounce with source loops and create-new publication.
 use super::*;
 
+/// Maximum release tail after the selected clip span, in seconds. Session
+/// preparation reserves the same allowance before rendering or adopting media.
+/// Unfinished tails are truncated at this cap; exact-range bounces add no tail.
+pub const MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS: u64 = 30;
+
 /// Render an isolated source revision to lossless float32 PCM. Preroll chases
 /// mutable instrument history at nonzero placements; no mix clamp/quantization.
 /// Source loops retain phase; transport wrapping and Session commands are disabled.
@@ -70,8 +75,9 @@ impl BlockRenderer for BounceRenderer {
 
 /// Selected-track bounce, post-device and before the retained mixer. Exact
 /// ranges discard causal preroll then write exactly `frames`; clip mode keeps
-/// rendering actual releases until the isolated runtime is quiescent. A hard
-/// ten-second release budget is a refusal, never a successful truncated bounce.
+/// rendering actual releases until the isolated runtime is quiescent, up to
+/// `MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS` after the selected span. A tail still
+/// sounding at that cap is truncated and published successfully without a fade.
 /// Nonzero-latency paths refuse until bounce has an origin-aligned capture tap.
 /// The control may cancel rendering/publication; the session seals it only at
 /// the final model-adoption boundary, after all files are prepared.
@@ -97,7 +103,7 @@ pub fn render_arrangement_bounce_new(
     let rate = revision.arrangement().sample_rate();
     let tail_budget = if include_tails {
         u64::from(rate)
-            .checked_mul(10)
+            .checked_mul(MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS)
             .ok_or(ExportError::Invalid("bounce tail budget overflows"))?
     } else {
         0
@@ -134,13 +140,11 @@ pub fn render_arrangement_bounce_new(
             rendered += count as u64;
             control.advance(count);
         }
-        if rendered >= frames && (!include_tails || playback.arrangement_bounce_is_quiescent()) {
+        if rendered == maximum
+            || (rendered >= frames
+                && (!include_tails || playback.arrangement_bounce_is_quiescent()))
+        {
             break;
-        }
-        if rendered == maximum {
-            return Err(ExportError::Invalid(
-                "bounce tail did not become quiescent within ten seconds · no edit applied",
-            ));
         }
     }
     drop(playback);

@@ -2755,8 +2755,11 @@ impl SessionPlayback {
         }
 
         // A source can be silent while its committed effect suffix still has
-        // delayed or recursive output. Retain that old suffix even when no
-        // MIDI release owner is available to carry it.
+        // delayed or recursive output. Retain a detached old suffix even when
+        // no MIDI release owner is available to carry it. Track gain, balance,
+        // mute and solo only change the output mix: an otherwise compatible
+        // chain inherits history under those new controls, without capturing
+        // duplicate tails or consuming the finite retirement bank.
         for old_index in 0..previous.routes.len() {
             let old_route = previous
                 .routes
@@ -2812,7 +2815,6 @@ impl SessionPlayback {
                         candidate_suffix_start..old_chain.len(),
                     );
                 old_track.instrument_position() != candidate_suffix_start
-                    || old_track.mix() != candidate_track.mix()
                     || old_track.instrument_suffix_matrix()
                         != candidate_track.instrument_suffix_matrix()
                     || !(exact_chain_configuration || retargetable_effect_configuration)

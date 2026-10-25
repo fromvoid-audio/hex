@@ -18,7 +18,10 @@ impl Drop for Folder {
     }
 }
 fn fixture() -> (Session, TrackId, ClipId) {
-    let mut session = Session::new(48_000, 32, 2_000_000).unwrap();
+    fixture_at_rate(48_000)
+}
+fn fixture_at_rate(rate: u32) -> (Session, TrackId, ClipId) {
+    let mut session = Session::new(rate, 32, 2_000_000).unwrap();
     let Created::Track(track) = session
         .command(Command::InsertTrackWithDevice {
             name: "source".into(),
@@ -831,3 +834,74 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
 
 #[path = "tests/grouping.rs"]
 mod grouping;
+
+#[test]
+fn clipped_thirty_second_delay_tail_adopts_media_and_undo_redo_as_one_edit() {
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+    let folder = Folder::new();
+    let rate = 8_000;
+    let (mut session, track, clip) = fixture_at_rate(rate);
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let mut state = hex_engine::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.delay"),
+    )
+    .unwrap();
+    for (id, value) in [
+        (1, ParameterValue::Float(1000.0)),
+        (2, ParameterValue::Float(0.95)),
+        (3, ParameterValue::Float(0.5)),
+        (5, ParameterValue::Bool(false)),
+        (6, ParameterValue::Bool(false)),
+        (15, ParameterValue::Bool(false)),
+    ] {
+        state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            &state,
+            ParameterId::from_static(id),
+            value,
+        )
+        .unwrap();
+    }
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let original = session.project().snapshot();
+    let revision = session.compile_prepared_revision(None).unwrap();
+    session
+        .bounce_arrangement(
+            BounceTarget::Clips(vec![clip]),
+            true,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            Some(&revision),
+        )
+        .unwrap();
+    let bounced = session.project().snapshot();
+    let audio = &session.project().track(track).unwrap().clips()[0];
+    let expected_frames = u64::from(rate) / 2 + u64::from(rate) * 30;
+    assert_eq!(audio.duration(), expected_frames);
+    let samples = session.audio(audio.asset()).unwrap().frames();
+    assert_eq!(samples.len() as u64, expected_frames);
+    assert!(
+        samples[samples.len() - 256..]
+            .iter()
+            .flatten()
+            .any(|s| s.abs() > 1e-6),
+        "delay is still sounding at the cutoff"
+    );
+    let project_path = folder.0.join("capped.hex");
+    hex_storage::save_new(&project_path, session.project()).unwrap();
+    assert_eq!(
+        hex_storage::load(&project_path).unwrap().snapshot(),
+        bounced
+    );
+    assert!(session.undo());
+    assert_eq!(session.project().snapshot().tracks, original.tracks);
+    assert!(session.redo());
+    assert_eq!(session.project().snapshot().tracks, bounced.tracks);
+}
