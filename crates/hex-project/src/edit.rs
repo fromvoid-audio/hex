@@ -825,6 +825,11 @@ pub enum Command {
         from_scene: crate::SceneId,
         to_scene: crate::SceneId,
     },
+    /// Change a Console audio cycle without replacing its retained PCM.
+    SetSessionAudioClipLoop {
+        clip: ClipId,
+        loop_range: Option<crate::SessionAudioLoop>,
+    },
     SetSessionAudioClipSource {
         clip: ClipId,
         asset: AssetId,
@@ -1911,6 +1916,7 @@ impl Project {
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }
+            | Command::SetSessionAudioClipLoop { .. }
             | Command::SetSessionAudioClipSource { .. }
             | Command::ClearSessionCell { .. }
             | Command::SetSessionStopCell { .. }
