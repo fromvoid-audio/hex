@@ -86,6 +86,10 @@ arrange places clips along a time ruler. console provides the clip/scene workspa
 these views share the project; switching views does not create another document.
 tracks can contain both audio and midi clips under the same mixer controls.
 
+solo takes precedence over track mute or deactivation. a muted track sounds while
+soloed; turning solo off restores its muted state. solo does not change the stored
+track activator setting.
+
 in arrange, select a track or clip before editing it. drag a clip to move it and
 use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
@@ -96,7 +100,11 @@ track and press **g** to group them. select only audio clips or only midi clips.
 hex keeps gaps and refuses a group that would cover unselected material. midi
 clips become one finite midi clip with their played notes and volume curves.
 audio clips become events inside one clip; original files and source processing
-remain retained. grouped audio keeps its source timing at the grouping tempo.
+remain retained. when an existing group has repeats or outer processing, hex
+renders its audible span to one ordinary audio clip. this includes partial repeats
+and gaps, keeps original media, and leaves track effects and routing live.
+rendered grouping supports one track at a time; press escape to cancel preparation.
+grouped audio keeps its source timing at the grouping tempo.
 use undo to restore the original clips in one step. grouping requires resident
 audio; unsupported streamed sources refuse before the edit is committed.
 

@@ -2090,6 +2090,7 @@ impl EditorView {
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
+        self.reconcile_rendered_group_selection(&event);
         if event.bounce_complete.as_ref().is_some_and(|completed| {
             self.bounce_control
                 .as_ref()

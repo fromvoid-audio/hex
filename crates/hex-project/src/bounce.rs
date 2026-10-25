@@ -12,6 +12,21 @@ pub const MAX_ARRANGEMENT_BOUNCE_FRAMES: u64 = 8_000_000;
 pub enum BounceTarget {
     Clips(Vec<ClipId>),
     Range(TimeRange),
+    /// Finite pre-device audio grouping, not a track/device bake. The range
+    /// variant retains exterior fragments; the clip variant requires two clips.
+    AudioGroup {
+        clips: Vec<ClipId>,
+        range: Option<TimeRange>,
+    },
+}
+impl BounceTarget {
+    pub fn is_audio_group(&self) -> bool {
+        matches!(self, Self::AudioGroup { .. })
+    }
+    /// Only a device bake replaces live voices and needs the stopped fence.
+    pub fn bakes_devices(&self, in_place: bool) -> bool {
+        in_place && !self.is_audio_group()
+    }
 }
 #[derive(Clone, Debug)]
 pub struct BounceTrack {
@@ -34,6 +49,16 @@ impl Project {
         target: &BounceTarget,
         in_place: bool,
     ) -> Result<Vec<BounceTrack>, Invalid> {
+        if let BounceTarget::AudioGroup { clips, range } = target {
+            if !in_place {
+                return Err(Invalid("audio grouping replaces its selected clips"));
+            }
+            return Ok(vec![crate::clip_consolidate::render::plan(
+                self,
+                clips,
+                range.as_ref(),
+            )?]);
+        }
         if !self.audio_feeds.is_empty() || !self.midi_routes.is_empty() || !self.routing.is_empty()
         {
             return Err(Invalid(
@@ -54,6 +79,9 @@ impl Project {
             BounceTarget::Range(range) => {
                 range.validate(self)?;
                 BTreeSet::new()
+            }
+            BounceTarget::AudioGroup { .. } => {
+                return Err(Invalid("audio grouping plan was not resolved"));
             }
         };
         let mut found = 0;
@@ -111,6 +139,9 @@ impl Project {
                             midi_frames(self, c).map_or(true, |(s, e)| s < start || e > end)
                         })
                     }
+                    BounceTarget::AudioGroup { .. } => {
+                        return Err(Invalid("audio grouping plan was not resolved"));
+                    }
                 };
                 let console = self.session_cells().iter().any(|c| {
                     c.track() == track.id() && !matches!(c.content(), SessionCellContent::Stop)
@@ -153,6 +184,12 @@ pub(crate) fn commit(
     in_place: bool,
     files: Vec<BounceFile>,
 ) -> Result<Created, Invalid> {
+    if let BounceTarget::AudioGroup { clips, range } = &target {
+        if !in_place {
+            return Err(Invalid("audio grouping replaces its selected clips"));
+        }
+        return crate::clip_consolidate::render::commit(project, clips, range.as_ref(), files);
+    }
     let plan = project.plan_arrangement_bounce(&target, in_place)?;
     if files.len() != plan.len() {
         return Err(Invalid("bounce output count changed"));
@@ -174,6 +211,7 @@ pub(crate) fn commit(
             || match target {
                 BounceTarget::Range(_) => file.frames != item.end - item.start,
                 BounceTarget::Clips(_) => file.frames < item.end - item.start,
+                BounceTarget::AudioGroup { .. } => true,
             }
         {
             return Err(Invalid("bounce output differs from captured interval"));
@@ -219,6 +257,9 @@ pub(crate) fn commit(
                     project.apply(Command::DeleteTimeRange {
                         range: TimeRange::new(vec![item.track], item.start, item.end)?,
                     })?;
+                }
+                BounceTarget::AudioGroup { .. } => {
+                    return Err(Invalid("audio grouping plan was not resolved"));
                 }
             }
             let owner = project
