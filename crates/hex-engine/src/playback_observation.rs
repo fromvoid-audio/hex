@@ -1,5 +1,5 @@
 //! Exact read-only observations copied from one compiled revision on control. These values own
-//! only scalar MIDI gates/indexes/timing and existing two-atomic meter endpoints. They contain no
+//! only scalar MIDI gates/indexes/timing and existing scalar-atomic meter endpoints. They contain no
 //! PCM, prepared revision, instrument/effect factory, native configuration or analytic context.
 //! Consumers must correlate them with the actual applied output/context/audio revision.
 use crate::midi_compile::{CompiledNoteSpan, SpanNode};

@@ -1,10 +1,21 @@
-//! Lock-free sample-peak handoff. Positive finite floats preserve bit ordering.
+//! Lock-free peak handoff. Positive finite floats preserve bit ordering.
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
+/// Provider-reported attenuation, in positive dB, for its two working lanes.
+/// Lane meaning follows the device's active routing. Only committed processing
+/// publishes readings; no signal-ratio estimate or speculative history is used.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DynamicsMeter {
+    pub reduction_db: [f32; 2],
+    pub clipped: bool,
+}
 
 #[derive(Debug, Default)]
 pub struct DeviceMeter {
     input: AtomicU32,
     output: AtomicU32,
+    reduction: [AtomicU32; 2],
+    clipped: AtomicU32,
 }
 impl DeviceMeter {
     /// CONTROL ONLY: complete exclusive payload declaration for this value.
@@ -14,6 +25,8 @@ impl DeviceMeter {
         let Self {
             input: _,
             output: _,
+            reduction: _,
+            clipped: _,
         } = self;
         crate::PreparedStorageDeclaration::ExclusiveOnly {
             bytes: std::mem::size_of::<Self>(),
@@ -71,6 +84,25 @@ impl DeviceMeter {
             f32::from_bits(self.output.swap(0, Relaxed)),
         ]
     }
+    pub(crate) fn observe_dynamics(&self, reading: DynamicsMeter) {
+        for (target, value) in self.reduction.iter().zip(reading.reduction_db) {
+            if value.is_finite() && value >= 0.0 {
+                target.fetch_max(value.to_bits(), Relaxed);
+            }
+        }
+        if reading.clipped {
+            self.clipped.store(1, Relaxed);
+        }
+    }
+    /// One UI consumer drains independently of the input/output sample peaks.
+    pub fn take_dynamics(&self) -> DynamicsMeter {
+        DynamicsMeter {
+            reduction_db: std::array::from_fn(|i| {
+                f32::from_bits(self.reduction[i].swap(0, Relaxed))
+            }),
+            clipped: self.clipped.swap(0, Relaxed) != 0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -87,5 +119,41 @@ mod tests {
         meter.observe_output(&[[f32::NAN, f32::INFINITY]]);
         assert_eq!(meter.take_peaks(), [1.2, 0.8]);
         assert_eq!(meter.take_peaks(), [0.0; 2]);
+    }
+
+    #[test]
+    fn dynamics_peaks_are_independent_and_ignore_invalid_readings() {
+        let meter = DeviceMeter::default();
+        meter.observe_input(&[[0.25, -0.5]]);
+        meter.observe_output(&[[0.75, -1.0]]);
+        meter.observe_dynamics(DynamicsMeter {
+            reduction_db: [3.0, 5.5],
+            clipped: false,
+        });
+        meter.observe_dynamics(DynamicsMeter {
+            reduction_db: [f32::NAN, f32::INFINITY],
+            clipped: true,
+        });
+        meter.observe_dynamics(DynamicsMeter {
+            reduction_db: [-2.0, f32::NEG_INFINITY],
+            clipped: false,
+        });
+
+        assert_eq!(meter.take_peaks(), [0.5, 1.0]);
+        assert_eq!(
+            meter.take_dynamics(),
+            DynamicsMeter {
+                reduction_db: [3.0, 5.5],
+                clipped: true,
+            }
+        );
+        assert_eq!(meter.take_dynamics(), DynamicsMeter::default());
+        assert_eq!(meter.take_peaks(), [0.0; 2]);
+        assert_eq!(
+            meter.control_storage_declaration(),
+            crate::PreparedStorageDeclaration::ExclusiveOnly {
+                bytes: std::mem::size_of::<DeviceMeter>(),
+            }
+        );
     }
 }

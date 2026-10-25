@@ -43,6 +43,7 @@ pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
@@ -1173,6 +1174,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.limiter")) => limiter_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.reverb")) => reverb_panel::FRAME_WIDTH,
@@ -1537,6 +1539,8 @@ fn render_effect(
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 utility_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.limiter") {
+                limiter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
                 compressor_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
@@ -1644,6 +1648,7 @@ fn render_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8" | "hex.eq") => eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
+        Ok("hex.limiter") => limiter_panel::FRAME_WIDTH,
         Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => gate_panel::FRAME_WIDTH,
         Ok("hex.reverb") => reverb_panel::FRAME_WIDTH,
