@@ -28,9 +28,11 @@
 //! require rebasing these roots refuse explicitly. Uncut MIDI retains source
 //! and loop metadata; boundary crossings reuse the finite canonical split law,
 //! including retriggered carried gates and materialized source-beat volume.
-//! Original source loops are supported. The separate outer Once/Repeat view
-//! placement capability refuses until its engine occurrence path can preserve
-//! the complete song edit; it is never silently flattened or partly moved.
+//! Original source loops and finite outer Once/Repeat views retain their full
+//! processing clock, crop, phase and silent tails. Musical outer views translate
+//! the old integer-frame projection to their new onset, including internal repeat
+//! and directed-read seams; splits trim that same saved clock before relocation.
+//! Later global tempo replacement returns warped roots to live processing.
 //! Every fragment is planned from the original state; Editor owns one atomic
 //! preparation/history transition and preserves the original on any failure.
 use crate::{BeatTime, Command, Created, ElementColor, Invalid, Project, SectionId};

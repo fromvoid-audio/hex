@@ -529,7 +529,7 @@ fn bounded_gain_splice_and_dense_midi_expansion_fail_without_consuming_source_or
 }
 
 #[test]
-fn unsupported_outer_audio_placements_refuse_transactionally_instead_of_partial_song_edits() {
+fn outer_audio_placements_section_edits_are_atomic_and_retain_history() {
     for mode in [
         hex_project::AudioViewMode::Once,
         hex_project::AudioViewMode::Repeat,
@@ -537,6 +537,8 @@ fn unsupported_outer_audio_placements_refuse_transactionally_instead_of_partial_
         let (seed, a, c) = fixture();
         let clip = seed.project().tracks()[0].clips()[0].clone();
         let mut edit = clip.audio_event_root();
+        edit.view_start = 271;
+        edit.view_end = 4_271;
         edit.placement = Some(hex_project::AudioViewPlacement {
             mode,
             outer_length: hex_project::AudioDomainClock::Frames(clip.duration()),
@@ -544,26 +546,45 @@ fn unsupported_outer_audio_placements_refuse_transactionally_instead_of_partial_
         });
         let mut snapshot = seed.project().snapshot();
         snapshot.tracks[0].audio_clips_mut().unwrap()[0].edit = Some(edit);
-        let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
-        let before = e.project().snapshot();
-        let mut prepared = false;
-        let error = e
-            .execute_prepared::<(), hex_project::Invalid>(
-                Command::ReorderSectionBefore {
-                    section: c,
-                    before: a,
-                },
-                |_| {
-                    prepared = true;
-                    Ok(())
-                },
-            )
+        let seed = Project::from_snapshot(snapshot).unwrap();
+        for command in [
+            Command::ReorderSectionBefore {
+                section: c,
+                before: a,
+            },
+            Command::DuplicateArrangementSection(a),
+            Command::DeleteArrangementSection(a),
+            Command::ResizeArrangementSection {
+                section: a,
+                edge: hex_project::TrimEdge::Left,
+                length: b(3),
+            },
+        ] {
+            let mut e = Editor::new(seed.clone(), 8).unwrap();
+            let before = e.project().snapshot();
+            let mut prepared = false;
+            e.execute_prepared::<(), hex_project::Invalid>(command.clone(), |_| {
+                prepared = true;
+                Err(hex_project::Invalid("injected preparation refusal"))
+            })
             .unwrap_err();
-        assert!(error.0.contains("outer audio once/repeat"));
-        assert!(!prepared);
-        assert_eq!(e.project().snapshot(), before);
-        assert!(!e.can_undo());
-        assert!(!e.can_redo());
+            assert!(prepared);
+            assert_eq!(e.project().snapshot(), before);
+            assert!(!e.can_undo());
+            e.execute(command).unwrap();
+            let after = e.project().snapshot();
+            assert_ne!(after, before);
+            assert_eq!(
+                Project::from_snapshot(after.clone()).unwrap().snapshot(),
+                after
+            );
+            assert!(e.undo());
+            let mut undone = e.project().snapshot();
+            undone.next_id = before.next_id;
+            assert_eq!(undone, before);
+            assert!(e.redo());
+            assert_eq!(e.project().snapshot(), after);
+        }
     }
 }
 
