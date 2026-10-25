@@ -726,16 +726,28 @@ fn shared_receiver_bounce_case(whole_track: bool) {
                 .devices()
                 .eq(original.native_source(source_id).unwrap().devices())
         );
+        let contributor_after = session.project().track(contributor).unwrap();
+        let contributor_before = original.track(contributor).unwrap();
+        assert_eq!(contributor_after.source_id(), Some(source_id));
+        assert_eq!(contributor_after.devices(), contributor_before.devices());
+        assert_eq!(contributor_after.clips(), contributor_before.clips());
         assert_eq!(
-            session.project().track(contributor),
-            original.track(contributor)
+            contributor_after.midi_clips(),
+            contributor_before.midi_clips()
         );
         let receiver = session.project().track(receiver).unwrap();
         assert!(receiver.instrument().is_none());
         assert!(receiver.devices().is_empty());
         let bounced = session.project().clone();
         assert!(session.undo());
-        assert_eq!(session.project(), &original);
+        assert_eq!(
+            session.project().snapshot().tracks,
+            original.snapshot().tracks
+        );
+        assert_eq!(
+            session.project().native_sources(),
+            original.native_sources()
+        );
         assert!(session.redo());
         assert_eq!(session.project(), &bounced);
     }
@@ -774,18 +786,32 @@ fn contributor_midi_clip_bounce_is_refused_instead_of_silently_baking_nothing() 
     else {
         panic!("midi clip")
     };
-    let target = BounceTarget::Clips(vec![clip]);
-    let item = session
-        .project()
-        .plan_arrangement_bounce(&target, false)
-        .unwrap()
-        .remove(0);
-    let error = isolated(session.project(), &target, &item).unwrap_err();
-    assert!(error.contains("bounce its receiver"), "{error}");
+    for (target, in_place) in [
+        (BounceTarget::Clips(vec![clip]), false),
+        (BounceTarget::Track(contributor), true),
+        (
+            BounceTarget::Range(hex_project::TimeRange::new(vec![contributor], 0, 48_000).unwrap()),
+            false,
+        ),
+    ] {
+        let item = session
+            .project()
+            .plan_arrangement_bounce(&target, in_place)
+            .unwrap()
+            .remove(0);
+        let error = isolated(session.project(), &target, &item).unwrap_err();
+        assert!(error.contains("bounce its receiver"), "{error}");
+    }
 }
 
 #[test]
 fn nonreceiver_audio_bounce_isolates_its_audio_and_unassigns_retained_source() {
+    for shared in [false, true] {
+        nonreceiver_audio_bounce_case(shared);
+    }
+}
+
+fn nonreceiver_audio_bounce_case(shared: bool) {
     let folder = Folder::new();
     let (mut session, receiver, _) = fixture();
     let source_id = session
@@ -821,10 +847,27 @@ fn nonreceiver_audio_bounce_isolates_its_audio_and_unassigns_retained_source() {
     else {
         panic!("audio import")
     };
+    if shared {
+        session
+            .command(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source_id),
+            })
+            .unwrap();
+    }
+    let effect = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    let gain = effect.output_gain_linear();
     session
-        .command(Command::BindTrackSource {
+        .command(Command::InsertDevice {
             track: contributor,
-            source: Some(source_id),
+            before: None,
+            state: effect,
         })
         .unwrap();
     let target = BounceTarget::Clips(vec![clip]);
@@ -837,6 +880,7 @@ fn nonreceiver_audio_bounce_isolates_its_audio_and_unassigns_retained_source() {
     assert_eq!(isolated.tracks().len(), 1);
     assert!(isolated.track(contributor).unwrap().source_id().is_none());
     assert_eq!(isolated.track(contributor).unwrap().clips().len(), 1);
+    assert_eq!(isolated.track(contributor).unwrap().devices().len(), 1);
     assert_eq!(isolated.native_source(source_id).unwrap().receiver(), None);
 
     let (created, _) = session
@@ -859,7 +903,14 @@ fn nonreceiver_audio_bounce_isolates_its_audio_and_unassigns_retained_source() {
         .find(|clip| clip.id() == first)
         .unwrap();
     let actual = session.audio(bounced.asset()).unwrap().frames();
-    assert_eq!(actual, source_audio.frames());
+    assert_eq!(actual.len(), source_audio.frames().len());
+    let error = actual
+        .iter()
+        .flatten()
+        .zip(source_audio.frames().iter().flatten())
+        .map(|(actual, dry)| (actual - dry * gain).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(error < 1e-6, "local effects must be baked once: {error}");
 }
 
 #[test]

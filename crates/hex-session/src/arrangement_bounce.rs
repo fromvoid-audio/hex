@@ -86,12 +86,14 @@ pub(crate) fn isolated(
                 _ => std::collections::BTreeSet::new(),
             })
             .ok_or("bounce track changed")?;
-        if matches!(target, BounceTarget::Clips(_))
-            && !selected_is_receiver
-            && item
+        if !selected_is_receiver
+            && (item
                 .clips
                 .iter()
                 .any(|clip| selected_midi.contains(&clip.value()))
+                // A range may include a shared voice's release from an earlier
+                // onset. There is no independent contributor audio stem.
+                || matches!(target, BounceTarget::Range(_)) && !selected_midi.is_empty())
         {
             return Err(
                 "cannot bounce midi from a shared-source contributor; bounce its receiver instead"
@@ -146,7 +148,6 @@ pub(crate) fn isolated(
                 track.sends.clear();
                 if !selected_is_receiver {
                     let audio_clips = track.audio_clips_mut().map_err(|e| e.to_string())?.clone();
-                    track.devices.clear();
                     track.instrument = None;
                     track.instrument_position = None;
                     track.content = TrackContentSnapshot::Hybrid {
