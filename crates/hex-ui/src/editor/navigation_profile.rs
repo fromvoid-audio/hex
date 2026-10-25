@@ -289,7 +289,7 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
     );
     if stage_timing {
         println!(
-            "NAV_STAGE_CSV,phase,content,tracks,row_mode,density,action,iteration,warmup,editor_us,row_us,clip_model_us,wave_lookup_us,wave_build_us,wave_provider_us,diagnostic_us,request_layout_us,prepaint_us,paint_us,editor_calls,row_calls,clip_model_calls,wave_lookup_calls,wave_build_calls,wave_provider_calls,diagnostic_calls,request_layout_calls,prepaint_calls,paint_calls"
+            "NAV_STAGE_CSV,phase,content,tracks,row_mode,density,action,iteration,warmup,editor_us,row_us,clip_model_us,wave_lookup_us,wave_build_us,wave_provider_us,diagnostic_us,request_layout_us,prepaint_us,paint_us,wave_sampling_us,wave_paths_us,editor_calls,row_calls,clip_model_calls,wave_lookup_calls,wave_build_calls,wave_provider_calls,diagnostic_calls,request_layout_calls,prepaint_calls,paint_calls,wave_sampling_calls,wave_paths_calls"
         );
     }
     for (input, row_modes) in profile_inputs() {
