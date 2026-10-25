@@ -242,9 +242,8 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
-        let edit_cancellation = self
-            .plugins
-            .preparing_edit(metadata.context)
+        let preparing_native_edit = self.plugins.preparing_edit(metadata.context);
+        let edit_cancellation = preparing_native_edit
             .then(|| self.request_cancellation.clone())
             .flatten();
         let mut edit_admitted = false;
@@ -465,12 +464,29 @@ impl NativeAudioSink {
                     )
                 },
             );
-            let result = control.publish_with_admission_and_source_on_control(
-                playback,
-                policy,
-                metadata.context,
-                |prospective| admit(&[prospective, retired, pending]),
-            );
+            let mut retained_playback = playback;
+            let result = loop {
+                match control.publish_with_admission_and_source_on_control(
+                    retained_playback,
+                    policy,
+                    metadata.context,
+                    |prospective| admit(&[prospective, retired, pending]),
+                ) {
+                    Err(hex_audio::prepared::AdmittedPublishError::Publication(error))
+                        if preparing_native_edit
+                            && error.reason == "native graph preparation is busy" =>
+                    {
+                        // Work contention happens before source references or
+                        // publication admission. Retry the exact returned graph;
+                        // the existing resource owner rolls back its proposal.
+                        retained_playback = error.playback;
+                        control.reclaim();
+                        control.poll_resident_publication();
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    result => break result,
+                }
+            };
             return match result {
                 Ok(audio_revision) => {
                     if metadata.stopped_restore {

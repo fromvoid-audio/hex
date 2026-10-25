@@ -1098,6 +1098,29 @@ impl NativeRuntimeChain {
         previous: &Self,
         excluded_old_range: std::ops::Range<usize>,
     ) -> bool {
+        self.can_inherit_preflight(previous, excluded_old_range, false)
+    }
+
+    /// Preflight a completed foreign suffix without retaining its old endpoint.
+    /// The range is only a hint: each excluded entry must be an actual foreign
+    /// runtime whose committed provider observation is quiescent. Speculative
+    /// silence, owned DSP and incompatible nonforeign histories remain subject
+    /// to the ordinary inheritance checks. This grants no host resource return
+    /// or native source/admission authority.
+    pub fn can_inherit_with_completed_foreign_range(
+        &self,
+        previous: &Self,
+        completed_old_range: std::ops::Range<usize>,
+    ) -> bool {
+        self.can_inherit_preflight(previous, completed_old_range, true)
+    }
+
+    fn can_inherit_preflight(
+        &self,
+        previous: &Self,
+        excluded_old_range: std::ops::Range<usize>,
+        completed_foreign_only: bool,
+    ) -> bool {
         if excluded_old_range.start > excluded_old_range.end
             || excluded_old_range.end > previous.entries.len()
         {
@@ -1112,7 +1135,11 @@ impl NativeRuntimeChain {
             }) else {
                 return true;
             };
-            excluded_old_range.contains(&index) || entry.runtime.can_inherit_from(&old.runtime)
+            (excluded_old_range.contains(&index)
+                && (!completed_foreign_only
+                    || (matches!(&old.runtime, RuntimeOwnership::Foreign(_))
+                        && old.runtime.committed_is_quiescent())))
+                || entry.runtime.can_inherit_from(&old.runtime)
         })
     }
     fn same_runtime_identity(a: &RuntimeEntry, b: &RuntimeEntry) -> bool {

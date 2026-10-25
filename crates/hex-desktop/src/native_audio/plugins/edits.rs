@@ -25,6 +25,34 @@ impl Plugins {
                 source.retiring |= !source.accepted;
             }
         }
+        if accepted {
+            // A newly restored version supersedes earlier instances of this
+            // canonical device. History owns their opaque payloads, not their
+            // live DSP state: epoch resume deliberately does not restore those
+            // bytes. Keep the newest source as restoration provenance and let
+            // Root retire predecessors only after their actual graph/endpoint
+            // and outgoing-tail references return. Refusal leaves predecessors
+            // untouched; no endpoint is reset or freed here.
+            for index in 0..self.sources.len() {
+                let superseded = {
+                    let old = &self.sources[index];
+                    old.accepted
+                        && !old.retiring
+                        && !matches!(old.operation, SourceOperation::Edit(current) if current == context)
+                        && self.sources.iter().any(|new| {
+                            new.accepted
+                                && !new.retiring
+                                && new.project_generation == old.project_generation
+                                && new.device == old.device
+                                && matches!(new.operation, SourceOperation::Edit(current) if current == context)
+                        })
+                };
+                if superseded {
+                    self.sources[index].accepted = false;
+                    self.sources[index].retiring = true;
+                }
+            }
+        }
     }
     #[allow(clippy::too_many_arguments)] // Exact target and its existing canonical source.
     pub(super) fn matching_edit_source(
@@ -47,7 +75,7 @@ impl Plugins {
                 .effect_preparation()
                 .visit_plugin_effects(|old_owner, old_device, old| {
                     changed_state |=
-                        old_owner == owner && old_device == device && !old.processing_eq(state);
+                        old_device == device && (old_owner != owner || !old.processing_eq(state));
                     Ok(())
                 })?;
         }
@@ -223,14 +251,14 @@ impl Plugins {
         }
     }
 }
-fn check_cancel(cancellation: Option<&RequestCancellation>) -> Result<(), String> {
+pub(super) fn check_cancel(cancellation: Option<&RequestCancellation>) -> Result<(), String> {
     if cancellation.is_some_and(RequestCancellation::is_cancelled) {
         Err("vst3 edit cancelled by document request or shutdown".into())
     } else {
         Ok(())
     }
 }
-fn poll_control(control: &mut PublicationControl) {
+pub(super) fn poll_control(control: &mut PublicationControl) {
     control.reclaim();
     control.poll_resident_publication();
     // Existing control-worker polling cadence. This is not a paint delay,

@@ -491,3 +491,66 @@ fn stopped_zero_foreign_main_replacement_uses_full_handoff_and_pure_stream_previ
     assert!(!candidate.playing);
     assert!(!candidate.candidate_admission_open);
 }
+
+#[test]
+fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
+    // Pure engine boundary: completion comes from the borrowed processor
+    // oracle after processing zeros, not from a native admission/Root witness.
+    struct Quiet;
+    impl ForeignProcessors for Quiet {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [Frame],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            assert!(frames.iter().all(|frame| *frame == [0.0; 2]));
+            Ok(())
+        }
+        fn committed_tail_is_drained(&self, _: ForeignProcessorNode<'_>) -> bool {
+            true
+        }
+        fn reject_callback(&mut self) {
+            panic!("quiet planner fixture rejected");
+        }
+    }
+    let mut old = SessionPlayback::new(prepared_with_latency(2, false, 3, Some(1)).0).unwrap();
+    let mut candidate =
+        SessionPlayback::new(prepared_with_latency(2, false, 3, Some(2)).0).unwrap();
+    old.main_chain.begin_block();
+    old.main_chain
+        .process_range_with_foreign(
+            0..old.main_chain.len(),
+            &mut [[0.0; 2]; 64],
+            0,
+            None,
+            &mut Quiet,
+        )
+        .unwrap();
+    old.main_chain.commit_block();
+    assert!(
+        old.main_chain
+            .committed_range_is_quiescent(0..old.main_chain.len())
+    );
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(candidate.playing);
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+    assert_eq!(
+        candidate
+            .main_chain
+            .foreign_bindings()
+            .flatten()
+            .next()
+            .unwrap()
+            .epoch,
+        2
+    );
+}

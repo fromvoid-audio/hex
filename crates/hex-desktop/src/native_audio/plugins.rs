@@ -445,8 +445,9 @@ impl Plugins {
             }
         }
         // Refused operations retain their original binding until actual report
-        // recovery. Accepted sources stay warm for canonical Undo/Redo, bounded
-        // by this document's finite source pool, until output retirement.
+        // recovery. Latest accepted sources stay warm for canonical Undo/Redo;
+        // a restored successor retires superseded versions through Root's
+        // original graph/tail/endpoint return checks, keeping the pool bounded.
         let mut index = 0;
         // Renewal's bounded indices refer to this original record set. Leave
         // refused records in control custody until the epoch operation retires;
@@ -597,7 +598,23 @@ impl Plugins {
         let control = output
             .and_then(|output| output.publication.control())
             .ok_or("native output closed")?;
-        Hosting::prepare_on_control(control, &bindings, &unavailable, prepare).map(Some)
+        loop {
+            match Hosting::prepare_on_control(control, &bindings, &unavailable, prepare) {
+                Err(error)
+                    if input.preparing_edit()
+                        && matches!(
+                            error.as_str(),
+                            "native effect preparation is busy" | "native effect selection is busy"
+                        ) =>
+                {
+                    // Root has not borrowed/called the compiler while its Work
+                    // or bank is contended by original-source reclamation.
+                    edits::check_cancel(cancellation)?;
+                    edits::poll_control(control);
+                }
+                result => return result.map(Some),
+            }
+        }
     }
 }
 

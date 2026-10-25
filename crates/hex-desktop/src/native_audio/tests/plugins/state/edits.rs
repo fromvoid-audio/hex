@@ -23,6 +23,10 @@ fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
     loop {
         h.pump();
         h.render();
+        // The headless driver advances only after the actual installed workers
+        // have completed this callback's request prefixes. Tight-loop rendering
+        // while native preparation runs would manufacture missed deadlines.
+        workers_idle(h);
         if let Ok(event) = h.service.try_event()
             && event.request_complete
         {
@@ -42,6 +46,71 @@ fn workers_idle(h: &ResidentHarness) {
             .native_workers_idle_on_control()
             == Some(true)
     });
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn native_effect_repeated_state_history_reclaims_superseded_instances() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for playing in [false, true] {
+        repeated_state_history(playing);
+    }
+}
+fn repeated_state_history(playing: bool) {
+    let (mut h, files, saved) = fixture(Start::Saved);
+    let device = saved.project.main_devices()[0].id();
+    let replacement = with_gain(saved.project.main_devices()[0].state(), 0.75);
+    let original_bytes = fs::read(files.0.join("effect.hex")).unwrap();
+    let (mut applied, _) = h.applied(0);
+    if playing {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
+    h.service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: replacement.clone(),
+        }))
+        .unwrap();
+    let replaced = ordinary_terminal(&mut h);
+    assert!(replaced.error.is_none(), "{:?}", replaced.error);
+    (applied, _) = h.applied(applied);
+    // More changes than the fixed native pool can hold. Render each actual
+    // finite outgoing tail and reclaim its original graph before the next edit;
+    // a current/tail alias may never be treated as a reusable history instance.
+    for cycle in 0..12 {
+        for (request, expected) in [
+            (Request::Undo, &saved.project),
+            (Request::Redo, &replaced.state.project),
+        ] {
+            for _ in 0..8 {
+                h.render_plugin_block();
+                workers_idle(&h);
+                h.pump();
+            }
+            h.service.submit(request).unwrap();
+            let event = ordinary_terminal(&mut h);
+            assert!(
+                event.error.is_none(),
+                "playing={playing}, cycle {cycle}: {:?}",
+                event.error
+            );
+            assert_eq!(&event.state.project, expected);
+            (applied, _) = h.applied(applied);
+        }
+    }
+    assert!(
+        h.plugin_records.load(Acquire) <= 3,
+        "history must reclaim superseded sources"
+    );
+    assert_eq!(
+        fs::read(files.0.join("effect.hex")).unwrap(),
+        original_bytes
+    );
 }
 
 #[test]
