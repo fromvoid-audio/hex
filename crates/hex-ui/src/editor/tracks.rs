@@ -63,7 +63,6 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
     } = decor;
     let mut ghost = hex_widgets::rectangle_surface_pixels(left, top, width, height)
         .debug_selector(move || selector.to_owned())
-        .border_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
         .bg(rgb(fill));
     if let Some((lines, start, end)) = grid {
@@ -440,8 +439,6 @@ impl EditorView {
             .min_w_0()
             .h(px(self.track_height(track_id)))
             .overflow_hidden()
-            .border_r_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                     if let Some(position) = event.mouse_position() {
@@ -516,6 +513,19 @@ impl EditorView {
                 .h(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        // Keep the divider out of layout: clips, pointer projection and the Main
+        // lane must all use the complete timeline width. Paint beneath clips to
+        // preserve their selection stroke at the viewport edge.
+        clip_area = clip_area.child(
+            div()
+                .debug_selector(|| format!("lane-right-divider-{}", track_id.value()))
+                .absolute()
+                .right_0()
+                .top_0()
+                .bottom_0()
+                .w(px(1.0))
+                .bg(rgb(theme::color(theme::PaletteRole::Border))),
+        );
         if track_selected {
             // Paint beneath clip content so every outer selection stroke stays
             // intact, including where vertical clip edges cross these accents.
@@ -579,11 +589,13 @@ impl EditorView {
                 if visible_start < visible_end {
                     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
+                    let pixel_width = self.drag_lanes.get(&track_id).map_or(0.0, |lane| {
+                        super::trim::rendered_clip_width(lane.width, width)
+                    });
                     let mut overlay =
-                        hex_widgets::rectangle_surface(left as f32, width as f32, 4.0)
+                        hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
                             .id(("midi-trim-live-preview", track_id.value()))
                             .debug_selector(|| "midi-trim-live-preview".to_owned())
-                            .border_1()
                             .border_color(rgb(if self.clip_is_selected(clip.id()) {
                                 theme::color(theme::PaletteRole::Primary)
                             } else {
@@ -654,11 +666,13 @@ impl EditorView {
                 if visible_start < visible_end {
                     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
+                    let pixel_width = self.drag_lanes.get(&track_id).map_or(0.0, |lane| {
+                        super::trim::rendered_clip_width(lane.width, width)
+                    });
                     let mut preview =
-                        hex_widgets::rectangle_surface(left as f32, width as f32, 3.0)
+                        hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
                             .id(("trim-live-preview", track_id.value()))
                             .debug_selector(|| "trim-live-preview".to_owned())
-                            .border_1()
                             .border_color(rgb(if self.clip_is_selected(original_clip.id()) {
                                 theme::color(theme::PaletteRole::Primary)
                             } else {
@@ -755,18 +769,14 @@ impl EditorView {
                         ClipGroupContent::Midi(c) => (c.flavor(), c.active()),
                     };
                     let id = member.id();
-                    let mut overlay = div()
+                    let left = (start - viewport.start) as f32 / viewport.length as f32;
+                    let width = (end - start) as f32 / viewport.length as f32;
+                    let pixel_width = self
+                        .drag_lanes
+                        .get(&track_id)
+                        .map_or(0.0, |lane| lane.width * width);
+                    let mut overlay = hex_widgets::rectangle_surface(left, width, pixel_width)
                         .debug_selector(move || format!("group-clip-preview-{}", id.value()))
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(relative(
-                            (start - viewport.start) as f32 / viewport.length as f32,
-                        ))
-                        .w(relative((end - start) as f32 / viewport.length as f32))
-                        .min_w(px(3.0))
-                        .overflow_hidden()
-                        .border_1()
                         .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
                         .bg(rgb(theme::clip_activity_fill(
                             track.color(),
@@ -861,34 +871,30 @@ impl EditorView {
             if visible_start < visible_end {
                 let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                 let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-                let mut drop_preview = div()
-                    .id(("clip-drop-preview", track_id.value()))
-                    .debug_selector(|| "clip-drop-preview".to_owned())
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(relative(left as f32))
-                    .w(relative(width as f32))
-                    .min_w(px(3.0))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(rgb(if clip_preview.is_some() {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        0x000000
-                    }))
-                    .bg(rgb(theme::clip_activity_fill(
-                        track.color(),
-                        self.displayed_clip_drag()
-                            .and_then(|d| state.project.clip_flavor(d.clip))
-                            .unwrap_or_default(),
-                        false,
-                        self.displayed_clip_drag()
-                            .and_then(|drag| state.project.clip_active(drag.clip))
-                            .unwrap_or(true),
-                    )))
-                    .opacity(if clip_preview.is_some() { 1.0 } else { 0.88 })
-                    .children(clip_grid_layer(grid, visible_start, visible_end));
+                let pixel_width = self.drag_lanes.get(&track_id).map_or(0.0, |lane| {
+                    super::trim::rendered_clip_width(lane.width, width)
+                });
+                let mut drop_preview =
+                    hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
+                        .id(("clip-drop-preview", track_id.value()))
+                        .debug_selector(|| "clip-drop-preview".to_owned())
+                        .border_color(rgb(if clip_preview.is_some() {
+                            theme::color(theme::PaletteRole::Primary)
+                        } else {
+                            0x000000
+                        }))
+                        .bg(rgb(theme::clip_activity_fill(
+                            track.color(),
+                            self.displayed_clip_drag()
+                                .and_then(|d| state.project.clip_flavor(d.clip))
+                                .unwrap_or_default(),
+                            false,
+                            self.displayed_clip_drag()
+                                .and_then(|drag| state.project.clip_active(drag.clip))
+                                .unwrap_or(true),
+                        )))
+                        .opacity(if clip_preview.is_some() { 1.0 } else { 0.88 })
+                        .children(clip_grid_layer(grid, visible_start, visible_end));
                 if let Some(drag) = self
                     .displayed_clip_drag()
                     .filter(|_| clip_preview.is_some())
@@ -1050,6 +1056,9 @@ impl EditorView {
                     continue;
                 };
                 if let Some(fragment_view) = passive_audio_fragment(
+                    self.drag_lanes
+                        .get(&track_id)
+                        .map_or(0.0, |lane| lane.width),
                     theme::clip_activity_fill(
                         track.color(),
                         fragment.flavor(),
@@ -1107,6 +1116,9 @@ impl EditorView {
                     continue;
                 };
                 let (fragment, shown) = passive_midi_fragment(
+                    self.drag_lanes
+                        .get(&track_id)
+                        .map_or(0.0, |lane| lane.width),
                     theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active()),
                     clip.id(),
                     &preview.samples,
@@ -1579,6 +1591,9 @@ impl EditorView {
                     .flatten()
                 {
                     if let Some(fragment_view) = passive_audio_fragment(
+                        self.drag_lanes
+                            .get(&track_id)
+                            .map_or(0.0, |lane| lane.width),
                         theme::clip_activity_fill(
                             track.color(),
                             fragment.flavor(),
@@ -1657,6 +1672,9 @@ impl EditorView {
                         continue;
                     };
                     let (fragment, shown) = passive_midi_fragment(
+                        self.drag_lanes
+                            .get(&track_id)
+                            .map_or(0.0, |lane| lane.width),
                         theme::clip_activity_fill(
                             track.color(),
                             clip.flavor(),
@@ -1711,7 +1729,7 @@ impl EditorView {
             let pixel_width = self
                 .drag_lanes
                 .get(&track_id)
-                .map(|lane| super::trim::rendered_clip_width(lane.width, width, 4.0))
+                .map(|lane| super::trim::rendered_clip_width(lane.width, width))
                 .unwrap_or(0.0);
             let trim_handles = self.midi_trim_handles(
                 state,
@@ -1747,13 +1765,12 @@ impl EditorView {
                 selected_clip,
                 clip.active(),
             );
-            let mut midi = hex_widgets::rectangle_surface(left as f32, width as f32, 4.0)
+            let mut midi = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
                 .cursor(gpui::CursorStyle::Arrow)
                 .opacity(if trim_preview.is_some() { 0.0 } else { 1.0 })
                 .bg(rgb(fill))
-                .border_1()
                 .border_color(rgb(if selected_clip {
                     theme::color(theme::PaletteRole::Primary)
                 } else {
@@ -1812,6 +1829,7 @@ impl EditorView {
                 ))
             });
             if let Some((payload, lane)) = midi_drag_payload {
+                let border = hex_widgets::rectangle_border_width(pixel_width);
                 let move_surface = self
                     .clip_drag_surface(
                         payload,
@@ -1824,16 +1842,18 @@ impl EditorView {
                         clip.id(),
                         cx,
                     )
-                    .left(px(if !trim_handles.is_empty() && visible_start == start {
-                        super::trim::handle_width(pixel_width)
-                    } else {
-                        0.0
-                    }))
-                    .right(px(if !trim_handles.is_empty() && visible_end == end {
-                        super::trim::handle_width(pixel_width)
-                    } else {
-                        0.0
-                    }));
+                    .left(px(-border
+                        + if !trim_handles.is_empty() && visible_start == start {
+                            super::trim::handle_width(pixel_width)
+                        } else {
+                            0.0
+                        }))
+                    .right(px(-border
+                        + if !trim_handles.is_empty() && visible_end == end {
+                            super::trim::handle_width(pixel_width)
+                        } else {
+                            0.0
+                        }));
                 midi = midi.children([move_surface]).children(trim_handles);
             }
             clip_area = clip_area.children([midi]);
@@ -2084,18 +2104,22 @@ impl EditorView {
             selected,
             clip.active(),
         );
-        let mut content = hex_widgets::rectangle_surface(left as f32, width as f32, 3.0)
-            .cursor(gpui::CursorStyle::Arrow)
-            .opacity(if active_trim_preview { 0.0 } else { 1.0 })
-            .bg(rgb(fill))
-            .hover(move |style| {
-                style.border_color(rgb(theme::color(if selected {
-                    theme::PaletteRole::Primary
-                } else {
-                    theme::PaletteRole::Text
-                })))
-            });
-        content = content.border_1().border_color(rgb(if selected {
+        let clip_pixel_width = self.drag_lanes.get(&track).map_or(0.0, |lane| {
+            super::trim::rendered_clip_width(lane.width, width)
+        });
+        let mut content =
+            hex_widgets::rectangle_surface(left as f32, width as f32, clip_pixel_width)
+                .cursor(gpui::CursorStyle::Arrow)
+                .opacity(if active_trim_preview { 0.0 } else { 1.0 })
+                .bg(rgb(fill))
+                .hover(move |style| {
+                    style.border_color(rgb(theme::color(if selected {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Text
+                    })))
+                });
+        content = content.border_color(rgb(if selected {
             theme::color(theme::PaletteRole::Primary)
         } else {
             0x000000
@@ -2125,7 +2149,7 @@ impl EditorView {
         let envelope_width = self
             .drag_lanes
             .get(&track)
-            .map(|lane| (lane.width * width as f32).max(3.0))
+            .map(|lane| super::trim::rendered_clip_width(lane.width, width))
             .unwrap_or(0.0);
         if !active_trim_preview
             && self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
@@ -2153,11 +2177,6 @@ impl EditorView {
                 ));
             }
         }
-        let clip_pixel_width = self
-            .drag_lanes
-            .get(&track)
-            .map(|lane| super::trim::rendered_clip_width(lane.width, width, 3.0))
-            .unwrap_or(0.0);
         let trim_handles = self.trim_handles(
             state,
             track,
@@ -2206,6 +2225,7 @@ impl EditorView {
                 }),
             );
         if let Some((payload, lane)) = drag_payload {
+            let border = hex_widgets::rectangle_border_width(clip_pixel_width);
             let move_surface = self
                 .clip_drag_surface(
                     payload,
@@ -2219,18 +2239,18 @@ impl EditorView {
                     cx,
                 )
                 // Edge strips retain trimming beside the upper-third move header.
-                .left(px(
-                    if !trim_handles.is_empty() && visible_start == clip.start() {
+                .left(px(-border
+                    + if !trim_handles.is_empty() && visible_start == clip.start() {
                         super::trim::handle_width(clip_pixel_width)
                     } else {
                         0.0
-                    },
-                ))
-                .right(px(if !trim_handles.is_empty() && visible_end == clip_end {
-                    super::trim::handle_width(clip_pixel_width)
-                } else {
-                    0.0
-                }));
+                    }))
+                .right(px(-border
+                    + if !trim_handles.is_empty() && visible_end == clip_end {
+                        super::trim::handle_width(clip_pixel_width)
+                    } else {
+                        0.0
+                    }));
             content = content.children([move_surface]).children(trim_handles);
         }
         if !active_trim_preview
@@ -2492,7 +2512,7 @@ impl EditorView {
         let left =
             visible_start.saturating_sub(viewport.start) as f64 / viewport.length.max(1) as f64;
         let width = visible_frames as f64 / viewport.length.max(1) as f64;
-        let element_width = (f64::from(lane.width) * width).max(3.0) as f32;
+        let element_width = super::trim::rendered_clip_width(lane.width, width);
         let element_left = lane.left + (f64::from(lane.width) * left) as f32;
         let drag_entity = cx.entity();
         let mouse_down_entity = drag_entity.clone();
@@ -2502,7 +2522,9 @@ impl EditorView {
         let source_generation = payload.project_generation;
         let mouse_down_payload = payload.clone();
         let mouse_up_payload = payload.clone();
-        hex_widgets::rectangle_body(-1.0, super::time_selection::header_hit_height(lane.height))
+        let border = hex_widgets::rectangle_border_width(element_width);
+        let header_height = super::time_selection::header_hit_height(lane.height);
+        hex_widgets::rectangle_body(-border, header_height)
             .id(("clip-move", clip_id.value()))
             .debug_selector(|| format!("clip-drag-surface-{}", clip_id.value()))
             .on_click(

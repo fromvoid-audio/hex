@@ -23,7 +23,7 @@ impl NumericControl {
                 cx.listener(|control, event, window, cx| {
                     control.text_mouse = None;
                     control.text_click.clear();
-                    control.begin_press(PressTarget::Fader, event, cx);
+                    control.begin_press(PressTarget::Fader, event, window, cx);
                     control.focus.focus(window);
                 }),
             )

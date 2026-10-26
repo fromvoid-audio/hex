@@ -264,6 +264,8 @@ diff --git a/src/app.rs b/src/app.rs
 +        self.platform.prompt_for_paths_with_directory(options, directory)
 +    }
 +
+@@ -1374,0 +1385 @@
++                window.cancel_pointer_capture(cx);
 diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
@@ -811,54 +813,81 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 @@ -1845 +1893 @@
 -                                                GroupHitboxes::push(group, hitbox.id, cx);
 +                                                GroupHitboxes::push(group, hitbox, cx);
-@@ -2159 +2207 @@
+@@ -2087,0 +2136,4 @@
++        let tracks_pointer_click = !click_listeners.is_empty()
++            || drag_listener.is_some()
++            || self.active_style.is_some()
++            || self.group_active_style.is_some();
+@@ -2159 +2211 @@
 -                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
 +                            && (event.position - mouse_down.position).magnitude() > POINTER_DRAG_THRESHOLD
-@@ -2261,4 +2309 @@
+@@ -2261,4 +2313 @@
 -                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
 -                    if phase != DispatchPhase::Bubble {
 -                        return;
 -                    }
 +                window.on_pointer_hover_change(move |window, cx| {
-@@ -2266,0 +2312 @@
+@@ -2266,0 +2316 @@
 +                        && !window.is_pointer_dragging()
-@@ -2274,0 +2321,3 @@
+@@ -2274,0 +2325,3 @@
 +                        true
 +                    } else {
 +                        false
-@@ -2298 +2347,2 @@
+@@ -2298 +2351,2 @@
 -                        pending_mouse_down.borrow().is_none()
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
-@@ -2305 +2355,3 @@
+@@ -2305 +2359,3 @@
 -                        pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
 +                            && hitbox.is_hovered(window)
-@@ -2498 +2550 @@
+@@ -2321,0 +2378,21 @@
++            if tracks_pointer_click {
++                let pending = element_state.pending_mouse_down.clone();
++                let clicked = active_state.clone();
++                window.on_pointer_hover_change(move |window, _| {
++                    if !window.has_pointer_capture() {
++                        return false;
++                    }
++                    // An explicit gesture owns the press. Clear framework-only
++                    // click/drag latches after its initiating press propagates,
++                    // without delivering a mouse-up or invoking a user action.
++                    // These records replay with cached/deferred paint and run
++                    // during input, including a press/release with no repaint.
++                    let had_press = pending
++                        .as_ref()
++                        .is_some_and(|pending| pending.borrow_mut().take().is_some());
++                    let mut clicked = clicked.borrow_mut();
++                    let was_clicked = clicked.is_clicked();
++                    *clicked = ElementClickedState::default();
++                    had_press || was_clicked
++                });
++            }
+@@ -2498 +2575 @@
 -            if !cx.has_active_drag() {
 +            if !cx.has_active_drag() && !window.is_pointer_dragging() {
-@@ -2758,0 +2811,6 @@
+@@ -2758,0 +2836,6 @@
 +                        // A capture listener can consume movement before this
 +                        // pending tooltip receives its cancellation event.
 +                        if window.is_pointer_dragging() {
 +                            active_tooltip.borrow_mut().take();
 +                            return;
 +                        }
-@@ -2874,0 +2933,4 @@
+@@ -2874,0 +2958,4 @@
 +// Bounds are conservative invalidation metadata only. Style calculation still
 +// uses the current group's actual hitbox and ordinary occlusion rules.
 +type GroupHitboxDependency = (HitboxId, Bounds<Pixels>);
 +
-@@ -2876 +2938 @@
+@@ -2876 +2963 @@
 -pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[HitboxId; 1]>>);
 +pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[GroupHitboxDependency; 1]>>);
-@@ -2881,0 +2944,4 @@
+@@ -2881,0 +2969,4 @@
 +        Self::dependency(name, cx).map(|(id, _)| id)
 +    }
 +
 +    fn dependency(name: &SharedString, cx: &mut App) -> Option<GroupHitboxDependency> {
-@@ -2886,4 +2952,4 @@
+@@ -2886,4 +2977,4 @@
 -            .cloned()
 -    }
 -
@@ -867,10 +896,10 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +    }
 +
 +    pub fn push(name: SharedString, hitbox: &Hitbox, cx: &mut App) {
-@@ -2894 +2960 @@
+@@ -2894 +2985 @@
 -            .push(hitbox_id);
 +            .push((hitbox.id, hitbox.bounds.intersect(&hitbox.content_mask.bounds)));
-@@ -2904,0 +2971,12 @@
+@@ -2904,0 +2996,12 @@
 +}
 +
 +impl Stateful<Div> {
@@ -4558,10 +4587,22 @@ diff --git a/src/window.rs b/src/window.rs
  mod prompts;
  
  use crate::util::atomic_incr_if_not_zero;
-@@ -462,6 +465,16 @@
+@@ -462,6 +465,28 @@
  pub(crate) type AnyMouseListener =
      Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
  
++type CapturedMouseListener = Box<dyn FnMut(&dyn Any, &mut Window, &mut App)>;
++
++// One control-side lease. The owner must witness its live held gesture in paint;
++// cached/deferred replay retains that witness. No callback executes during paint.
++struct PointerCapture {
++    owner: EntityId,
++    button: MouseButton,
++    cursor: CursorStyle,
++    listener: Option<CapturedMouseListener>,
++    cancelled: Option<FrameCallback>,
++}
++
 +type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App) -> bool>;
 +
 +struct PointerHoverObserver {
@@ -4575,7 +4616,7 @@ diff --git a/src/window.rs b/src/window.rs
  #[derive(Clone)]
  pub(crate) struct CursorStyleRequest {
      pub(crate) hitbox_id: Option<HitboxId>,
-@@ -656,7 +669,7 @@
+@@ -656,7 +681,7 @@
      current_view: EntityId,
      priority: usize,
      parent_node: DispatchNodeId,
@@ -4584,7 +4625,7 @@ diff --git a/src/window.rs b/src/window.rs
      text_style_stack: Vec<TextStyleRefinement>,
      element: Option<AnyElement>,
      absolute_offset: Point<Pixels>,
-@@ -665,6 +678,7 @@
+@@ -665,6 +690,7 @@
  }
  
  pub(crate) struct Frame {
@@ -4592,18 +4633,19 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) focus: Option<FocusId>,
      pub(crate) window_active: bool,
      pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
-@@ -678,8 +692,9 @@
+@@ -678,8 +704,10 @@
      pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
      pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
      pub(crate) cursor_styles: Vec<CursorStyleRequest>,
 +    pointer_hover_observers: Vec<PointerHoverObserver>,
++    pointer_capture_owners: Vec<EntityId>,
      #[cfg(any(test, feature = "test-support"))]
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
      #[cfg(any(feature = "inspector", debug_assertions))]
      pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
      #[cfg(any(feature = "inspector", debug_assertions))]
-@@ -687,8 +702,42 @@
+@@ -687,8 +715,42 @@
      pub(crate) tab_stops: TabStopMap,
  }
  
@@ -4646,11 +4688,12 @@ diff --git a/src/window.rs b/src/window.rs
      hitboxes_index: usize,
      tooltips_index: usize,
      deferred_draws_index: usize,
-@@ -703,14 +752,18 @@
+@@ -703,14 +765,19 @@
      mouse_listeners_index: usize,
      input_handlers_index: usize,
      cursor_styles_index: usize,
 +    pointer_hover_observers_index: usize,
++    pointer_capture_owners_index: usize,
      accessed_element_states_index: usize,
      tab_handle_index: usize,
      line_layout_index: LineLayoutIndex,
@@ -4665,11 +4708,12 @@ diff --git a/src/window.rs b/src/window.rs
              focus: None,
              window_active: false,
              element_states: FxHashMap::default(),
-@@ -724,9 +777,10 @@
+@@ -724,9 +791,11 @@
              input_handlers: Vec::new(),
              tooltip_requests: Vec::new(),
              cursor_styles: Vec::new(),
 +            pointer_hover_observers: Vec::new(),
++            pointer_capture_owners: Vec::new(),
  
              #[cfg(any(test, feature = "test-support"))]
 -            debug_bounds: FxHashMap::default(),
@@ -4677,7 +4721,7 @@ diff --git a/src/window.rs b/src/window.rs
  
              #[cfg(any(feature = "inspector", debug_assertions))]
              next_inspector_instance_ids: FxHashMap::default(),
-@@ -738,6 +792,7 @@
+@@ -738,6 +807,7 @@
      }
  
      pub(crate) fn clear(&mut self) {
@@ -4685,23 +4729,35 @@ diff --git a/src/window.rs b/src/window.rs
          self.element_states.clear();
          self.accessed_element_states.clear();
          self.mouse_listeners.clear();
-@@ -746,11 +801,15 @@
+@@ -746,12 +816,17 @@
          self.input_handlers.clear();
          self.tooltip_requests.clear();
          self.cursor_styles.clear();
 +        self.pointer_hover_observers.clear();
++        self.pointer_capture_owners.clear();
          self.hitboxes.clear();
          self.window_control_hitboxes.clear();
          self.deferred_draws.clear();
          self.tab_stops.clear();
          self.focus = None;
-+
+ 
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
- 
++
          #[cfg(any(feature = "inspector", debug_assertions))]
          {
-@@ -815,11 +874,21 @@
+             self.next_inspector_instance_ids.clear();
+@@ -760,6 +835,9 @@
+     }
+ 
+     pub(crate) fn cursor_style(&self, window: &Window) -> Option<CursorStyle> {
++        if let Some(capture) = &window.pointer_capture {
++            return Some(capture.cursor);
++        }
+         self.cursor_styles
+             .iter()
+             .rev()
+@@ -815,11 +893,21 @@
      }
  }
  
@@ -4723,7 +4779,7 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) platform_window: Box<dyn PlatformWindow>,
      display_id: Option<DisplayId>,
      sprite_atlas: Arc<dyn PlatformAtlas>,
-@@ -833,7 +902,7 @@
+@@ -833,7 +921,7 @@
      pub(crate) viewport_size: Size<Pixels>,
      layout_engine: Option<TaffyLayoutEngine>,
      pub(crate) root: Option<AnyView>,
@@ -4732,20 +4788,23 @@ diff --git a/src/window.rs b/src/window.rs
      pub(crate) text_style_stack: Vec<TextStyleRefinement>,
      pub(crate) rendered_entity_stack: Vec<EntityId>,
      pub(crate) element_offset_stack: Vec<Point<Pixels>>,
-@@ -853,6 +922,8 @@
+@@ -853,6 +941,10 @@
      default_prevented: bool,
      mouse_position: Point<Pixels>,
      mouse_hit_test: HitTest,
 +    pointer_press: Option<(MouseButton, Point<Pixels>)>,
 +    pointer_dragging: bool,
++    pointer_capture: Option<PointerCapture>,
++    suppressed_pointer_ups: SmallVec<[MouseButton; 5]>,
      modifiers: Modifiers,
      capslock: Capslock,
      scale_factor: f32,
-@@ -1095,6 +1166,11 @@
+@@ -1095,6 +1187,12 @@
                  handle
                      .update(&mut cx, |_, window, cx| {
                          window.active.set(active);
 +                        if !active {
++                            window.cancel_pointer_capture(cx);
 +                            window.hidden_cursor_restore.take();
 +                            window.pointer_press = None;
 +                            window.pointer_dragging = false;
@@ -4753,7 +4812,7 @@ diff --git a/src/window.rs b/src/window.rs
                          window.modifiers = window.platform_window.modifiers();
                          window.capslock = window.platform_window.capslock();
                          window
-@@ -1121,6 +1197,16 @@
+@@ -1121,6 +1219,16 @@
                      .log_err();
              }
          }));
@@ -4770,7 +4829,7 @@ diff --git a/src/window.rs b/src/window.rs
          platform_window.on_input({
              let mut cx = cx.to_async();
              Box::new(move |event| {
-@@ -1208,6 +1294,7 @@
+@@ -1208,6 +1316,7 @@
              handle,
              invalidator,
              removed: false,
@@ -4778,16 +4837,18 @@ diff --git a/src/window.rs b/src/window.rs
              platform_window,
              display_id,
              sprite_atlas,
-@@ -1236,6 +1323,8 @@
+@@ -1236,6 +1345,10 @@
              default_prevented: true,
              mouse_position,
              mouse_hit_test: HitTest::default(),
 +            pointer_press: None,
 +            pointer_dragging: false,
++            pointer_capture: None,
++            suppressed_pointer_ups: SmallVec::new(),
              modifiers,
              capslock,
              scale_factor,
-@@ -1371,8 +1460,17 @@
+@@ -1371,8 +1484,17 @@
          }
      }
  
@@ -4805,7 +4866,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.removed = true;
      }
  
-@@ -1908,6 +2006,61 @@
+@@ -1908,6 +2030,61 @@
          self.platform_window.completed_frame();
      }
  
@@ -4867,7 +4928,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Produces a new frame and assigns it to `rendered_frame`. To actually show
      /// the contents of the new [`Scene`], use [`Self::present`].
      #[profiling::function]
-@@ -1941,6 +2094,10 @@
+@@ -1941,6 +2118,10 @@
          let previous_window_active = self.rendered_frame.window_active;
          mem::swap(&mut self.rendered_frame, &mut self.next_frame);
          self.next_frame.clear();
@@ -4878,7 +4939,25 @@ diff --git a/src/window.rs b/src/window.rs
          let current_focus_path = self.rendered_frame.focus_path();
          let current_window_active = self.rendered_frame.window_active;
  
-@@ -2086,6 +2243,11 @@
+@@ -1975,6 +2156,17 @@
+         self.reset_cursor_style(cx);
+         self.refreshing = false;
+         self.invalidator.set_phase(DrawPhase::None);
++        if self.pointer_capture.as_ref().is_some_and(|capture| {
++            !self
++                .rendered_frame
++                .pointer_capture_owners
++                .contains(&capture.owner)
++        }) {
++            // Roots have finished updating their entities. A removed, replaced or
++            // no-longer-held control cannot retain input just because it is alive.
++            self.cancel_pointer_capture(cx);
++            self.reset_cursor_style(cx);
++        }
+         self.needs_present.set(true);
+ 
+         ArenaClearNeeded
+@@ -2086,6 +2278,11 @@
      }
  
      fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
@@ -4890,7 +4969,7 @@ diff --git a/src/window.rs b/src/window.rs
          // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
          for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
              let Some(Some(tooltip_request)) = self
-@@ -2220,6 +2382,7 @@
+@@ -2220,6 +2417,7 @@
  
      pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
          PrepaintStateIndex {
@@ -4898,7 +4977,7 @@ diff --git a/src/window.rs b/src/window.rs
              hitboxes_index: self.next_frame.hitboxes.len(),
              tooltips_index: self.next_frame.tooltip_requests.len(),
              deferred_draws_index: self.next_frame.deferred_draws.len(),
-@@ -2230,6 +2393,14 @@
+@@ -2230,6 +2428,14 @@
      }
  
      pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
@@ -4913,11 +4992,12 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.hitboxes.extend(
              self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                  .iter()
-@@ -2284,13 +2455,33 @@
+@@ -2284,13 +2490,38 @@
              mouse_listeners_index: self.next_frame.mouse_listeners.len(),
              input_handlers_index: self.next_frame.input_handlers.len(),
              cursor_styles_index: self.next_frame.cursor_styles.len(),
 +            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
++            pointer_capture_owners_index: self.next_frame.pointer_capture_owners.len(),
              accessed_element_states_index: self.next_frame.accessed_element_states.len(),
              tab_handle_index: self.next_frame.tab_stops.paint_index(),
              line_layout_index: self.text_system.layout_index(),
@@ -4932,9 +5012,13 @@ diff --git a/src/window.rs b/src/window.rs
 +            &self.rendered_frame.debug_bounds.insertion_history
 +                [range.start.debug_bounds_index..range.end.debug_bounds_index],
 +        );
++        self.next_frame.pointer_capture_owners.extend_from_slice(
++            &self.rendered_frame.pointer_capture_owners
++                [range.start.pointer_capture_owners_index..range.end.pointer_capture_owners_index],
++        );
 +        self.next_frame.pointer_hover_observers.extend(
-+            self.rendered_frame.pointer_hover_observers
-+                [range.start.pointer_hover_observers_index..range.end.pointer_hover_observers_index]
++            self.rendered_frame.pointer_hover_observers[range.start.pointer_hover_observers_index
++                ..range.end.pointer_hover_observers_index]
 +                .iter_mut()
 +                .map(|observer| PointerHoverObserver {
 +                    view: observer.view,
@@ -4947,7 +5031,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.cursor_styles.extend(
              self.rendered_frame.cursor_styles
                  [range.start.cursor_styles_index..range.end.cursor_styles_index]
-@@ -3524,14 +3715,28 @@
+@@ -3524,14 +3755,28 @@
          subscription
      }
  
@@ -4983,7 +5067,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3781,98 @@
+@@ -3576,6 +3821,174 @@
              .unwrap_or_else(|| action.name().to_string())
      }
  
@@ -4997,13 +5081,15 @@ diff --git a/src/window.rs b/src/window.rs
 +    ) {
 +        self.invalidator.debug_assert_paint();
 +        let view = self.current_view();
-+        self.next_frame.pointer_hover_observers.push(PointerHoverObserver {
-+            view,
-+            listener: None,
-+            hitbox,
-+            group_bounds,
-+            painted_hover,
-+        });
++        self.next_frame
++            .pointer_hover_observers
++            .push(PointerHoverObserver {
++                view,
++                listener: None,
++                hitbox,
++                group_bounds,
++                painted_hover,
++            });
 +    }
 +
 +    /// Register a hover notification independent of mouse-event propagation.
@@ -5063,14 +5149,88 @@ diff --git a/src/window.rs b/src/window.rs
 +        invalidation.dirty = true;
 +    }
 +
-+    /// Whether a pressed pointer has moved beyond GPUI's drag threshold.
++    /// Claim one pressed pointer for an explicit gesture owner. While held, all
++    /// mouse input goes only to `listener`, including movement outside its bounds;
++    /// keyboard dispatch stays unchanged. The initiating press keeps its normal
++    /// propagation, including gesture-owned ancestor selection. Subsequent mouse
++    /// input is exclusive. Refuses a different owner, an absent or
++    /// mismatched press, and an existing typed drag. Call before mutating the gesture.
++    ///
++    /// The owner must call `renew_pointer_capture` while painting its held gesture.
++    /// Missing witnesses (including source replacement), escape, button loss and
++    /// deactivation cancel exactly once outside paint. Normal matching mouse-up
++    /// runs the listener then releases without cancellation. A cancelled press's
++    /// trailing mouse-up is consumed. This lifetime never follows an edit ACK.
++    pub fn capture_pointer(
++        &mut self,
++        owner: EntityId,
++        button: MouseButton,
++        cursor: CursorStyle,
++        listener: impl FnMut(&dyn Any, &mut Window, &mut App) + 'static,
++        cancelled: impl FnOnce(&mut Window, &mut App) + 'static,
++        cx: &App,
++    ) -> bool {
++        if let Some(capture) = &self.pointer_capture {
++            return capture.owner == owner && capture.button == button;
++        }
++        if cx.has_active_drag()
++            || !self
++                .pointer_press
++                .is_some_and(|(pressed, _)| pressed == button)
++        {
++            return false;
++        }
++        self.pointer_capture = Some(PointerCapture {
++            owner,
++            button,
++            cursor,
++            listener: Some(Box::new(listener)),
++            cancelled: Some(Box::new(cancelled)),
++        });
++        true
++    }
++
++    /// Renew the active owner's held-gesture witness and cursor during paint.
++    /// Ordinary hitbox/window cursor requests cannot override this cursor.
++    pub fn renew_pointer_capture(&mut self, owner: EntityId, cursor: CursorStyle) {
++        self.invalidator.debug_assert_paint();
++        if let Some(capture) = &mut self.pointer_capture
++            && capture.owner == owner
++        {
++            capture.cursor = cursor;
++            self.next_frame.pointer_capture_owners.push(owner);
++        }
++    }
++
++    pub(crate) fn has_pointer_capture(&self) -> bool {
++        self.pointer_capture.is_some()
++    }
++
++    pub(crate) fn cancel_pointer_capture(&mut self, cx: &mut App) {
++        if let Some(mut capture) = self.pointer_capture.take() {
++            if !self.suppressed_pointer_ups.contains(&capture.button) {
++                // MouseButton has five possible values; unique entries stay
++                // within inline storage even across overlapping cancellations.
++                self.suppressed_pointer_ups.push(capture.button);
++            }
++            self.pointer_press = None;
++            self.pointer_dragging = false;
++            if let Some(cancelled) = capture.cancelled.take() {
++                cancelled(self, cx);
++            }
++            self.invalidate_pointer_hover();
++        }
++    }
++
++    /// Whether an explicit pointer owner is held, or a pressed pointer has moved
++    /// beyond GPUI's drag threshold.
 +    ///
 +    /// This is window input state, independent of event propagation, view caches,
 +    /// and asynchronous edit acknowledgements. It suppresses ordinary hover paint;
 +    /// it does not replace a consumer's capture, cancellation or drop contract.
 +    /// Release, button loss, escape and window deactivation clear it.
 +    pub fn is_pointer_dragging(&self) -> bool {
-+        self.pointer_dragging
++        self.pointer_dragging || self.pointer_capture.is_some()
 +    }
 +
 +    /// Dispatch input through this window's existing event path, without exposing
@@ -5082,11 +5242,49 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3585,6 +3882,28 @@
+@@ -3585,6 +3998,66 @@
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
  
-+        let was_dragging = self.pointer_dragging;
++        let was_dragging = self.is_pointer_dragging();
++        // Retain isolation for the entire terminal event, even if cancellation
++        // or the owner clears its lease while handling it.
++        let mut isolated_mouse_event = self.pointer_capture.is_some();
++        match &event {
++            PlatformInput::MouseDown(down) => {
++                if self
++                    .pointer_capture
++                    .as_ref()
++                    .is_some_and(|capture| capture.button != down.button)
++                {
++                    // A secondary button pressed during capture must not leak
++                    // its release after the primary gesture has finished.
++                    if !self.suppressed_pointer_ups.contains(&down.button) {
++                        self.suppressed_pointer_ups.push(down.button);
++                    }
++                } else {
++                    self.suppressed_pointer_ups
++                        .retain(|button| *button != down.button);
++                }
++            }
++            PlatformInput::MouseUp(up) if self.suppressed_pointer_ups.contains(&up.button) => {
++                self.suppressed_pointer_ups
++                    .retain(|button| *button != up.button);
++                isolated_mouse_event = true;
++            }
++            PlatformInput::MouseMove(moved)
++                if self
++                    .pointer_capture
++                    .as_ref()
++                    .is_some_and(|capture| moved.pressed_button != Some(capture.button)) =>
++            {
++                self.cancel_pointer_capture(cx);
++            }
++            PlatformInput::KeyDown(key) if key.keystroke.key == "escape" => {
++                self.cancel_pointer_capture(cx);
++            }
++            _ => {}
++        }
 +        match &event {
 +            PlatformInput::MouseDown(down) if self.pointer_press.is_none() => {
 +                self.pointer_press = Some((down.button, down.position));
@@ -5111,20 +5309,25 @@ diff --git a/src/window.rs b/src/window.rs
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
              // API for the mouse position can only occur on the main thread.
-@@ -3662,10 +3981,33 @@
+@@ -3662,10 +4135,51 @@
              PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
          };
  
-+        let pointer_hover_transition = was_dragging != self.pointer_dragging;
-+        let keyboard_hover_transition = event.keyboard_event().is_some()
-+            && pointer_hover_transition;
++        let pointer_hover_transition = was_dragging != self.is_pointer_dragging();
++        let keyboard_hover_transition =
++            event.keyboard_event().is_some() && pointer_hover_transition;
 +        if keyboard_hover_transition {
 +            self.invalidate_pointer_hover();
 +            self.dispatch_pointer_hover(cx);
 +        }
          if let Some(any_mouse_event) = event.mouse_event() {
 -            self.dispatch_mouse_event(any_mouse_event, cx);
-+            self.dispatch_mouse_event(any_mouse_event, pointer_hover_transition, cx);
++            self.dispatch_mouse_event(
++                any_mouse_event,
++                pointer_hover_transition,
++                isolated_mouse_event,
++                cx,
++            );
          } else if let Some(any_key_event) = event.keyboard_event() {
              self.dispatch_key_event(any_key_event, cx);
 +        }
@@ -5134,48 +5337,83 @@ diff --git a/src/window.rs b/src/window.rs
 +            self.invalidate_pointer_hover();
 +        }
 +
-+        if let PlatformInput::MouseUp(up) = &event
-+            && self.pointer_press.is_some_and(|(button, _)| button == up.button)
-+        {
-+            self.pointer_press = None;
-+            self.pointer_dragging = false;
-+            if was_dragging {
-+                self.invalidate_pointer_hover();
-+                self.dispatch_pointer_hover(cx);
++        if let PlatformInput::MouseUp(up) = &event {
++            if self
++                .pointer_capture
++                .as_ref()
++                .is_some_and(|capture| capture.button == up.button)
++            {
++                self.pointer_capture.take();
 +            }
++            if self
++                .pointer_press
++                .is_some_and(|(button, _)| button == up.button)
++            {
++                self.pointer_press = None;
++                self.pointer_dragging = false;
++            }
++        }
++        if was_dragging != self.is_pointer_dragging() {
++            self.invalidate_pointer_hover();
++            self.dispatch_pointer_hover(cx);
++        }
++        if isolated_mouse_event != self.pointer_capture.is_some() {
++            self.reset_cursor_style(cx);
          }
  
          DispatchEventResult {
-@@ -3674,11 +4016,17 @@
+@@ -3674,17 +4188,50 @@
          }
      }
  
 -    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
-+    fn dispatch_mouse_event(&mut self, event: &dyn Any, hover_transition: bool, cx: &mut App) {
++    fn dispatch_mouse_event(
++        &mut self,
++        event: &dyn Any,
++        hover_transition: bool,
++        isolated: bool,
++        cx: &mut App,
++    ) {
          let hit_test = self.rendered_frame.hit_test(self.mouse_position());
          if hit_test != self.mouse_hit_test {
              self.mouse_hit_test = hit_test;
              self.reset_cursor_style(cx);
-+        }
-+
+         }
+ 
 +        if hover_transition {
 +            // Use the updated hit test: both painted hover and newly eligible
 +            // hover must retire/restore even if capture consumes this event.
 +            self.invalidate_pointer_hover();
-         }
- 
++        }
++
          #[cfg(any(feature = "inspector", debug_assertions))]
-@@ -3686,6 +4034,10 @@
+         if self.is_inspector_picking(cx) {
              self.handle_inspector_mouse_event(event, cx);
              // When inspector is picking, all other mouse handling is skipped.
-             return;
++            return;
 +        }
 +
 +        if event.is::<MouseMoveEvent>() {
 +            self.dispatch_pointer_hover(cx);
++        }
++
++        if isolated {
++            let listener = self
++                .pointer_capture
++                .as_mut()
++                .and_then(|capture| capture.listener.take());
++            if let Some(mut listener) = listener {
++                listener(event, self, cx);
++                if let Some(capture) = &mut self.pointer_capture {
++                    capture.listener = Some(listener);
++                }
++            }
++            // No underlying action, wheel, raw listener or trailing click can
++            // receive this input, even if the owner ignored this event type.
++            cx.stop_propagation();
+             return;
          }
  
-         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
 diff --git a/src/element.rs b/src/element.rs
 --- a/src/element.rs
 +++ b/src/element.rs
