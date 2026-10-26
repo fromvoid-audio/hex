@@ -686,6 +686,8 @@ impl Selector {
             return Err("selector index is outside its options");
         }
         if selected != self.selected {
+            // An external acknowledged choice invalidates a captured local dial draft.
+            self.dial_press = None;
             self.selected = selected;
             cx.notify();
         }
@@ -893,6 +895,10 @@ impl Selector {
             return;
         }
         if self.appearance == SelectorAppearance::CompactDial {
+            if self.dial_press.is_some() {
+                cx.stop_propagation();
+                return;
+            }
             let next = match event.keystroke.key.as_str() {
                 "right" | "up" | "space" => (self.selected + 1).min(self.choices.len() - 1),
                 "left" | "down" => self.selected.saturating_sub(1),

@@ -3067,6 +3067,7 @@ fn choice_dial_commits_one_bounded_choice_and_cancels_preview(cx: &mut TestAppCo
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
+    visual.simulate_keystrokes("up");
     assert!(
         choices.borrow().is_empty(),
         "preview does not publish timing edits"
@@ -3085,9 +3086,23 @@ fn choice_dial_commits_one_bounded_choice_and_cancels_preview(cx: &mut TestAppCo
     assert_eq!(*choices.borrow(), vec![2]);
     visual.simulate_keystrokes("down");
     assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 1);
+    let start = visual.debug_bounds("lookahead-knob").unwrap().center();
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    selector.update(cx, |selector, cx| selector.set_selected(0, cx).unwrap());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 0);
+    assert_eq!(
+        *choices.borrow(),
+        vec![2, 1],
+        "external update cancels stale preview without publishing it"
+    );
     selector.update(cx, |selector, cx| selector.set_enabled(false, cx));
     visual.simulate_keystrokes("up");
-    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 1);
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 0);
 }
 
 #[gpui::test]
