@@ -58,6 +58,7 @@ fn request(config: &Configuration, n: u64) -> Block {
         frames: config.quantum,
         pcm: [[0.0; 2]; 256],
         events: Events::default(),
+        parameters: crate::transport::Parameters::default(),
     };
     for (i, frame) in block.pcm[..usize::from(block.frames)]
         .iter_mut()

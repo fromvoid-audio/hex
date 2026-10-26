@@ -1,13 +1,17 @@
 //! Worker-only bounded little-endian copied protocol. Never call I/O on callback.
-//! Header: HXVB, version u16, frames u16, event count u16, six zero bytes,
+//! Header: HXVB, version u16, frames u16, event count u16, parameter count
+//! u16 (version2 only), four zero bytes,
 //! root/instance/graph/epoch/sequence/first-frame u64. Then interleaved f32 PCM
 //! and eight-byte MIDI records (offset u16, len u8, three bytes, two zero bytes).
+//! Version2 appends sixteen-byte parameter records: offset u16, two zero bytes,
+//! raw ParamID u32 and normalized f64. Empty parameter payloads retain version1.
 //! These records carry transport data; they do not promise SDK event admission.
 use super::*;
 use std::io::{self, Read, Write};
 
 pub const HEADER_BYTES: usize = 64;
-pub const MAX_PACKET_BYTES: usize = HEADER_BYTES + MAX_FRAMES * 8 + MAX_EVENTS * 8;
+pub const MAX_PACKET_BYTES: usize =
+    HEADER_BYTES + MAX_FRAMES * 8 + MAX_EVENTS * 8 + MAX_PARAMETER_POINTS * 16;
 
 fn invalid() -> io::Error {
     io::ErrorKind::InvalidData.into()
@@ -32,9 +36,15 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     }
     let mut packet = [0_u8; MAX_PACKET_BYTES];
     packet[..4].copy_from_slice(b"HXVB");
-    packet[4..6].copy_from_slice(&1_u16.to_le_bytes());
+    let version = if block.parameters.as_slice().is_empty() {
+        1_u16
+    } else {
+        2_u16
+    };
+    packet[4..6].copy_from_slice(&version.to_le_bytes());
     packet[6..8].copy_from_slice(&block.frames.to_le_bytes());
     packet[8..10].copy_from_slice(&(block.events.len as u16).to_le_bytes());
+    packet[10..12].copy_from_slice(&(block.parameters.as_slice().len() as u16).to_le_bytes());
     for (index, value) in [
         block.binding.root,
         block.binding.instance,
@@ -61,6 +71,12 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
         packet[offset + 3..offset + 6].copy_from_slice(&event.bytes);
         offset += 8;
     }
+    for point in block.parameters.as_slice() {
+        packet[offset..offset + 2].copy_from_slice(&point.frame.to_le_bytes());
+        packet[offset + 4..offset + 8].copy_from_slice(&point.id.to_le_bytes());
+        packet[offset + 8..offset + 16].copy_from_slice(&point.normalized.to_le_bytes());
+        offset += 16;
+    }
     writer.write_all(&packet[..offset])?;
     writer.flush()
 }
@@ -75,15 +91,23 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
         Err(error) => return Err(error),
     }
     reader.read_exact(&mut header[1..])?;
+    let version = u16::from_le_bytes([header[4], header[5]]);
     if &header[..4] != b"HXVB"
-        || header[4..6] != 1_u16.to_le_bytes()
-        || header[10..16].iter().any(|b| *b != 0)
+        || !matches!(version, 1 | 2)
+        || header[if version == 1 { 10 } else { 12 }..16]
+            .iter()
+            .any(|b| *b != 0)
     {
         return Err(invalid());
     }
     let frames = u16::from_le_bytes([header[6], header[7]]);
     let count = usize::from(u16::from_le_bytes([header[8], header[9]]));
-    if frames == 0 || usize::from(frames) > MAX_FRAMES || count > MAX_EVENTS {
+    let parameters = usize::from(u16::from_le_bytes([header[10], header[11]]));
+    if frames == 0
+        || usize::from(frames) > MAX_FRAMES
+        || count > MAX_EVENTS
+        || parameters > MAX_PARAMETER_POINTS
+    {
         return Err(invalid());
     }
     let mut values = [0_u64; 6];
@@ -126,6 +150,23 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
             })
             .map_err(|_| invalid())?;
     }
+    for _ in 0..parameters {
+        let mut bytes = [0_u8; 16];
+        reader.read_exact(&mut bytes)?;
+        if bytes[2..4] != [0; 2] {
+            return Err(invalid());
+        }
+        let mut value = [0; 8];
+        value.copy_from_slice(&bytes[8..16]);
+        block
+            .parameters
+            .push(ParameterPoint {
+                frame: u16::from_le_bytes([bytes[0], bytes[1]]),
+                id: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+                normalized: f64::from_le_bytes(value),
+            })
+            .map_err(|_| invalid())?;
+    }
     block
         .valid(binding, frames, block.sequence)
         .map_err(|_| invalid())?;
@@ -135,6 +176,57 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parameter_wire_preserves_precision_offsets_and_rejects_truncation_or_bad_points() {
+        let mut block = Block::empty(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            8,
+        );
+        for point in [
+            ParameterPoint {
+                frame: 0,
+                id: 0,
+                normalized: 0.1234567890123456,
+            },
+            ParameterPoint {
+                frame: 7,
+                id: 0x7fff_ffff,
+                normalized: 1.0,
+            },
+        ] {
+            block.parameters.push(point).unwrap();
+        }
+        let mut bytes = Vec::new();
+        write(&mut bytes, &block).unwrap();
+        assert_eq!(bytes.len(), HEADER_BYTES + 8 * 8 + 2 * 16);
+        assert_eq!(&bytes[4..6], &2_u16.to_le_bytes());
+        let decoded = read(&mut bytes.as_slice()).unwrap().unwrap();
+        assert_eq!(decoded.parameters, block.parameters);
+        for end in 1..bytes.len() {
+            assert!(read(&mut &bytes[..end]).is_err(), "truncation {end}");
+        }
+        let start = HEADER_BYTES + 8 * 8;
+        for (index, value) in [
+            (10, 65),
+            (12, 1),
+            (start, 8),
+            (start + 2, 1),
+            (start + 7, 128),
+        ] {
+            let mut bad = bytes.clone();
+            bad[index] = value;
+            assert!(read(&mut bad.as_slice()).is_err(), "invalid byte {index}");
+        }
+        let mut bad = bytes.clone();
+        bad[start + 8..start + 16].copy_from_slice(&f64::NAN.to_le_bytes());
+        assert!(read(&mut bad.as_slice()).is_err());
+    }
+
     #[test]
     fn canonical_wire_roundtrip_and_all_truncations_are_bounded() {
         let binding = Binding {
