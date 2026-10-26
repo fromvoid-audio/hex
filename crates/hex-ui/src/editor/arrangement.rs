@@ -485,6 +485,9 @@ impl EditorView {
                                 cx,
                             ) {
                                 view.focus.focus(window);
+                                if !view.capture_section_drag(window, cx) {
+                                    view.cancel_section_pointer();
+                                }
                                 cx.notify();
                                 return (true, false);
                             }

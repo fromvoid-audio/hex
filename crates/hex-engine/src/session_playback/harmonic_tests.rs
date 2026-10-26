@@ -744,3 +744,63 @@ fn arrangement_clip_gain_uses_content_clock_after_looped_tempo_handoff() {
         }
     }
 }
+
+#[test]
+fn first_track_limiter_keeps_held_mutable_voice_and_its_note_off() {
+    let original = edit(
+        &fixture(1, 1 << 28),
+        &[(harmonic_parameter(1, 2), ParameterValue::Float(0.1))],
+    );
+    let mut donor = start(&original, false);
+    let mut oracle = start(&original, false);
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.render(&mut [[0.0; 2]; 257]).unwrap();
+        assert_eq!(
+            runtime.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .proofs()
+                .count(),
+            1
+        );
+    }
+    let mut editor = Editor::new(original, 8).unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: editor.project().tracks()[0].id(),
+            before: None,
+            state: crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Effect,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let revision = prepared(editor.project(), Some(donor.revision.session()));
+    let delay = revision.arrangement().main_latency_frames() as usize;
+    let mut candidate = SessionPlayback::new(revision).unwrap();
+    candidate.try_inherit_state_from(&mut donor).unwrap();
+    assert_eq!(candidate.performance_frame(), donor.performance_frame());
+    assert_eq!(
+        candidate.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .count(),
+        1
+    );
+    let mut actual = vec![[0.0; 2]; delay + 2048];
+    let mut expected = actual.clone();
+    oracle.render(&mut expected[delay..]).unwrap();
+    for block in actual.chunks_mut(63) {
+        candidate.render(block).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        candidate.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .all(|proof| proof.note_off_sent)
+    );
+}
