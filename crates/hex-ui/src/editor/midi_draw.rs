@@ -5,7 +5,6 @@ use gpui::Window;
 #[cfg(test)]
 use hex_project::BeatTime;
 use hex_project::{ClipId, MidiNote, NoteId};
-use hex_session::service::Request;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -149,9 +148,16 @@ impl EditorView {
             stroke.cancel();
             return true;
         }
+        // finish retires the working stroke and clears its own preview. Keep
+        // the final shared geometry before that, then transfer only on admission.
+        let preview = stroke.shared_preview();
         match stroke.finish(context, pending) {
             Ok(Some(command)) => {
-                self.enqueue(Request::Edit(command));
+                self.submit_midi_drag_preview(
+                    context.clip,
+                    super::midi_pending_drag::Frozen::Stroke(preview),
+                    command,
+                );
             }
             Ok(None) => {}
             Err(error) => self.error = Some(stroke_error(error).into()),
