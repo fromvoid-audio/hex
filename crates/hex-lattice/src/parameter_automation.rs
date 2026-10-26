@@ -4,8 +4,9 @@
 //! Missing content-origin clocks use base values (None), never performance beats.
 use crate::NativeInstrumentClock;
 use hex_lattice_contract::{
-    DeviceContractError as Error, ParameterAccess, ParameterAutomation, ParameterDescriptor,
-    ParameterId, ParameterKind, ParameterSemantics, ParameterStepping, ParameterValue,
+    DeviceAutomationTarget, DeviceContractError as Error, HostGain, ParameterAccess,
+    ParameterAutomation, ParameterDescriptor, ParameterId, ParameterKind, ParameterSemantics,
+    ParameterStepping, ParameterValue,
 };
 
 pub const MAX_AUTOMATION_LANES: usize = 256;
@@ -52,14 +53,20 @@ pub struct ParameterAutomationLane {
     pub semantics: ParameterSemantics,
     pub points: std::ops::Range<usize>,
 }
+/// Host gain staging is independent of the provider parameter ID space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostAutomationLane {
+    pub target: DeviceAutomationTarget,
+    pub points: std::ops::Range<usize>,
+}
 /// Opaque, validated runtime mapping. Descriptor text is retained only for
 /// control admission; sample queries use this compiled scalar law exclusively.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedParameterAutomationLane {
-    descriptor: ParameterDescriptor,
+    descriptor: Option<ParameterDescriptor>,
     mapping: Mapping,
     points: std::ops::Range<usize>,
-    constant: Option<ParameterValue>,
+    constant: Option<CanonicalValue>,
 }
 /// Private validated point payload; canonical held values are prepared once.
 /// The public opaque type permits physical backing observations by the existing
@@ -67,10 +74,34 @@ pub struct PreparedParameterAutomationLane {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedParameterAutomationPoint {
     point: ParameterAutomationPoint,
-    canonical: ParameterValue,
+    canonical: CanonicalValue,
+}
+/// Private cache units stay explicit. Host amplitude can never leave the
+/// provider query seam as a forged ParameterValue or ParameterId. Its value is
+/// prepared by the canonical integer-millidB HostGain law exactly once for each
+/// authored held/constant point; interpolated host values use that same law.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CanonicalValue {
+    Provider(ParameterValue),
+    HostGainLinear(f32),
+}
+impl CanonicalValue {
+    fn provider(self) -> Option<ParameterValue> {
+        match self {
+            Self::Provider(value) => Some(value),
+            Self::HostGainLinear(_) => None,
+        }
+    }
+    fn host_gain(self) -> Option<f32> {
+        match self {
+            Self::HostGainLinear(value) => Some(value),
+            Self::Provider(_) => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mapping {
+    HostGain,
     Float {
         min: f64,
         max: f64,
@@ -122,12 +153,15 @@ impl Mapping {
     fn discrete(self) -> bool {
         matches!(self, Self::Bool | Self::Choice { .. })
     }
-    fn value(self, normalized: f32) -> ParameterValue {
-        match self {
-            Self::Bool => ParameterValue::Bool(normalized >= 0.5),
-            Self::Choice { last } => {
-                ParameterValue::Choice((normalized * last as f32).round() as u32)
+    fn value(self, normalized: f32) -> Result<CanonicalValue, Error> {
+        Ok(match self {
+            Self::HostGain => {
+                CanonicalValue::HostGainLinear(HostGain::from_normalized(normalized)?.linear())
             }
+            Self::Bool => CanonicalValue::Provider(ParameterValue::Bool(normalized >= 0.5)),
+            Self::Choice { last } => CanonicalValue::Provider(ParameterValue::Choice(
+                (normalized * last as f32).round() as u32,
+            )),
             Self::Float {
                 min,
                 max,
@@ -146,23 +180,64 @@ impl Mapping {
                 let value = increment.map_or(value, |step| {
                     (min + ((value - min) / step).round() * step).clamp(min, max)
                 });
-                ParameterValue::Float(value as f32)
+                CanonicalValue::Provider(ParameterValue::Float(value as f32))
             }
-        }
+        })
     }
+}
+fn compile_points(
+    mapping: Mapping,
+    points: &[ParameterAutomationPoint],
+    compiled: &mut Vec<PreparedParameterAutomationPoint>,
+) -> Result<Option<CanonicalValue>, Error> {
+    let first = points.first().ok_or(Error::InvalidDescriptor)?;
+    if points
+        .iter()
+        .any(|point| !point.normalized.is_finite() || !(0.0..=1.0).contains(&point.normalized))
+        || points
+            .windows(2)
+            .any(|pair| pair[0].beat_raw >= pair[1].beat_raw)
+    {
+        return Err(Error::InvalidParameterValue);
+    }
+    let canonical = mapping.value(first.normalized)?;
+    let constant = points
+        .iter()
+        .all(|point| point.normalized == first.normalized)
+        .then_some(canonical);
+    for &point in points {
+        compiled.push(PreparedParameterAutomationPoint {
+            point,
+            canonical: mapping.value(point.normalized)?,
+        });
+    }
+    Ok(constant)
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PreparedParameterAutomation {
     ids: Vec<ParameterId>,
     lanes: Vec<PreparedParameterAutomationLane>,
     points: Vec<PreparedParameterAutomationPoint>,
+    host_input: Option<usize>,
+    host_output: Option<usize>,
 }
 impl PreparedParameterAutomation {
     pub fn new(
         lanes: Vec<ParameterAutomationLane>,
         points: Vec<ParameterAutomationPoint>,
     ) -> Result<Self, Error> {
-        if lanes.len() > MAX_AUTOMATION_LANES || points.len() > MAX_AUTOMATION_POINTS {
+        Self::new_with_host(lanes, Vec::new(), points)
+    }
+    pub fn new_with_host(
+        lanes: Vec<ParameterAutomationLane>,
+        host: Vec<HostAutomationLane>,
+        points: Vec<ParameterAutomationPoint>,
+    ) -> Result<Self, Error> {
+        let count = lanes
+            .len()
+            .checked_add(host.len())
+            .ok_or(Error::RuntimeBudgetExceeded)?;
+        if count > MAX_AUTOMATION_LANES || points.len() > MAX_AUTOMATION_POINTS {
             return Err(Error::RuntimeBudgetExceeded);
         }
         let mut ids = Vec::new();
@@ -170,7 +245,7 @@ impl PreparedParameterAutomation {
             .map_err(|_| Error::RuntimeAllocation)?;
         let mut prepared = Vec::new();
         prepared
-            .try_reserve_exact(lanes.len())
+            .try_reserve_exact(count)
             .map_err(|_| Error::RuntimeAllocation)?;
         let mut compiled_points = Vec::new();
         compiled_points
@@ -196,36 +271,46 @@ impl PreparedParameterAutomation {
             let values = points
                 .get(lane.points.clone())
                 .ok_or(Error::InvalidDescriptor)?;
-            if values.iter().any(|point| {
-                !point.normalized.is_finite() || !(0.0..=1.0).contains(&point.normalized)
-            }) || values
-                .windows(2)
-                .any(|pair| pair[0].beat_raw >= pair[1].beat_raw)
-            {
-                return Err(Error::InvalidParameterValue);
-            }
             ids.push(lane.descriptor.id);
             let mapping = Mapping::prepare(lane.descriptor, lane.semantics)?;
-            let first = values.first().ok_or(Error::InvalidDescriptor)?;
-            let constant = values
-                .iter()
-                .all(|point| point.normalized == first.normalized)
-                .then(|| mapping.value(first.normalized));
-            compiled_points.extend(
-                values
-                    .iter()
-                    .map(|&point| PreparedParameterAutomationPoint {
-                        point,
-                        canonical: mapping.value(point.normalized),
-                    }),
-            );
+            let constant = compile_points(mapping, values, &mut compiled_points)?;
             prepared.push(PreparedParameterAutomationLane {
-                descriptor: lane.descriptor,
+                descriptor: Some(lane.descriptor),
                 mapping,
                 points: lane.points.clone(),
                 constant,
             });
             end = lane.points.end;
+        }
+        let mut host_input = None;
+        let mut host_output = None;
+        let mut previous = None;
+        for lane in host {
+            if !lane.target.is_host()
+                || previous.is_some_and(|target| target >= lane.target)
+                || lane.points.start != end
+                || lane.points.is_empty()
+                || lane.points.len() > MAX_AUTOMATION_POINTS_PER_LANE
+            {
+                return Err(Error::InvalidDescriptor);
+            }
+            let values = points
+                .get(lane.points.clone())
+                .ok_or(Error::InvalidDescriptor)?;
+            let constant = compile_points(Mapping::HostGain, values, &mut compiled_points)?;
+            previous = Some(lane.target);
+            match lane.target {
+                DeviceAutomationTarget::HostInputGain => host_input = Some(prepared.len()),
+                DeviceAutomationTarget::HostOutputGain => host_output = Some(prepared.len()),
+                DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+            }
+            end = lane.points.end;
+            prepared.push(PreparedParameterAutomationLane {
+                descriptor: None,
+                mapping: Mapping::HostGain,
+                points: lane.points,
+                constant,
+            });
         }
         if end != points.len() {
             return Err(Error::InvalidDescriptor);
@@ -234,17 +319,29 @@ impl PreparedParameterAutomation {
             ids,
             lanes: prepared,
             points: compiled_points,
+            host_input,
+            host_output,
         })
     }
     pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+        self.lanes.is_empty()
+    }
+    pub fn has_host_target(&self, target: DeviceAutomationTarget) -> bool {
+        match target {
+            DeviceAutomationTarget::HostInputGain => self.host_input.is_some(),
+            DeviceAutomationTarget::HostOutputGain => self.host_output.is_some(),
+            DeviceAutomationTarget::Parameter(_) => false,
+        }
+    }
+    pub fn has_host_targets(&self) -> bool {
+        self.host_input.is_some() || self.host_output.is_some()
     }
     pub fn parameter_ids(&self) -> &[ParameterId] {
         &self.ids
     }
     pub fn descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
         let index = self.ids.binary_search(&id).ok()?;
-        self.lanes.get(index).map(|lane| lane.descriptor)
+        self.lanes.get(index).and_then(|lane| lane.descriptor)
     }
     /// Actual owned flat-vector observations for the existing control ledger.
     pub fn storage_vectors(
@@ -272,20 +369,38 @@ impl PreparedParameterAutomation {
             )
     }
     pub fn quoted_storage_bytes(lanes: usize, points: usize) -> Option<usize> {
-        lanes
-            .checked_mul(
-                std::mem::size_of::<ParameterId>()
-                    .checked_add(std::mem::size_of::<PreparedParameterAutomationLane>())?,
+        Self::quoted_storage_bytes_with_host(lanes, 0, points)
+    }
+    pub fn quoted_storage_bytes_with_host(
+        provider: usize,
+        host: usize,
+        points: usize,
+    ) -> Option<usize> {
+        provider
+            .checked_mul(std::mem::size_of::<ParameterId>())?
+            .checked_add(
+                provider
+                    .checked_add(host)?
+                    .checked_mul(std::mem::size_of::<PreparedParameterAutomationLane>())?,
             )?
             .checked_add(
                 points.checked_mul(std::mem::size_of::<PreparedParameterAutomationPoint>())?,
             )
     }
-    /// Staging lane metadata coexists with retained compiled backing only while
-    /// this control-side constructor validates and converts its input vector.
+    /// Raw provider/host metadata and normalized point staging coexist with the
+    /// retained compiled vectors during control construction. The compiled
+    /// point size includes its explicit canonical cache and is charged above.
     pub fn quoted_construction_overlap_bytes(lanes: usize, points: usize) -> Option<usize> {
-        lanes
+        Self::quoted_construction_overlap_bytes_with_host(lanes, 0, points)
+    }
+    pub fn quoted_construction_overlap_bytes_with_host(
+        provider: usize,
+        host: usize,
+        points: usize,
+    ) -> Option<usize> {
+        provider
             .checked_mul(std::mem::size_of::<ParameterAutomationLane>())?
+            .checked_add(host.checked_mul(std::mem::size_of::<HostAutomationLane>())?)?
             .checked_add(points.checked_mul(std::mem::size_of::<ParameterAutomationPoint>())?)
     }
     pub fn block<'a>(
@@ -306,7 +421,21 @@ pub struct ParameterAutomationBlock<'a> {
     frames: usize,
 }
 impl ParameterAutomationBlock<'_> {
-    fn value_at_beat(&self, index: usize, beat: u64) -> Option<ParameterValue> {
+    /// Native host gain in linear amplitude units, from the same exact integer
+    /// HostGain conversion used by base state. Missing origin uses base fallback.
+    pub fn host_gain_at(&self, target: DeviceAutomationTarget, offset: usize) -> Option<f32> {
+        if offset >= self.frames {
+            return None;
+        }
+        let index = match target {
+            DeviceAutomationTarget::HostInputGain => self.program.host_input?,
+            DeviceAutomationTarget::HostOutputGain => self.program.host_output?,
+            DeviceAutomationTarget::Parameter(_) => return None,
+        };
+        self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?)?
+            .host_gain()
+    }
+    fn value_at_beat(&self, index: usize, beat: u64) -> Option<CanonicalValue> {
         let lane = self.program.lanes.get(index)?;
         if let Some(value) = lane.constant {
             return Some(value);
@@ -327,7 +456,7 @@ impl ParameterAutomationBlock<'_> {
                     + (f64::from(right.point.normalized) - f64::from(left.point.normalized))
                         * elapsed as f64
                         / span as f64) as f32;
-                Some(lane.mapping.value(normalized))
+                lane.mapping.value(normalized).ok()
             }
             _ => Some(left.canonical),
         }
@@ -342,7 +471,8 @@ impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
             return None;
         }
         let index = self.program.ids.binary_search(&parameter).ok()?;
-        self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?)
+        self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?)?
+            .provider()
     }
     fn values_at(&self, offset: usize, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
         if output.len() != self.program.ids.len() || offset >= self.frames {
@@ -352,7 +482,9 @@ impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
             .clock
             .and_then(|clock| clock.arrangement_beat_at_offset(offset));
         for (index, slot) in output.iter_mut().enumerate() {
-            *slot = beat.and_then(|beat| self.value_at_beat(index, beat));
+            *slot = beat
+                .and_then(|beat| self.value_at_beat(index, beat))
+                .and_then(CanonicalValue::provider);
         }
         Ok(())
     }

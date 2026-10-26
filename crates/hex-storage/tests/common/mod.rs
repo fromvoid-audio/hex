@@ -112,9 +112,20 @@ pub fn remove_empty_aliases(value: &mut Value) {
     }
 }
 
+/// Historical comparisons may omit only an actually empty schema53 host inventory.
+pub fn remove_empty_host_automation(value: &mut Value) {
+    assert_eq!(
+        value.get("host_automation"),
+        Some(&json!([])),
+        "historical comparison cannot discard host automation"
+    );
+    value.as_object_mut().unwrap().remove("host_automation");
+}
+
 /// Remove the schema48 cycle layer and any newer empty automation inventory
 /// when constructing a frozen pre-cycle envelope. Never discard authored data.
 pub fn remove_audio_cycles(value: &mut Value) {
+    remove_empty_host_automation(value);
     remove_empty_aliases(value);
     if let Some(automation) = value.as_object_mut().unwrap().remove("device_automation") {
         assert_eq!(

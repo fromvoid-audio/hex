@@ -459,6 +459,13 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("move_track_device"; ["device" => device.value(), "track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
+        Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points,
+        } => {
+            describe!("replace_device_automation_target"; ["device" => device.value(), "target" => target, "points_count" => points.len()]; omitted="")
+        }
         Command::ReplaceDeviceAutomation {
             device,
             parameter,
@@ -1286,10 +1293,10 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             device,
-            parameter,
+            target,
             points,
         } => {
-            describe!("device_automation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "parameter" => parameter.value(), "points_count" => points.len()]; omitted="")
+            describe!("device_automation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "target" => target, "points_count" => points.len()]; omitted="")
         }
         Request::DeviceGesture(value0) => {
             let mut description = describe!("device_gesture"; []; omitted="");

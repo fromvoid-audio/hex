@@ -3075,3 +3075,5 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
         })
         .collect()
 }
+
+pub(crate) mod host_automation;
