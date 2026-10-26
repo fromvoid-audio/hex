@@ -93,14 +93,21 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
                 .map(move |lane| ((device.id().value(), lane.target), lane.read_selection))
         })
         .collect();
-    let mut snapshot = project.snapshot();
-    for device in devices(&mut snapshot) {
-        for lane in &mut device.automation {
-            lane.read_selection = AutomationReadSelection::Authored;
+    // Ordinary projects already satisfy the frozen writer. Only an overridden
+    // selection needs a neutral temporary model; avoid copying all project state
+    // just to rewrite no selections.
+    let mut value = if project.has_overridden_device_automation() {
+        let mut snapshot = project.snapshot();
+        for device in devices(&mut snapshot) {
+            for lane in &mut device.automation {
+                lane.read_selection = AutomationReadSelection::Authored;
+            }
         }
-    }
-    let core = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
-    let mut value = super::host_automation::encode(&core)?;
+        let core = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
+        super::host_automation::encode(&core)?
+    } else {
+        super::host_automation::encode(project)?
+    };
     for host in [false, true] {
         for row in rows(&mut value, host)? {
             let row = row
@@ -148,6 +155,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     }
     value["version"] = 53.into();
     let core = super::host_automation::decode(&serde_json::to_vec(&value)?)?;
+    // Strict53 has validated and retained every row and its canonical owner,
+    // constructing Authored selections. No model copy is needed in that case.
+    if selections
+        .values()
+        .all(|selection| matches!(selection, Selection::Authored))
+    {
+        return Ok(core);
+    }
     let mut snapshot = core.snapshot();
     for device in devices(&mut snapshot) {
         for lane in &mut device.automation {
