@@ -479,3 +479,58 @@ fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserv
     assert_eq!(endpoint.segments, 1);
     assert_eq!(endpoint.rejections, 1);
 }
+
+#[test]
+fn resumed_state_data_drops_old_worker_anchor_and_requires_a_fresh_source_projection() {
+    let source = Arc::new(());
+    let source_key: std::sync::Weak<()> = Arc::downgrade(&source);
+    let source_key: ForeignStateSource = source_key;
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let state = state();
+    let live = ForeignStateApproval::new_on_control(source_key.clone(), binding, &state).unwrap();
+    let resumed_source = Arc::new(());
+    let resumed_key: std::sync::Weak<()> = Arc::downgrade(&resumed_source);
+    let resumed_key: ForeignStateSource = resumed_key;
+    let next = hex_lattice_contract::ForeignProcessorBinding {
+        epoch: 5,
+        ..binding
+    };
+    assert!(
+        live.after_original_resume_on_control(resumed_key.clone(), next)
+            .is_err(),
+        "live graph data cannot be retagged"
+    );
+    let detached = live.detached_after_quiescence_on_control();
+    assert!(!detached.matches_source(&source_key));
+    assert_eq!(
+        Arc::weak_count(&source),
+        1,
+        "only the caller's original key remains"
+    );
+    assert!(detached.matches_state(&state));
+    assert!(
+        detached
+            .after_original_resume_on_control(resumed_key.clone(), binding)
+            .is_err()
+    );
+    assert!(
+        detached
+            .after_original_resume_on_control(
+                resumed_key.clone(),
+                hex_lattice_contract::ForeignProcessorBinding { root: 2, ..next }
+            )
+            .is_err()
+    );
+    let resumed = detached
+        .after_original_resume_on_control(resumed_key.clone(), next)
+        .unwrap();
+    assert!(resumed.matches_source(&resumed_key));
+    assert!(!resumed.matches_source(&source_key));
+    assert!(resumed.matches_state(&state));
+    assert_eq!(resumed.binding(), next);
+}

@@ -240,6 +240,10 @@ enum Owner {
 #[derive(Default)]
 struct Execution {
     owner: Option<Owner>,
+    // DATA moves here only with the original successfully quiesced native
+    // owner, then back into its freshly resumed effect. No old worker alias or
+    // detached identity can admit a replacement source or revive an epoch.
+    suspended_state: Option<crate::plugin_effects::SuspendedState>,
     error: Option<hex_plugin_host::Error>,
     cleanup_error: Option<hex_plugin_host::Error>,
     // Constructor refusals retain their original cause in the actual owner
@@ -773,9 +777,10 @@ impl Custody {
             cleanup_error: cell.cleanup_error.take(),
         };
         let cancellation = bank.sources.slots[index].cancellation.take();
+        let suspended_state = cell.suspended_state.take();
         bank.sources.slots[index] = Slot::vacant();
         drop(bank);
-        drop(cancellation);
+        drop((cancellation, suspended_state));
         Some(result)
     }
 }

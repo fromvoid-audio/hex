@@ -58,6 +58,9 @@ impl Custody {
             {
                 return Err("native epoch effect custody differs");
             }
+            if effect.has_pending_state_approval() || cell.suspended_state.is_some() {
+                return Err("native epoch requires state approval terminal");
+            }
             let binding = Binding {
                 graph,
                 epoch: bank.sources.next_epoch,
@@ -85,7 +88,10 @@ impl Custody {
         after_reservation();
         let result = catch_unwind(AssertUnwindSafe(|| match cell.owner.take() {
             Some(Owner::Effect(effect)) => match effect.into_quiescent_on_control() {
-                Ok(owner) => cell.owner = Some(Owner::Quiescent(owner)),
+                Ok((owner, state)) => {
+                    cell.suspended_state = state;
+                    cell.owner = Some(Owner::Quiescent(owner));
+                }
                 Err(owner) => {
                     cell.constructor_refused = true;
                     cell.owner = Some(Owner::WorkerRefused(owner));

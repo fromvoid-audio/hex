@@ -28,6 +28,7 @@ pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod source_metadata;
 mod state_approval;
 pub use source_metadata::EffectSourceMetadata;
+pub(crate) use state_approval::SuspendedState;
 mod callbacks;
 pub use callbacks::NativeEffectCallbacks;
 pub(crate) use callbacks::{NativeEffectCycle, NativeEffectEntry};
@@ -91,7 +92,10 @@ impl NativeEffect {
     #[allow(clippy::result_large_err)]
     pub(crate) fn into_quiescent_on_control(
         self,
-    ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
+    ) -> Result<
+        (hex_plugin_host::native::Quiescent, Option<SuspendedState>),
+        NativeWorkerStartFailure,
+    > {
         let Self {
             worker,
             callback,
@@ -99,12 +103,15 @@ impl NativeEffect {
         } = self;
         let NativeEffectCallback {
             transport,
-            configuration,
+            mut configuration,
             dry,
             ..
         } = callback;
+        let accepted = configuration.accepted_state.take();
         drop((configuration, dry, source_metadata));
-        worker.into_quiescent_on_control(transport)
+        worker
+            .into_quiescent_on_control(transport)
+            .map(|source| (source, accepted.map(state_approval::ApprovedState::suspend)))
     }
     pub fn prepare_on_control(
         identity: ProcessorInstanceIdentity,

@@ -425,3 +425,49 @@ fn actual_root_stopped_parameters_require_original_return_and_keep_failure_or_re
         matches!(returned.disposal,PreparationDisposal::Reaped(retired) if retired.status.success())
     );
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_quiescence_preserves_pending_state_terminal_before_rebinding() {
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(binding, presentation())
+        .unwrap();
+    root.start_native_effect(binding).unwrap();
+    let request = root.begin_live_native_capture(binding).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let snapshot = loop {
+        match root.poll_live_native_snapshot(binding, &request).unwrap() {
+            crate::plugin_worker::NativeWorkerStateSnapshotProgress::Captured(snapshot) => {
+                break snapshot;
+            }
+            crate::plugin_worker::NativeWorkerStateSnapshotProgress::Pending => {}
+            other => panic!("original state snapshot: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    root.stage_live_native_snapshot(binding, &snapshot).unwrap();
+    assert_eq!(
+        root.quiesce_native_source(binding, binding.graph),
+        Err("native epoch requires state approval terminal")
+    );
+    assert_eq!(lock(&root.bank).sources.slots[0].binding, Some(binding));
+    root.finalize_live_native_snapshot(binding, &snapshot, false)
+        .unwrap();
+    root.stage_live_native_snapshot(binding, &snapshot).unwrap();
+    root.finalize_live_native_snapshot(binding, &snapshot, true)
+        .unwrap();
+    let next = root.quiesce_native_source(binding, binding.graph).unwrap();
+    assert!(next.epoch > binding.epoch);
+    assert!(lock(&root.work).sources.cells[0].suspended_state.is_some());
+    assert!(root.retire_native_source(next));
+    dispose(&root, next);
+    assert!(root.recover_native_source(next).unwrap().error.is_none());
+    assert!(
+        lock(&root.work).sources.cells[0].suspended_state.is_none(),
+        "recovered pool cells cannot lend accepted data to a replacement source"
+    );
+}

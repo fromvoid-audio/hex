@@ -333,7 +333,114 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
             f.control.native_source_endpoint_status(f.binding),
             Some((true, true))
         );
-        dispose(f);
+        let mut completed = 8u64;
+        for epoch in 0..2 {
+            if epoch == 0 {
+                snapshot_action(|| {
+                    f.control
+                        .stage_native_source_state_snapshot_on_control(f.binding, &later)
+                })
+                .unwrap();
+            }
+            let source = f.control.status.native_effect_source().unwrap();
+            f.control.stop();
+            let fence = f.control.request_native_epoch_fence(source).unwrap();
+            allocation_free(|| {
+                f.data
+                    .owner_mut()
+                    .unwrap()
+                    .run(|callback, _| callback.begin_block())
+            });
+            assert_eq!(
+                f.control.stopped_edit_fence_state(fence),
+                StoppedEditFenceState::Ready
+            );
+            f.control
+                .return_stopped_ordinary_native_epoch_runtime(source, fence)
+                .unwrap();
+            // The preceding live handoff may already occupy the two-slot
+            // return carrier. Alternate the actual control drain and callback
+            // frontier until the original endpoint is ingested; control-only
+            // polling cannot advance a callback-held return.
+            let until = Instant::now() + Duration::from_secs(3);
+            loop {
+                f.control.reclaim();
+                if f.control.native_source_endpoint_status(f.binding) == Some((false, false)) {
+                    break;
+                }
+                assert!(Instant::now() < until, "original endpoint did not return");
+                allocation_free(|| {
+                    f.data
+                        .owner_mut()
+                        .unwrap()
+                        .run(|callback, _| callback.begin_block())
+                });
+            }
+            assert!(f.control.status.native_effect_source().is_none());
+            if epoch == 0 {
+                assert_eq!(
+                    snapshot_action(|| f
+                        .control
+                        .quiesce_native_source_preparation(f.binding, f.binding.graph)
+                        .map(|_| ())),
+                    Err("native epoch requires state approval terminal")
+                );
+                snapshot_action(|| {
+                    f.control
+                        .finalize_native_source_state_snapshot_on_control(f.binding, &later, false)
+                })
+                .expect("stop must retain the exact pending terminal without reviving transport");
+                assert_eq!(
+                    f.control.native_source_endpoint_status(f.binding),
+                    Some((false, false))
+                );
+            }
+            let previous = f.binding;
+            renew_cohort(&mut f);
+            assert_eq!(
+                (f.binding.root, f.binding.instance),
+                (previous.root, previous.instance)
+            );
+            assert!(f.binding.epoch > previous.epoch);
+            assert!(
+                f.control
+                    .stage_native_source_state_snapshot_on_control(f.binding, &snapshot)
+                    .is_err(),
+                "old worker capture cannot authorize a resumed epoch"
+            );
+            let playback = compile(&f, true);
+            let installed = publish(
+                &mut f.control,
+                playback,
+                PublicationPolicy::InstallUnderNativeEpoch(fence),
+            );
+            assert_eq!(block(&mut f), [[0.0; 2]; 8]);
+            assert_eq!(f.control.status.applied_revision.load(Acquire), installed);
+            f.control.release_stopped_edit_fence(fence);
+            f.control.command(PlaybackCommand::Play).unwrap();
+            for n in 0..4u64 {
+                let output = block(&mut f);
+                replacement::wait_for_blocks(&root, f.binding, completed + n + 1);
+                let gain = 3.0 * (0.5 + (completed + n.saturating_sub(2)) as f32 * 0.125)
+                    + if location == 1 { 1.0 } else { 0.0 };
+                assert_eq!(
+                    output,
+                    if n < 2 {
+                        [[0.0; 2]; 8]
+                    } else {
+                        [[0.25 * gain, -0.5 * gain]; 8]
+                    },
+                    "same native lease must retain edited value and actual DSP prefix across resume"
+                );
+            }
+            completed += 4;
+            assert_eq!(f.editor.project(), &committed);
+        }
+        let returned = dispose(f);
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
+            if retired.terminal.is_some_and(|terminal| terminal.blocks == completed))
+        );
     }
 }
 

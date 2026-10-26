@@ -76,6 +76,7 @@ impl Bank {
             |mut sum, (slot, cell)| {
                 if slot.phase == Phase::Vacant {
                     return (cell.owner.is_none()
+                        && cell.suspended_state.is_none()
                         && !cell.pending
                         && cell.first_panic.is_none()
                         && cell.error.is_none()

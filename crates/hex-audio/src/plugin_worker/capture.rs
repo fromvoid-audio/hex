@@ -177,12 +177,14 @@ impl NativeWorker {
         hex_lattice::ForeignStateApproval::new_on_control(source, self.binding, snapshot.state())
             .map_err(|_| "native snapshot approval is invalid")
     }
-    pub(crate) fn owns_live_state_snapshot_on_control(
+    // Terminal custody survives Stop's transport revocation. This identity
+    // query cannot stage new permission or revive processing; those operations
+    // retain their separate live-transport and latest-capture checks.
+    pub(crate) fn owns_state_snapshot_on_control(
         &self,
         snapshot: &NativeWorkerStateSnapshot,
     ) -> bool {
         !self.retirement_requested
-            && self.transport_is_live_on_control()
             && self.retains_original_source_on_control()
             && snapshot.binding == self.binding
             && snapshot.source.as_ptr() == Arc::as_ptr(&self.reaper.completed)

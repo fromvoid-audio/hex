@@ -14,6 +14,47 @@ pub(super) struct ApprovedState {
     ordinal: u64,
     proof: hex_lattice::ForeignStateApproval,
 }
+/// Accepted configuration DATA travelling with Root's unique quiescent source.
+/// Its old worker anchor has been removed after actual quiescence. There is no
+/// public constructor, native owner, pending gesture or graph permission here.
+pub(crate) struct SuspendedState(ApprovedState);
+impl ApprovedState {
+    pub(super) fn suspend(self) -> SuspendedState {
+        SuspendedState(Self {
+            ordinal: self.ordinal,
+            proof: self.proof.detached_after_quiescence_on_control(),
+        })
+    }
+}
+impl NativeEffect {
+    pub(crate) fn has_pending_state_approval(&self) -> bool {
+        self.callback.configuration.pending_state.is_some()
+    }
+    /// Root calls only after its same retained native lease has resumed and
+    /// constructed a fresh paired worker/endpoint. Caller DATA cannot enter
+    /// this path: SuspendedState is minted by the original effect's quiescence.
+    pub(crate) fn restore_state_approval_after_resume(
+        &mut self,
+        state: &SuspendedState,
+    ) -> Result<(), &'static str> {
+        if !self.worker.transport_is_live_on_control()
+            || !self.worker.retains_original_source_on_control()
+            || self.callback.configuration.approval_count() != 0
+        {
+            return Err("native resumed state source differs");
+        }
+        let proof = state
+            .0
+            .proof
+            .after_original_resume_on_control(self.worker.state_source_on_control(), self.binding())
+            .map_err(|_| "native resumed state binding differs")?;
+        self.callback.configuration.accepted_state = Some(ApprovedState {
+            ordinal: state.0.ordinal,
+            proof,
+        });
+        Ok(())
+    }
+}
 impl Configuration {
     pub(super) fn approval_count(&self) -> usize {
         usize::from(self.accepted_state.is_some()) + usize::from(self.pending_state.is_some())
@@ -80,7 +121,7 @@ pub(super) fn finalize(
     snapshot: &NativeWorkerStateSnapshot,
     accepted: bool,
 ) -> Result<(), &'static str> {
-    if !worker.owns_live_state_snapshot_on_control(snapshot)
+    if !worker.owns_state_snapshot_on_control(snapshot)
         || configuration.pending_state.as_ref().is_none_or(|pending| {
             pending.ordinal != snapshot.ordinal() || !pending.proof.matches_state(snapshot.state())
         })

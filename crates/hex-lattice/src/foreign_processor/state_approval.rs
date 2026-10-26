@@ -56,6 +56,41 @@ impl ForeignStateApproval {
     pub fn binding(&self) -> ForeignProcessorBinding {
         self.binding
     }
+    /// Retain configuration DATA after the host has obtained actual source
+    /// quiescence and returned its endpoint. Removing the old weak anchor lets
+    /// that completed worker allocation be reclaimed. This value cannot match
+    /// any live original endpoint and grants no resume or publication authority.
+    pub fn detached_after_quiescence_on_control(mut self) -> Self {
+        let empty: Weak<()> = Weak::new();
+        self.source = empty;
+        self
+    }
+    /// Project retained DATA onto the same actual source after its real resume
+    /// acknowledgement. The host must retain original lease custody across the
+    /// transition; monotonic scalar bindings alone cannot establish that fact.
+    /// No plugin state is restored or recaptured by this operation.
+    pub fn after_original_resume_on_control(
+        &self,
+        source: ForeignStateSource,
+        binding: ForeignProcessorBinding,
+    ) -> Result<Self, DeviceContractError> {
+        let empty: Weak<()> = Weak::new();
+        let empty: ForeignStateSource = empty;
+        if !Weak::ptr_eq(&self.source, &empty)
+            || !binding.is_valid()
+            || binding.root != self.binding.root
+            || binding.instance != self.binding.instance
+            || binding.graph < self.binding.graph
+            || binding.epoch <= self.binding.epoch
+            || source.strong_count() == 0
+        {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        let mut resumed = self.clone();
+        resumed.source = source;
+        resumed.binding = binding;
+        Ok(resumed)
+    }
     /// Bounded byte comparison only. Independent host gains are intentionally
     /// excluded, as with NativeDeviceState::processing_eq.
     pub fn matches_state(&self, state: &NativeDeviceState) -> bool {

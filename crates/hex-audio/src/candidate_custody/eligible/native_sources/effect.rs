@@ -48,7 +48,17 @@ impl Custody {
                     owner,
                     max_data_bytes,
                 ) {
-                    Ok(owner) => cell.owner = Some(Owner::Effect(owner)),
+                    Ok(mut owner) => {
+                        if let Some(state) = cell.suspended_state.as_ref() {
+                            match owner.restore_state_approval_after_resume(state) {
+                                Ok(()) => cell.suspended_state = None,
+                                Err(error) => {
+                                    cell.error = Some(hex_plugin_host::Error::Protocol(error))
+                                }
+                            }
+                        }
+                        cell.owner = Some(Owner::Effect(owner));
+                    }
                     Err(owner) => {
                         cell.constructor_refused = true;
                         cell.owner = Some(Owner::WorkerRefused(owner));
@@ -65,7 +75,7 @@ impl Custody {
         after_construction();
         cell.pending = false;
         let prepared = match cell.owner.as_ref() {
-            Some(Owner::Effect(owner)) => Some(owner.prepared()),
+            Some(Owner::Effect(owner)) if cell.cause().is_none() => Some(owner.prepared()),
             _ => None,
         };
         let mut bank = lock(&self.bank);
