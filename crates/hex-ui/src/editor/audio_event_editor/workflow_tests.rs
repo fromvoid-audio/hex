@@ -1645,3 +1645,6 @@ fn grouped_fade_handles_use_retained_source_extent_and_keep_release_geometry(
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
     });
 }
+
+#[path = "pointer_tests.rs"]
+mod pointer_tests;
