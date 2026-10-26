@@ -1560,6 +1560,11 @@ impl EditorView {
             ));
         }
         let row = div()
+            .on_scroll_wheel(
+                cx.listener(move |view, event: &gpui::ScrollWheelEvent, _, cx| {
+                    view.resize_row_wheel(Some(track_id), event, cx);
+                }),
+            )
             .w_full()
             .h(px(self.track_body_height(track_id)))
             .flex_shrink_0()
