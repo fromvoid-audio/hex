@@ -655,3 +655,6 @@ fn option_wheel_pitch_geometry_creates_the_displayed_note_through_worker_and_und
         )
     });
 }
+
+#[path = "midi_pitch_capture_ui_tests.rs"]
+mod capture_tests;
