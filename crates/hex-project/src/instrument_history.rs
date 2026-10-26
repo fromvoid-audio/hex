@@ -149,6 +149,7 @@ impl Project {
                 return None;
             };
             let Device {
+                automation,
                 id: device_id,
                 state,
                 bypassed,
@@ -157,6 +158,7 @@ impl Project {
             if current.source_id() != next.source_id()
                 || device_id != &next.id
                 || bypassed != &next.bypassed
+                || automation != &next.automation
                 || comparison != &next.comparison
                 || state.type_id() != next.state.type_id()
                 || state == &next.state

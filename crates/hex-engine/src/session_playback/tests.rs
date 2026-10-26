@@ -958,6 +958,7 @@ fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_p
                 .checked_add(1)
                 .ok_or(hex_project::Invalid("fixture id capacity"))?;
             track.instrument = Some(DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id,
                 bypassed: false,
@@ -1324,6 +1325,7 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
         )
         .unwrap();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 7,
             bypassed: false,
@@ -1443,6 +1445,7 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
             gain: 1.0,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 80,
                 bypassed,
@@ -1570,6 +1573,7 @@ fn removed_track_release_retains_its_original_device_matrix() {
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 10,
         bypassed: false,
@@ -1618,6 +1622,7 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         )
         .unwrap();
     old_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 10,
         bypassed: false,
@@ -1679,12 +1684,14 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 10,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 11,
             bypassed: false,
@@ -1747,12 +1754,14 @@ fn same_revision_session_release_enters_at_the_instrument_gap() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 10,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 11,
             bypassed: false,
@@ -1807,12 +1816,14 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
@@ -1875,12 +1886,14 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: neutral,
         },
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
@@ -2088,6 +2101,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
             state = crate::patch_native_device_parameter(&state, parameter, value).unwrap();
         }
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 7,
             bypassed: false,
@@ -2256,6 +2270,7 @@ fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail
                 .unwrap();
         }
         let device = DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
@@ -2366,12 +2381,14 @@ fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
         )
         .unwrap();
     snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: instrument_id,
         bypassed: false,
         state: instrument_state,
     });
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: device_id,
         bypassed: false,
@@ -2457,12 +2474,14 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: state.clone(),
         },
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
@@ -2727,6 +2746,7 @@ fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_cl
         let id = snapshot.next_id;
         snapshot.next_id += 1;
         devices.push(hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id,
             bypassed: false,
@@ -3542,6 +3562,7 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
         let mut devices = Vec::new();
         for _ in 0..devices_in_chain {
             devices.push(DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: next_id,
                 bypassed: false,
@@ -4180,6 +4201,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         )
         .unwrap();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: effect,
         bypassed: false,
@@ -4920,6 +4942,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     let eq8_id = source_snapshot.next_id;
     source_snapshot.next_id += 1;
     source_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: eq8_id,
         bypassed: false,
@@ -5327,12 +5350,14 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let first_id = source.next_id;
     source.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: first_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: first_id + 1,
             bypassed: false,
@@ -5538,12 +5563,14 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     let first_id = old_snapshot.next_id;
     old_snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: first_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: first_id + 1,
             bypassed: false,
@@ -7134,6 +7161,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
                 bypassed: false,
@@ -7816,6 +7844,7 @@ fn with_utility_filter_state(project: &Project, dc_remove: bool, bass_mono: bool
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
@@ -10589,6 +10618,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
         .unwrap();
     let mut track_snapshot = project(1.0, 0, 8 << 32).snapshot();
     track_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: track_snapshot.next_id,
         bypassed: false,
@@ -10619,6 +10649,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: return_device_id,
                 bypassed: false,
@@ -11170,6 +11201,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: track_effect_id,
         bypassed: false,
@@ -11189,6 +11221,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: return_effect_id,
                 bypassed: false,

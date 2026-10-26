@@ -451,6 +451,9 @@ fn apply_transform(
     transform: Transform,
     purpose: TransformPurpose,
 ) -> Result<(), Invalid> {
+    if project.has_device_automation() {
+        return Err(Invalid(crate::AUTOMATION_EDIT_UNSUPPORTED));
+    }
     let mut next_id = project.next_id;
     let purpose = match purpose {
         TransformPurpose::Duplicate(source, mut marker) => {
