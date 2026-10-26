@@ -353,13 +353,15 @@ pub(in crate::editor) fn view(
                     .opacity(theme::TIME_SELECTION_OPACITY)
                     .child(
                         div()
+                            .id("audio-event-range-handle")
                             .absolute()
                             .top_0()
                             .left_0()
                             .right_0()
                             .h(relative(RANGE_HANDLE_FRACTION))
                             .debug_selector(|| "audio-event-range-handle".into())
-                            .cursor(gpui::CursorStyle::OpenHand),
+                            .cursor(gpui::CursorStyle::OpenHand)
+                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
                     ),
             );
         }
