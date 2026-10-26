@@ -1049,7 +1049,7 @@ impl EditorView {
                                     && view.capture_midi_note_pointer(
                                         rendered_context,
                                         note.id,
-                                        kind,
+                                        gesture.kind(),
                                         gesture.is_copy(),
                                         window,
                                         view_cx,

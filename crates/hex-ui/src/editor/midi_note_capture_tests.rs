@@ -89,9 +89,9 @@ fn modifiers(copy: bool) -> Modifiers {
 }
 fn cursor(copy: bool, edge: i8) -> CursorStyle {
     match edge {
+        _ if copy => CursorStyle::DragCopy,
         -1 => CursorStyle::ResizeLeft,
         1 => CursorStyle::ResizeRight,
-        _ if copy => CursorStyle::DragCopy,
         _ => CursorStyle::ClosedHand,
     }
 }
@@ -106,6 +106,10 @@ fn note_move_edges_group_and_copy_own_input_then_release_to_receipt(cx: &mut Tes
         (true, false, 1),
         (false, true, 0),
         (true, true, 0),
+        (false, true, -1),
+        (false, true, 1),
+        (true, true, -1),
+        (true, true, 1),
     ] {
         let cx = &mut cx.new_app();
         let Fixture {
