@@ -12,8 +12,8 @@ use super::{
 };
 use crate::theme;
 use gpui::{
-    Context, Div, MouseButton, MouseMoveEvent, MouseUpEvent, Window, canvas, div, prelude::*, px,
-    rgb,
+    Context, Div, MouseButton, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Window, canvas, div,
+    prelude::*, px, rgb,
 };
 use hex_project::{TrackId, TrackSelectionIds};
 use hex_session::service::{Event, Request};
@@ -155,12 +155,13 @@ impl EditorView {
                 let released = event
                     .downcast_ref::<MouseUpEvent>()
                     .filter(|e| e.button == MouseButton::Left);
-                let Some(position) = moved
+                let wheel = event.downcast_ref::<ScrollWheelEvent>();
+                let position = moved
                     .map(|e| e.position)
-                    .or_else(|| released.map(|e| e.position))
-                else {
+                    .or_else(|| released.map(|e| e.position));
+                if position.is_none() && wheel.is_none() {
                     return;
-                };
+                }
                 let _ = owner.update(cx, |view, cx| {
                     if !view.track_reorder.gesture.as_ref().is_some_and(|g| {
                         g.generation == generation && g.revision == revision && g.track == track
@@ -169,10 +170,17 @@ impl EditorView {
                     }
                     if !view.track_header_focused(window) {
                         view.cancel_track_reorder();
-                    } else if released.is_some() {
-                        view.finish_track_reorder(position);
-                    } else {
-                        view.update_track_reorder(position);
+                    } else if let Some(wheel) = wheel {
+                        if view.scroll_track_reorder(wheel) {
+                            cx.notify();
+                        }
+                        return;
+                    } else if let Some(position) = position {
+                        if released.is_some() {
+                            view.finish_track_reorder(position);
+                        } else {
+                            view.update_track_reorder(position);
+                        }
                     }
                     cx.notify();
                 });
@@ -189,6 +197,54 @@ impl EditorView {
             },
             cx,
         )
+    }
+    /// The normal header list wheel remains gesture-owned. Do not deliver it
+    /// to underlying scalar controls or the timeline's unrelated zoom handler.
+    fn scroll_track_reorder(&mut self, event: &ScrollWheelEvent) -> bool {
+        let Some(g) = self.track_reorder.gesture.as_ref() else {
+            return false;
+        };
+        if !self.track_reorder_current(g) {
+            return self.cancel_track_reorder();
+        }
+        let Some(bounds) = self.arrangement_bounds else {
+            return false;
+        };
+        let x = f32::from(event.position.x);
+        let y = f32::from(event.position.y);
+        let header_left = bounds.left + (bounds.width - self.track_header_width()).max(0.);
+        if !g.moved
+            || !x.is_finite()
+            || !y.is_finite()
+            || x < header_left
+            || x > bounds.left + bounds.width
+            || y < bounds.top
+            || y > bounds.top + bounds.height
+        {
+            return false;
+        }
+        // Match GPUI List's normal logical wheel line unit. The existing
+        // TrackScroll scrollbar endpoint retains variable-row mapping/clamps.
+        let delta = f32::from(event.delta.pixel_delta(px(20.)).y);
+        let offset = self.track_scroll.offset();
+        let maximum = f32::from(self.track_scroll.max_offset().height);
+        if !delta.is_finite()
+            || !maximum.is_finite()
+            || maximum < 0.
+            || !f32::from(offset.y).is_finite()
+        {
+            return false;
+        }
+        let next = (f32::from(offset.y) + delta).clamp(-maximum, 0.);
+        if next == f32::from(offset.y) {
+            return false;
+        }
+        let pointer = g.pointer;
+        self.track_scroll
+            .set_offset(gpui::point(offset.x, px(next)));
+        self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
+        self.update_track_reorder(gpui::point(px(pointer.0), px(pointer.1)));
+        true
     }
     fn track_reorder_current(&self, g: &Gesture) -> bool {
         self.mode == EditorMode::Arrangement

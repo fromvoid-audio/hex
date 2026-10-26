@@ -38,8 +38,8 @@ struct Fixture {
     from: gpui::Point<gpui::Pixels>,
     to: gpui::Point<gpui::Pixels>,
 }
-fn open(cx: &mut TestAppContext) -> Fixture {
-    let (mut visual, editor, ids) = live_fixture(cx);
+fn open(cx: &mut TestAppContext, count: usize) -> Fixture {
+    let (mut visual, editor, ids) = live_tracks(cx, count, false);
     let from = bounds(&mut visual, ids[0]).center();
     let row = visual
         .debug_bounds(Box::leak(
@@ -87,7 +87,7 @@ fn active_reorder_isolates_input_cursor_and_outside_release(cx: &mut TestAppCont
         from,
         to,
         ..
-    } = open(cx);
+    } = open(cx, 4);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     activate(&mut visual, from, to);
     let outside = point(px(640.), px(10.));
@@ -131,7 +131,7 @@ fn reorder_receipt_keeps_painted_gap_without_retaining_input(cx: &mut TestAppCon
         actions,
         from,
         to,
-    } = open(cx);
+    } = open(cx, 4);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     activate(&mut visual, from, to);
     let gap = visual.debug_bounds("track-insertion-line").unwrap();
@@ -196,7 +196,7 @@ fn active_reorder_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
             from,
             to,
             ..
-        } = open(cx);
+        } = open(cx, 4);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         activate(&mut visual, from, to);
         let outside = point(px(640.), px(10.));
@@ -260,4 +260,41 @@ fn active_reorder_loss_cannot_commit_or_leak_late_up(cx: &mut TestAppContext) {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
     }
+}
+
+#[gpui::test]
+fn active_reorder_keeps_its_header_list_wheel_scroll(cx: &mut TestAppContext) {
+    let Fixture {
+        mut visual,
+        editor,
+        from,
+        to,
+        ..
+    } = open(cx, 20);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    activate(&mut visual, from, to);
+    let offset = editor.read_with(&visual, |v, _| v.track_scroll.offset());
+    visual.simulate_event(ScrollWheelEvent {
+        position: to,
+        delta: ScrollDelta::Lines(point(0., -3.)),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.track_scroll.offset().y < offset.y,
+            "active reorder retains gesture-owned list scrolling"
+        );
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+    assert!(visual.debug_bounds("track-insertion-line").is_some());
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(CursorStyle::ClosedHand)
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insertion-line").is_none());
 }
