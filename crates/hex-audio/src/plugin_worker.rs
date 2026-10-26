@@ -377,13 +377,15 @@ fn transport_runner_with_setup(
                         break;
                     }
                     let result = state.process(block).and_then(|reply| {
-                        // Validate the complete reply before publishing a
-                        // read-only observation under this original owner.
+                        // Native exchange already validated the complete SDK
+                        // reply. Retain its private input receipt even if Stop
+                        // revokes the transport before callback publication.
+                        // The live terminal is still published only below.
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        state.complete_parameter_change(&reply)?;
                         state.worker.complete(reply)?;
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         state.observe_parameter_reply(&reply)?;
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        state.complete_parameter_change(&reply)?;
                         Ok(())
                     });
                     if let Err(error) = result {
@@ -556,6 +558,14 @@ impl NativeWorker {
         if self.retirement_requested {
             return Err(hex_plugin_host::Error::Protocol(
                 "native worker retirement is terminal",
+            ));
+        }
+        if self
+            .parameter_change_pending_on_control()
+            .map_err(hex_plugin_host::Error::Protocol)?
+        {
+            return Err(hex_plugin_host::Error::Protocol(
+                "native parameter input terminal is pending",
             ));
         }
         let joined = self.reaper.join_on_control();

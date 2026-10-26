@@ -223,6 +223,10 @@ fn live_change(name: &str, variant: u32) {
         terminal(&mut owner, &abandoned),
         NativeWorkerParameterProgress::Failed
     );
+    assert_eq!(
+        drain(&mut owner, &abandoned),
+        NativeWorkerParameterProgress::Withdrawn
+    );
     assert!(owner.begin_parameter_change_on_control(id, 0.5).is_err());
     let stopped = owner.quiesce_on_control().unwrap();
     assert_eq!(stopped.child_id_on_control(), child);
@@ -235,6 +239,191 @@ fn terminal_pending(
     request: &NativeWorkerParameterChange,
 ) -> NativeWorkerParameterProgress {
     owner.poll_parameter_change_on_control(request).unwrap()
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_parameter_drain_distinguishes_queued_and_processed_on_original_source() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::stopped_parameter_drain_distinguishes_queued_and_processed_on_original_source";
+    if fixture_child(92, NAME) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let processed = begin_change(&mut owner, 0, 0.75);
+    assert!(
+        owner
+            .drain_stopped_parameter_change_on_control(&processed)
+            .is_err()
+    );
+    let (mut other, _other_endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    other.revoke_on_control();
+    assert!(
+        other
+            .drain_stopped_parameter_change_on_control(&processed)
+            .is_err(),
+        "equal binding numbers do not transfer a token"
+    );
+    assert!(other.retire_on_control().unwrap().native.status.success());
+    callback(&owner, &mut endpoint, 0, 3.0, &[]);
+    owner.revoke_on_control();
+    assert_eq!(
+        terminal(&mut owner, &processed),
+        NativeWorkerParameterProgress::Failed
+    );
+    assert!(
+        owner.quiesce_on_control().is_err(),
+        "the pending token retains its source"
+    );
+    let result = drain(&mut owner, &processed);
+    assert!(
+        matches!(result, NativeWorkerParameterProgress::Processed(point)
+        if point.point.id == 0 && point.point.normalized == 0.75 && point.sequence == 0)
+    );
+    assert!(
+        owner
+            .drain_stopped_parameter_change_on_control(&processed)
+            .is_err()
+    );
+    let capture = begin(&mut owner);
+    let snapshot = complete(&mut owner, &capture);
+    assert_eq!(
+        &hex_plugin_state::decode(&snapshot)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+
+    let (mut owner, _endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let queued = begin_change(&mut owner, 0, 0.5);
+    owner.revoke_on_control();
+    assert!(
+        owner.quiesce_on_control().is_err(),
+        "queued input must reach a terminal first"
+    );
+    assert_eq!(
+        drain(&mut owner, &queued),
+        NativeWorkerParameterProgress::Withdrawn
+    );
+    assert!(
+        owner
+            .drain_stopped_parameter_change_on_control(&queued)
+            .is_err()
+    );
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_parameter_drain_observes_the_actual_held_sdk_reply() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::stopped_parameter_drain_observes_the_actual_held_sdk_reply";
+    if fixture_child(95, NAME) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let request = begin_change(&mut owner, 7, 0.75);
+    let mut output = [[0.0; 2]; 8];
+    endpoint
+        .stage(&[[0.5, -0.25]; 8], &[], &mut output)
+        .unwrap();
+    endpoint.finish(true).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    while trace()[0] != 27 {
+        assert!(Instant::now() < until, "actual SDK process hold");
+        thread::sleep(Duration::from_millis(1));
+    }
+    owner.revoke_on_control();
+    assert_eq!(
+        owner
+            .drain_stopped_parameter_change_on_control(&request)
+            .unwrap(),
+        NativeWorkerParameterProgress::Pending
+    );
+    assert!(
+        owner.quiesce_on_control().is_err(),
+        "held SDK input retains the original source"
+    );
+    fs::write(
+        PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap()),
+        b"release original SDK process",
+    )
+    .unwrap();
+    let result = drain(&mut owner, &request);
+    assert!(
+        matches!(result, NativeWorkerParameterProgress::Processed(point)
+        if point.point.id == 7 && point.point.normalized == 0.75 && point.sequence == 0)
+    );
+    assert!(
+        owner
+            .drain_stopped_parameter_change_on_control(&request)
+            .is_err()
+    );
+    let stopped = owner.quiesce_on_control().unwrap();
+    assert_eq!(stopped.completed_blocks(), 1);
+    assert!(stopped.retire_on_control().unwrap().status.success());
+}
+
+fn drain(
+    owner: &mut NativeWorker,
+    request: &NativeWorkerParameterChange,
+) -> NativeWorkerParameterProgress {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let result = owner
+            .drain_stopped_parameter_change_on_control(request)
+            .unwrap();
+        if result != NativeWorkerParameterProgress::Pending {
+            return result;
+        }
+        assert!(Instant::now() < until, "stopped parameter terminal");
+        thread::yield_now();
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn stopped_parameter_drain_keeps_an_authored_collision_refused() {
+    const NAME: &str = "plugin_worker::capture::tests::parameter_change::stopped_parameter_drain_keeps_an_authored_collision_refused";
+    if fixture_child(91, NAME) {
+        return;
+    }
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let request = begin_change(&mut owner, 7, 0.75);
+    callback(
+        &owner,
+        &mut endpoint,
+        0,
+        2.0,
+        &[ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        }],
+    );
+    owner.revoke_on_control();
+    assert_eq!(
+        drain(&mut owner, &request),
+        NativeWorkerParameterProgress::Refused
+    );
+    assert!(
+        owner
+            .drain_stopped_parameter_change_on_control(&request)
+            .is_err()
+    );
+    let capture = begin(&mut owner);
+    let actual = complete(&mut owner, &capture);
+    assert_eq!(
+        &hex_plugin_state::decode(&actual)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &2.0_f32.to_le_bytes()
+    );
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
 }
 
 #[test]

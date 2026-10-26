@@ -153,6 +153,17 @@ impl Custody {
             _ => Err("native parameter input owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn drain_stopped_native_parameter_change(
+        &self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.drain_stopped_parameter_change(request),
+            Owner::Loaned(owner) => owner.drain_stopped_parameter_change(request),
+            _ => Err("native parameter input owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn begin_native_controller_query(
         &self,
         binding: Binding,
@@ -357,6 +368,19 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    pub(crate) fn drain_stopped_native_parameter_change(
+        &self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .drain_stopped_native_parameter_change(binding, request)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
     pub(crate) fn reactivate_native_source(
         &self,
         binding: Binding,

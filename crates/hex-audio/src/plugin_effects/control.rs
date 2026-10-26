@@ -33,6 +33,16 @@ impl NativeEffect {
     ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
         self.worker.poll_parameter_change_on_control(request)
     }
+    pub(crate) fn drain_stopped_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.worker
+            .drain_stopped_parameter_change_on_control(request)
+    }
+    pub(crate) fn parameter_change_pending(&self) -> Result<bool, &'static str> {
+        self.worker.parameter_change_pending_on_control()
+    }
     pub(crate) fn begin_controller_query(
         &mut self,
         query: hex_plugin_host::protocol::ControllerRequest,
@@ -112,6 +122,13 @@ impl NativeEffectControl {
         request: &crate::plugin_worker::NativeWorkerParameterChange,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
         self.worker.poll_parameter_change_on_control(request)
+    }
+    pub(crate) fn drain_stopped_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.worker
+            .drain_stopped_parameter_change_on_control(request)
     }
     pub(crate) fn begin_controller_query(
         &mut self,

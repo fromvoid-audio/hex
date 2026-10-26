@@ -34,7 +34,9 @@ pub(super) struct Work {
 }
 
 /// Exact original worker and operation; neither a source/endpoint lease nor
-/// canonical edit authority. Retain at most the current operation's weak token.
+/// canonical edit authority. Retain the one current token until its exact
+/// terminal, including after Stop. If custody is lost, retire the original
+/// source; never rebind it as though the input had been consumed.
 pub struct NativeWorkerParameterChange {
     source: Weak<Signal>,
     binding: Binding,
@@ -62,6 +64,97 @@ pub enum NativeWorkerParameterProgress {
     Failed,
 }
 impl NativeWorker {
+    /// Drain the exact admitted input after its original worker has stopped.
+    /// This reports SDK processing only, not delivery or canonical acceptance.
+    pub fn drain_stopped_parameter_change_on_control(
+        &mut self,
+        request: &NativeWorkerParameterChange,
+    ) -> Result<NativeWorkerParameterProgress, &'static str> {
+        self.require_parameter_change_source(request)?;
+        if self.retirement_requested
+            || self.transport_is_live_on_control()
+            || !self.retains_original_source_on_control()
+        {
+            return Err("native stopped parameter source differs");
+        }
+        {
+            let mailbox = match self.reaper.completed.capture.try_lock() {
+                Ok(mailbox) => mailbox,
+                Err(TryLockError::WouldBlock) => return Ok(NativeWorkerParameterProgress::Pending),
+                Err(TryLockError::Poisoned(_)) => return Err("native parameter mailbox failed"),
+            };
+            if !mailbox.parameter_change.matches(request) {
+                return Err("native parameter input operation differs");
+            }
+        }
+        if self
+            .reaper
+            .join
+            .as_ref()
+            .is_some_and(|join| !join.is_finished())
+        {
+            return Ok(NativeWorkerParameterProgress::Pending);
+        }
+        let joined = self.reaper.join_on_control();
+        let state = self
+            .reaper
+            .worker
+            .as_mut()
+            .ok_or("native parameter owner missing")?;
+        let healthy = joined.is_ok()
+            && state.native_error.is_none()
+            && matches!(state.processor, Some(Processor::Native(_)));
+        let mut mailbox = match self.reaper.completed.capture.try_lock() {
+            Ok(mailbox) => mailbox,
+            Err(TryLockError::WouldBlock) => return Ok(NativeWorkerParameterProgress::Pending),
+            Err(TryLockError::Poisoned(_)) => return Err("native parameter mailbox failed"),
+        };
+        let slot = &mut mailbox.parameter_change;
+        if !slot.matches(request) {
+            return Err("native parameter input operation differs");
+        }
+        let terminal = if !healthy {
+            None
+        } else {
+            match slot.phase {
+                Phase::Queued => Some(Terminal::Withdrawn),
+                Phase::Complete => slot.result,
+                Phase::InFlight if state.parameter_change.ordinal == Some(request.ordinal) => {
+                    state.parameter_change.result
+                }
+                _ => None,
+            }
+        };
+        if healthy && terminal.is_none() {
+            // An unexplained missing receipt is not a terminal. Keep the
+            // original owner and fence intact for explicit fault recovery.
+            return Err("native parameter input terminal missing");
+        }
+        slot.phase = Phase::Idle;
+        slot.result = None;
+        if state.parameter_change.ordinal == Some(request.ordinal) {
+            state.parameter_change = Work::default();
+        }
+        self.reaper
+            .completed
+            .parameter_change_requested
+            .store(false, Release);
+        Ok(match terminal {
+            Some(Terminal::Processed(value)) => NativeWorkerParameterProgress::Processed(value),
+            Some(Terminal::Refused) => NativeWorkerParameterProgress::Refused,
+            Some(Terminal::Withdrawn) => NativeWorkerParameterProgress::Withdrawn,
+            None => NativeWorkerParameterProgress::Failed,
+        })
+    }
+
+    pub(crate) fn parameter_change_pending_on_control(&self) -> Result<bool, &'static str> {
+        let mailbox = match self.reaper.completed.capture.try_lock() {
+            Ok(mailbox) => mailbox,
+            Err(TryLockError::WouldBlock) => return Err("native parameter mailbox is busy"),
+            Err(TryLockError::Poisoned(_)) => return Err("native parameter mailbox failed"),
+        };
+        Ok(mailbox.parameter_change.phase != Phase::Idle)
+    }
     /// Queue one point at offset zero of the next actual accepted PCM quantum.
     /// Admission does no SDK/socket I/O; invalid/full/busy refusal preserves the
     /// prior request and source. The caller must first validate current SDK
@@ -144,8 +237,9 @@ impl NativeWorker {
             .store(false, Release);
         Ok(true)
     }
-    /// Consume the exact result once. Revocation wins over a late processed
-    /// result, and foreign/old tokens cannot consume another request's result.
+    /// Consume the exact result once. Revocation returns Failed without consuming
+    /// the token; its owner must then drain the stopped input before quiescence.
+    /// Foreign/old tokens cannot consume another request's result.
     pub fn poll_parameter_change_on_control(
         &mut self,
         request: &NativeWorkerParameterChange,

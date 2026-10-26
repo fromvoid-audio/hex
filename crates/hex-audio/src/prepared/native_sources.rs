@@ -74,6 +74,26 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Consume an exact stopped input's real SDK terminal after the original
+    /// worker joins. Pending never fabricates a result; Processed does not
+    /// imply callback delivery or canonical acceptance. Root must drain before
+    /// quiescing this source, and an old token cannot address a new epoch.
+    pub fn drain_stopped_native_source_parameter_change_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        let result = self
+            .candidate_root
+            .drain_stopped_native_parameter_change(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
     /// Query actual SDK controller metadata through the original Root effect
     /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
     /// replacing them. Normally stopped transport uses its joined original
