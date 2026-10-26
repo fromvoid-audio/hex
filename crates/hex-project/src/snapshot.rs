@@ -116,9 +116,11 @@ pub struct TrackSnapshot {
     pub muted: bool,
     pub soloed: bool,
     pub devices: Vec<DeviceSnapshot>,
-    /// Resolved read projection of the bound source instrument. Strict snapshots
-    /// require an identical registry device; this is never a second state owner.
-    /// Historical inline projections use the explicit legacy adapter.
+    /// Resolved read projection of the bound source instrument. Identity, state,
+    /// bypass and comparison must match its registry device; `automation` must be
+    /// empty. NativeSourceSnapshot is the sole source-envelope transport owner,
+    /// avoiding one curve copy per shared binding. This is never a second state
+    /// owner. Historical inline projections use the explicit legacy adapter.
     pub instrument: Option<DeviceSnapshot>,
     /// Number of effects before `instrument`; required exactly when present.
     pub instrument_position: Option<usize>,
@@ -320,7 +322,7 @@ impl Project {
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
-                        automation: instrument.automation().to_vec(),
+                        automation: Vec::new(),
                         comparison: instrument.comparison.clone(),
                         id: instrument.id.value(),
                         bypassed: instrument.bypassed,
@@ -508,7 +510,33 @@ impl Project {
     /// authoritative. Current-format callers use strict `from_snapshot` instead.
     /// Original DeviceIds and source membership/order survive; fresh SourceIds
     /// are reserved after the old identity cursor, without writing any file.
+    /// Generic device envelopes did not exist in these historical formats;
+    /// snapshots containing them must use strict `from_snapshot` so an inline
+    /// projection cannot replace their canonical source owner.
     pub fn from_legacy_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        if snapshot
+            .tracks
+            .iter()
+            .flat_map(|track| track.devices.iter().chain(track.instrument.iter()))
+            .chain(
+                snapshot
+                    .return_tracks
+                    .iter()
+                    .flat_map(|track| track.devices.iter()),
+            )
+            .chain(snapshot.main_devices.iter())
+            .chain(
+                snapshot
+                    .native_sources
+                    .iter()
+                    .flat_map(|source| source.devices.iter()),
+            )
+            .any(|device| !device.automation.is_empty())
+        {
+            return Err(Invalid(
+                "legacy snapshots cannot carry device automation; use strict current snapshots",
+            ));
+        }
         let mut max_id = 0;
         let mut note_id = |id: u64| {
             max_id = max_id.max(id);
@@ -852,7 +880,7 @@ impl Project {
                     .find(|source| source.instrument().id().value() == instrument.id)
                     .ok_or(Invalid("track instrument has no retained source"))?;
                 let expected = source.instrument();
-                if expected.automation() != instrument.automation
+                if !instrument.automation.is_empty()
                     || expected.state() != &instrument.state
                     || expected.bypassed() != instrument.bypassed
                     || expected.comparison() != instrument.comparison.as_ref()

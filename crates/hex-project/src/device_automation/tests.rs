@@ -238,12 +238,14 @@ fn source_main_and_return_envelopes_are_canonical_and_survive_history() {
         *e.project()
     );
     let mut snapshot = e.project().snapshot();
-    snapshot.tracks[0]
-        .instrument
-        .as_mut()
+    assert!(Project::from_legacy_snapshot(snapshot.clone()).is_err());
+    let injected = e
+        .project()
+        .device(instrument)
         .unwrap()
-        .automation
-        .clear();
+        .automation()
+        .to_vec();
+    snapshot.tracks[0].instrument.as_mut().unwrap().automation = injected;
     assert!(Project::from_snapshot(snapshot).is_err());
     e.execute(Command::RemoveTrack(track)).unwrap();
     assert!(
@@ -407,4 +409,67 @@ fn clearing_an_unassigned_parameter_preserves_redo_and_does_not_assign_a_lane() 
     assert_eq!(e.project(), &original);
     assert!(e.can_redo());
     assert!(e.project().device(device).unwrap().automation().is_empty());
+}
+
+#[test]
+fn shared_source_snapshots_keep_only_one_canonical_envelope_copy() {
+    let (mut e, track, _) = fixture();
+    let Created::Device(instrument) = e
+        .execute(Command::InsertInstrument {
+            track,
+            state: state(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument")
+    };
+    let source = e.project().track(track).unwrap().source_id().unwrap();
+    for name in ["shared one", "shared two"] {
+        let Created::Track(shared) = e.execute(Command::AddTrack { name: name.into() }).unwrap()
+        else {
+            panic!("track")
+        };
+        e.execute(Command::BindTrackSource {
+            track: shared,
+            source: Some(source),
+        })
+        .unwrap();
+    }
+    e.execute(Command::ReplaceDeviceAutomation {
+        device: instrument,
+        parameter: ParameterId::from_static(7),
+        points: points(),
+    })
+    .unwrap();
+    let snapshot = e.project().snapshot();
+    assert_eq!(
+        snapshot
+            .tracks
+            .iter()
+            .filter(|track| track.instrument.is_some())
+            .count(),
+        3
+    );
+    assert!(
+        snapshot
+            .tracks
+            .iter()
+            .filter_map(|track| track.instrument.as_ref())
+            .all(|instrument| instrument.automation.is_empty())
+    );
+    assert_eq!(
+        snapshot.native_sources[0].devices[0].automation[0].points,
+        points()
+    );
+    assert_eq!(
+        Project::from_snapshot(snapshot.clone()).unwrap().snapshot(),
+        snapshot
+    );
+    let mut injected = snapshot;
+    injected.tracks[1].instrument.as_mut().unwrap().automation =
+        injected.native_sources[0].devices[0].automation.clone();
+    assert!(
+        Project::from_snapshot(injected).is_err(),
+        "even an identical envelope is not a valid binding projection"
+    );
 }

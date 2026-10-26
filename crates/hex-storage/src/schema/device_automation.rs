@@ -99,12 +99,13 @@ fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> 
     }
     d.deserialize_seq(Inventory)
 }
-/// Visit resolved track projections too, keeping strict source binding equality.
+/// Visit only canonical envelope owners. Track instrument projections remain
+/// empty even when many bindings reference the same retained source envelope.
 fn devices(snapshot: &mut Snapshot) -> impl Iterator<Item = &mut DeviceSnapshot> {
     snapshot
         .tracks
         .iter_mut()
-        .flat_map(|track| track.devices.iter_mut().chain(track.instrument.iter_mut()))
+        .flat_map(|track| track.devices.iter_mut())
         .chain(
             snapshot
                 .return_tracks
@@ -278,16 +279,48 @@ mod tests {
             })
             .unwrap();
         }
+        let source = e.project().track(track).unwrap().source_id().unwrap();
+        for name in ["shared one", "shared two"] {
+            let Created::Track(shared) =
+                e.execute(Command::AddTrack { name: name.into() }).unwrap()
+            else {
+                panic!("track")
+            };
+            e.execute(Command::BindTrackSource {
+                track: shared,
+                source: Some(source),
+            })
+            .unwrap();
+        }
         e.project().clone()
     }
     #[test]
     fn current_format_preserves_complete_device_and_source_automation() {
         let project = fixture();
         let bytes = crate::encode(&project).unwrap();
+        let snapshot = project.snapshot();
         assert_eq!(
-            crate::decode(&bytes).unwrap().snapshot(),
-            project.snapshot()
+            snapshot
+                .tracks
+                .iter()
+                .filter(|track| track.instrument.is_some())
+                .count(),
+            3
         );
+        assert!(
+            snapshot
+                .tracks
+                .iter()
+                .filter_map(|track| track.instrument.as_ref())
+                .all(|instrument| instrument.automation.is_empty())
+        );
+        assert_eq!(
+            snapshot.native_sources[0].devices[0].automation[0]
+                .points
+                .len(),
+            2
+        );
+        assert_eq!(crate::decode(&bytes).unwrap().snapshot(), snapshot);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["version"], 50);
         assert_eq!(
