@@ -653,6 +653,7 @@ class DeliveryTests(unittest.TestCase):
                         delivery.recover(self.app)
                 else:
                     receipt = delivery.build(args)
+                    self.assertEqual(receipt["diagnostic_capabilities"], ["actions-v1", "audio-v1"])
                     if rmdir_member:
                         self.assertEqual(rmdir_calls, 2)
             if finder_metadata in ("unknown", "symlink"):

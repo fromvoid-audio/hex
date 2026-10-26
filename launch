@@ -138,6 +138,8 @@ def open_installed(app: Path, expected_source: str | None = None, *, diagnostics
     if expected_source is not None and (source != expected_source or receipt.get("candidate") != expected_source):
         raise LaunchError(f"installed app does not match fetched main {expected_source}; app was not opened")
     if diagnostics:
+        if not {"actions-v1", "audio-v1"}.issubset(receipt.get("diagnostic_capabilities", [])):
+            raise LaunchError("installed app does not advertise action/audio diagnostics; run ./launch --test --diagnostics to build it")
         # macOS does not replace launch arguments in an already running process.
         delivery.assert_inactive(app)
         assert_no_raw_desktop_process(ROOT)

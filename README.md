@@ -32,7 +32,8 @@ cargo run -r --locked -- --demo
 ```
 
 For an instrumented production test, save and quit hex, then use
-`./launch --open --diagnostics` on the qualified installed build. When building a
+`./launch --open --diagnostics` on a qualified installed build advertising diagnostic support; older bundles are
+refused with rebuild guidance. When building a
 new user-test candidate, use `./launch --test --diagnostics`. The recommended
 `--diagnostics` preset records semantic actions, requests/outcomes, pointer/key
 intent and observed view changes together with audio publication/readiness and
