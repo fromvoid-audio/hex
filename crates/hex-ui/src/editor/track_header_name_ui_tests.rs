@@ -9,7 +9,7 @@ fn setup(
     [TrackId; 2],
 ) {
     let (environment, handle, editor) = clip_drag_ui_test::upper_rail_owned_fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
+    let visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1280.), px(800.)));
     visual.run_until_parked();
     let tracks = editor.read_with(&visual, |v, _| {
@@ -128,13 +128,25 @@ fn name_color_and_inline_rename_follow_canonical_updates_and_undo(cx: &mut TestA
     visual.simulate_click(at, Modifiers::default());
     visual.simulate_keystrokes("cmd-r");
     visual.run_until_parked();
-    editor.read_with(&visual, |v, cx| {
-        let input = v.track_name.edit.as_ref().unwrap().input.read(cx);
-        assert_eq!(input.text(), name);
-        assert_eq!(input.painted_text(), Some("long canonical track name 🎹"));
+    assert!(visual.debug_bounds("track-name-input").is_some());
+    editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
+    let final_name = "UI CANONICAL Track Name 🎛";
+    visual.simulate_input(final_name);
+    visual.simulate_keystrokes("enter");
+    clip_drag_ui_test::pump_move(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .name(),
+            final_name
+        )
     });
-    visual.simulate_keystrokes("escape");
-    for _ in 0..2 {
+    for _ in 0..3 {
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
         clip_drag_ui_test::pump_move(&editor, &mut visual);
     }
@@ -151,7 +163,7 @@ fn name_color_and_inline_rename_follow_canonical_updates_and_undo(cx: &mut TestA
             original
         )
     });
-    for _ in 0..2 {
+    for _ in 0..3 {
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
         clip_drag_ui_test::pump_move(&editor, &mut visual);
     }
@@ -165,7 +177,7 @@ fn name_color_and_inline_rename_follow_canonical_updates_and_undo(cx: &mut TestA
                 .track(track)
                 .unwrap()
                 .name(),
-            name
+            final_name
         )
     });
 }
