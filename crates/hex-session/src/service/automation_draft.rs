@@ -151,6 +151,7 @@ impl Shared {
                 let mut state = poison.into_inner();
                 state.failed = true;
                 state.terminal.get_or_insert(DraftTerminal::Interrupted);
+                self.wake.notify_one();
                 state
             }
         }
@@ -298,6 +299,10 @@ fn spawn_with_start(
             let mut failure = None;
             let terminal = loop {
                 let mut state = worker_shared.state();
+                if state.failed && failure.is_none() {
+                    failure =
+                        Some("automation draft control state failed; retain the take".to_owned());
+                }
                 while state.queue.is_empty() && state.terminal.is_none() {
                     state = match worker_shared.wake.wait(state) {
                         Ok(state) => state,

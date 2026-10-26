@@ -343,3 +343,38 @@ fn discovery_is_bounded_and_never_treats_candidate_names_as_valid_files() {
         "paging does not discard the prefetched entry or impose a total-file ceiling"
     );
 }
+
+#[test]
+fn failed_control_gate_keeps_admitted_batches_available_without_a_false_terminal() {
+    let files = Files::new();
+    let path = files.path("control-failure.hex-automation-draft");
+    let (project, target, stamp) = fixture();
+    let writer = DraftWriter::create_new(&path, &project, target, stamp).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let held = Arc::clone(&barrier);
+    let (mut input, worker) = spawn_with_start(writer, move || {
+        held.wait();
+    })
+    .unwrap();
+    send(&mut input, &[event(1)]);
+    send(&mut input, &[event(2)]);
+    let shared = Arc::clone(&input.shared);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = shared.state.lock().unwrap();
+            panic!("controlled gate failure");
+        })
+        .join()
+        .is_err()
+    );
+    assert!(input.progress().failed);
+    barrier.wait();
+    let outcome = worker.join_on_control().unwrap();
+    assert!(outcome.failure.is_some());
+    assert_eq!(outcome.progress.durable_events, 0);
+    assert_eq!(outcome.progress.durable_terminal, None);
+    assert_eq!(outcome.retained.len(), 2);
+    assert_eq!(outcome.retained[0].events(), &[event(1)]);
+    assert_eq!(outcome.retained[1].events(), &[event(2)]);
+    assert_eq!(reader(&path).outcome(), DraftOutcome::Interrupted);
+}
