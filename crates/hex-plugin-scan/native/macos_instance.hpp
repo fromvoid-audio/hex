@@ -8,6 +8,7 @@
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "macos_host.hpp"
+#include "macos_parameter_page.hpp"
 #include "macos_processing.hpp"
 #include "macos_state_stream.hpp"
 #include "pluginterfaces/vst/ivstmessage.h"
@@ -352,6 +353,11 @@ public:
     }
     const ParameterSnapshot* parameter_snapshot() const {
         return host?host->snapshot():nullptr;
+    }
+    bool parameter_page_on_control(uint16 first,uint64 revision,ControllerParameterPage& result) {
+        if(![NSThread isMainThread]) return false;
+        return opened && host && !quarantined.load() &&
+            controller_page(controller,host->snapshot(),first,revision,result);
     }
     ProcessingParameterSnapshot processing_parameters_on_control() const {
         return host?host->processing_snapshot_on_control():ProcessingParameterSnapshot{};

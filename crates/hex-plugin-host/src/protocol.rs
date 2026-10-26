@@ -7,9 +7,15 @@ use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
 mod capture;
 mod edits;
+mod parameter_page;
 pub use edits::{
     MAX_PARAMETER_EDITS, ParameterEdit, ParameterEditKind, ParameterEdits, edit_request,
     parameter_edits,
+};
+pub use parameter_page::{
+    ControllerParameter, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE, ParameterPage,
+    ParameterPageProgress, ParameterPageQuery, ParameterPlainValue, ParameterText, parameter_page,
+    parameter_page_request,
 };
 mod flush;
 pub use capture::{capture_request, captured_state, live_capture_request, live_captured_state};

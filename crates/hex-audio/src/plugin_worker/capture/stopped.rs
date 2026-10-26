@@ -13,9 +13,13 @@ impl State {
         // running. Preserve that instance by observing the call's real terminal
         // before setProcessing(false). Existing SDK deadlines/cancellation bound
         // this drain; the sleep is only the existing control polling cadence.
-        while self.capture.is_in_flight() {
-            self.advance_capture(signal)?;
+        while self.capture.is_in_flight() || self.controller.is_in_flight() {
             if self.capture.is_in_flight() {
+                self.advance_capture(signal)?;
+            } else {
+                self.advance_controller(signal)?;
+            }
+            if self.capture.is_in_flight() || self.controller.is_in_flight() {
                 thread::sleep(Duration::from_millis(1));
             }
         }

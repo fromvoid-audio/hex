@@ -14,6 +14,46 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Query actual SDK controller metadata through the original Root effect
+    /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
+    /// replacing them. Normally stopped transport uses its joined original
+    /// worker. The caller owns the one weak token and retires it at its exact
+    /// terminal; neither admission nor copied metadata grants edit authority.
+    pub fn begin_native_source_controller_query_on_control(
+        &mut self,
+        binding: Binding,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+    ) -> Result<crate::plugin_worker::NativeWorkerControllerQuery, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        let result = self
+            .candidate_root
+            .begin_native_controller_query(binding, query)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        Ok(result)
+    }
+    /// Consume only the exact source/worker query terminal. Recheck the owning
+    /// document/device context before using these copied observations in UI.
+    /// Source revocation wins over a late result; close suppresses delivery.
+    pub fn poll_native_source_controller_query_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerControllerQuery,
+    ) -> Result<crate::plugin_worker::NativeWorkerControllerProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_native_controller_query(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        Ok(result)
+    }
     /// Request/read ordered native controller callbacks through the actual
     /// original effect or loan control. None is pending; Some consumes at most
     /// eight receipts. Call regularly while observing an editor: bounded full

@@ -230,6 +230,14 @@ int main(int argc,char** argv) {
             std::atomic<LiveCaptureStage> live_stage{LiveIdle};
             hex_instance::CapturedState live_state{};
             uint32_t live_failure=0;
+            // One main-produced copied page. Processing only publishes/polls
+            // this request and never waits for the SDK getter or shares a
+            // controller pointer. This bounded slot is separate from Host.
+            enum PageStage {PageIdle,PageFeedbackPending,PageRequested,PageComplete,PageFailed};
+            std::atomic<PageStage> page_stage{PageIdle};
+            uint16_t page_first=0;uint64_t page_revision=0;
+            hex_instance::ControllerParameterPage parameter_page{};
+            uint32_t page_failure=0;
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -284,6 +292,54 @@ int main(int argc,char** argv) {
                         }
                         return true;
                     };
+                    uint64_t page_operation=0;
+                    const auto page_reply=[&](const wire::Packet& request,bool poll) {
+                        auto state=page_stage.load(std::memory_order_acquire);
+                        if(!poll) {
+                            if(state!=PageIdle || page_operation==std::numeric_limits<uint64_t>::max() ||
+                                request.capture_operation!=page_operation+1) return false;
+                            page_first=request.parameter_first;page_revision=request.parameter_revision;
+                            // A previous PCM result may still be waiting for
+                            // the main-lane feedback slot. Publish it before
+                            // allowing the controller to answer this query.
+                            ++page_operation;page_stage.store(parameter_feedback.count?PageFeedbackPending:PageRequested,std::memory_order_release);
+                        } else if(state==PageIdle || request.capture_operation!=page_operation ||
+                                  request.parameter_first!=page_first || request.parameter_revision!=page_revision) return false;
+                        if(state==PageFailed) {worker_failure.store(page_failure);return false;}
+                        const bool complete=poll && state==PageComplete;
+                        wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
+                        wire::number(body,page_operation,8);
+                        wire::number(body,complete?(parameter_page.changed?2:1):0,1);
+                        if(complete) {
+                            wire::number(body,parameter_page.revision,8);wire::number(body,parameter_page.total,2);
+                            if(!parameter_page.changed) {
+                                wire::number(body,parameter_page.first,2);wire::number(body,parameter_page.count,1);
+                                const auto number=[&](double value) {
+                                    uint64_t bits=0;std::memcpy(&bits,&value,8);wire::number(body,bits,8);
+                                };
+                                const auto plain=[&](double value) {
+                                    const auto kind=std::isnan(value)?3:(std::isinf(value)?(value<0?1:2):0);
+                                    wire::number(body,kind,1);number(kind?0:value);
+                                };
+                                const auto text=[&](const String128& value) {
+                                    for(const auto unit:value) wire::number(body,static_cast<uint16>(unit),2);
+                                };
+                                for(uint16 n=0;n<parameter_page.count;++n) {
+                                    const auto& value=parameter_page.parameters[n];const auto& info=value.info;
+                                    wire::number(body,info.id,4);wire::number(body,static_cast<uint32>(info.flags),4);
+                                    wire::number(body,static_cast<uint32>(info.stepCount),4);wire::number(body,static_cast<uint32>(info.unitId),4);
+                                    number(value.normalized);number(info.defaultNormalizedValue);
+                                    plain(value.plain);plain(value.default_plain);
+                                    text(info.title);text(info.shortTitle);text(info.units);
+                                    wire::number(body,(value.formatted?1:0)|(value.default_formatted?2:0),1);
+                                    text(value.display);text(value.default_display);
+                                }
+                            }
+                        }
+                        if(!wire::send(channel,"HXVIMD01",body)) return false;
+                        if(complete) page_stage.store(PageIdle,std::memory_order_release);
+                        return true;
+                    };
                     wire::Packet packet{};
                     std::array<float,wire::max_frames> left{},right{},output_left{},output_right{};
                     float* input_pointers[]={left.data(),right.data()};float* output_pointers[]={output_left.data(),output_right.data()};
@@ -296,7 +352,7 @@ int main(int argc,char** argv) {
                     // request to report its error, without another DSP call.
                     // This keeps the failure reply paired with that exchange
                     // instead of racing a later write against child exit.
-                    while(started && (!worker_failure.load() || live_stage.load(std::memory_order_acquire)==LiveFailed)) {
+                    while(started && (!worker_failure.load() || live_stage.load(std::memory_order_acquire)==LiveFailed || page_stage.load(std::memory_order_acquire)==PageFailed)) {
                         phase.store(1,std::memory_order_release); // receiving a complete frame
                         const auto received=packet.read(channel,*config,blocks,frames);
                         if(worker_failure.load()) break;
@@ -305,8 +361,14 @@ int main(int argc,char** argv) {
                         // retain the ordered receipt until its consumer reads.
                         drain_edit_boundaries();
                         instance.publish_parameter_feedback(parameter_feedback);
+                        if(page_stage.load(std::memory_order_acquire)==PageFeedbackPending && !parameter_feedback.count)
+                            page_stage.store(PageRequested,std::memory_order_release);
                         if(live_stage.load(std::memory_order_acquire)==LiveFeedbackPending && !parameter_feedback.count && !instance.pending_parameter_edits())
                             live_stage.store(LiveRequested,std::memory_order_release);
+                        if(received==10 || received==11) {
+                            if(!page_reply(packet,received==11)) {if(!worker_failure.load())worker_failure.store(ProtocolFailure);break;}
+                            continue;
+                        }
                         if(received==9) {
                             if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
                             continue;
@@ -351,7 +413,11 @@ int main(int argc,char** argv) {
                             phase.store(1,std::memory_order_release);
                             auto resumed=packet.read(channel,*config,blocks,frames);
                             uint64_t captures=0,flushes=0;
-                            while(resumed==5 || resumed==8 || resumed==9) {
+                            while(resumed==5 || resumed==8 || resumed==9 || resumed==10 || resumed==11) {
+                                if(resumed==10 || resumed==11) {
+                                    if(!page_reply(packet,resumed==11)) {if(!worker_failure.load())worker_failure.store(ProtocolFailure);break;}
+                                    resumed=packet.read(channel,*config,blocks,frames);continue;
+                                }
                                 if(resumed==9) {
                                     if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
                                     resumed=packet.read(channel,*config,blocks,frames);continue;
@@ -490,7 +556,7 @@ int main(int argc,char** argv) {
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());
                     // Never stop/deactivate/unload beneath a main-lane capture,
                     // even on malformed PCM, EOF or a foreign processing fault.
-                    if(live_stage.load(std::memory_order_acquire)!=LiveIdle)
+                    if(live_stage.load(std::memory_order_acquire)!=LiveIdle || page_stage.load(std::memory_order_acquire)!=PageIdle)
                         std::_Exit(worker_failure.load()?worker_failure.load():Cancelled);
                     phase.store(3,std::memory_order_release); // foreign stopping may also refuse/hang
                     if(started && !instance.stop_processing()) worker_failure.store(Teardown);
@@ -524,6 +590,16 @@ int main(int argc,char** argv) {
                     if(!instance.synchronize_parameter_feedback_on_control()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
                     instance.dispatch_host_callbacks();
                     if(instance.host_refusals()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
+                    if(page_stage.load(std::memory_order_acquire)==PageRequested) {
+                        try {
+                            // Acquire the exact prior worker publication even
+                            // if it arrived after this main iteration's sync.
+                            page_failure=instance.synchronize_parameter_feedback_on_control() &&
+                                instance.parameter_page_on_control(page_first,page_revision,parameter_page)?0:HostControl;
+                        } catch(...) {page_failure=Unexpected;}
+                        page_stage.store(page_failure?PageFailed:PageComplete,std::memory_order_release);
+                        if(page_failure) {uint32_t clear=0;worker_failure.compare_exchange_strong(clear,page_failure);}
+                    }
                     if(live_stage.load(std::memory_order_acquire)==LiveRequested) {
                         // Admission observes only that instant's queue. Main
                         // callbacks may arrive before or during SDK capture.
