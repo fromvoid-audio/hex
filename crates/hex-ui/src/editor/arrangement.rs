@@ -663,7 +663,10 @@ impl EditorView {
                 }
             }
         }
-        body
+        body.children(
+            self.time_selection_cursor_layer()
+                .map(|layer| layer.right(px(header_width))),
+        )
     }
 
     fn arrangement_surface(
@@ -799,7 +802,8 @@ impl EditorView {
                 )
                 .absolute()
                 .inset_0(),
-            );
+            )
+            .children(self.time_selection_cursor_layer());
         let row = div()
             .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
                 view.resize_row_wheel(None, event, cx);

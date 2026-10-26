@@ -1721,7 +1721,7 @@ impl EditorView {
             .min_h_0()
             .flex()
             .children([self.piano_keys(pitch_low, cx)])
-            .children([roll]);
+            .children([roll.children(self.time_selection_cursor_layer())]);
         let source_ruler = self.midi_source_ruler(cx);
         panel = panel.child(source_column).child(
             div()
