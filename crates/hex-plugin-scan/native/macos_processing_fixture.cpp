@@ -172,7 +172,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
     std::atomic<int32> block{0};
     double sample_rate=0;
-    float gain=1;
+    std::atomic<float> gain{1};
     uint32 input_latency=0,output_latency=0,restored_latency=0;
     std::array<std::array<double,2>,32> delay{};uint32 delay_cursor=0;
 #if HEX_FIXTURE_RESIDUAL_ECHO
@@ -238,11 +238,12 @@ public:
         if(fault==41)fault_hang(16);
         std::array<unsigned char,32> data{};int32 read=0;
         if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=32 || std::memcmp(data.data(),"HXPS",4))return kResultFalse;
-        std::memcpy(&gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
-        if(!std::isfinite(gain) || gain<0 || gain>4 || restored_latency>32 || (fault<37 && restored_latency))return kResultFalse;
+        float restored_gain=0;std::memcpy(&restored_gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
+        if(!std::isfinite(restored_gain) || restored_gain<0 || restored_gain>4 || restored_latency>32 || (fault<37 && restored_latency))return kResultFalse;
+        gain.store(restored_gain);
         if(fault==50)stream->write(data.data(),1,nullptr);
         if(fault==51 || fault==52) {stream->addRef();retained_stream=stream;}
-        restoration.component_gain=bits(gain);restoration.latency=static_cast<int>(restored_latency);restoration.phase=1;
+        restoration.component_gain=bits(restored_gain);restoration.latency=static_cast<int>(restored_latency);restoration.phase=1;
         trace(16);return kResultOk;
     }
     tresult PLUGIN_API getState(IBStream* stream) override {
@@ -267,7 +268,8 @@ public:
         if (fault==16) { stream->addRef();retained_stream=stream; }
         std::array<unsigned char,32> bytes{};std::memcpy(bytes.data(),"HXPS",4);
         const uint32 count=fault>=37?restored_latency:static_cast<uint32>(block);std::memcpy(bytes.data()+4,&count,4);
-        std::memcpy(bytes.data()+8,&gain,4);std::memcpy(bytes.data()+12,&sample_rate,8);
+        const auto captured_gain=gain.load();
+        std::memcpy(bytes.data()+8,&captured_gain,4);std::memcpy(bytes.data()+12,&sample_rate,8);
         bytes[20]=static_cast<unsigned char>(inputs);bytes[21]=static_cast<unsigned char>(outputs);
         std::memcpy(bytes.data()+24,&input_latency,4);std::memcpy(bytes.data()+28,&output_latency,4);
         ISizeableStream* sized=nullptr;
@@ -386,7 +388,7 @@ public:
             if (fault==11) return kResultFalse;
             gain=static_cast<float>(value);return kResultOk;
         }
-        if (!processing || data.numSamples<1 || data.numSamples>maximum || data.inputEvents || data.inputParameterChanges ||
+        if (!processing || data.numSamples<1 || data.numSamples>maximum || data.inputEvents ||
             data.numInputs!=(mode==1 || (!input && data.numInputs==0)?0:1) ||
             data.numOutputs!=(!output && data.numOutputs==0?0:1)) return kInvalidArgument;
         if (data.numInputs && (!data.inputs || data.inputs[0].numChannels!=inputs ||
@@ -395,18 +397,49 @@ public:
         if (data.numOutputs && (!data.outputs || data.outputs[0].numChannels!=outputs ||
             (precision==kSample32?!data.outputs[0].channelBuffers32:!data.outputs[0].channelBuffers64)))
             return kInvalidArgument;
+        // Independent SDK automation oracle. The previous block's final value
+        // is the implicit point at -1; jumps require adjacent old/new points.
+        std::array<std::pair<int32,ParamValue>,64> points{};int32 point_count=0;
+        if(data.inputParameterChanges) {
+            if(data.inputParameterChanges->getParameterCount()!=1) return kInvalidArgument;
+            auto* queue=data.inputParameterChanges->getParameterData(0);
+            if(!queue || queue->getParameterId()!=7) return kInvalidArgument;
+            point_count=queue->getPointCount();
+            if(point_count<1 || point_count>static_cast<int32>(points.size())) return kInvalidArgument;
+            for(int32 n=0;n<point_count;++n) {
+                auto& point=points[static_cast<size_t>(n)];
+                if(queue->getPoint(n,point.first,point.second)!=kResultOk || point.first<0 ||
+                    point.first>=data.numSamples || !std::isfinite(point.second) || point.second<0 || point.second>1 ||
+                    (n && points[static_cast<size_t>(n-1)].first>=point.first)) return kInvalidArgument;
+            }
+        }
         ++observed.blocks; // count attempted foreign DSP, including a refusal
         if (fault==28) fault_hang(9);
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
         const float scale=0.5f+static_cast<float>(block)*0.125f;
+        int32 next_point=0,left_offset=-1;double left_value=static_cast<double>(gain.load())/4.0;
+        double current_gain=gain.load();
         bool silent=true;
         for (int32 frame=0;frame<data.numSamples;++frame) {
+            if(point_count) {
+                while(next_point<point_count && points[static_cast<size_t>(next_point)].first<frame) {
+                    left_offset=points[static_cast<size_t>(next_point)].first;
+                    left_value=points[static_cast<size_t>(next_point)].second;++next_point;
+                }
+                double value=left_value;
+                if(next_point<point_count) {
+                    const auto& right_point=points[static_cast<size_t>(next_point)];
+                    value+=(right_point.second-left_value)*static_cast<double>(frame-left_offset)/
+                        static_cast<double>(right_point.first-left_offset);
+                }
+                current_gain=value*4.0;
+            }
             // Read all inputs for this sample before writing any aliased output.
             const double left=mode==1?0.25:(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
             const double right=mode==1?0.25:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
             if (output) for (int32 channel=0;channel<outputs;++channel) {
-                double value=(channel?right:left)*scale*gain;
+                double value=(channel?right:left)*scale*current_gain;
 #if HEX_FIXTURE_RESIDUAL_ECHO
                 // Original three-frame FIR echo. Store the immediate sample,
                 // not the summed result: zero input has a genuinely finite tail.
@@ -430,6 +463,14 @@ public:
 #if HEX_FIXTURE_RESIDUAL_ECHO
             residual_cursor=(residual_cursor+1)%residual.size();
 #endif
+        }
+        if(point_count) {
+            gain.store(static_cast<float>(current_gain));
+            if(data.outputParameterChanges) {
+                int32 index=-1;const ParamID id=7;
+                auto* queue=data.outputParameterChanges->addParameterData(id,index);
+                if(!queue || queue->addPoint(data.numSamples-1,current_gain/4.0,index)!=kResultOk) return kResultFalse;
+            }
         }
         if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
         if (fault==8 && output) data.outputs[0].numChannels=3;

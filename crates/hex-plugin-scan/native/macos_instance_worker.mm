@@ -206,6 +206,8 @@ int main(int argc,char** argv) {
             failure=Presentation;
             if(!final_latency || !final_tail || *final_latency!=*latency || *final_tail!=*tail) throw Refusal{}; // caller's plan became stale
             const auto hello=ready_body(*config,state,*latency,*tail,presentation,supplied,restoration.restored());
+            auto processing_parameters=instance.processing_parameters_on_control();
+            hex_instance::ParameterChanges parameter_input,parameter_output;
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             // One serialized epoch mailbox, never a second request reader. The
@@ -326,13 +328,43 @@ int main(int argc,char** argv) {
                             valid=valid && (config->inputs==2 || right[n]==0) && (config->inputs!=0 || left[n]==0);
                         }
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
+                        instance.refresh_processing_parameters(processing_parameters);
+                        if(!parameter_input.reset(packet.frames,false) || !parameter_output.reset(packet.frames,true)) {
+                            error(channel,&*config,Processing);std::_Exit(Processing);
+                        }
+                        for(size_t n=0;n<packet.parameter_count;++n) {
+                            const auto& point=packet.parameters[n];
+                            const auto* info=processing_parameters.find(point.id);
+                            if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
+                                !parameter_input.input(point.id,point.offset,point.normalized)) valid=false;
+                        }
+                        if(!valid) { worker_failure.store(ProtocolFailure);break; }
+                        if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
+                            error(channel,&*config,Processing);std::_Exit(Processing);
+                        }
+                        data.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;
+                        data.outputParameterChanges=&parameter_output;
                         data.numSamples=packet.frames;phase.store(2,std::memory_order_release);
-                        if(!instance.process(data)) { worker_failure.store(Processing);break; }
+                        const bool processed=instance.process(data);
+                        // No SDK stop/unload beneath retained or malformed
+                        // borrowed queues. Their existing process owner retires
+                        // the isolated instance without claiming rollback.
+                        const bool input_returned=parameter_input.end_sdk();
+                        const bool output_returned=parameter_output.end_sdk();
+                        if(!input_returned || !output_returned) {
+                            error(channel,&*config,Processing);std::_Exit(Processing);
+                        }
+                        if(!processed) { worker_failure.store(Processing);break; }
+                        for(size_t n=0;n<parameter_output.size();++n) {
+                            hex_instance::ParameterPoint point{};
+                            if(!parameter_output.point(n,point) || !processing_parameters.find(point.id)) valid=false;
+                        }
+                        if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         for(size_t n=0;n<packet.frames;++n) {
                             wire::sample(packet.bytes.data()+wire::header_size+n*8,output_left[n]);
                             wire::sample(packet.bytes.data()+wire::header_size+n*8+4,output_right[n]);
                         }
-                        if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
+                        if(!packet.write(channel,parameter_output)) { worker_failure.store(Cancelled);break; }
                         ++blocks;frames+=packet.frames;
                     }
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());

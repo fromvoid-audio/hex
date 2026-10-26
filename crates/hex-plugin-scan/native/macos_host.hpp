@@ -14,7 +14,19 @@ struct ParameterSnapshot {
     uint32 count=0;
     uint64 revision=0;
 };
-enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity };
+// Copied DSP-facing facts contain no controller pointers or strings. Main owns
+// the rich snapshot; its one processing reader uses these published copies.
+struct ProcessingParameterSnapshot {
+    struct Parameter { ParamID id=0; int32 steps=0,flags=0; };
+    std::array<Parameter,HOST_PARAMETER_COUNT> parameters{};
+    uint32 count=0;
+    uint64 revision=0;
+    const Parameter* find(ParamID id) const {
+        for(uint32 n=0;n<count;++n) if(parameters[n].id==id) return &parameters[n];
+        return nullptr;
+    }
+};
+enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending };
 struct HostDispatch {
     uint64 sequence=0, metadata_revision=0;
     int32 flags=0;
@@ -38,6 +50,33 @@ class Host final : public IHostApplication, public IComponentHandler {
     uint64 sequence=0;
     bool accepting=true, dispatching=false, recursive=false;
     ParameterSnapshot metadata{};
+    // Two fixed copies, one main producer and one serialized processing reader.
+    // Main may coalesce an unread Ready snapshot, never a Reading one. A raced
+    // scan defers the existing restart request; neither lane waits or allocates.
+    enum SnapshotPhase : uint8_t { Free, Writing, Ready, Reading };
+    struct ProcessingSlot {
+        std::atomic<uint8_t> phase{Free};
+        ProcessingParameterSnapshot snapshot{};
+    };
+    std::array<ProcessingSlot,2> processing_snapshots{};
+    static ProcessingParameterSnapshot compact(const ParameterSnapshot& source) {
+        ProcessingParameterSnapshot result{};result.count=source.count;result.revision=source.revision;
+        for(uint32 n=0;n<source.count;++n) {
+            const auto& parameter=source.parameters[n];
+            result.parameters[n]={parameter.info.id,parameter.info.stepCount,parameter.info.flags};
+        }
+        return result;
+    }
+    bool publish_processing_snapshot(const ProcessingParameterSnapshot& next) {
+        for(auto& slot:processing_snapshots) {
+            auto phase=slot.phase.load(std::memory_order_acquire);
+            if((phase!=Free && phase!=Ready) ||
+                !slot.phase.compare_exchange_strong(phase,Writing,std::memory_order_acq_rel)) continue;
+            slot.snapshot=next;
+            slot.phase.store(Ready,std::memory_order_release);return true;
+        }
+        return false;
+    }
     void refuse(uint32 why) { refusals.fetch_or(why,std::memory_order_relaxed); }
     static bool valid_text(const String128 value) {
         for (size_t n=0;n<128;++n) {
@@ -126,9 +165,11 @@ public:
         if (!accepting) { result.disposition=HostDisposition::Retiring; return result; }
         if (dispatching) { recursive=true; refuse(RecursiveRestart); result.disposition=HostDisposition::Recursive; return result; }
         if (!count) return result;
-        const auto request=requests[first]; first=(first+1)%requests.size(); --count;
+        const auto request=requests[first];
         result.sequence=request.sequence; result.flags=request.flags;
-        return refresh_controller_on_control(controller,result);
+        result=refresh_controller_on_control(controller,result);
+        if(result.disposition!=HostDisposition::Pending) { first=(first+1)%requests.size();--count; }
+        return result;
     }
     // Startup restoration must rescan actual controller values without
     // fabricating a plug-in restart request or IComponentHandler edit.
@@ -149,7 +190,7 @@ private:
         if (total>static_cast<int32>(staged.parameters.size())) {
             refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
         }
-        bool valid=total>=0;
+        bool valid=total>=0;uint32 bypasses=0;
         if (valid) staged.count=static_cast<uint32>(total);
         for (uint32 i=0;valid && i<staged.count;++i) {
             auto& parameter=staged.parameters[i];
@@ -157,8 +198,11 @@ private:
             if (!valid) break;
             const auto& info=parameter.info;
             valid=valid_text(info.title) && valid_text(info.shortTitle) && valid_text(info.units) &&
-                  info.stepCount>=0 && std::isfinite(info.defaultNormalizedValue) &&
+                  info.id<=0x7FFFFFFFu && info.stepCount>=0 && std::isfinite(info.defaultNormalizedValue) &&
                   info.defaultNormalizedValue>=0 && info.defaultNormalizedValue<=1;
+            valid=valid && !((info.flags&ParameterInfo::kIsReadOnly) && (info.flags&ParameterInfo::kCanAutomate)) &&
+                (!(info.flags&ParameterInfo::kIsHidden) || (info.flags&ParameterInfo::kIsReadOnly));
+            if(info.flags&ParameterInfo::kIsBypass) valid=valid && ++bypasses==1;
             for (uint32 n=0;n<i;++n) if (staged.parameters[n].info.id==info.id) valid=false;
             if (valid) {
                 parameter.value=controller->getParamNormalized(info.id);
@@ -177,6 +221,9 @@ private:
             refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
         }
         staged.revision=metadata.revision+1;
+        if(!publish_processing_snapshot(compact(staged))) {
+            result.disposition=HostDisposition::Pending;return result;
+        }
         metadata=staged;
         result.metadata_revision=metadata.revision; result.disposition=HostDisposition::Refreshed;
         return result;
@@ -185,6 +232,19 @@ public:
     // Native-control borrowed view only, valid until next dispatch or retirement.
     // A transport consumer must copy/validate its bounded data before crossing IPC.
     const ParameterSnapshot* snapshot() const { return [NSThread isMainThread]?&metadata:nullptr; }
+    ProcessingParameterSnapshot processing_snapshot_on_control() const {
+        return [NSThread isMainThread]?compact(metadata):ProcessingParameterSnapshot{};
+    }
+    void refresh_processing_snapshot(ProcessingParameterSnapshot& current) {
+        // The caller is the same single worker that invokes process/flush.
+        // Release a slot only after copying; no SDK or channel I/O spans it.
+        for(auto& slot:processing_snapshots) {
+            uint8_t phase=Ready;
+            if(!slot.phase.compare_exchange_strong(phase,Reading,std::memory_order_acq_rel)) continue;
+            if(slot.snapshot.revision>current.revision) current=slot.snapshot;
+            slot.phase.store(Free,std::memory_order_release);
+        }
+    }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }
         accepting=false; first=0; count=0;

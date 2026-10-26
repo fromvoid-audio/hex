@@ -352,6 +352,12 @@ public:
     const ParameterSnapshot* parameter_snapshot() const {
         return host?host->snapshot():nullptr;
     }
+    ProcessingParameterSnapshot processing_parameters_on_control() const {
+        return host?host->processing_snapshot_on_control():ProcessingParameterSnapshot{};
+    }
+    void refresh_processing_parameters(ProcessingParameterSnapshot& current) {
+        if(host) host->refresh_processing_snapshot(current);
+    }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
 
     bool close() {

@@ -2,6 +2,7 @@
 // plug-in stdio is disconnected before loading. No native pointer is serialized.
 #pragma once
 #include "macos_state_stream.hpp"
+#include "macos_parameters.hpp"
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -171,7 +172,9 @@ inline void sample(uint8_t* p,float value) {
     uint32_t bits=0;std::memcpy(&bits,&value,4);for(size_t n=0;n<4;++n) p[n]=static_cast<uint8_t>(bits>>(n*8));
 }
 struct Packet {
-    std::array<uint8_t,header_size+max_frames*8> bytes{};
+    std::array<uint8_t,header_size+max_frames*8+hex_instance::PARAMETER_POINT_COUNT*16> bytes{};
+    std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
+    size_t parameter_count=0;
     uint16_t frames=0;bool stop=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
@@ -186,8 +189,13 @@ struct Packet {
         stop=!std::memcmp(p,"HXVE",4);
         const bool quiesce=!std::memcmp(p,"HXVQ",4),resume=!std::memcmp(p,"HXVR",4),capture=!std::memcmp(p,"HXVC",4);
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
-        if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && std::memcmp(p,"HXVB",4)) || number(p+4,2)!=1 || number(p+8,2)) return -1;
-        for(size_t n=resume?11:10;n<16;++n) if(p[n]) return -1;
+        const bool pcm=!std::memcmp(p,"HXVB",4);
+        const auto version=number(p+4,2);
+        if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm) ||
+            (pcm?(version!=1 && version!=2):version!=1) || number(p+8,2)) return -1;
+        parameter_count=pcm && version==2?static_cast<size_t>(number(p+10,2)):0;
+        if(parameter_count>parameters.size()) return -1;
+        for(size_t n=resume?11:(pcm && version==2?12:10);n<16;++n) if(p[n]) return -1;
         for(size_t n=0;n<4;++n) if(number(p+16+n*8,8)!=config.binding[n]) return -1;
         frames=static_cast<uint16_t>(number(p+6,2));
         if(resume) {
@@ -208,10 +216,33 @@ struct Packet {
             capture_operation=number(p+header_size,8);return capture_operation?(live_start?6:(live_poll?7:5)):-1;
         }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
-        if(read_exact(fd,p+header_size,frames*8)!=1) return -1;
+        if(read_exact(fd,p+header_size,frames*8+parameter_count*16)!=1) return -1;
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
+        for(size_t n=0;n<parameter_count;++n) {
+            const auto* point=p+header_size+frames*8+n*16;
+            auto& value=parameters[n];value.offset=static_cast<int32_t>(number(point,2));
+            value.id=static_cast<uint32_t>(number(point+4,4));
+            const auto bits=number(point+8,8);std::memcpy(&value.normalized,&bits,8);
+            if(number(point+2,2) || value.offset>=frames || value.id>0x7FFFFFFFu ||
+                !std::isfinite(value.normalized) || value.normalized<0 || value.normalized>1 ||
+                (n && parameters[n-1].offset>value.offset)) return -1;
+        }
         return 1;
     }
-    bool write(int fd) const { return write_exact(fd,bytes.data(),header_size+frames*8); }
+    bool write(int fd,const hex_instance::ParameterChanges& output) {
+        if(output.size()>parameters.size()) return false;
+        bytes[4]=output.size()?2:1;bytes[5]=0;
+        bytes[10]=static_cast<uint8_t>(output.size());bytes[11]=0;
+        for(size_t n=0;n<output.size();++n) {
+            hex_instance::ParameterPoint value{};if(!output.point(n,value)) return false;
+            auto* point=bytes.data()+header_size+frames*8+n*16;
+            point[0]=static_cast<uint8_t>(value.offset);point[1]=static_cast<uint8_t>(value.offset>>8);
+            point[2]=point[3]=0;
+            for(size_t byte=0;byte<4;++byte) point[4+byte]=static_cast<uint8_t>(value.id>>(byte*8));
+            uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);
+            for(size_t byte=0;byte<8;++byte) point[8+byte]=static_cast<uint8_t>(bits>>(byte*8));
+        }
+        return write_exact(fd,bytes.data(),header_size+frames*8+output.size()*16);
+    }
 };
 } // namespace hex_instance_wire
