@@ -10,6 +10,11 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn parameter_values(
+        &self,
+    ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
+        self.worker.parameter_values_on_control()
+    }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
     }
@@ -42,6 +47,11 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn parameter_values(
+        &self,
+    ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
+        self.worker.parameter_values_on_control()
+    }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
     }

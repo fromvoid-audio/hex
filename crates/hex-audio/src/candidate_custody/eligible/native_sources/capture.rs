@@ -85,6 +85,16 @@ impl Custody {
         }
         Ok(result)
     }
+    pub(in crate::candidate_custody) fn native_parameter_values(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.parameter_values(),
+            Owner::Loaned(owner) => owner.parameter_values(),
+            _ => Err("native parameter owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn begin_live_native_capture(
         &self,
         binding: Binding,
@@ -225,6 +235,15 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    pub(crate) fn native_source_parameter_values(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.native_parameter_values(binding)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
     pub(crate) fn begin_live_native_capture(
         &self,
         binding: Binding,

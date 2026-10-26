@@ -14,6 +14,26 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Inspect latest processor parameter values through the actual original
+    /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
+    /// refuse; busy is a read refusal, not consumption or transport cancellation.
+    /// Values and their worker prefix are processing observations, not authored
+    /// edits, final callback delivery or graph/canonical installation authority.
+    pub fn native_source_parameter_values_on_control(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        let result = self
+            .candidate_root
+            .native_source_parameter_values(binding)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
     /// Admit one capture through the original Root-held effect/control,
     /// including an active callback loan or normally ended transport. Stopped
     /// capture requires the original worker's joined healthy terminal and leaves

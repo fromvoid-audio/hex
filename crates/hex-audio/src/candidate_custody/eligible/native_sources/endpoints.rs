@@ -514,4 +514,189 @@ mod tests {
             assert!(returned.error.is_none() && returned.cleanup_error.is_none());
         }
     }
+    #[test]
+    #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+    fn actual_root_parameter_segments_and_feedback_keep_original_loan_and_final_acceptance() {
+        use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+        use hex_lattice_contract::ForeignParameterPoint;
+        use std::time::{Duration, Instant};
+        if std::env::var_os("HEX_ROOT_GRAPH_PARAMETERS").is_none() {
+            let name = std::thread::current().name().unwrap().to_owned();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &name,
+                    "--ignored",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env("HEX_ROOT_GRAPH_PARAMETERS", "1")
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+            return;
+        }
+        let root = root();
+        let binding = ready(&root);
+        let (identity, prepared, configuration) = {
+            let work = lock(&root.work);
+            let Some(Owner::Effect(owner)) = work.sources.cells[0].owner.as_ref() else {
+                panic!("actual effect")
+            };
+            (
+                owner.identity(),
+                owner.prepared(),
+                owner.configuration().clone(),
+            )
+        };
+        assert!(
+            root.native_parameter_values(binding)
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        let loan = root.loan_native_endpoint(binding).unwrap();
+        assert!(
+            root.native_parameter_values(binding)
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        let mut bank = NativeEndpointBank::new().unwrap();
+        assert!(bank.install(binding.root, loan).is_ok());
+        let node = ForeignProcessorNode {
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: configuration.type_id(),
+            sample_rate: 48_000,
+            configuration: &configuration,
+            prepared,
+            bypassed: false,
+            input_gain: 1.0,
+        };
+        for block in 0..4_u64 {
+            let mut frames = [[0.5, -0.25]; 8];
+            let points = [ForeignParameterPoint {
+                frame: 2,
+                id: 7,
+                normalized: (block + 1) as f64 / 8.0,
+            }];
+            let render = || {
+                bank.begin_rendering(8).unwrap();
+                bank.process_segment_with_parameters(node, 0, &mut frames[..3], &points, None)
+                    .unwrap();
+                bank.process_segment_with_parameters(node, 3, &mut frames[3..], &[], None)
+                    .unwrap();
+                bank.finish_rendering(true).unwrap();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let measured = allocation_counter::measure(render);
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                let mut render = render;
+                render();
+            }
+            for (frame, actual) in frames.iter().enumerate() {
+                let normalized = if block < 2 {
+                    0.0
+                } else {
+                    let source = block - 2;
+                    let end = (source + 1) as f64 / 8.0;
+                    let before = if source == 0 {
+                        0.25
+                    } else {
+                        source as f64 / 8.0
+                    };
+                    before + (end - before) * (frame + 1).min(3) as f64 / 3.0
+                };
+                let gain = normalized * 4.0 * (0.5 + block.saturating_sub(2) as f64 * 0.125);
+                for (channel, sample) in actual.iter().enumerate() {
+                    let input = if channel == 0 { 0.5 } else { -0.25 };
+                    assert!(
+                        (f64::from(*sample) - input * gain).abs() < 1e-6,
+                        "block{block}/frame{frame}/channel{channel}"
+                    );
+                }
+            }
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Ok(values) = root.native_parameter_values(binding)
+                    && values.completed_blocks() == block + 1
+                {
+                    assert_eq!(
+                        values.as_slice(),
+                        &[crate::plugin_worker::NativeParameterValue {
+                            id: 7,
+                            normalized: (block + 1) as f64 / 8.0
+                        }]
+                    );
+                    break;
+                }
+                assert!(Instant::now() < until, "actual original worker feedback");
+                std::thread::yield_now();
+            }
+        }
+        assert!(
+            root.native_parameter_values(Binding {
+                epoch: binding.epoch + 1,
+                ..binding
+            })
+            .is_err()
+        );
+        {
+            let _work = lock(&root.work);
+            assert!(matches!(
+                root.native_parameter_values(binding),
+                Err("native preparation is busy")
+            ));
+        }
+        bank.begin_rendering(8).unwrap();
+        let mut refused = [[0.5, -0.25]; 8];
+        bank.process_segment_with_parameters(
+            node,
+            0,
+            &mut refused,
+            &[ForeignParameterPoint {
+                frame: 0,
+                id: 7,
+                normalized: 0.875,
+            }],
+            None,
+        )
+        .unwrap();
+        assert!(bank.finish_rendering(false).is_err());
+        assert!(
+            root.native_parameter_values(binding).is_err(),
+            "rejected epoch cannot provide live observations"
+        );
+        bank.request_epoch_return();
+        let returned = bank.take_requested(0).unwrap();
+        assert!(root.ingest_native_endpoint(returned).is_ok());
+        assert!(root.native_parameter_values(binding).is_err());
+        assert!(root.retire_native_source(binding));
+        dispose(&root, binding);
+        let returned = root.recover_native_source(binding).unwrap();
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal,PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks==4 && terminal.frames==32))
+        );
+    }
 }

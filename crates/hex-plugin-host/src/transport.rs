@@ -463,7 +463,9 @@ impl Callback {
             return Err(Fault::InvalidEvents);
         }
         if parameters.len() > MAX_PARAMETER_POINTS - stage.input_parameters
-            || !parameters.iter().all(|point| point.valid(input.len()))
+            || !parameters
+                .iter()
+                .all(|point| parameters::valid(*point, input.len()))
             || parameters
                 .windows(2)
                 .any(|pair| pair[0].frame > pair[1].frame)

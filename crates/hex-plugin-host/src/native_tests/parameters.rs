@@ -201,3 +201,78 @@ fn actual_stopped_parameter_flush_synchronizes_original_controller_without_pcm_a
     assert_eq!((terminal.blocks, terminal.frames), (2, 16));
     assert_eq!(case.observation().unwrap()[1], 0);
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_host_input_updates_controller_without_fabricating_optional_processor_feedback() {
+    for variant in [78, 79] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        let child = instance.child_id_on_control();
+        let initial = instance.ready().initial_state.clone();
+        let mut input = request(instance.configuration(), 0);
+        input
+            .parameters
+            .push(ParameterPoint {
+                frame: if variant == 78 { 0 } else { 7 },
+                id: 7,
+                normalized: 0.75,
+            })
+            .unwrap();
+        let output = instance.exchange_on_worker(input).unwrap();
+        if variant == 78 {
+            assert!(
+                output.parameters.as_slice().is_empty(),
+                "SDK output changes are optional, not a fabricated echo"
+            );
+        } else {
+            assert_eq!(
+                output.parameters.as_slice(),
+                &[ParameterPoint {
+                    frame: 0,
+                    id: 7,
+                    normalized: 0.25
+                }],
+                "preserve actual early processor feedback"
+            );
+        }
+        for (n, actual) in output.pcm[..8].iter().enumerate() {
+            let gain = if variant == 78 {
+                3.0
+            } else if n == 0 {
+                1.0
+            } else {
+                1.0 + 2.0 * (n + 1) as f32 / 8.0
+            };
+            for (actual, source) in actual.iter().zip(input.pcm[n]) {
+                assert!((*actual - source * 0.5 * gain).abs() < 1e-6);
+            }
+        }
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+        assert_eq!(
+            &decode(&captured).unwrap().component.unwrap()[8..12],
+            &3.0_f32.to_le_bytes()
+        );
+        assert_eq!(
+            case.restore_observation()[6],
+            i32::from_le_bytes(3.0_f32.to_le_bytes()),
+            "main controller must receive latest host input, with no echo or earlier output (variant{variant})"
+        );
+        assert_eq!(stopped.child_id_on_control(), child);
+        assert_eq!(stopped.completed_blocks(), 1);
+        assert_eq!(
+            &decode(&initial).unwrap().component.unwrap()[8..12],
+            &1.0_f32.to_le_bytes()
+        );
+        assert!(stopped.retire_on_control().unwrap().status.success());
+        assert_eq!(case.observation().unwrap()[1], 0);
+    }
+}

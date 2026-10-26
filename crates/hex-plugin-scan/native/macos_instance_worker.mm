@@ -399,10 +399,21 @@ int main(int argc,char** argv) {
                             error(channel,&*config,Processing);std::_Exit(Processing);
                         }
                         if(!processed) { worker_failure.store(Processing);break; }
-                        for(size_t n=0;n<parameter_output.size();++n) {
-                            hex_instance::ParameterPoint point{};
-                            if(!parameter_output.point(n,point) || !processing_parameters.find(point.id) ||
-                                !parameter_feedback.put(point.id,point.normalized)) valid=false;
+                        // Both streams are globally sample-ordered. Mirror
+                        // their latest value per ID; DSP feedback wins a tie,
+                        // never a later host point. Optional output is returned
+                        // unchanged rather than manufacturing an input echo.
+                        size_t incoming=0,outgoing=0;
+                        while(incoming<packet.parameter_count || outgoing<parameter_output.size()) {
+                            hex_instance::ParameterPoint output_point{};
+                            if(outgoing<parameter_output.size() && !parameter_output.point(outgoing,output_point)) {
+                                valid=false;break;
+                            }
+                            const bool use_input=incoming<packet.parameter_count &&
+                                (outgoing==parameter_output.size() || packet.parameters[incoming].offset<=output_point.offset);
+                            const auto point=use_input?packet.parameters[incoming++]:output_point;
+                            if(!use_input) ++outgoing;
+                            if(!processing_parameters.find(point.id) || !parameter_feedback.put(point.id,point.normalized)) valid=false;
                         }
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         for(size_t n=0;n<packet.frames;++n) {

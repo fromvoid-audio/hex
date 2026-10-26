@@ -8,22 +8,16 @@ use super::Fault;
 /// channel and endpoint storage quotes account for its actual size.
 pub const MAX_PARAMETER_POINTS: usize = 64;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ParameterPoint {
-    pub frame: u16,
-    pub id: u32,
-    pub normalized: f64,
+pub use hex_lattice_contract::ForeignParameterPoint as ParameterPoint;
+
+fn valid_value(point: ParameterPoint) -> bool {
+    // The upper half of the SDK ParamID range is reserved for the host.
+    point.id <= i32::MAX as u32
+        && point.normalized.is_finite()
+        && (0.0..=1.0).contains(&point.normalized)
 }
-impl ParameterPoint {
-    fn valid_value(self) -> bool {
-        // The upper half of the SDK ParamID range is reserved for the host.
-        self.id <= i32::MAX as u32
-            && self.normalized.is_finite()
-            && (0.0..=1.0).contains(&self.normalized)
-    }
-    pub(super) fn valid(self, frames: usize) -> bool {
-        usize::from(self.frame) < frames && self.valid_value()
-    }
+pub(super) fn valid(point: ParameterPoint, frames: usize) -> bool {
+    usize::from(point.frame) < frames && valid_value(point)
 }
 
 /// Globally ordered offsets preserve each parameter queue's ordering. The
@@ -48,7 +42,7 @@ impl Parameters {
         &self.values[..self.len]
     }
     pub fn push(&mut self, point: ParameterPoint) -> Result<(), Fault> {
-        if !point.valid_value()
+        if !valid_value(point)
             || self
                 .as_slice()
                 .last()
@@ -72,7 +66,7 @@ impl Parameters {
         Ok(())
     }
     pub(super) fn valid(&self, frames: usize) -> bool {
-        self.as_slice().iter().all(|point| point.valid(frames))
+        self.as_slice().iter().all(|point| valid(*point, frames))
     }
 }
 

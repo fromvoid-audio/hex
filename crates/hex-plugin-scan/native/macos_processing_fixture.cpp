@@ -451,6 +451,9 @@ public:
                 }
                 current_gain=value*4.0;
             }
+            // Independent internal change at offset0; later host automation
+            // still reaches its endpoint at the end of this actual SDK block.
+            if(fault==79 && point_count && frame==0) current_gain=1.0;
             // Read all inputs for this sample before writing any aliased output.
             const double left=mode==1?0.25:(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
             const double right=mode==1?0.25:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
@@ -482,10 +485,10 @@ public:
         }
         if(point_count) {
             gain.store(static_cast<float>(current_gain));
-            if(data.outputParameterChanges) {
+            if(data.outputParameterChanges && fault!=78) {
                 int32 index=-1;const ParamID id=7;
                 auto* queue=data.outputParameterChanges->addParameterData(id,index);
-                if(!queue || queue->addPoint(data.numSamples-1,current_gain/4.0,index)!=kResultOk) return kResultFalse;
+                if(!queue || queue->addPoint(fault==79?0:data.numSamples-1,fault==79?0.25:current_gain/4.0,index)!=kResultOk) return kResultFalse;
             }
         }
         if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
@@ -548,7 +551,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>77) return false;next_fault=value;
+        if (value>79) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
