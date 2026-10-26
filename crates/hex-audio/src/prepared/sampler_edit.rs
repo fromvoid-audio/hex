@@ -22,6 +22,7 @@ pub(super) struct Fence {
     resident: AtomicBool,
     native_epoch: AtomicBool,
     ordinary_native_epoch: AtomicBool,
+    native_epoch_position_valid: AtomicBool,
     allow_playing: AtomicBool,
     playing: AtomicBool,
     position: AtomicU64,
@@ -144,6 +145,7 @@ impl Fence {
             .store(!matches!(native_epoch, NativeEpoch::None), SeqCst);
         self.ordinary_native_epoch
             .store(matches!(native_epoch, NativeEpoch::Ordinary), SeqCst);
+        self.native_epoch_position_valid.store(false, SeqCst);
         self.output.store(source.output_identity, SeqCst);
         self.generation
             .store(source.context.project_generation, SeqCst);
@@ -323,6 +325,21 @@ impl PublicationControl {
             && self.status.sampler_edit.resident.load(Acquire))
         .then(|| self.status.sampler_edit.position.load(Acquire))
     }
+    /// Cursor observed by the exact stopped native-epoch callback witness for
+    /// an ordinary playback graph. This is preparation data, not permission to
+    /// install a successor or reuse a source. A later Stop can make it stale;
+    /// the caller must preserve Stop priority through the actual installation.
+    /// Eligible constructor runtimes do not expose a cursor through this method.
+    pub fn native_epoch_position(&self, token: StoppedEditFence) -> Option<u64> {
+        (self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready
+            && self.status.sampler_edit.native_epoch_active()
+            && self
+                .status
+                .sampler_edit
+                .native_epoch_position_valid
+                .load(SeqCst))
+        .then(|| self.status.sampler_edit.position.load(SeqCst))
+    }
     /// Playback state from the same callback witness as `arrangement_edit_position`.
     pub fn arrangement_edit_playing(&self, token: StoppedEditFence) -> Option<bool> {
         self.arrangement_edit_position(token)
@@ -381,6 +398,19 @@ impl Callback {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.status.sampler_edit.native_epoch.load(Acquire) {
             let source = self.current_native_epoch_fence_source();
+            if self.status.sampler_edit.ack.load(SeqCst) != operation {
+                let active = self.active.as_ref().and_then(ActivePublication::legacy);
+                self.status
+                    .sampler_edit
+                    .native_epoch_position_valid
+                    .store(active.is_some() && source.is_some(), SeqCst);
+                if let Some(active) = active {
+                    self.status
+                        .sampler_edit
+                        .position
+                        .store(active.playback.position(), SeqCst);
+                }
+            }
             let playing = match self.active.as_ref() {
                 Some(ActivePublication::Eligible(active)) => active
                     .runtime()

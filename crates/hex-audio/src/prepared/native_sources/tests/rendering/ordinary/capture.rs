@@ -4,7 +4,7 @@ use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn paused_original_source_uses_stopped_sdk_flush_without_advancing_pcm_or_project() {
+fn paused_original_source_flush_reinstalls_at_witnessed_position() {
     if std::env::var_os("HEX_PAUSED_PARAMETER_DRIVER").is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -81,6 +81,8 @@ fn paused_original_source_uses_stopped_sdk_flush_without_advancing_pcm_or_projec
             f.control.stopped_edit_fence_state(fence),
             StoppedEditFenceState::Ready
         );
+        let witnessed_position = f.control.native_epoch_position(fence).unwrap();
+        assert_eq!(witnessed_position, position);
         f.control
             .return_stopped_ordinary_native_epoch_runtime(source, fence)
             .unwrap();
@@ -168,14 +170,71 @@ fn paused_original_source_uses_stopped_sdk_flush_without_advancing_pcm_or_projec
                 .stage_native_source_state_snapshot_on_control(next, &snapshot)
         })
         .unwrap();
+        epoch::on_control(|| f.control.publish_native_source_endpoint(next));
+        allocation_free(|| {
+            f.data
+                .owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+        let device = f
+            .editor
+            .project()
+            .tracks()
+            .iter()
+            .flat_map(|track| track.devices())
+            .chain(
+                f.editor
+                    .project()
+                    .return_tracks()
+                    .iter()
+                    .flat_map(|bus| bus.devices()),
+            )
+            .chain(f.editor.project().main_devices())
+            .find(|device| device.id().value() == next.instance)
+            .unwrap()
+            .id();
+        let (_, mut candidate) = f
+            .editor
+            .execute_prepared(
+                Command::ReplaceDeviceState {
+                    device,
+                    state: snapshot.state().clone(),
+                },
+                |project| {
+                    compile_captured_project(&f.control, next, project, &f.media, &f.resources)
+                },
+            )
+            .unwrap();
+        candidate
+            .try_apply_action(hex_engine::PlaybackAction::Transport(
+                PlaybackCommand::Seek(witnessed_position),
+            ))
+            .unwrap();
+        // This low-level fixture retains the old publication context; the
+        // desktop canonical next-revision admission remains separate work.
+        let revision = publish(
+            &mut f.control,
+            candidate,
+            PublicationPolicy::InstallUnderNativeEpoch(fence),
+        );
+        assert_eq!(block(&mut f), [[0.0; 2]; 8]);
+        assert_eq!(f.control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(f.control.status.position.load(Acquire), position);
+        assert!(!f.control.status.playing.load(Acquire));
         snapshot_action(|| {
             f.control
-                .finalize_native_source_state_snapshot_on_control(next, &snapshot, false)
+                .finalize_native_source_state_snapshot_on_control(next, &snapshot, true)
         })
         .unwrap();
-        assert_eq!(f.control.status.position.load(Acquire), position);
+        let committed = f.editor.project().clone();
+        assert_eq!(committed.device(device).unwrap().state(), snapshot.state());
+        assert!(f.editor.undo());
         assert_eq!(f.editor.project(), &canonical);
+        assert!(f.editor.redo());
+        assert_eq!(f.editor.project(), &committed);
         f.control.release_stopped_edit_fence(fence);
+        assert_eq!(f.control.native_epoch_position(fence), None);
         let returned = dispose(f);
         assert!(
             matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
