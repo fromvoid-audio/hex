@@ -759,7 +759,7 @@ impl EditorView {
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
-                .child(pointer_layer)
+                .children([pointer_layer])
                 .children(handle)
                 .child(row),
         )
