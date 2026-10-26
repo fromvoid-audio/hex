@@ -678,3 +678,7 @@ mod tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "gain_recording/tests.rs"]
+mod tests;
