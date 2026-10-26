@@ -356,3 +356,10 @@ latches on affected Divs. It uses the existing cached/deferred observer range an
 never invokes an action or synthesizes mouse-up. The initiating press's ancestor
 selection still runs; an ancestor cannot retain that press and begin a phantom
 drag after the exclusive owner releases, including without an intervening repaint.
+
+Pointer-lease Escape sequencing: dispatch the existing keyboard path before
+retiring any remaining lease. Gesture key handlers still see held state and keep
+their cancellation/propagation guards; a handled Escape cannot accidentally reach
+the parent after premature model cancellation. The terminal still runs outside
+paint in that same input turn, and idempotent widget cancellation retains one
+typed terminal. Other loss/normal release paths and native APIs are unchanged.

@@ -3903,7 +3903,9 @@ impl Window {
     /// mouse input goes only to `listener`, including movement outside its bounds;
     /// keyboard dispatch stays unchanged. The initiating press keeps its normal
     /// propagation, including gesture-owned ancestor selection. Subsequent mouse
-    /// input is exclusive. Refuses a different owner, an absent or
+    /// input is exclusive. Escape reaches existing key handlers before lease
+    /// retirement, preserving their cancellation/propagation guards. Refuses a
+    /// different owner, an absent or
     /// mismatched press, and an existing typed drag. Call before mutating the gesture.
     ///
     /// The owner must call `renew_pointer_capture` while painting its held gesture.
@@ -4032,9 +4034,6 @@ impl Window {
             {
                 self.cancel_pointer_capture(cx);
             }
-            PlatformInput::KeyDown(key) if key.keystroke.key == "escape" => {
-                self.cancel_pointer_capture(cx);
-            }
             _ => {}
         }
         match &event {
@@ -4156,6 +4155,15 @@ impl Window {
         if keyboard_hover_transition {
             self.dispatch_pointer_hover(cx);
             self.invalidate_pointer_hover();
+        }
+
+        if let PlatformInput::KeyDown(key) = &event
+            && key.keystroke.key == "escape"
+        {
+            // Existing widget key handlers must see their held state so their
+            // cancellation/propagation guards still run. Retire any remaining
+            // lease afterward; the owner may already have cancelled its model.
+            self.cancel_pointer_capture(cx);
         }
 
         if let PlatformInput::MouseUp(up) = &event {
