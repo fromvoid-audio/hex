@@ -6517,6 +6517,7 @@ mod sampler_native_ui_protocol_tests {
                 view.device_gesture
                     .acknowledge(&hex_session::device_gesture::GestureAck {
                         preview_retained: false,
+                        source_lost: false,
                         key,
                         phase: hex_session::device_gesture::GesturePhase::Begin,
                         sequence: 0,

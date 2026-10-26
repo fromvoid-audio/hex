@@ -16,6 +16,9 @@ pub fn dispatch_numeric_gesture(
     phase: NumericEventPhase,
     value: ParameterValue,
 ) -> Result<(), &'static str> {
+    if matches!(target, GestureTarget::PluginParameter { .. }) {
+        return Err("plugin parameters require lossless sdk conversion");
+    }
     // Delayed events from a different control must never address whichever
     // gesture happens to be active now. Incarnation checks remain with bindings.
     if phase != NumericEventPhase::Begin
@@ -38,6 +41,9 @@ pub fn commit_owned_numeric_edit(
     target: GestureTarget,
     finalized: &NumericControlFinalValue,
 ) -> Result<(), &'static str> {
+    if matches!(target, GestureTarget::PluginParameter { .. }) {
+        return Err("plugin parameters require lossless sdk conversion");
+    }
     if !finalized.explicit_edit
         && finalized.value == finalized.previous
         && view.device_gesture.snapshot().is_none()
@@ -82,7 +88,8 @@ pub fn commit_owned_numeric_edit(
                 return Err("paired parameter edits use the graph gesture");
             }
             GestureTarget::DeviceParameterSnapshot { .. }
-            | GestureTarget::EqNodeCreation { .. } => {
+            | GestureTarget::EqNodeCreation { .. }
+            | GestureTarget::PluginParameter { .. } => {
                 return Err("snapshot parameter edits use the harmonic gesture");
             }
             GestureTarget::ReturnSend {
