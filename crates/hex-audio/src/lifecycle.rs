@@ -203,6 +203,9 @@ impl Drop for StreamOwner {
         if let Some(reaper) = retirement.spectrum_reaper.as_ref() {
             reaper.request_stop();
         }
+        if let Some(native) = retirement.native.as_ref() {
+            native.fail_scalar_receipts();
+        }
         let mut quarantine = match QUARANTINE.lock() {
             Ok(guard) => guard,
             Err(poison) => poison.into_inner(),

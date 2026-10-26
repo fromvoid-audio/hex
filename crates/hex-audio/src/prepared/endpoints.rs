@@ -632,6 +632,13 @@ impl ClientEndpoints {
             .as_ref()
             .map_or(Some(None), |reader| reader.native_identity().map(Some))
     }
+    pub(crate) fn matches_retired_scalar_output(
+        &self,
+        status_identity: usize,
+        output: u64,
+    ) -> bool {
+        Arc::as_ptr(&self.status) as usize == status_identity && self.output_identity == output
+    }
     pub(crate) fn matches(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
     }

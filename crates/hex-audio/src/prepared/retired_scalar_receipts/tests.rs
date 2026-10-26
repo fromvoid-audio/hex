@@ -31,7 +31,7 @@ fn native_late_finished_survives_close_and_both_guard_release_orders_once() {
     let _serial = crate::prepared::candidate_tests::serial();
     for errors_first in [false, true] {
         let (control, callback, target) =
-            crate::device_native_parameter_input_tests::fixture(false);
+            crate::device::native_parameter_input_tests::fixture(false);
         let root = control.native_candidate_root();
         let (mut data, errors, terminals, mut client, mut publication) =
             reserve_native_worker(control, callback, None);
@@ -44,7 +44,7 @@ fn native_late_finished_survives_close_and_both_guard_release_orders_once() {
         client
             .native_parameter_begin(
                 target,
-                crate::device_native_parameter_input_tests::value(-6.0),
+                crate::device::native_parameter_input_tests::value(-6.0),
             )
             .unwrap();
         let mut output = [[0.0; 2]; 16];
@@ -100,7 +100,7 @@ fn native_late_finished_survives_close_and_both_guard_release_orders_once() {
 #[test]
 fn missing_actual_terminal_is_interrupted_and_failure_publication_is_once_only() {
     let _serial = crate::prepared::candidate_tests::serial();
-    let (control, callback, target) = crate::device_native_parameter_input_tests::fixture(false);
+    let (control, callback, target) = crate::device::native_parameter_input_tests::fixture(false);
     let root = control.native_candidate_root();
     let (data, errors, terminals, mut client, mut publication) =
         reserve_native_worker(control, callback, None);
@@ -113,7 +113,7 @@ fn missing_actual_terminal_is_interrupted_and_failure_publication_is_once_only()
     client
         .native_parameter_begin(
             target,
-            crate::device_native_parameter_input_tests::value(-6.0),
+            crate::device::native_parameter_input_tests::value(-6.0),
         )
         .unwrap();
     let mut token = client.close_retaining_native_parameter_receipts().unwrap();

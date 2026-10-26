@@ -570,9 +570,9 @@ impl NativeRetirement {
                 return Ok(false);
             }
             let client = self.client.as_mut().ok_or(())?;
-            if self.scalar_release_status != Some(Arc::as_ptr(&client.status) as usize)
-                || client.output_identity != self.root.root_id()
-            {
+            if !self.scalar_release_status.is_some_and(|identity| {
+                client.matches_retired_scalar_output(identity, self.root.root_id())
+            }) {
                 return Err(());
             }
             // No destructor precedes the copied result for a selected retired client.
