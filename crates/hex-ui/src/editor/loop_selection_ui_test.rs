@@ -1488,6 +1488,11 @@ fn section_loop_focus_respects_held_foreground_automation_input(cx: &mut TestApp
         assert!(v.automation_view.enabled);
         v.state.as_ref().unwrap().project.tracks()[0].id()
     });
+    editor.update(&mut visual, |v, cx| {
+        v.gain_lane.track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
     let selector =
         Box::leak(format!("arrangement-automation-plot-{}", track.value()).into_boxed_str());
     let plot = visual.debug_bounds(selector).unwrap();

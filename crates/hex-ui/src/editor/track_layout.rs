@@ -170,6 +170,7 @@ impl EditorView {
             || self.gain_numeric_editing(cx)
             || self.track_gain_controls.has_pending_draft(cx)
             || self.gain_lane.pointer_is_active()
+            || self.automation_view.devices.pointer_active()
             || self.clip_numeric_editing(cx)
             || self.project_open.busy()
             || self.pending_open_path.is_some()
@@ -211,7 +212,7 @@ impl EditorView {
     pub(super) fn track_resize_active(&self) -> bool {
         self.track_layout.drag.is_some()
     }
-    pub(super) fn track_height(&self, track: TrackId) -> f32 {
+    pub(super) fn track_body_height(&self, track: TrackId) -> f32 {
         self.track_layout
             .active_heights()
             .get(&track)
@@ -221,6 +222,16 @@ impl EditorView {
             } else {
                 TRACK_ROW_HEIGHT
             })
+    }
+    pub(super) fn track_height(&self, track: TrackId) -> f32 {
+        self.track_body_height(track)
+            + if self.automation_view.enabled {
+                self.automation_view
+                    .devices
+                    .extra_height(super::device_panel::DevicePanelOwner::Track(track))
+            } else {
+                0.0
+            }
     }
     /// Visibility can change with active-track selection without a project edit.
     pub(super) fn invalidate_arrangement_track_layout(&mut self) {
@@ -410,7 +421,10 @@ impl EditorView {
         } else {
             self.maximum_header_width()
         };
-        let original = track.map_or_else(|| self.track_header_width(), |id| self.track_height(id));
+        let original = track.map_or_else(
+            || self.track_header_width(),
+            |id| self.track_body_height(id),
+        );
         if !self.capture_track_resize(track, revision, window, cx) {
             return;
         }
