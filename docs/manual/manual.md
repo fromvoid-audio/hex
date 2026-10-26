@@ -134,7 +134,11 @@ media remains available, and undo restores the previous tempo and clip extents.
 with the computer midi keyboard off, **l** or **w** sets and enables a loop around
 selected clips, a time selection, or the selected main sections. pressing again
 with the same bounds toggles looping off or on, retaining the range. with no
-selection, these keys toggle the existing loop. **command+l** uses the same action.
+selection, these keys toggle the existing loop. **command+l** toggles the active
+transport loop without changing its bounds. when starting playback with space,
+an enabled loop provides its beginning as the play-start position, even when the
+edit cursor or time selection is outside it. disabling the loop restores the
+normal time-selection and edit-cursor start behavior.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -694,6 +698,8 @@ the complete edit.
 | open project | command+o |
 | save / save as | command+s / command+shift+s |
 | play or pause / stop | space / escape |
+| set loop from selection / toggle matching loop | l / w |
+| toggle active transport loop | command+l |
 | import audio | command+i |
 | add track | command+t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
