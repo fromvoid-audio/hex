@@ -235,7 +235,7 @@ impl EditorView {
             .midi_stroke
             .as_ref()
             .map(|stroke| stroke.shared_preview());
-        let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
+        let draw_creation = self.displayed_midi_creation();
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
         let draw_step = self.midi_step_preview();
