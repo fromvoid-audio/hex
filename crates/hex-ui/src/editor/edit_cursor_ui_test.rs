@@ -1541,6 +1541,12 @@ fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppCon
 
 #[gpui::test]
 fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut TestAppContext) {
+    for enabled in [false, true] {
+        assert_space_restart_policy(&mut cx.new_app(), enabled);
+    }
+}
+
+fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, _) = audio_project();
     let mut model = Editor::new(project, 8).unwrap();
@@ -1548,7 +1554,7 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
         .execute(Command::SetLoopRegion {
             start: 32_000,
             end: 64_000,
-            enabled: true,
+            enabled,
         })
         .unwrap();
     let project = model.project().clone();
@@ -1579,8 +1585,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(28_000)),
-            "reverse time selections restart from their normalized start"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 28_000 }
+            )),
+            "active loop wins; otherwise reverse time selection supplies its normalized start"
         );
     });
 
@@ -1600,8 +1608,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
-            "a point selection falls back to the edit cursor"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "active loop wins; otherwise a point selection falls back to the edit cursor"
         );
     });
 
@@ -1617,8 +1627,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(0)),
-            "no selection or edit cursor starts at project beginning"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 0 }
+            )),
+            "active loop wins; otherwise no selection or cursor starts at project beginning"
         );
     });
 
@@ -1661,12 +1673,14 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
-            "Space after Pause restarts from the edit cursor, not the paused playhead"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "Space after Pause uses active loop or edit cursor rather than the paused playhead"
         );
         assert_eq!(
             view.state.as_ref().unwrap().project.loop_region(),
-            Some(hex_project::LoopRegion::new(32_000, 64_000, true).unwrap())
+            Some(hex_project::LoopRegion::new(32_000, 64_000, enabled).unwrap())
         );
     });
 

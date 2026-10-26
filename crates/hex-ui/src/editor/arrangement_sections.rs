@@ -2684,7 +2684,7 @@ mod tests {
         visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        for (key, start, end) in [("l", 192_000, 288_000), ("cmd-l", 0, 288_000)] {
+        for (key, start, end) in [("l", 192_000, 288_000), ("w", 0, 288_000)] {
             if start == 0 {
                 let intro = editor.read_with(cx, |v, _| position(v, 2));
                 let shift = Modifiers {
