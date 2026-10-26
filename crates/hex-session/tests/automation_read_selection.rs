@@ -177,7 +177,11 @@ fn stamped_base_edits_keep_nonautomatable_effects_and_retained_instruments_edita
             name: "instrument".into(),
             before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
-            state: hex_project::default_instrument_state().unwrap(),
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                DeviceTypeId::from_static("hex.instrument.operator"),
+            )
+            .unwrap(),
         }),
     );
     let device = event
