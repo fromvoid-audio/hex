@@ -124,10 +124,38 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
         self.prepare_with_gain(
-            project, sink, media, table, transforms, waveforms, None, context,
+            project, sink, media, table, transforms, waveforms, None, None, context,
         )
     }
-    #[allow(clippy::too_many_arguments)] // Existing compile inputs plus one transient raw-fader target.
+    /// Validate a canonical tuning transition before Arc publication. Explicit
+    /// tuning previews/commits also retain the family when returning exactly to
+    /// the canonical value; document replacement never enters this path.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_transition(
+        &self,
+        source: &Project,
+        project: &Project,
+        explicit_tuning: bool,
+        sink: &mut dyn WorkerAudioSink,
+        media: &MediaBank,
+        table: Arc<hex_engine::SineTable>,
+        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+        waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<Snapshot, SessionError> {
+        self.prepare_with_gain(
+            project,
+            sink,
+            media,
+            table,
+            transforms,
+            waveforms,
+            None,
+            Some((source, explicit_tuning)),
+            context,
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // Compile inputs plus raw-fader and exact canonical tuning source.
     fn prepare_with_gain(
         &self,
         project: &Project,
@@ -137,6 +165,7 @@ impl Inputs<'_> {
         transforms: &hex_engine::audio_transform::AudioTransformPreparation,
         waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
         gain_recording: Option<hex_project::TrackId>,
+        tuning_source: Option<(&Project, bool)>,
         context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
@@ -238,6 +267,21 @@ impl Inputs<'_> {
                     "host effect compiler result differs from its invocation",
                 ));
             }
+        };
+        let prepared = if let Some((source, explicit)) = tuning_source {
+            match self.current {
+                Some(current) if explicit => {
+                    prepared.with_tuning_continuation_from(project, source, &current.prepared)?
+                }
+                previous => crate::tuning_prepared_transition(
+                    prepared,
+                    source,
+                    project,
+                    previous.map(|snapshot| snapshot.prepared.as_ref()),
+                )?,
+            }
+        } else {
+            prepared
         };
         let prepared = match gain_recording {
             Some(track) => prepared.arm_gain_recording(project, track)?,
@@ -1494,9 +1538,11 @@ impl Session {
     ) -> Result<(Arc<Project>, Snapshot), SessionError> {
         let inputs = self.resident_seek_inputs(admission, Some(current), None)?;
         let mut editor = hex_project::Editor::new(self.project().clone(), 1)?;
-        let (_, prepared) = editor.execute_prepared_transition(command, |_, candidate| {
-            let mut snapshot = inputs.prepare(
+        let (_, prepared) = editor.execute_prepared_transition(command, |source, candidate| {
+            let mut snapshot = inputs.prepare_transition(
+                source,
                 candidate,
+                matches!(identity, resident_preview::Identity::Tuning(_)),
                 sink,
                 &self.media_bank(),
                 self.sine_table(),
@@ -1543,6 +1589,7 @@ impl Session {
             &self.audio_transforms,
             &self.audio_clip_waveforms,
             Some(track),
+            None,
             context,
         )?;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
@@ -1831,6 +1878,8 @@ impl Session {
             &transition,
             Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
         );
+        let explicit_tuning = matches!(&transition, Transition::Command(command)
+            if matches!(command.as_ref(), Command::SetTuning(..)));
         let prepare = |source: &Project, project: &Project| {
             let context = if source == project {
                 hex_engine::AudioSourceContext {
@@ -1840,8 +1889,17 @@ impl Session {
             } else {
                 context
             };
-            let mut snapshot =
-                inputs.prepare(project, sink, &media, table, transforms, waveforms, context)?;
+            let mut snapshot = inputs.prepare_transition(
+                source,
+                project,
+                explicit_tuning,
+                sink,
+                &media,
+                table,
+                transforms,
+                waveforms,
+                context,
+            )?;
             if let Some(frame) = stopped_bounce_frame {
                 inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
             } else if let Some(cursor) = stopped_cursor {

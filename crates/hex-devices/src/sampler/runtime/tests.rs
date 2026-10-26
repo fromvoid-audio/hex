@@ -996,10 +996,15 @@ fn retarget_refuses_effective_coordinate_source_velocity_release_and_budget_chan
     let mut changed = settings;
     changed.velocity_amount = 0.5;
     push("velocity", changed, source_view, 4, 259, &tuning);
-    let mut frequencies = *tuning.frequencies();
-    frequencies[60] *= 1.5;
-    let altered_tuning = hex_lattice::TuningTable::new(frequencies).unwrap();
-    push("pitch step", settings, source_view, 4, 259, &altered_tuning);
+    let mut changed = settings;
+    changed.root_note = 61;
+    push("authored root", changed, source_view, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.transpose_semitones = 1.0;
+    push("authored transpose", changed, source_view, 4, 259, &tuning);
+    let mut changed = settings;
+    changed.detune_cents = 15.0;
+    push("authored detune", changed, source_view, 4, 259, &tuning);
     push("voice capacity", settings, source_view, 3, 259, &tuning);
     push("event capacity", settings, source_view, 4, 258, &tuning);
     for (name, target, target_view) in cases {
@@ -1056,4 +1061,244 @@ fn retarget_finished_one_shot_never_retriggers_without_a_new_note_on() {
     let mut audible = [[0.0; 2]; 4];
     process(&mut next, &[on(0, 2, 60)], &mut audible, &resources);
     assert_eq!(audible, [[2.0; 2], [4.0; 2], [6.0; 2], [8.0; 2]]);
+}
+
+fn ratio_tuning(ratio: f64) -> hex_lattice::TuningTable {
+    let frequencies = hex_lattice::TuningTable::default()
+        .frequencies()
+        .map(|frequency| frequency * ratio);
+    hex_lattice::TuningTable::new(frequencies).unwrap()
+}
+
+#[test]
+fn gated_tuning_retargets_actual_cursor_fast_slow_and_cancel_without_replaying_prefix() {
+    let pcm = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region { start: 0, end: 8 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(settings.region),
+    };
+    let original = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(1.0));
+    let mut old = pair(&original);
+    let mut prefix = [[0.0; 2]; 3];
+    process(&mut old, &[on(0, 7, 60)], &mut prefix, &resources);
+    assert_eq!(prefix, [[1.0; 2], [2.0; 2], [3.0; 2]]);
+
+    let fast_factory = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(2.0));
+    let mut fast = pair(&fast_factory);
+    assert!(!fast.can_inherit_from(&old));
+    fast.retarget_from(&old, target_proof(&fast_factory).as_ref())
+        .unwrap();
+    let mut fast_pcm = [[0.0; 2]; 4];
+    process(&mut fast, &[], &mut fast_pcm, &resources);
+    assert_eq!(
+        fast_pcm,
+        [[4.0; 2], [6.0; 2], [8.0; 2], [2.0; 2]],
+        "source cursor3 survives; only future steps double"
+    );
+
+    let slow_factory = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(0.5));
+    let mut slow = pair(&slow_factory);
+    slow.retarget_from(&fast, target_proof(&slow_factory).as_ref())
+        .unwrap();
+    let mut slow_pcm = [[0.0; 2]; 4];
+    for output in slow_pcm.chunks_mut(1) {
+        process(&mut slow, &[], output, &resources);
+    }
+    assert_eq!(
+        slow_pcm,
+        [[4.0; 2], [4.5; 2], [5.0; 2], [5.5; 2]],
+        "fractional cursor11 survives the second retune"
+    );
+
+    let mut cancelled = pair(&original);
+    cancelled
+        .retarget_from(&slow, target_proof(&original).as_ref())
+        .unwrap();
+    let mut cancel_pcm = [[0.0; 2]; 2];
+    process(&mut cancelled, &[], &mut cancel_pcm, &resources);
+    assert_eq!(
+        cancel_pcm,
+        [[6.0; 2], [7.0; 2]],
+        "cancel restores rate1 at actual cursor13, not envelope age11"
+    );
+    let mut ids = [0; 32];
+    assert_eq!(cancelled.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], 7);
+    let mut donor = [[0.0; 2]; 3];
+    process(&mut old, &[], &mut donor, &resources);
+    assert_eq!(
+        donor,
+        [[4.0; 2], [5.0; 2], [6.0; 2]],
+        "retargeting never mutates the donor"
+    );
+}
+
+#[test]
+fn gated_retuning_retires_at_actual_source_end_instead_of_age_times_new_step() {
+    let pcm = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let settings = Settings::new(Region { start: 0, end: 8 });
+    let original = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(1.0));
+    for (ratio, expected) in [
+        (2.0, vec![4.0, 6.0, 8.0]),
+        (0.5, vec![4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.0]),
+    ] {
+        let mut old = pair(&original);
+        process(&mut old, &[on(0, 7, 60)], &mut [[0.0; 2]; 3], &resources);
+        let target = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(ratio));
+        let mut next = pair(&target);
+        next.retarget_from(&old, target_proof(&target).as_ref())
+            .unwrap();
+        let mut actual = vec![[0.0; 2]; expected.len()];
+        process(&mut next, &[], &mut actual, &resources);
+        assert_eq!(
+            actual,
+            expected
+                .into_iter()
+                .map(|sample| [sample; 2])
+                .collect::<Vec<_>>(),
+            "ratio{ratio}"
+        );
+        assert!(
+            next.committed_is_quiescent(),
+            "cursor reaches region end exactly after the rendered prefix and changed-rate suffix"
+        );
+        assert_eq!(next.active_occurrence_ids(&mut []), Ok(0));
+    }
+}
+
+#[test]
+fn releasing_gated_tuning_keeps_gate_age_velocity_and_new_onsets_start_at_zero() {
+    let pcm = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region { start: 0, end: 8 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(settings.region),
+    };
+    settings.envelope.release_seconds = 4.0 / 8_000.0;
+    let original = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(1.0));
+    let mut old = pair(&original);
+    let event = NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 7,
+        pitch: 60,
+        velocity: 64,
+    };
+    process(&mut old, &[event], &mut [[0.0; 2]; 3], &resources);
+    process(&mut old, &[off(0, 7)], &mut [[0.0; 2]; 2], &resources);
+    let target = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(2.0));
+    let mut next = pair(&target);
+    next.retarget_from(&old, target_proof(&target).as_ref())
+        .unwrap();
+    let velocity = |sample: f64| (sample * (64.0 / 127.0)) as f32;
+    let mut tail = [[0.0; 2]; 4];
+    process(&mut next, &[], &mut tail, &resources);
+    assert_eq!(
+        tail,
+        [[velocity(3.0); 2], [velocity(2.0); 2], [0.0; 2], [0.0; 2]],
+        "cursor5 and gate3 survive retuning at age5"
+    );
+    assert!(next.committed_is_quiescent());
+    let mut onset = [[0.0; 2]; 4];
+    process(&mut next, &[on(0, 8, 60)], &mut onset, &resources);
+    assert_eq!(onset, [[1.0; 2], [3.0; 2], [5.0; 2], [7.0; 2]]);
+}
+
+#[test]
+fn trigger_tuning_and_output_rate_changes_refuse_without_mutating_donor_pcm() {
+    let pcm = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region { start: 0, end: 8 });
+    settings.mode = Mode::OneShot {
+        gate: GateMode::Trigger,
+    };
+    let tuning = ratio_tuning(1.0);
+    let original = prepare_retarget_settings(views[0], settings, 4, 259, &tuning);
+    let mut old = pair(&original);
+    process(&mut old, &[on(0, 7, 60)], &mut [[0.0; 2]; 3], &resources);
+    let mut frequencies = *tuning.frequencies();
+    frequencies[60] *= 2.0;
+    let tuned = hex_lattice::TuningTable::new(frequencies).unwrap();
+    let trigger = prepare_retarget_settings(views[0], settings, 4, 259, &tuned);
+    assert_eq!(
+        trigger.max_release_tail_frames(),
+        original.max_release_tail_frames()
+    );
+    let mut next = pair(&trigger);
+    assert_eq!(
+        next.retarget_from(&old, target_proof(&trigger).as_ref()),
+        Err(Error::IncompatibleHistory)
+    );
+    assert!(next.committed_is_quiescent());
+    let mut donor = [[0.0; 2]; 3];
+    process(&mut old, &[], &mut donor, &resources);
+    assert_eq!(donor, [[4.0; 2], [5.0; 2], [6.0; 2]]);
+
+    settings.mode = Mode::Classic {
+        loop_region: Some(settings.region),
+    };
+    let gated = prepare_retarget_settings(views[0], settings, 4, 259, &tuning);
+    let mut old = pair(&gated);
+    process(&mut old, &[on(0, 7, 60)], &mut [[0.0; 2]; 3], &resources);
+    let changed_rate = PreparedSamplerPlan::new(
+        SampleShape::new(8, 8_000, SampleChannels::Mono).unwrap(),
+        16_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(views[0])
+    .unwrap()
+    .prepare_runtime_on_control(4, 259, &ratio_tuning(2.0))
+    .unwrap();
+    let mut next = pair(&changed_rate);
+    assert_eq!(
+        next.retarget_from(&old, target_proof(&changed_rate).as_ref()),
+        Err(Error::IncompatibleHistory),
+        "equal effective step still cannot change output clock"
+    );
+    let mut donor = [[0.0; 2]; 2];
+    process(&mut old, &[], &mut donor, &resources);
+    assert_eq!(donor, [[4.0; 2], [5.0; 2]]);
+}
+
+#[test]
+fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
+    let pcm = [1.0, 2.0, 3.0, 4.0];
+    let views = [view(&pcm)];
+    let mut settings = Settings::new(Region { start: 0, end: 4 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(settings.region),
+    };
+    settings.envelope.release_seconds = 4.0 / 8_000.0;
+    let prepared = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(1.0));
+    // Seed the valid finite cursor/age state directly: rendering this many
+    // output frames is impractical, while the public preflight must stay bounded.
+    let age = u64::MAX - 2;
+    let position = u128::from(age) * u128::from(prepared.notes[60].unwrap().step);
+    let mut runtime = SamplerRuntime {
+        prepared,
+        active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+    };
+    runtime.active[0] = Some(ActiveVoice {
+        occurrence: 7,
+        pitch: 60,
+        gain: 1.0,
+        age,
+        position,
+        gate: None,
+    });
+    assert_eq!(
+        runtime.preflight_events(&[off(0, 7)], 1, &BorrowedDeviceResources(&views)),
+        Err(Error::InvalidEventBatch)
+    );
+    let voice = runtime.active[0].unwrap();
+    assert_eq!(
+        (voice.age, voice.position, voice.gate),
+        (age, position, None)
+    );
 }

@@ -16,24 +16,39 @@ fn limits() -> AudioStorageLedgerReservation {
     }
 }
 fn compile(editor: &Editor, sources: &ResidentDeviceAssets) -> Playback {
+    compile_with_tuning(editor, sources, None).0
+}
+fn compile_with_tuning(
+    editor: &Editor,
+    sources: &ResidentDeviceAssets,
+    previous: Option<(&Project, &PreparedRevision)>,
+) -> (Playback, Arc<PreparedRevision>) {
     let cancel = AtomicBool::new(false);
     let resources =
         PreparedDeviceResources::prepare_on_control(sources, editor.project(), 1_000_000, &cancel)
             .unwrap();
-    let revision = Arc::new(
-        PreparedRevision::prepare_with_device_resources(
-            editor.project(),
-            &BTreeMap::new(),
-            Arc::new(SineTable::new()),
-            None,
-            &hex_engine::audio_transform::AudioTransformPreparation::default(),
-            &resources,
-            100_000,
-            &cancel,
-        )
-        .unwrap(),
-    );
-    Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap()
+    let revision = PreparedRevision::prepare_with_device_resources(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+        &hex_engine::audio_transform::AudioTransformPreparation::default(),
+        &resources,
+        100_000,
+        &cancel,
+    )
+    .unwrap();
+    let revision = match previous {
+        Some((project, old)) => revision
+            .with_tuning_continuation_from(editor.project(), project, old)
+            .unwrap(),
+        None => revision,
+    };
+    let revision = Arc::new(revision);
+    let playback =
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&revision), &resources)
+            .unwrap();
+    (playback, revision)
 }
 fn source(
     editor: &mut Editor,
@@ -259,6 +274,211 @@ fn shared_sampler_scalar_retarget_keeps_live_and_authored_history_without_callba
         control.reclaim();
     }
     assert_eq!(block(&mut callback), [[0.125; 2]; 32]);
+    control.request_shutdown();
+    assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+    control.reclaim();
+}
+
+#[test]
+fn shared_sampler_tuning_preview_cancel_keeps_actual_live_cursor_without_callback_allocations() {
+    const PCM: [Frame; 4] = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.25, 0.125]];
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let Created::Asset(asset) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "tuning-phase.wav".into(),
+            sample_rate: 8000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    sources
+        .insert_on_control(
+            (
+                asset,
+                hex_engine::OwnedAudioSource::try_resident(8000, PCM.to_vec())
+                    .ok()
+                    .unwrap(),
+            ),
+            0,
+            limits(),
+            4,
+            &AtomicBool::new(false),
+            || Ok::<_, ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::AddMidiTrack {
+            name: "receiver".into(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track: receiver,
+            state:
+                hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+                    4, asset, 0.05,
+                )
+                .unwrap(),
+        })
+        .unwrap();
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    for track in [receiver, contributor] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+    input.set_key(0, Some((60, 127, 1))).unwrap();
+    let (mut initial, neutral_revision) = compile_with_tuning(&editor, &sources, None);
+    let neutral = editor.project().clone();
+    initial
+        .prepare_computer_keyboard(editor.project(), contributor, Arc::clone(&input))
+        .unwrap();
+    let (mut control, mut callback) = channel(8000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control
+        .publish_with_policy_and_context_generation(initial, PublicationPolicy::InheritRuntime, 7)
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut prefix = [[0.0; 2]; 7];
+    let render = || {
+        callback.begin_block();
+        callback.render(&mut prefix).unwrap();
+    };
+    #[cfg(feature = "allocation-probe")]
+    {
+        let count = allocation_counter::measure(render);
+        assert_eq!(
+            (
+                count.count_total,
+                count.bytes_total,
+                count.count_current,
+                count.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        let mut render = render;
+        render();
+    }
+    for (i, frame) in prefix.iter().enumerate() {
+        assert_eq!(*frame, PCM[i % 4].map(|sample| sample * 3.0));
+    }
+    control.reclaim();
+    let tune = |editor: &mut Editor, hz| {
+        let mut scale = hex_tuning::ProjectTuning::default().scale();
+        scale.set_reference(69, hz, 0).unwrap();
+        editor
+            .execute(Command::SetTuning(
+                hex_tuning::ProjectTuning::new(true, scale, hex_tuning::Audition::default())
+                    .unwrap(),
+            ))
+            .unwrap();
+    };
+    tune(&mut editor, 660.0);
+    let skipped_project = editor.project().clone();
+    let (_, skipped_revision) =
+        compile_with_tuning(&editor, &sources, Some((&neutral, &neutral_revision)));
+    tune(&mut editor, 880.0);
+    let tuned_project = editor.project().clone();
+    let (mut tuned, tuned_revision) = compile_with_tuning(
+        &editor,
+        &sources,
+        Some((&skipped_project, &skipped_revision)),
+    );
+    tuned
+        .prepare_computer_keyboard(editor.project(), contributor, Arc::clone(&input))
+        .unwrap();
+    let revision = control
+        .publish_with_policy_and_context_generation(tuned, PublicationPolicy::InheritRuntime, 7)
+        .unwrap();
+    for (i, frame) in block(&mut callback).iter().enumerate() {
+        assert_eq!(*frame, PCM[(7 + 2 * i) % 4].map(|sample| sample * 3.0));
+    }
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    assert!(!input.is_cancelled());
+    control.reclaim();
+    editor
+        .execute(Command::SetTuning(neutral.tuning()))
+        .unwrap();
+    let (mut cancelled, _) =
+        compile_with_tuning(&editor, &sources, Some((&tuned_project, &tuned_revision)));
+    cancelled
+        .prepare_computer_keyboard(editor.project(), contributor, Arc::clone(&input))
+        .unwrap();
+    control
+        .publish_with_policy_and_context_generation(cancelled, PublicationPolicy::InheritRuntime, 7)
+        .unwrap();
+    for (i, frame) in block(&mut callback).iter().enumerate() {
+        assert_eq!(*frame, PCM[(71 + i) % 4].map(|sample| sample * 3.0));
+    }
+    assert!(!input.is_cancelled());
+    control.reclaim();
+    input.set_key(0, None).unwrap();
+    for (i, frame) in block(&mut callback).iter().enumerate() {
+        for channel in 0..2 {
+            let expected = PCM[(103 + i) % 4][channel] * (3.0 - i as f32 / 400.0);
+            assert!((frame[channel] - expected).abs() < 1e-6);
+        }
+    }
+    control.command(PlaybackCommand::Pause).unwrap();
+    let paused = control.status.position.load(Acquire);
+    for _ in 0..14 {
+        block(&mut callback);
+        control.reclaim();
+    }
+    assert_eq!(control.status.position.load(Acquire), paused);
+    assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+    input.set_key(0, Some((60, 127, 2))).unwrap();
+    for (i, frame) in block(&mut callback).iter().enumerate() {
+        assert_eq!(*frame, PCM[i % 4]);
+    }
     control.request_shutdown();
     assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
     control.reclaim();

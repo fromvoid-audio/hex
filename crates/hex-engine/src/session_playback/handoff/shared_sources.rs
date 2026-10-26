@@ -109,7 +109,15 @@ impl SharedSourceHandoff {
                     .revision
                     .retained_source_configuration_matches(revision, source);
             let new_receiver = routes[new_index].id;
+            let tuning_continuity = previous
+                .revision
+                .arrangement()
+                .shared_contexts()
+                .tuning_identity()
+                == revision.arrangement().shared_contexts().tuning_identity()
+                || previous.revision.tuning_family() == revision.tuning_family();
             let retarget = !timing_changed
+                && tuning_continuity
                 && previous
                     .revision
                     .retained_source_identity_matches(revision, source)
@@ -1748,6 +1756,12 @@ mod tests {
     }
 
     fn playback(f: &Fixture) -> SessionPlayback {
+        playback_with_tuning(f, None)
+    }
+    fn playback_with_tuning(
+        f: &Fixture,
+        previous: Option<(&hex_project::Project, &PreparedRevision)>,
+    ) -> SessionPlayback {
         let cancel = AtomicBool::new(false);
         let resources = PreparedDeviceResources::prepare_on_control(
             &f.store,
@@ -1756,22 +1770,26 @@ mod tests {
             &cancel,
         )
         .unwrap();
-        let revision = Arc::new(
-            PreparedRevision::prepare_with_device_resources(
-                f.editor.project(),
-                &BTreeMap::new(),
-                Arc::new(crate::SineTable::new()),
-                None,
-                &crate::audio_transform::AudioTransformPreparation::default(),
-                &resources,
-                resources
-                    .compiler_scan_work_on_control(f.editor.project())
-                    .unwrap(),
-                &cancel,
-            )
-            .unwrap(),
-        );
-        SessionPlayback::new_with_device_resources(revision, &resources).unwrap()
+        let revision = PreparedRevision::prepare_with_device_resources(
+            f.editor.project(),
+            &BTreeMap::new(),
+            Arc::new(crate::SineTable::new()),
+            None,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            &resources,
+            resources
+                .compiler_scan_work_on_control(f.editor.project())
+                .unwrap(),
+            &cancel,
+        )
+        .unwrap();
+        let revision = match previous {
+            Some((project, old)) => revision
+                .with_tuning_continuation_from(f.editor.project(), project, old)
+                .unwrap(),
+            None => revision,
+        };
+        SessionPlayback::new_with_device_resources(Arc::new(revision), &resources).unwrap()
     }
     fn check_pcm(playback: &mut SessionPlayback, start: usize, count: usize, gain: f32) {
         let mut output = vec![[0.0; 2]; count];
@@ -2098,6 +2116,70 @@ mod tests {
             restored.apply(SessionPlaybackCommand::Play).unwrap();
             check_pcm(&mut restored, 0, 19, 0.5);
             assert_eq!(f.editor.project().source_contributors(f.source).count(), 2);
+        });
+    }
+    #[test]
+    fn shared_sampler_tuning_uses_actual_cursor_through_skipped_preview_and_cancel() {
+        on_control(|| {
+            fn tune(f: &mut Fixture, hz: f64) {
+                let mut scale = hex_tuning::ProjectTuning::default().scale();
+                scale.set_reference(69, hz, 0).unwrap();
+                f.editor
+                    .execute(Command::SetTuning(
+                        hex_tuning::ProjectTuning::new(
+                            true,
+                            scale,
+                            hex_tuning::Audition::default(),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap();
+            }
+            fn literal(runtime: &mut SessionPlayback, position: usize, step: usize, count: usize) {
+                let mut output = vec![[0.0; 2]; count];
+                for chunk in output.chunks_mut(3) {
+                    runtime.render(chunk).unwrap();
+                }
+                for (i, frame) in output.iter().enumerate() {
+                    assert_eq!(
+                        *frame,
+                        PCM[(position + i * step) % 4].map(|sample| sample * 0.5)
+                    );
+                }
+            }
+            let mut f = fixture();
+            let neutral = f.editor.project().clone();
+            let mut old = started(&f);
+            let old_revision = Arc::clone(&old.revision);
+            tune(&mut f, 660.0);
+            let skipped_project = f.editor.project().clone();
+            let skipped = playback_with_tuning(&f, Some((&neutral, &old_revision)));
+            tune(&mut f, 880.0);
+            let mut unrelated = playback(&f);
+            assert!(
+                unrelated.try_inherit_state_from(&mut old).is_err(),
+                "a fresh open is not a tuning history proof"
+            );
+            literal(&mut old, 7, 1, 5);
+            let tuned_project = f.editor.project().clone();
+            let mut tuned = playback_with_tuning(&f, Some((&skipped_project, &skipped.revision)));
+            tuned.try_inherit_state_from(&mut old).unwrap();
+            assert_eq!(tuned.mutable_instruments.iter().flatten().count(), 1);
+            assert!(tuned.tail_mutable_instruments.iter().all(Option::is_none));
+            literal(&mut tuned, 12, 2, 21);
+            f.editor
+                .execute(Command::SetTuning(neutral.tuning()))
+                .unwrap();
+            let mut cancelled = playback_with_tuning(&f, Some((&tuned_project, &tuned.revision)));
+            cancelled.try_inherit_state_from(&mut tuned).unwrap();
+            literal(&mut cancelled, 54, 1, 19);
+            assert_eq!(cancelled.mutable_instruments.iter().flatten().count(), 1);
+            assert!(
+                cancelled
+                    .tail_mutable_instruments
+                    .iter()
+                    .all(Option::is_none)
+            );
         });
     }
 }

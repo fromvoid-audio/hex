@@ -200,14 +200,16 @@ impl PreparedRevision {
                 .iter()
                 .zip(previous_revision.arrangement.tracks())
                 .any(|(authored, compiled)| {
+                    // Every contributor retains complete canonical descriptors
+                    // above; only the receiver owns compiled generator fields.
+                    let instrument = authored
+                        .instrument()
+                        .filter(|_| authored.receives_source_audio());
                     compiled.canonical_track_id() != Some(authored.id())
-                        || compiled.instrument_id != authored.instrument().map(Device::id)
+                        || compiled.instrument_id != instrument.map(Device::id)
                         || compiled.instrument_state
-                            != authored
-                                .instrument()
-                                .map(|device| device.state().clone().without_host_gains())
-                        || compiled.instrument_bypassed
-                            != authored.instrument().is_some_and(Device::bypassed)
+                            != instrument.map(|device| device.state().clone().without_host_gains())
+                        || compiled.instrument_bypassed != instrument.is_some_and(Device::bypassed)
                         || compiled.instrument_position
                             != authored.instrument_position().unwrap_or(0)
                 })

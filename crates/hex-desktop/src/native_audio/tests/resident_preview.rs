@@ -1221,11 +1221,31 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     assert_eq!(prepared.tuning_preview.as_ref().unwrap().identity, identity);
     assert!(!next.is_cancelled());
     assert_eq!(h.render(), [[0.25; 2]; 64]);
+    // A preview returning exactly to canonical tuning still carries the
+    // accepted family's live-note phase. Then change away again before Cancel.
+    let canonical_preview = h.run(Request::TuningGesture(TuningGestureRequest::Change {
+        key,
+        sequence: 2,
+        tuning: canonical.state.project.tuning(),
+    }));
+    (applied, _) = h.applied(applied);
+    assert_eq!(canonical_preview.state.project, canonical.state.project);
+    assert!(!next.is_cancelled());
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    let preview = h.run(Request::TuningGesture(TuningGestureRequest::Change {
+        key,
+        sequence: 3,
+        tuning: tuned,
+    }));
+    (applied, _) = h.applied(applied);
+    let identity = preview.tuning_preview.as_ref().unwrap().identity;
+    assert!(!next.is_cancelled());
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
     h.service
         .submit(Request::TuningGesture(TuningGestureRequest::Commit {
             key,
-            sequence: 2,
+            sequence: 4,
             tuning: super::sampler::tuning(660.0),
         }))
         .unwrap();
@@ -1254,13 +1274,32 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     assert_eq!(h.render(), [[0.25; 2]; 64]);
     h.refuse.store(false, std::sync::atomic::Ordering::Release);
     let cancelled = h.run(Request::TuningGesture(TuningGestureRequest::Cancel { key }));
-    let (_, metadata) = h.applied(applied);
+    let (cancelled_audio, metadata) = h.applied(applied);
+    applied = cancelled_audio;
     assert!(metadata.tuning_preview.is_none());
     assert!(cancelled.active_tuning_gesture.is_none());
     assert!(cancelled.tuning_preview.is_none());
     assert_eq!(cancelled.state.project, canonical.state.project);
     assert_eq!(cancelled.state.revision, canonical.state.revision);
     assert_eq!(h.render(), [[0.25; 2]; 64]);
+    // Canonical tuning edits and their global history use the same validated
+    // family as previews; none may cancel the held physical input.
+    let committed = h.run(Request::Edit(Command::SetTuning(tuned)));
+    (applied, _) = h.applied(applied);
+    assert_eq!(committed.state.project.tuning(), tuned);
+    assert!(!next.is_cancelled());
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    for (request, expected) in [
+        (Request::Undo, canonical.state.project.tuning()),
+        (Request::Redo, tuned),
+        (Request::Undo, canonical.state.project.tuning()),
+    ] {
+        let changed = h.run(request);
+        (applied, _) = h.applied(applied);
+        assert_eq!(changed.state.project.tuning(), expected);
+        assert!(!next.is_cancelled());
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+    }
     assert!(loaded.playback.is_none());
 }
 

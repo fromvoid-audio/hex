@@ -29,16 +29,26 @@ impl SamplerConfigurationId {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct AuthoredPitch {
+    root_note: u8,
+    transpose_semitones: f64,
+    detune_cents: f64,
+    output_rate: u32,
+}
+
 /// Control-prepared key table and original source binding, without PCM/markers.
 /// Not registry admission: the actual owner graph must still qualify separately.
 /// Exact-copy equality covers the complete effective law, independently of
 /// preparation identity. A retarget proof instead binds one exact prepared
-/// candidate (and its clones) while permitting gain/pan and ADS changes only.
+/// candidate (and its clones) while permitting gain/pan, ADS and gated global
+/// tuning changes. Authored pitch settings and output rate remain exact.
 #[derive(Clone)]
 pub struct PreparedSamplerRuntime {
     configuration: SamplerConfigurationId,
     notes: [Option<VoiceCoefficients>; 128],
     source: binding::SourceKey,
+    authored_pitch: AuthoredPitch,
     voices: usize,
     tail: u64,
     velocity_amount: f64,
@@ -51,6 +61,7 @@ impl PartialEq for PreparedSamplerRuntime {
             configuration: _,
             notes,
             source,
+            authored_pitch,
             voices,
             tail,
             velocity_amount,
@@ -58,6 +69,7 @@ impl PartialEq for PreparedSamplerRuntime {
         } = self;
         *notes == other.notes
             && *source == other.source
+            && *authored_pitch == other.authored_pitch
             && *voices == other.voices
             && *tail == other.tail
             && *velocity_amount == other.velocity_amount
@@ -105,12 +117,14 @@ impl PreparedSamplerRuntime {
             configuration: _,
             notes,
             source,
+            authored_pitch,
             voices,
             tail,
             velocity_amount,
             max_events,
         } = self;
         *source == previous.source
+            && *authored_pitch == previous.authored_pitch
             && *voices == previous.voices
             && *tail == previous.tail
             && *velocity_amount == previous.velocity_amount
@@ -143,7 +157,7 @@ fn retarget_coordinates_match(target: &VoiceCoefficients, source: &VoiceCoeffici
         && *region == source.region
         && *loop_offsets == source.loop_offsets
         && *reverse == source.reverse
-        && *step == source.step
+        && (*step == source.step || *gate == GateMode::Gate)
         && *gate == source.gate
         && envelope.release_frames() == source.envelope.release_frames()
 }
@@ -183,6 +197,12 @@ impl BoundSamplerPlan<'_> {
             configuration: SamplerConfigurationId::prepare_on_control()?,
             notes,
             source: self.source,
+            authored_pitch: AuthoredPitch {
+                root_note: self.plan.settings.root_note,
+                transpose_semitones: self.plan.settings.transpose_semitones,
+                detune_cents: self.plan.settings.detune_cents,
+                output_rate: self.plan.output_rate(),
+            },
             voices,
             tail,
             velocity_amount: self.plan.settings.velocity_amount,
@@ -197,6 +217,9 @@ struct ActiveVoice {
     pitch: u8,
     gain: f64,
     age: u64,
+    // Monotonic Q32 source distance, independent of the envelope age. Retuning
+    // changes future increments without reinterpreting the rendered prefix.
+    position: u128,
     gate: Option<u64>,
 }
 type Active = [Option<ActiveVoice>; MAX_SAMPLER_RUNTIME_VOICES];
@@ -253,27 +276,43 @@ impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
 }
 impl SamplerRuntime {
     fn advance(&self, active: &mut Active, frames: u64) -> Result<(), Error> {
-        for entry in active.iter_mut().flatten() {
-            entry.age = entry
-                .age
-                .checked_add(frames)
-                .ok_or(Error::InvalidEventBatch)?;
-        }
         for entry in active.iter_mut() {
             let Some(voice) = entry else { continue };
             let Some(note) = self.prepared.notes[usize::from(voice.pitch)] else {
                 *entry = None;
                 continue;
             };
-            let end = if let Some(gate) = voice.gate {
-                Some(
-                    note.end_age_frames(gate)
-                        .map_err(|_| Error::InvalidEventBatch)?,
-                )
-            } else {
-                note.natural_frames()
+            voice.age = voice
+                .age
+                .checked_add(frames)
+                .ok_or(Error::InvalidEventBatch)?;
+            let distance = u128::from(note.step)
+                .checked_mul(u128::from(frames))
+                .ok_or(Error::InvalidEventBatch)?;
+            voice.position = voice
+                .position
+                .checked_add(distance)
+                .ok_or(Error::InvalidEventBatch)?;
+            let source_ended = note.loop_offsets.is_none()
+                && voice.position >= (note.region.end - note.region.start) as u128 * ONE;
+            let release_ended = match (note.gate, voice.gate) {
+                (GateMode::Gate, Some(gate)) => {
+                    // A looping release still needs a representable deadline,
+                    // as before cursor-based source exhaustion was introduced.
+                    if note.loop_offsets.is_some()
+                        && gate.checked_add(note.release_frames()).is_none()
+                    {
+                        return Err(Error::InvalidEventBatch);
+                    }
+                    voice
+                        .age
+                        .checked_sub(gate)
+                        .ok_or(Error::InvalidEventBatch)?
+                        >= note.release_frames()
+                }
+                _ => false,
             };
-            if end.is_some_and(|end| voice.age >= end) {
+            if source_ended || release_ended {
                 *entry = None;
             }
         }
@@ -326,6 +365,7 @@ impl SamplerRuntime {
                     gain: 1.0 - self.prepared.velocity_amount
                         + self.prepared.velocity_amount * f64::from(velocity) / 127.0,
                     age: 0,
+                    position: 0,
                     gate: None,
                 });
             }
@@ -478,9 +518,9 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         previous: &dyn MutableInstrumentRuntime,
         proof: &dyn PreparedInstrumentHistoryRetarget,
     ) {
-        // Gain/pan and ADS apply at each carried voice's actual age and gate.
-        // Effective source coordinates, velocity and release must stay exact;
-        // law-identical authoring metadata needs no separate mode/tuning tag.
+        // Gain/pan and ADS use the carried envelope age/gate. Gated tuning
+        // uses the carried source cursor and the candidate step from now on.
+        // Authored pitch, effective coordinates, velocity and release stay exact.
         if self.can_retarget_history_from(previous, proof)
             && let Some(previous) = previous.as_any().downcast_ref::<Self>()
         {
@@ -528,7 +568,12 @@ impl SamplerRuntime {
                 for channel_gain in &mut note.channel_gain {
                     *channel_gain *= voice.gain;
                 }
-                let sample = note.sample(view.pcm, voice.age, voice.gate.unwrap_or(u64::MAX));
+                let sample = note.sample_at_position(
+                    view.pcm,
+                    voice.age,
+                    voice.gate.unwrap_or(u64::MAX),
+                    voice.position,
+                );
                 let gain = gains
                     .binary_search_by_key(&voice.occurrence, |gain| gain.occurrence_id())
                     .ok()
