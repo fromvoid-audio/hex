@@ -464,10 +464,10 @@ impl AudioCandidateOwner {
             )
             .chain(arrangement.main_device_chain.iter())
             .filter(|node| {
-                matches!(
-                    node.definition,
-                    Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                )
+                node.definition
+                    .as_ref()
+                    .and_then(hex_lattice::PreparedProcessorFactory::foreign_processor)
+                    .is_some()
             }))
     }
     /// Query the original closed constructor, never a caller-provided summary.

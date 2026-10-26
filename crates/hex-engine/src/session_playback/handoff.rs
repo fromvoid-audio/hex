@@ -35,9 +35,10 @@ fn validate_foreign_tail_sources(
             )
             .chain(arrangement.main_device_chain.iter())
             .any(|node| {
-                matches!(&node.definition,
-                Some(hex_lattice::PreparedProcessorFactory::Foreign(current))
-                    if current.binding() == Some(binding))
+                node.definition
+                    .as_ref()
+                    .and_then(hex_lattice::PreparedProcessorFactory::foreign_processor)
+                    .is_some_and(|current| current.binding() == Some(binding))
             })
         {
             return Err(SessionPlaybackError::ForeignTailSourceBusy);

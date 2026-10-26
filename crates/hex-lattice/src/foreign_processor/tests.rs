@@ -8,6 +8,75 @@ use std::sync::Arc;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.foreign");
 
+#[test]
+fn captured_state_retarget_requires_exact_bytes_source_and_epoch() {
+    let source = Arc::new(());
+    let other = Arc::new(());
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 17,
+        graph: 2,
+        epoch: 3,
+    };
+    let facts = PreparedForeignProcessor::new(8, 3, 16)
+        .unwrap()
+        .with_binding(binding)
+        .unwrap();
+    let mut initial = declaration(ProcessorChainOwner::Main, false);
+    initial.definition = Some(PreparedProcessorFactory::Foreign(facts));
+    let initial_chain = NativeRuntimeChain::new_prepared(vec![initial.clone()]).unwrap();
+    let next_state = Arc::new(NativeDeviceState::new(TYPE, 1, vec![4, 5, 6]).unwrap());
+    let approve = |source: &Arc<()>, state: &NativeDeviceState| {
+        let anchor: std::sync::Weak<()> = Arc::downgrade(source);
+        ForeignStateApproval::new_on_control(anchor, binding, state).unwrap()
+    };
+    let proof = Arc::new(approve(&source, &next_state));
+    assert!(!proof.matches_state(initial.configuration.as_ref().unwrap()));
+    assert!(proof.matches_state(&next_state.as_ref().clone().with_input_gain_db(6.0).unwrap()));
+    let mut next = initial.clone();
+    next.configuration = Some(Arc::clone(&next_state));
+    let unapproved = NativeRuntimeChain::new_prepared(vec![next.clone()]).unwrap();
+    assert!(!unapproved.can_retarget_parameters_from_range(&initial_chain, 0..1));
+    next.definition = Some(PreparedProcessorFactory::ForeignApproved {
+        processor: facts,
+        approval: proof,
+    });
+    let approved = NativeRuntimeChain::new_prepared(vec![next.clone()]).unwrap();
+    assert!(!approved.configuration_matches_range(&initial_chain, 0..1));
+    assert!(approved.can_retarget_parameters_from_range(&initial_chain, 0..1));
+    let different_state = Arc::new(NativeDeviceState::new(TYPE, 1, vec![7]).unwrap());
+    next.configuration = Some(Arc::clone(&different_state));
+    assert!(
+        NativeRuntimeChain::new_prepared(vec![next.clone()]).is_err(),
+        "approval cannot authorize caller bytes"
+    );
+    next.definition = Some(PreparedProcessorFactory::ForeignApproved {
+        processor: facts,
+        approval: Arc::new(approve(&other, &different_state)),
+    });
+    let foreign = NativeRuntimeChain::new_prepared(vec![next.clone()]).unwrap();
+    assert!(
+        !foreign.can_retarget_parameters_from_range(&approved, 0..1),
+        "equal binding cannot substitute another source"
+    );
+    next.definition = Some(PreparedProcessorFactory::ForeignApproved {
+        processor: facts,
+        approval: Arc::new(approve(&source, &different_state)),
+    });
+    let following = NativeRuntimeChain::new_prepared(vec![next.clone()]).unwrap();
+    assert!(following.can_retarget_parameters_from_range(&approved, 0..1));
+    next.definition = Some(PreparedProcessorFactory::ForeignApproved {
+        processor: facts
+            .with_binding(hex_lattice_contract::ForeignProcessorBinding {
+                epoch: 4,
+                ..binding
+            })
+            .unwrap(),
+        approval: Arc::new(approve(&source, &different_state)),
+    });
+    assert!(NativeRuntimeChain::new_prepared(vec![next]).is_err());
+}
+
 fn state() -> Arc<NativeDeviceState> {
     Arc::new(
         NativeDeviceState::new(TYPE, 1, vec![1, 2, 3])
@@ -376,6 +445,7 @@ fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserv
     let declaration = declaration(ProcessorChainOwner::Main, false);
     let mut endpoint = endpoint(&declaration);
     let node = ForeignProcessorNode {
+        state_approval: None,
         owner: declaration.owner,
         device_id: 17,
         device_type: TYPE,

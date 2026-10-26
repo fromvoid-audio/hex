@@ -133,6 +133,8 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                     16 * std::mem::size_of::<[f32; 2]>()
                 );
                 assert_eq!(constructor.state_alias_handles, 1);
+                assert_eq!(constructor.source_weak_handles, 1);
+                assert_eq!(constructor.approved_state_weak_handles, 0);
                 assert_eq!(
                     constructor.data_bytes(),
                     Some(
@@ -144,7 +146,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                 assert!(constructor.source_metadata_data_bytes > 128);
                 assert_eq!(
                     constructor.shared_handle_bound(),
-                    Some(constructor.worker.shared_handle_bound + 1)
+                    Some(constructor.worker.shared_handle_bound + 2)
                 );
                 // The existing factory borrows this exact actual owner; copied
                 // latency/state facts alone cannot construct the definition.

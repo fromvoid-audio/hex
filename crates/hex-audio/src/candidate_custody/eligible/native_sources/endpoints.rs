@@ -391,7 +391,7 @@ impl Custody {
         };
         let backing = control
             .storage()
-            .data_bytes()
+            .and_then(|storage| storage.data_bytes())
             .and_then(|n| n.checked_add(std::mem::size_of::<Endpoint>()))
             .and_then(|n| n.checked_add(std::mem::size_of::<EndpointSignal>()))
             .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
@@ -563,6 +563,7 @@ mod tests {
         }
         assert_eq!(edits.len(), 1);
         let node = ForeignProcessorNode {
+            state_approval: None,
             owner: identity.owner(),
             device_id: identity.device_id(),
             device_type: configuration.type_id(),
@@ -716,6 +717,7 @@ mod tests {
         let mut bank = NativeEndpointBank::new().unwrap();
         assert!(bank.install(binding.root, loan).is_ok());
         let node = ForeignProcessorNode {
+            state_approval: None,
             owner: identity.owner(),
             device_id: identity.device_id(),
             device_type: configuration.type_id(),

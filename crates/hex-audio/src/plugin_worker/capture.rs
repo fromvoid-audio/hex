@@ -96,6 +96,7 @@ pub struct NativeWorkerCapture {
     binding: Binding,
     ordinal: u64,
     mode: Mode,
+    input_fence: (u64, bool),
 }
 /// Data/progress only, never a canonical edit, save or graph acknowledgement.
 #[derive(Debug)]
@@ -121,9 +122,13 @@ pub struct NativeWorkerStateSnapshot {
     source: Weak<Signal>,
     binding: Binding,
     ordinal: u64,
+    input_fence: (u64, bool),
     state: NativeDeviceState,
 }
 impl NativeWorkerStateSnapshot {
+    pub(crate) fn ordinal(&self) -> u64 {
+        self.ordinal
+    }
     pub fn state(&self) -> &NativeDeviceState {
         &self.state
     }
@@ -140,6 +145,48 @@ pub enum NativeWorkerStateSnapshotProgress {
 }
 
 impl NativeWorker {
+    pub(crate) fn state_source_on_control(&self) -> hex_lattice::ForeignStateSource {
+        let source: Weak<Signal> = Arc::downgrade(&self.reaper.completed);
+        source
+    }
+    // Approval requires an idle host-input stream at capture admission and no
+    // later admitted input, even when subsequently withdrawn. Ordinals only
+    // fence the actual private source/capture; they cannot mint provenance.
+    pub(crate) fn state_snapshot_approval_on_control(
+        &self,
+        snapshot: &NativeWorkerStateSnapshot,
+    ) -> Result<hex_lattice::ForeignStateApproval, &'static str> {
+        if !self.matches_live_state_snapshot_on_control(snapshot)? {
+            return Err("native snapshot source or capture differs");
+        }
+        {
+            let slot = self
+                .reaper
+                .completed
+                .capture
+                .try_lock()
+                .map_err(|_| "native capture mailbox is busy")?;
+            if !snapshot.input_fence.1
+                || slot.parameter_change.snapshot_fence() != snapshot.input_fence
+            {
+                return Err("native parameter input changed during capture");
+            }
+        }
+        let source: Weak<Signal> = Weak::clone(&snapshot.source);
+        let source: hex_lattice::ForeignStateSource = source;
+        hex_lattice::ForeignStateApproval::new_on_control(source, self.binding, snapshot.state())
+            .map_err(|_| "native snapshot approval is invalid")
+    }
+    pub(crate) fn owns_live_state_snapshot_on_control(
+        &self,
+        snapshot: &NativeWorkerStateSnapshot,
+    ) -> bool {
+        !self.retirement_requested
+            && self.transport_is_live_on_control()
+            && self.retains_original_source_on_control()
+            && snapshot.binding == self.binding
+            && snapshot.source.as_ptr() == Arc::as_ptr(&self.reaper.completed)
+    }
     /// Consume the matching live capture terminal with its original source
     /// correlation intact. This shares the ordinary capture slot and consumes
     /// it exactly once; it does not initiate another SDK read. Stopped captures
@@ -159,6 +206,7 @@ impl NativeWorker {
                     source: Weak::clone(&request.source),
                     binding: request.binding,
                     ordinal: request.ordinal,
+                    input_fence: request.input_fence,
                     state,
                 }))
             }
@@ -236,6 +284,7 @@ impl NativeWorker {
             binding: self.binding,
             ordinal,
             mode,
+            input_fence: slot.parameter_change.snapshot_fence(),
         })
     }
 

@@ -14,6 +14,7 @@ struct Facts {
     decline: bool,
     processor_latency: u32,
     calls: std::sync::atomic::AtomicUsize,
+    approval: Option<Arc<hex_lattice::ForeignStateApproval>>,
 }
 impl NativeDeviceMetadata for Facts {
     fn type_id(&self) -> DeviceTypeId {
@@ -75,7 +76,13 @@ impl NativeDeviceDefinition for Facts {
         if let Some(binding) = self.binding {
             facts = facts.with_binding(binding)?;
         }
-        Ok(Some(PreparedProcessorFactory::Foreign(facts)))
+        Ok(Some(match &self.approval {
+            Some(approval) => PreparedProcessorFactory::ForeignApproved {
+                processor: facts,
+                approval: Arc::clone(approval),
+            },
+            None => PreparedProcessorFactory::Foreign(facts),
+        }))
     }
 }
 fn setup(location: usize) -> (hex_project::Project, crate::OwnedAudioInputs, Facts) {
@@ -128,6 +135,7 @@ fn setup(location: usize) -> (hex_project::Project, crate::OwnedAudioInputs, Fac
         panic!("device")
     };
     let facts = Facts {
+        approval: None,
         identity: ProcessorInstanceIdentity::new(owner, id.value()).unwrap(),
         binding: Some(ForeignProcessorBinding {
             root: 7,
@@ -935,5 +943,112 @@ fn grouped_faded_pcm_preserves_closed_foreign_track_return_and_main_roots() {
             owner.recover_inputs_on_control().unwrap().sources.as_ptr(),
             original_bank
         );
+    }
+}
+
+#[test]
+fn approved_foreign_state_is_copied_into_closed_constructor_and_runtime_inventory() {
+    for location in 0..3 {
+        let (project, bank, mut facts) = setup(location);
+        let source = Arc::new(());
+        let anchor: std::sync::Weak<()> = Arc::downgrade(&source);
+        let anchor: hex_lattice::ForeignStateSource = anchor;
+        let binding = ForeignProcessorBinding {
+            root: 1,
+            instance: facts.identity.device_id(),
+            graph: 2,
+            epoch: 3,
+        };
+        facts.binding = Some(binding);
+        let provider = Arc::new(
+            hex_lattice::ForeignStateApproval::new_on_control(
+                anchor.clone(),
+                binding,
+                &state(19).unwrap(),
+            )
+            .unwrap(),
+        );
+        facts.approval = Some(Arc::clone(&provider));
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&facts];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let mut bank = Some(bank);
+        let mut custody = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_effect_revision_in_place_on_control(
+                &project,
+                11,
+                crate::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                &mut bank,
+                None,
+                &registry,
+            )
+            .unwrap();
+        let revision = custody.candidate_root_view(&token).unwrap();
+        let nodes = revision
+            .arrangement()
+            .tracks
+            .iter()
+            .flat_map(|track| track.device_chain.iter())
+            .chain(
+                revision
+                    .arrangement()
+                    .return_buses
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(revision.arrangement().main_device_chain.iter());
+        let node = nodes
+            .into_iter()
+            .find(|node| node.device_id == facts.identity.device_id())
+            .unwrap();
+        let proof = node
+            .definition
+            .as_ref()
+            .unwrap()
+            .foreign_state_approval()
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(proof, &provider),
+            "provider allocation must never enter closed graph custody"
+        );
+        assert!(proof.matches_source(&anchor));
+        assert!(proof.matches_state(node.configuration.as_ref().unwrap()));
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+            crate::AudioStorageLedgerReservation {
+                data_rows: 2048,
+                handle_rows: 2048,
+                root_rows: 8,
+                max_retained_bytes: usize::MAX,
+                max_construction_peak_bytes: usize::MAX,
+            },
+        )
+        .unwrap();
+        ledger
+            .borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)
+            .unwrap();
+        assert_eq!(ledger.summary().unwrap().unknown_storage, 0);
+        drop(ledger);
+        let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        owner
+            .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                data_rows: 4096,
+                handle_rows: 4096,
+                root_rows: 8,
+                max_retained_bytes: usize::MAX,
+                max_construction_peak_bytes: usize::MAX,
+            })
+            .unwrap();
+        assert!(owner.foreign_nodes_on_control().unwrap().all(|node| {
+            node.definition
+                .as_ref()
+                .unwrap()
+                .foreign_state_approval()
+                .is_some()
+        }));
     }
 }

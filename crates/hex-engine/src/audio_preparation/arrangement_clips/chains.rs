@@ -21,9 +21,10 @@ struct Entry {
     foreign: Option<PreparedForeignProcessor>,
     state: SharedDeclaration,
     processor: Option<SharedDeclaration>,
+    approval: Option<SharedDeclaration>,
     meter: SharedDeclaration,
     payload: (usize, usize),
-    handles: [u64; 4],
+    handles: [u64; 6],
 }
 #[derive(Default)]
 pub(in crate::audio_preparation) struct ChainCustody {
@@ -124,6 +125,18 @@ impl ChainCustody {
                     .checked_add(bytes)
                     .ok_or(AudioStorageError::Overflow)?;
             }
+            if state.type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                && state.type_id() != hex_devices::saturator::SATURATOR_TYPE_ID
+                && state.type_id() != hex_devices::reverb::REVERB_TYPE_ID
+            {
+                let approval_bytes =
+                    parts(OwnedShared::<hex_lattice::ForeignStateApproval>::declared_parts())?;
+                retained = retained
+                    .checked_add(approval_bytes)
+                    .ok_or(AudioStorageError::Overflow)?;
+                // Provider's temporary immutable Arc overlaps the fresh graph copy.
+                largest_copy = largest_copy.max(approval_bytes);
+            }
             if let Some(bytes) = processor {
                 retained = retained
                     .checked_add(bytes)
@@ -195,29 +208,30 @@ impl ChainCustody {
             })
             .try_fold(0usize, |largest, value| Some(largest.max(value?)))
             .ok_or(AudioStorageError::Overflow)?;
+        let mut copy_overlap = 0usize;
+        for device in devices {
+            let ty = device.state().type_id();
+            if ty == hex_devices::reverb::REVERB_TYPE_ID {
+                copy_overlap = copy_overlap.max(hex_devices::reverb::PARAMETER_COUNT * 4);
+            } else if ty != hex_devices::utility::UTILITY_TYPE_ID {
+                copy_overlap = copy_overlap.max(device.state().payload().len());
+                if ty != hex_devices::saturator::SATURATOR_TYPE_ID {
+                    let (payload, overhead) =
+                        OwnedShared::<hex_lattice::ForeignStateApproval>::declared_parts()
+                            .ok_or(AudioStorageError::UnknownStorage)?;
+                    copy_overlap = copy_overlap.max(
+                        payload
+                            .checked_add(overhead)
+                            .ok_or(AudioStorageError::Overflow)?,
+                    );
+                }
+            }
+        }
         self.construction_overlap = prepared
             .capacity()
             .checked_mul(std::mem::size_of::<PreparedRuntimeInstance>())
-            .and_then(|n| {
-                n.checked_add(
-                    devices
-                        .iter()
-                        .filter(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-                        .map(|d| {
-                            if d.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID {
-                                hex_devices::reverb::PARAMETER_COUNT * 4
-                            } else {
-                                d.state().payload().len()
-                            }
-                        })
-                        .max()
-                        .unwrap_or(0),
-                )
-            })
-            .ok_or(AudioStorageError::Overflow)?;
-        self.construction_overlap = self
-            .construction_overlap
-            .checked_add(automation_staging)
+            .and_then(|bytes| bytes.checked_add(copy_overlap))
+            .and_then(|bytes| bytes.checked_add(automation_staging))
             .ok_or(AudioStorageError::Overflow)?;
         if prepared.capacity() != devices.len() {
             return Err(AudioStorageError::UnknownStorage);
@@ -268,8 +282,8 @@ impl ChainCustody {
             } else {
                 copy_state(device.state())?
             };
-            let foreign = if native {
-                None
+            let (foreign, foreign_approval) = if native {
+                (None, None)
             } else {
                 let definition = foreign_definition.ok_or(AudioStorageError::UnsupportedGraph)?;
                 let tuning = hex_lattice::TuningTable::default();
@@ -284,10 +298,29 @@ impl ChainCustody {
                     .prepare_instance_runtime_factory(identity, &migrated, &context)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
                 {
-                    Some(PreparedProcessorFactory::Foreign(facts))
-                        if facts.binding().is_some_and(|b| b.is_valid()) =>
+                    Some(factory)
+                        if factory
+                            .foreign_processor()
+                            .is_some_and(|facts| facts.binding().is_some_and(|b| b.is_valid())) =>
                     {
-                        Some(facts)
+                        let facts = factory
+                            .foreign_processor()
+                            .ok_or(AudioStorageError::UnsupportedGraph)?;
+                        let approval = factory
+                            .foreign_state_approval()
+                            .map(|approval| {
+                                if facts.binding() != Some(approval.binding())
+                                    || !approval.matches_state(&migrated)
+                                {
+                                    return Err(AudioStorageError::SourceMismatch);
+                                }
+                                // Fresh declared immutable allocation. Never adopt a provider Arc.
+                                let copied = OwnedShared::new_owned(approval.as_ref().clone());
+                                copied.parts().ok_or(AudioStorageError::UnknownStorage)?;
+                                Ok(copied.into_paired_parts_on_control())
+                            })
+                            .transpose()?;
+                        (Some(facts), approval)
                     }
                     _ => return Err(AudioStorageError::UnsupportedGraph),
                 }
@@ -369,7 +402,18 @@ impl ChainCustody {
             let meter = OwnedShared::new_owned(hex_lattice::DeviceMeter::default());
             meter.parts().ok_or(AudioStorageError::UnknownStorage)?;
             let (meter, meter_declaration) = meter.into_paired_parts_on_control();
-            let handles = [handle()?, handle()?, handle()?, handle()?];
+            let handles = [
+                handle()?,
+                handle()?,
+                handle()?,
+                handle()?,
+                handle()?,
+                handle()?,
+            ];
+            let (approval, approval_declaration) = foreign_approval
+                .map_or((None, None), |(approval, declaration)| {
+                    (Some(approval), Some(declaration))
+                });
             self.entries.push(Entry {
                 automation_bytes,
                 device_id: device.id().value(),
@@ -378,6 +422,7 @@ impl ChainCustody {
                 foreign,
                 state,
                 processor: processor_declaration,
+                approval: approval_declaration,
                 meter: meter_declaration,
                 payload,
                 handles,
@@ -393,7 +438,13 @@ impl ChainCustody {
                 sample_rate: rate,
                 configuration: Some(configuration),
                 definition: foreign
-                    .map(PreparedProcessorFactory::Foreign)
+                    .map(|processor| match approval {
+                        Some(approval) => PreparedProcessorFactory::ForeignApproved {
+                            processor,
+                            approval,
+                        },
+                        None => PreparedProcessorFactory::Foreign(processor),
+                    })
                     .or_else(|| processor.map(PreparedProcessorFactory::Legacy)),
             });
         }
@@ -413,8 +464,16 @@ impl ChainCustody {
                 || value.owner != pair.owner
                 || value.device_type != pair.device_type
                 || match (&value.definition, pair.foreign, pair.processor.is_some()) {
-                    (Some(PreparedProcessorFactory::Foreign(actual)), Some(expected), false) => {
-                        *actual != expected
+                    (Some(factory), Some(expected), false) => {
+                        factory.foreign_processor() != Some(expected)
+                            || factory.foreign_state_approval().is_some() != pair.approval.is_some()
+                            || factory.foreign_state_approval().is_some_and(|approval| {
+                                expected.binding() != Some(approval.binding())
+                                    || value
+                                        .configuration
+                                        .as_deref()
+                                        .is_none_or(|state| !approval.matches_state(state))
+                            })
                     }
                     (Some(PreparedProcessorFactory::Legacy(_)), None, true)
                     | (None, None, false) => false,
@@ -467,6 +526,21 @@ impl ChainCustody {
                     .and_then(|n| n.checked_add(overhead))
                     .ok_or(AudioStorageError::Overflow)?;
             }
+            if let Some(approval) = value
+                .definition
+                .as_ref()
+                .and_then(PreparedProcessorFactory::foreign_state_approval)
+            {
+                let (payload, overhead) = pair
+                    .approval
+                    .as_ref()
+                    .and_then(|declaration| declaration.parts(approval))
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                bytes = bytes
+                    .checked_add(payload)
+                    .and_then(|n| n.checked_add(overhead))
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
             if let Some(PreparedProcessorFactory::Legacy(processor)) = &value.definition {
                 let (payload, overhead) = pair
                     .processor
@@ -484,7 +558,7 @@ impl ChainCustody {
     pub(in crate::audio_preparation) fn handles(&self) -> usize {
         self.entries
             .iter()
-            .map(|e| 3 + usize::from(e.processor.is_some()))
+            .map(|e| 3 + usize::from(e.processor.is_some()) + 2 * usize::from(e.approval.is_some()))
             .sum()
     }
     pub(in crate::audio_preparation) fn visit_metadata<'a>(
@@ -549,6 +623,23 @@ impl ChainCustody {
                 pair.handles[2],
                 None,
             )?;
+            if let Some(approval) = value
+                .definition
+                .as_ref()
+                .and_then(PreparedProcessorFactory::foreign_state_approval)
+            {
+                l.shared(
+                    approval,
+                    pair.approval
+                        .as_ref()
+                        .and_then(|declaration| declaration.parts(approval)),
+                    Owner::exclusive(approval),
+                    pair.handles[4],
+                    None,
+                )?;
+                // One weak alias in the immutable approval, not source DATA or custody.
+                l.foreign_source_weak(approval.as_ref(), pair.handles[5])?;
+            }
             if let Some(PreparedProcessorFactory::Legacy(processor)) = &value.definition {
                 l.shared(
                     processor,

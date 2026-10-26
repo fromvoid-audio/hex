@@ -911,7 +911,9 @@ fn native_source_controls_refuse_the_retiring_original_root() {
 fn native_pool_reserves_handles_before_allocating_and_keeps_them_while_vacant() {
     let per_source = resources::PoolResources::new(1).unwrap();
     assert_eq!(per_source.per_source.shared_groups, 11);
-    assert_eq!(per_source.per_source.shared_handle_bound, 30);
+    // Existing30 plus the callback anchor, four fixed permission aliases,
+    // and one stage/one compiler temporary; no additional shared group.
+    assert_eq!(per_source.per_source.shared_handle_bound, 37);
     assert_eq!(
         per_source.per_source.source.inventory_node_lifetime_bound,
         4

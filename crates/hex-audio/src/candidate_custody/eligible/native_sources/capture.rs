@@ -185,6 +185,44 @@ impl Custody {
             _ => Err("native capture owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn stage_live_native_snapshot(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+    ) -> Result<(), &'static str> {
+        self.with_live_capture(binding, |owner| {
+            let max_data = lock(&self.bank)
+                .sources
+                .limits
+                .ok_or("native source data is not reserved")?
+                .max_retained_data_bytes;
+            match owner {
+                Owner::Effect(owner) => owner.stage_state_snapshot(snapshot, max_data),
+                Owner::Loaned(owner) => {
+                    let max_data = max_data
+                        .checked_sub(
+                            NativeEndpointEnvelope::loan_data_bytes()
+                                .ok_or("native endpoint data overflow")?,
+                        )
+                        .ok_or("native state approval data reservation exceeded")?;
+                    owner.stage_state_snapshot(snapshot, max_data)
+                }
+                _ => Err("native snapshot owner differs"),
+            }
+        })
+    }
+    pub(in crate::candidate_custody) fn finalize_live_native_snapshot(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        accepted: bool,
+    ) -> Result<(), &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.finalize_state_snapshot(snapshot, accepted),
+            Owner::Loaned(owner) => owner.finalize_state_snapshot(snapshot, accepted),
+            _ => Err("native snapshot owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn poll_live_native_snapshot(
         &self,
         binding: Binding,
@@ -428,6 +466,29 @@ impl CandidateRoot {
         // gate too; copied result destruction occurs after its lock is gone.
         self.require_native_source_control_open()?;
         Ok(result)
+    }
+    pub(crate) fn stage_live_native_snapshot(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+    ) -> Result<(), &'static str> {
+        self.require_native_source_control_open()?;
+        self.0
+            .eligible
+            .stage_live_native_snapshot(binding, snapshot)?;
+        self.require_native_source_control_open()
+    }
+    pub(crate) fn finalize_live_native_snapshot(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        accepted: bool,
+    ) -> Result<(), &'static str> {
+        self.require_native_source_control_open()?;
+        self.0
+            .eligible
+            .finalize_live_native_snapshot(binding, snapshot, accepted)?;
+        self.require_native_source_control_open()
     }
     pub(crate) fn poll_live_native_snapshot(
         &self,

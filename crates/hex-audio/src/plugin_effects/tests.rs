@@ -485,6 +485,7 @@ fn equal_state_and_device_id_cannot_select_another_actual_native_epoch() {
     assert!(callback.matches_worker(&second_worker));
     callback.begin_host_callback(8).unwrap();
     let node = ForeignProcessorNode {
+        state_approval: None,
         owner: identity.owner(),
         device_id: identity.device_id(),
         device_type: hex_plugin_state::TYPE_ID,
@@ -1090,6 +1091,7 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
         .unwrap();
         let config = effect.callback.configuration.clone();
         let node = ForeignProcessorNode {
+            state_approval: None,
             owner: config.identity.owner(),
             device_id: config.identity.device_id(),
             device_type: config.state.type_id(),

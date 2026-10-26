@@ -1049,10 +1049,10 @@ impl Playback {
             )
             .chain(self.project.main_device_chain.iter())
             .filter(|node| {
-                matches!(
-                    node.definition,
-                    Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                )
+                node.definition
+                    .as_ref()
+                    .and_then(hex_lattice::PreparedProcessorFactory::foreign_processor)
+                    .is_some()
             })
     }
 

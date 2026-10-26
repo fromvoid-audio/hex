@@ -432,10 +432,11 @@ fn meter_sources(
                         device.device_id,
                         device.device_type,
                         &device.meter,
-                        matches!(
-                            device.definition.as_ref(),
-                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                        ),
+                        device
+                            .definition
+                            .as_ref()
+                            .and_then(hex_lattice::PreparedProcessorFactory::foreign_processor)
+                            .is_some(),
                     )
                 }))
         })
@@ -451,10 +452,11 @@ fn meter_sources(
                         device.device_id,
                         device.device_type,
                         &device.meter,
-                        matches!(
-                            device.definition.as_ref(),
-                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                        ),
+                        device
+                            .definition
+                            .as_ref()
+                            .and_then(hex_lattice::PreparedProcessorFactory::foreign_processor)
+                            .is_some(),
                     )
                 }),
         )

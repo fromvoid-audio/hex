@@ -25,6 +25,11 @@ pub(super) struct Slot {
     point: ParameterPoint,
     result: Option<Terminal>,
 }
+impl Slot {
+    pub(super) fn snapshot_fence(&self) -> (u64, bool) {
+        (self.ordinal, self.phase == Phase::Idle)
+    }
+}
 #[derive(Default)]
 pub(super) struct Work {
     ordinal: Option<u64>,

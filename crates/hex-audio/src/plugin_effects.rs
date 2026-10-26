@@ -26,6 +26,7 @@ pub use hosting::{EffectPresentation, EffectSelection, Hosting};
 mod control;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod source_metadata;
+mod state_approval;
 pub use source_metadata::EffectSourceMetadata;
 mod callbacks;
 pub use callbacks::NativeEffectCallbacks;
@@ -38,6 +39,8 @@ struct Configuration {
     sample_rate: u32,
     state: NativeDeviceState,
     prepared: PreparedForeignProcessor,
+    accepted_state: Option<state_approval::ApprovedState>,
+    pending_state: Option<state_approval::ApprovedState>,
 }
 
 /// One actually prepared native source and its exact constructor-paired queues.
@@ -60,6 +63,11 @@ pub struct NativeEffectStorage {
     pub dry_data_bytes: usize,
     pub source_metadata_data_bytes: usize,
     pub state_alias_handles: usize,
+    /// Weak aliases in the two fixed inline permission slots of each retained
+    /// callback/control configuration. Their DATA is already in those owners.
+    pub approved_state_weak_handles: usize,
+    /// One original completion-cell weak anchor in the actual callback.
+    pub source_weak_handles: usize,
 }
 impl NativeEffectStorage {
     pub fn data_bytes(&self) -> Option<usize> {
@@ -71,7 +79,9 @@ impl NativeEffectStorage {
     pub fn shared_handle_bound(&self) -> Option<usize> {
         self.worker
             .shared_handle_bound
-            .checked_add(self.state_alias_handles)
+            .checked_add(self.state_alias_handles)?
+            .checked_add(self.source_weak_handles)?
+            .checked_add(self.approved_state_weak_handles)
     }
 }
 impl NativeEffect {
@@ -178,11 +188,13 @@ impl NativeEffect {
             configuration.prepared.total_latency_frames(),
         );
         let (worker, callback) = NativeWorker::start_retained_on_control(instance)?;
+        let state_source = worker.state_source_on_control();
         Ok(Self {
             worker,
             source_metadata,
             callback: NativeEffectCallback {
                 configuration,
+                state_source,
                 transport: callback,
                 input: [[0.0; 2]; MAX_FRAMES],
                 dry_output: [[0.0; 2]; MAX_FRAMES],
@@ -244,6 +256,8 @@ impl NativeEffect {
             return Err(Error::Protocol("native effect latency exceeds graph limit"));
         }
         Ok(Configuration {
+            accepted_state: None,
+            pending_state: None,
             identity,
             binding: config.binding,
             sample_rate: config.sample_rate as u32,
@@ -302,6 +316,8 @@ impl NativeEffect {
                 .checked_mul(std::mem::size_of::<[f32; 2]>())?,
             source_metadata_data_bytes: self.source_metadata.data_bytes()?,
             state_alias_handles: 1,
+            approved_state_weak_handles: self.callback.configuration.approval_count(),
+            source_weak_handles: 1,
         })
     }
     /// Unique owner transfer, never a source/Root/publication ACK. The caller
@@ -316,6 +332,7 @@ impl NativeEffect {
 /// never finally destroy it or the matching worker on the callback lane.
 pub struct NativeEffectCallback {
     configuration: Configuration,
+    state_source: hex_lattice::ForeignStateSource,
     transport: Callback,
     input: [[f32; 2]; MAX_FRAMES],
     dry_output: [[f32; 2]; MAX_FRAMES],
@@ -370,7 +387,14 @@ impl NativeEffectCallback {
             && node.device_type == config.state.type_id()
             && node.sample_rate == config.sample_rate
             && node.prepared == config.prepared
-            && node.configuration.processing_eq(&config.state)
+            && match node.state_approval {
+                None => node.configuration.processing_eq(&config.state),
+                Some(approval) => {
+                    approval.binding() == config.binding
+                        && approval.matches_source(&self.state_source)
+                        && approval.matches_state(node.configuration)
+                }
+            }
     }
 }
 impl ForeignProcessors for NativeEffectCallback {

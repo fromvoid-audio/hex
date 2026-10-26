@@ -226,6 +226,46 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Stage exactly the latest actual live capture as a compiler permission
+    /// for this original source. It neither edits canonical state nor replaces
+    /// the endpoint. At most one pending permission is retained beside the last
+    /// accepted one. The canonical owner must retain its gesture/document context
+    /// and finalize with that operation's actual accepted/refused terminal.
+    pub fn stage_native_source_state_snapshot_on_control(
+        &mut self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .stage_live_native_snapshot(binding, snapshot)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(())
+    }
+    /// Retire the exact staged compiler permission with its canonical terminal.
+    /// Accepted promotes it; refusal preserves the preceding accepted permission.
+    /// This call does not itself accept a project edit, restore foreign DSP,
+    /// cancel in-flight input or acknowledge a graph. Those retain their owners.
+    pub fn finalize_native_source_state_snapshot_on_control(
+        &mut self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        accepted: bool,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .finalize_live_native_snapshot(binding, snapshot, accepted)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(())
+    }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
     #[cfg(feature = "allocation-probe")]

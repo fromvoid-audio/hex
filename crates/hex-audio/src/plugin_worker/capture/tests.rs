@@ -337,6 +337,43 @@ fn actual_worker_snapshot_retains_original_capture_provenance_without_source_aut
     let latest = complete_snapshot(&mut owner, &next);
     assert!(matches_snapshot(&owner, &latest));
     assert!(!matches_snapshot(&owner, &snapshot));
+    assert!(owner.state_snapshot_approval_on_control(&latest).is_ok());
+    let until = Instant::now() + Duration::from_secs(2);
+    let changed_intent = loop {
+        match owner.begin_parameter_change_on_control(7, 0.5) {
+            Ok(request) => break request,
+            Err("native parameter mailbox is busy") => {}
+            Err(error) => panic!("snapshot input fence: {error}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    assert!(owner.state_snapshot_approval_on_control(&latest).is_err());
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match owner.withdraw_parameter_change_on_control(&changed_intent) {
+            Ok(true) => break,
+            Err("native parameter mailbox is busy") => {}
+            other => panic!("queued snapshot input withdrawal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match owner.poll_parameter_change_on_control(&changed_intent) {
+            Ok(crate::plugin_worker::NativeWorkerParameterProgress::Withdrawn) => break,
+            Ok(crate::plugin_worker::NativeWorkerParameterProgress::Pending) => {}
+            other => panic!("withdrawn snapshot input terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(
+        owner.state_snapshot_approval_on_control(&latest).is_err(),
+        "withdrawal cannot retag a captured SDK result"
+    );
+
     assert_eq!(
         owner.constructor_storage_on_control(&callback),
         Some(storage)

@@ -20,7 +20,15 @@ impl PoolResources {
         // and the retained control configuration alias. State payloads already belong
         // to the original source; the return signal adds one shared group.
         // No process-wide Arc count is consulted.
-        per_source.shared_handle_bound = per_source.shared_handle_bound.checked_add(10)?;
+        // Additional compiler permissions: at most two immutable weak-anchor
+        // approvals in each of the callback/control configurations, one stage
+        // temporary and one compiler temporary, plus the callback source anchor.
+        // Graph-owned copies are charged by the graph's existing storage ledger.
+        let approval_aliases = 2usize.checked_mul(2)?.checked_add(3)?;
+        per_source.shared_handle_bound = per_source
+            .shared_handle_bound
+            .checked_add(10)?
+            .checked_add(approval_aliases)?;
         per_source.shared_groups = per_source.shared_groups.checked_add(1)?;
         Some(Self {
             per_source,

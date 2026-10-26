@@ -6,6 +6,8 @@ use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, ForeignParameterPoint, ForeignProcessorBinding,
     NativeDeviceState,
 };
+mod state_approval;
+pub use state_approval::{ForeignStateApproval, ForeignStateSource};
 
 /// Control-validated facts for a copied foreign endpoint. No runtime factory,
 /// native pointer or resource owner lives here. The host must bind these facts
@@ -91,6 +93,9 @@ pub struct ForeignProcessorNode<'a> {
     pub device_type: DeviceTypeId,
     pub sample_rate: u32,
     pub configuration: &'a NativeDeviceState,
+    /// Optional original-source approval of this exact captured configuration.
+    /// Copied binding/scalar facts alone cannot establish that provenance.
+    pub state_approval: Option<&'a ForeignStateApproval>,
     pub prepared: PreparedForeignProcessor,
     pub bypassed: bool,
     /// Cached finite host input trim. Segments contain the original untrimmed

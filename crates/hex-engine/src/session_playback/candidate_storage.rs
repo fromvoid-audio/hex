@@ -196,10 +196,10 @@ fn chain_storage<'a>(
         l.vec(ids)?;
         l.vec(lanes)?;
         l.vec(points)?;
-        let foreign = match &prepared.definition {
-            Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
-            _ => None,
-        };
+        let foreign = prepared
+            .definition
+            .as_ref()
+            .and_then(hex_lattice::PreparedProcessorFactory::foreign_processor);
         if (foreign.is_none()
             && !crate::native_effect_storage::is_closed_type(prepared.device_type))
             || entry.foreign_processor() != foreign
@@ -250,6 +250,17 @@ fn chain_storage<'a>(
                 (None, false) => {}
                 _ => return Err(AudioStorageError::UnknownStorage),
             }
+        }
+        if let Some(approval) = prepared
+            .definition
+            .as_ref()
+            .and_then(hex_lattice::PreparedProcessorFactory::foreign_state_approval)
+        {
+            l.existing_shared(
+                approval,
+                Owner::exclusive(chain),
+                Location("runtime-foreign-state-approval", index),
+            )?;
         }
         l.existing_shared(
             &prepared.meter,

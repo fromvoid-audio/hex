@@ -16,7 +16,8 @@ mod meter;
 mod owned_processor;
 mod parameter_automation;
 pub use foreign_processor::{
-    ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+    ForeignProcessorNode, ForeignProcessors, ForeignStateApproval, ForeignStateSource,
+    PreparedForeignProcessor, RefuseForeign,
 };
 pub use parameter_automation::{
     NativeParameterAutomation, ParameterAutomationBlock, ParameterAutomationLane,
@@ -676,6 +677,21 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             && self.entry.device_type == prepared.device_type
             && self.entry.sample_rate == prepared.sample_rate
             && std::sync::Arc::ptr_eq(&self.entry.meter, &prepared.meter)
+            && match (
+                &self.entry.runtime,
+                prepared
+                    .definition
+                    .as_ref()
+                    .and_then(PreparedProcessorFactory::foreign_state_approval),
+            ) {
+                (RuntimeOwnership::Foreign(runtime), Some(approval)) => runtime
+                    .approval
+                    .as_ref()
+                    .is_some_and(|actual| std::sync::Arc::ptr_eq(actual, approval)),
+                (RuntimeOwnership::Foreign(runtime), None) => runtime.approval.is_none(),
+                (_, None) => true,
+                _ => false,
+            }
             && match (&self.entry.configuration, &prepared.configuration) {
                 (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -803,14 +819,27 @@ impl NativeRuntimeChain {
                 } else {
                     (0, OutputTail::Finite { max_tail_frames: 0 }, Some(0))
                 };
-            if matches!(
-                instance.definition,
-                Some(PreparedProcessorFactory::Foreign(_))
-            ) && (instance
-                .configuration
+            if instance
+                .definition
                 .as_ref()
-                .is_none_or(|state| state.as_ref().type_id() != instance.device_type)
-                || !instance.matrix.is_identity())
+                .and_then(PreparedProcessorFactory::foreign_processor)
+                .is_some()
+                && (instance
+                    .configuration
+                    .as_ref()
+                    .is_none_or(|state| state.as_ref().type_id() != instance.device_type)
+                    || !instance.matrix.is_identity())
+            {
+                return Err(DeviceContractError::ForeignProcessingUnavailable);
+            }
+            if let Some(approval) = instance
+                .definition
+                .as_ref()
+                .and_then(PreparedProcessorFactory::foreign_state_approval)
+                && instance
+                    .configuration
+                    .as_deref()
+                    .is_none_or(|state| !approval.matches_state(state))
             {
                 return Err(DeviceContractError::ForeignProcessingUnavailable);
             }
@@ -1722,6 +1751,7 @@ impl NativeRuntimeChain {
                 device_type: entry.device_type,
                 sample_rate: entry.sample_rate,
                 configuration,
+                state_approval: runtime.approval.as_deref(),
                 prepared: runtime.prepared,
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,

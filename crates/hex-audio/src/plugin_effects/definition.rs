@@ -218,7 +218,16 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
             }
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         };
-        if effect.sample_rate != context.sample_rate || !state.processing_eq(&effect.state) {
+        if effect.sample_rate != context.sample_rate {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        if let Some(approval) = effect.state_approval(state) {
+            return Ok(Some(PreparedProcessorFactory::ForeignApproved {
+                processor: effect.prepared,
+                approval: std::sync::Arc::new(approval.clone()),
+            }));
+        }
+        if !state.processing_eq(&effect.state) {
             return Err(DeviceContractError::ForeignProcessingUnavailable);
         }
         Ok(Some(PreparedProcessorFactory::Foreign(effect.prepared)))

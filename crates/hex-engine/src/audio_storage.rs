@@ -92,6 +92,19 @@ impl<'a> Owner<'a> {
             },
         }
     }
+    /// A borrowed source correlation handle only. Its backing/native resources
+    /// are retained and accounted by the host; no source allocation is adopted.
+    pub(crate) fn foreign_state_source(value: &'a hex_lattice::ForeignStateApproval) -> Self {
+        Self {
+            value,
+            counts: None,
+            compare: |a, b| {
+                a.downcast_ref::<hex_lattice::ForeignStateApproval>()
+                    .zip(b.downcast_ref::<hex_lattice::ForeignStateApproval>())
+                    .is_some_and(|(a, b)| a.same_source(b))
+            },
+        }
+    }
     pub(crate) fn device_payload(value: &'a hex_lattice_contract::NativeDeviceState) -> Self {
         Self {
             value,
@@ -131,6 +144,9 @@ struct Data<'a> {
 }
 struct Handle<'a> {
     owner: Owner<'a>,
+    // Only the closed foreign-approval constructor can record this weak field.
+    // Its source DATA/native custody belongs to the embedding host, not graph.
+    borrowed_source_weak: bool,
     field: Owner<'a>,
     location: Location,
     id: u64,
@@ -262,7 +278,9 @@ impl<'a> AudioRootStorageLedger<'a> {
             return Err(AudioStorageError::UnknownStorage);
         }
         for handle in &self.handles {
-            if !self.data.iter().any(|row| row.owner.same(handle.owner)) {
+            if !handle.borrowed_source_weak
+                && !self.data.iter().any(|row| row.owner.same(handle.owner))
+            {
                 return Err(AudioStorageError::UnknownStorage);
             }
         }
@@ -583,6 +601,32 @@ impl<'a> AudioRootStorageLedger<'a> {
         location: Location,
         id: u64,
     ) -> Result<(), AudioStorageError> {
+        self.record_handle(owner, field, location, id, false)
+    }
+    /// Exactly one immutable approval's actual weak field. This records the
+    /// alias without adopting or declaring the external source backing as zero
+    /// bytes. All ordinary owning handles still require their constructor DATA.
+    pub(crate) fn foreign_source_weak(
+        &mut self,
+        approval: &'a hex_lattice::ForeignStateApproval,
+        id: u64,
+    ) -> Result<(), AudioStorageError> {
+        self.record_handle(
+            Owner::foreign_state_source(approval),
+            Owner::exclusive(approval),
+            Location("foreign-source-weak", 0),
+            id,
+            true,
+        )
+    }
+    fn record_handle(
+        &mut self,
+        owner: Owner<'a>,
+        field: Owner<'a>,
+        location: Location,
+        id: u64,
+        borrowed_source_weak: bool,
+    ) -> Result<(), AudioStorageError> {
         if id == 0
             || self
                 .handles
@@ -596,6 +640,7 @@ impl<'a> AudioRootStorageLedger<'a> {
         }
         self.handles.push(Handle {
             owner,
+            borrowed_source_weak,
             field,
             location,
             id,

@@ -165,8 +165,26 @@ pub enum PreparedProcessorFactory {
     Owned(Arc<dyn PreparedOwnedProcessorRuntime>),
     /// Borrowed staged graph capability; never an owned rollbackable DSP facade.
     Foreign(crate::PreparedForeignProcessor),
+    /// Same retained endpoint, with exact captured-state/source matching.
+    /// This immutable graph data grants no native source or publication custody.
+    ForeignApproved {
+        processor: crate::PreparedForeignProcessor,
+        approval: Arc<crate::ForeignStateApproval>,
+    },
 }
 impl PreparedProcessorFactory {
+    pub fn foreign_processor(&self) -> Option<crate::PreparedForeignProcessor> {
+        match self {
+            Self::Foreign(processor) | Self::ForeignApproved { processor, .. } => Some(*processor),
+            _ => None,
+        }
+    }
+    pub fn foreign_state_approval(&self) -> Option<&Arc<crate::ForeignStateApproval>> {
+        match self {
+            Self::ForeignApproved { approval, .. } => Some(approval),
+            _ => None,
+        }
+    }
     pub fn parameter_automation_descriptor(
         &self,
         parameter: hex_lattice_contract::ParameterId,
@@ -174,7 +192,7 @@ impl PreparedProcessorFactory {
         match self {
             Self::Legacy(v) => v.parameter_automation_descriptor(parameter),
             Self::Owned(v) => v.parameter_automation_descriptor(parameter),
-            Self::Foreign(_) => None,
+            Self::Foreign(_) | Self::ForeignApproved { .. } => None,
         }
     }
     pub fn supports_parameter_automation(
@@ -184,42 +202,49 @@ impl PreparedProcessorFactory {
         match self {
             Self::Legacy(value) => value.supports_parameter_automation(parameter),
             Self::Owned(value) => value.supports_parameter_automation(parameter),
-            Self::Foreign(_) => false,
+            Self::Foreign(_) | Self::ForeignApproved { .. } => false,
         }
     }
     pub fn runtime_version(&self) -> u32 {
         match self {
             Self::Legacy(v) => v.runtime_version(),
             Self::Owned(v) => v.runtime_version(),
-            Self::Foreign(_) => 1,
+            Self::Foreign(_) | Self::ForeignApproved { .. } => 1,
         }
     }
     pub fn declared_pair_bytes(&self) -> Option<usize> {
         match self {
             Self::Legacy(v) => v.declared_runtime_bytes().checked_mul(2),
             Self::Owned(v) => Some(v.declared_pair_bytes()),
-            Self::Foreign(_) => Some(0), // scalar declaration is already inline; host charges actual endpoints
+            // Endpoint backing belongs to the host. Immutable approval DATA is
+            // declared by the graph constructor, outside mutable DSP pair bytes.
+            Self::Foreign(_) | Self::ForeignApproved { .. } => Some(0),
         }
     }
     pub fn output_tail(&self) -> OutputTail {
         match self {
             Self::Legacy(v) => v.output_tail(),
             Self::Owned(v) => v.output_tail(),
-            Self::Foreign(value) => value.output_tail(),
+            Self::Foreign(value)
+            | Self::ForeignApproved {
+                processor: value, ..
+            } => value.output_tail(),
         }
     }
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
         match self {
             Self::Legacy(v) => v.algorithmic_latency_frames(),
             Self::Owned(v) => v.algorithmic_latency_frames(),
-            Self::Foreign(v) => Some(v.total_latency_frames()),
+            Self::Foreign(v) | Self::ForeignApproved { processor: v, .. } => {
+                Some(v.total_latency_frames())
+            }
         }
     }
     /// Control-side legacy preview capability, when actually supported.
     pub fn frequency_response_at_hz(&self, hz: f32) -> Option<[f32; 2]> {
         match self {
             Self::Legacy(v) => v.frequency_response_at_hz(hz),
-            Self::Owned(_) | Self::Foreign(_) => None,
+            Self::Owned(_) | Self::Foreign(_) | Self::ForeignApproved { .. } => None,
         }
     }
 }
@@ -241,7 +266,13 @@ pub struct PreparedRuntimeInstance {
 }
 impl PreparedRuntimeInstance {
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
-        if self.bypassed && !matches!(self.definition, Some(PreparedProcessorFactory::Foreign(_))) {
+        if self.bypassed
+            && self
+                .definition
+                .as_ref()
+                .and_then(PreparedProcessorFactory::foreign_processor)
+                .is_none()
+        {
             Some(0)
         } else {
             self.definition.as_ref().map_or(
@@ -277,7 +308,7 @@ impl PreparedProcessorFactory {
     pub fn legacy(&self) -> Option<&Arc<dyn PreparedNativeProcessor>> {
         match self {
             Self::Legacy(value) => Some(value),
-            Self::Owned(_) | Self::Foreign(_) => None,
+            Self::Owned(_) | Self::Foreign(_) | Self::ForeignApproved { .. } => None,
         }
     }
     pub fn is_owned(&self) -> bool {

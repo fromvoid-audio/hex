@@ -46,7 +46,10 @@ impl Bank {
     ) -> Result<References, &'static str> {
         let mut references = References::default();
         for node in nodes {
-            let Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) = &node.definition
+            let Some(prepared) = node
+                .definition
+                .as_ref()
+                .and_then(hex_lattice::PreparedProcessorFactory::foreign_processor)
             else {
                 return Err("native graph node differs");
             };

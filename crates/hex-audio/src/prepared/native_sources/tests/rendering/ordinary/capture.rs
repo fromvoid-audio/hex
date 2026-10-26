@@ -4,7 +4,7 @@ use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_canonical_commit() {
+fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_original_source() {
     use crate::plugin_worker::NativeWorkerParameterProgress;
     if std::env::var_os("HEX_ORDINARY_HOST_INPUT_DRIVER").is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
@@ -26,6 +26,24 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
     let _serial = serial();
     for location in 0..3 {
         let mut f = fixture_at("processing", location);
+        // Keep actual source audio present beyond the handoff. The standard
+        // fixture ends at frame32 and its pipeline becomes silent at frame48.
+        let clip = f.editor.project().tracks()[0].clips()[0].id();
+        f.editor
+            .execute(Command::SetClipLooping {
+                clip,
+                looping: true,
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::TrimClip {
+                clip,
+                start: 0,
+                duration: 128,
+                source_offset: 0,
+                source_length: 32,
+            })
+            .unwrap();
         let canonical = f.editor.project().clone();
         let initial = f.control.native_source_prepared_state(f.binding).unwrap();
         let root = f.control.native_candidate_root();
@@ -161,7 +179,221 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
             f.control.native_source_endpoint_status(f.binding),
             Some((true, true))
         );
+        // No caller-supplied envelope can authorize this source. Prepare-before-
+        // commit must refuse the captured state until the original capture is staged.
+        let device = f
+            .editor
+            .project()
+            .tracks()
+            .iter()
+            .flat_map(|track| track.devices())
+            .chain(
+                f.editor
+                    .project()
+                    .return_tracks()
+                    .iter()
+                    .flat_map(|bus| bus.devices()),
+            )
+            .chain(f.editor.project().main_devices())
+            .find(|device| device.id().value() == f.binding.instance)
+            .unwrap()
+            .id();
+        let command = Command::ReplaceDeviceState {
+            device,
+            state: snapshot.state().clone(),
+        };
+        let refused = f.editor.execute_prepared(command.clone(), |project| {
+            compile_captured_project(&f.control, f.binding, project, &f.media, &f.resources)
+        });
+        assert!(refused.is_err());
+        assert_eq!(f.editor.project(), &canonical);
+        snapshot_action(|| {
+            f.control
+                .stage_native_source_state_snapshot_on_control(f.binding, &snapshot)
+        })
+        .unwrap();
+        assert!(
+            snapshot_action(|| f
+                .control
+                .stage_native_source_state_snapshot_on_control(f.binding, &snapshot))
+            .is_err()
+        );
+        assert!(
+            matches!(
+                f.control
+                    .begin_native_source_parameter_change_on_control(f.binding, 7, 0.5),
+                Err("native state approval is pending")
+            ),
+            "frozen capture cannot admit a later host point before its terminal"
+        );
+        let (_, candidate) = f
+            .editor
+            .execute_prepared(command, |project| {
+                compile_captured_project(&f.control, f.binding, project, &f.media, &f.resources)
+            })
+            .unwrap();
+        let committed = f.editor.project().clone();
+        assert_eq!(committed.device(device).unwrap().state(), snapshot.state());
+        let revision = publish(&mut f.control, candidate, PublicationPolicy::InheritRuntime);
+        for n in 5..8_u64 {
+            let output = block(&mut f);
+            assert_eq!(
+                f.control.status.applied_revision.load(Acquire),
+                revision,
+                "matching captured canonical graph must actually install"
+            );
+            replacement::wait_for_blocks(&root, f.binding, n + 1);
+            let gain = 3.0 * (0.5 + (n - 2) as f32 * 0.125) + if location == 1 { 1.0 } else { 0.0 };
+            assert_eq!(
+                output,
+                [[0.25 * gain, -0.5 * gain]; 8],
+                "captured graph keeps original worker/PCM prefix"
+            );
+        }
+        snapshot_action(|| {
+            f.control
+                .finalize_native_source_state_snapshot_on_control(f.binding, &snapshot, true)
+        })
+        .unwrap();
+        assert!(
+            snapshot_action(|| f
+                .control
+                .finalize_native_source_state_snapshot_on_control(f.binding, &snapshot, true))
+            .is_err()
+        );
+        // A later capture cannot steal an earlier terminal. Refusing its
+        // pending compiler permission preserves the last accepted state.
+        let later_request = begin(&mut f);
+        let until = Instant::now() + Duration::from_secs(3);
+        let later = loop {
+            match f
+                .control
+                .poll_native_source_state_snapshot_on_control(f.binding, &later_request)
+            {
+                Ok(crate::plugin_worker::NativeWorkerStateSnapshotProgress::Captured(snapshot)) => {
+                    break snapshot;
+                }
+                Ok(crate::plugin_worker::NativeWorkerStateSnapshotProgress::Pending)
+                | Err("native preparation is busy") => {}
+                other => panic!("later snapshot terminal: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        snapshot_action(|| {
+            f.control
+                .stage_native_source_state_snapshot_on_control(f.binding, &later)
+        })
+        .unwrap();
+        assert!(
+            snapshot_action(|| f
+                .control
+                .finalize_native_source_state_snapshot_on_control(f.binding, &snapshot, true))
+            .is_err()
+        );
+        // The active canonical bytes still compile while another state is pending.
+        drop(
+            compile_captured_project(
+                &f.control,
+                f.binding,
+                f.editor.project(),
+                &f.media,
+                &f.resources,
+            )
+            .unwrap(),
+        );
+        snapshot_action(|| {
+            f.control
+                .finalize_native_source_state_snapshot_on_control(f.binding, &later, false)
+        })
+        .unwrap();
+        assert!(
+            snapshot_action(|| f
+                .control
+                .stage_native_source_state_snapshot_on_control(f.binding, &snapshot))
+            .is_err()
+        );
+        drop(
+            compile_captured_project(
+                &f.control,
+                f.binding,
+                f.editor.project(),
+                &f.media,
+                &f.resources,
+            )
+            .unwrap(),
+        );
+        assert_eq!(f.editor.project(), &committed);
+        // History contains one actual opaque edit; SDK work did not create extra edges.
+        assert!(f.editor.undo());
+        assert_eq!(f.editor.project(), &canonical);
+        assert!(f.editor.redo());
+        assert_eq!(f.editor.project(), &committed);
+        assert_eq!(
+            f.control.native_source_endpoint_status(f.binding),
+            Some((true, true))
+        );
         dispose(f);
+    }
+}
+
+fn snapshot_action(mut run: impl FnMut() -> Result<(), &'static str>) -> Result<(), &'static str> {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match run() {
+            Err("native preparation is busy" | "native capture mailbox is busy") => {
+                assert!(Instant::now() < until);
+                std::thread::yield_now();
+            }
+            result => return result,
+        }
+    }
+}
+fn compile_captured_project(
+    control: &Control,
+    binding: Binding,
+    project: &Project,
+    media: &BTreeMap<hex_project::AssetId, hex_engine::Audio>,
+    resources: &PreparedDeviceResources,
+) -> Result<Playback, hex_project::Invalid> {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let result = crate::plugin_effects::Hosting::prepare_on_control(
+            control,
+            &[binding],
+            &[],
+            &mut |effects| {
+                effects.prepare_registered_revision(
+                    project,
+                    media,
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                    &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                    resources,
+                    1_000_000,
+                    &AtomicBool::new(false),
+                )
+            },
+        );
+        match result {
+            Ok(revision) => {
+                return Playback::try_from_prepared_with_device_resources(
+                    Arc::new(revision),
+                    resources,
+                )
+                .map_err(|_| hex_project::Invalid("captured runtime refused"));
+            }
+            Err(error)
+                if matches!(
+                    error.as_str(),
+                    "native effect preparation is busy" | "native effect selection is busy"
+                ) =>
+            {
+                assert!(Instant::now() < until);
+                std::thread::yield_now();
+            }
+            Err(_) => return Err(hex_project::Invalid("captured source refused")),
+        }
     }
 }
 

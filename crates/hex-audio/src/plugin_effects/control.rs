@@ -13,11 +13,43 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn stage_state_snapshot(
+        &mut self,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        max_data_bytes: usize,
+    ) -> Result<(), &'static str> {
+        let bytes = self
+            .constructor_storage_on_control()
+            .and_then(|storage| storage.data_bytes())
+            .ok_or("native state approval storage differs")?;
+        state_approval::stage(
+            &self.worker,
+            &mut self.callback.configuration,
+            snapshot,
+            bytes,
+            max_data_bytes,
+        )
+    }
+    pub(crate) fn finalize_state_snapshot(
+        &mut self,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        accepted: bool,
+    ) -> Result<(), &'static str> {
+        state_approval::finalize(
+            &self.worker,
+            &mut self.callback.configuration,
+            snapshot,
+            accepted,
+        )
+    }
     pub(crate) fn begin_parameter_change(
         &mut self,
         id: u32,
         normalized: f64,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        if self.callback.configuration.pending_state.is_some() {
+            return Err("native state approval is pending");
+        }
         self.worker
             .begin_parameter_change_on_control(id, normalized)
     }
@@ -99,11 +131,38 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn stage_state_snapshot(
+        &mut self,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        max_data_bytes: usize,
+    ) -> Result<(), &'static str> {
+        let bytes = self
+            .constructor_storage_on_control()
+            .and_then(|storage| storage.data_bytes())
+            .ok_or("native state approval storage differs")?;
+        state_approval::stage(
+            &self.worker,
+            &mut self.configuration,
+            snapshot,
+            bytes,
+            max_data_bytes,
+        )
+    }
+    pub(crate) fn finalize_state_snapshot(
+        &mut self,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        accepted: bool,
+    ) -> Result<(), &'static str> {
+        state_approval::finalize(&self.worker, &mut self.configuration, snapshot, accepted)
+    }
     pub(crate) fn begin_parameter_change(
         &mut self,
         id: u32,
         normalized: f64,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        if self.configuration.pending_state.is_some() {
+            return Err("native state approval is pending");
+        }
         self.worker
             .begin_parameter_change_on_control(id, normalized)
     }
@@ -181,17 +240,25 @@ impl NativeEffectControl {
     pub(crate) fn configuration(&self) -> &NativeDeviceState {
         &self.configuration.state
     }
-    pub(crate) fn storage(&self) -> NativeEffectStorage {
-        self.storage
+    pub(crate) fn storage(&self) -> Option<NativeEffectStorage> {
+        let mut storage = self.storage;
+        storage.approved_state_weak_handles = storage
+            .approved_state_weak_handles
+            .checked_add(self.configuration.approval_count())?;
+        Some(storage)
     }
     pub(crate) fn constructor_storage_on_control(&self) -> Option<NativeEffectStorage> {
         // Only loan_on_control constructs this unique control, after inspecting
-        // the original paired callback. Its backing cannot resize while loaned;
-        // no worker extraction or source handoff is exposed from this owner.
-        (self.worker.retains_original_source_on_control()
-            && self.worker.binding() == self.binding()
-            && self.worker.quantum_frames() == self.prepared().quantum_frames())
-        .then_some(self.storage)
+        // the original paired callback. Worker/queue backing cannot resize while
+        // loaned; both inline approval slots are already reserved in each owner.
+        // No worker extraction or source handoff is exposed from this owner.
+        if !self.worker.retains_original_source_on_control()
+            || self.worker.binding() != self.binding()
+            || self.worker.quantum_frames() != self.prepared().quantum_frames()
+        {
+            return None;
+        }
+        self.storage()
     }
     pub(crate) fn matches_callback(&self, callback: &NativeEffectCallback) -> bool {
         callback.matches_worker(&self.worker)
@@ -201,11 +268,14 @@ impl NativeEffectControl {
     #[allow(clippy::result_large_err)] // A mismatched original return remains wholly owned by the caller.
     pub(crate) fn reunite(
         self,
-        callback: NativeEffectCallback,
+        mut callback: NativeEffectCallback,
     ) -> Result<NativeEffect, (Self, NativeEffectCallback)> {
         if !self.matches_callback(&callback) {
             return Err((self, callback));
         }
+        // The endpoint is exclusively back on control. Retire its old compiler
+        // permissions here, then move the actual current control configuration.
+        callback.configuration = self.configuration;
         Ok(NativeEffect {
             worker: self.worker,
             callback,
@@ -244,12 +314,11 @@ impl NativeEffectReference<'_> {
             && node.device_id == config.identity.device_id()
             && node.device_type == config.state.type_id()
             && node.sample_rate == config.sample_rate
-            && matches!(&node.definition,
-                Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if *prepared == config.prepared)
             && node
-                .configuration
-                .as_deref()
-                .is_some_and(|state| state.processing_eq(&config.state))
+                .definition
+                .as_ref()
+                .zip(node.configuration.as_deref())
+                .is_some_and(|(factory, state)| config.approves_factory(factory, state))
     }
     pub(crate) fn binding(&self) -> Binding {
         self.configuration().binding

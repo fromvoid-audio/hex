@@ -6,9 +6,12 @@ use hex_lattice_contract::DeviceContractError;
 
 /// Only the original borrowed provider can supply this observation. The
 /// ordinary chain transaction caches it beside its scalar facts; no foreign
-/// DSP state, source owner or acceptance authority is copied into the chain.
+/// DSP state, source owner or canonical acceptance authority is copied into the
+/// chain. An optional immutable captured-state approval retains only a weak
+/// comparison anchor and bytes, separately inventoried by graph construction.
 pub(super) struct ForeignRuntime {
     pub(super) prepared: crate::PreparedForeignProcessor,
+    pub(super) approval: Option<std::sync::Arc<crate::ForeignStateApproval>>,
     pub(super) committed_drained: bool,
     pub(super) scratch_drained: bool,
 }
@@ -95,9 +98,24 @@ impl RuntimeOwnership {
             None => Ok(Self::Memoryless),
             Some(PreparedProcessorFactory::Foreign(v)) => Ok(Self::Foreign(ForeignRuntime {
                 prepared: *v,
+                approval: None,
                 committed_drained: false,
                 scratch_drained: false,
             })),
+            Some(PreparedProcessorFactory::ForeignApproved {
+                processor,
+                approval,
+            }) => {
+                if processor.binding() != Some(approval.binding()) {
+                    return Err(DeviceContractError::ForeignProcessingUnavailable);
+                }
+                Ok(Self::Foreign(ForeignRuntime {
+                    prepared: *processor,
+                    approval: Some(std::sync::Arc::clone(approval)),
+                    committed_drained: false,
+                    scratch_drained: false,
+                }))
+            }
             Some(PreparedProcessorFactory::Legacy(factory)) => Ok(Self::Legacy {
                 primary: factory.create_runtime(),
                 scratch: factory.create_runtime(),
@@ -176,6 +194,14 @@ impl RuntimeOwnership {
     }
     pub(super) fn can_retarget_from(&self, old: &Self) -> bool {
         match (self, old) {
+            (Self::Foreign(new), Self::Foreign(old)) => {
+                new.prepared == old.prepared
+                    && new.approval.as_ref().is_some_and(|approval| {
+                        old.approval
+                            .as_ref()
+                            .is_none_or(|previous| approval.same_source(previous))
+                    })
+            }
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 primary.can_retarget_parameters_from(old.as_ref())
                     && scratch.can_retarget_parameters_from(old.as_ref())
