@@ -296,7 +296,7 @@ midi keyboard keep their contextual shortcuts.
 
 ## arrangement automation view
 
-press **a** or use the toolbar's **a** control to show track-gain automation across
+press **a** or use the toolbar's **a** control to show automation across
 the entire arranger, including unselected tracks. audio and midi clips fade into
 the background while the curves own editing. the toolbar control stays highlighted
 while this mode is on; the key and toolbar always switch the same view.
@@ -307,16 +307,41 @@ span. a partial time span splits clips at its edges. automation lanes prevent
 activation of the retained background clips. text fields and the computer midi
 keyboard keep their own input.
 
-click a gain curve to add a point, drag a point to change its time or value, and
+click a curve to add a point, drag a point to change its time or value, and
 release to apply the edit. editing another track's curve keeps the background
 clip selection. **command** gives free beat placement. **escape**
 cancels a held edit; **backspace** removes the selected automation point.
 one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.
 
-this view currently shows track gain. recorded touch spans are displayed but
-read-only: leave automation view and use the track's gain editor to clear the
-lane before editing its base curve. device-parameter lanes are not offered here.
+right-click a supported device parameter and choose **show automation** to use
+the track's main automation row, or **add new automation lane** for a separate
+lane. a track can show several device lanes at once. from the track-header menu,
+choose **automatable parameters…**, then the device and parameter. main and
+return headers offer the same picker for their effects.
+
+**show used automation lanes** reveals lanes with authored points. **show all
+automation lanes** also restores empty lanes you have already shown and the
+current parameter preview; it does not assign every available parameter.
+
+device parameters are not assigned automatically. the main row follows the last
+supported parameter you touch or show. a dashed line previews its base value
+without changing playback. adding the first point creates a solid automation
+curve. right-click a lane for **clear automation** to remove its points and return
+to the base value, or **hide lane** to keep the curve while hiding its display.
+point edits and clearing support undo and redo; authored curves survive saving
+and reopening.
+
+supported device controls are utility's parameters, saturator's four parameters,
+and auto pan's amount, rate, phase and waveform. native effects on tracks, main
+and returns also offer host **input gain** and **output gain** lanes. instrument
+and source-owned effect lanes, other device controls and vst lanes are not yet
+available. recording device movements, manual automation override and shared
+modulator assignments are not implemented.
+
+recorded track-gain touch spans are displayed but read-only: leave automation
+view and use the track's gain editor to clear the lane before editing its base
+curve.
 
 ## clip loop resizing
 
@@ -557,9 +582,10 @@ dry while history advances privately. removing a device drains its old history;
 a removed frozen tail persists until stop. retained tails use bounded host banks;
 a full bank refuses another edit rather than discarding an existing tail. smooth
 sets none, fast or slow parameter transitions; density selects scattering depth.
-all controls use undo/redo and survive save/reopen. device-parameter automation
-lanes are not currently offered. the functional control set does not establish
-sound parity with another application's reverb.
+all controls use undo/redo and survive save/reopen. reverb's internal parameters
+do not yet support automation lanes; its host input and output gains can be
+automated on tracks, main and returns. the functional control set does not
+establish sound parity with another application's reverb.
 
 the delay effect has independent left and right timing. **sync** selects a
 multiple of a sixteenth note; **time** selects 1–5000 ms. sync is bounded to
@@ -578,9 +604,10 @@ bypass keeps delay history warm while passing dry audio. removing a playing dela
 releases freeze and lets its existing repeats decay; stop and seek clear history.
 loop wraps preserve repeats. changing sample rate prepares empty history at the
 new rate. settings use ordinary device undo and save/reopen; runtime audio history
-is transient. automation lanes are currently unsupported. the control set follows
-the reference device, while the filter, interpolation and modulation algorithms
-are original hex implementations.
+is transient. delay's internal parameters do not yet support automation lanes;
+its host input and output gains can be automated on tracks, main and returns.
+the control set follows the reference device, while the filter, interpolation
+and modulation algorithms are original hex implementations.
 
 overdrive filters the signal before distortion. use **frequency** and **bandwidth**
 to choose the input band; the graph shows this filter response. **drive** adds
