@@ -198,6 +198,8 @@ notes or velocity bars, even with midi draw mode enabled. release **2** to retur
 to ordinary editing. a range already being dragged continues until mouse release.
 an i-beam cursor marks the time-selection tool while **2** is held.
 text and numeric fields keep normal number entry.
+the clip editor shows the selected clip. clicking away or making an arrange time
+selection clears its contents until a clip is selected again.
 
 a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
