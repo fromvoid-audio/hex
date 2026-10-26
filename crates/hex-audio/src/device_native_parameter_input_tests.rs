@@ -380,3 +380,125 @@ fn native_input_successful_release_observes_actual_restoration_and_failure_never
     assert!(control.native_parameter_input.try_receipt().is_none());
     shutdown(&mut control, &mut callback);
 }
+
+#[test]
+fn aborted_native_gesture_late_changes_retire_credits_without_repeating_its_terminal() {
+    let (mut control, mut callback, mut target) = fixture(false);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    for _ in 1..64 {
+        control.native_parameter_input.change(value(0.75)).unwrap();
+    }
+    control.command(hex_engine::PlaybackCommand::Stop).unwrap();
+    let mut source = [[0.0; 2]; 1];
+    let rendered = render(&mut callback, &mut source);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source, &rendered, 2));
+    // Leave Aborted unread behind the original normal receipts. Control still
+    // owns the gesture and may use each returned normal credit for a late Set.
+    // Every such Set owes exactly one Superseded, never another Aborted.
+    let mut seen = [false; 72];
+    for expected in 1..=8 {
+        let Some(Receipt::Superseded { sequence, .. }) =
+            control.native_parameter_input.try_receipt()
+        else {
+            panic!("normal credit")
+        };
+        assert_eq!(sequence, expected);
+        seen[usize::try_from(sequence - 1).unwrap()] = true;
+        control.native_parameter_input.change(value(0.5)).unwrap();
+        let rendered = render(&mut callback, &mut source);
+        assert!(rendered.is_ok());
+        assert!(write(&mut callback, &mut source, &rendered, 2));
+        assert!(
+            !control.status.native_parameter_input_fault.load(Acquire),
+            "late commands cannot exhaust reserved terminal receipt capacity"
+        );
+    }
+    let mut terminals = 0;
+    while let Some(receipt) = control.native_parameter_input.try_receipt() {
+        match receipt {
+            Receipt::Superseded { sequence, .. } => {
+                let index = usize::try_from(sequence - 1).unwrap();
+                assert!(!seen[index], "each issued credit retires once");
+                seen[index] = true;
+            }
+            Receipt::Aborted {
+                target: actual,
+                reason: AbortReason::TransportChanged,
+            } => {
+                assert_eq!(actual, target);
+                terminals += 1;
+            }
+            _ => panic!("a stopped gesture cannot be applied or finished"),
+        }
+    }
+    assert_eq!(seen, [true; 72]);
+    assert_eq!(terminals, 1);
+    target.gesture_serial += 1;
+    target.transport_epoch = control.status.transport_epoch.load(Acquire);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control.native_parameter_input.cancel().unwrap();
+    let rendered = render(&mut callback, &mut source);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source, &rendered, 2));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { sequence: 1, .. })
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted {
+            reason: AbortReason::Cancelled,
+            ..
+        })
+    ));
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
+fn stopped_native_begin_release_aborts_once_and_releases_publication_admission() {
+    let (mut control, mut callback, mut target) = fixture(false);
+    control.command(hex_engine::PlaybackCommand::Stop).unwrap();
+    let mut source = [[0.0; 2]; 1];
+    let rendered = render(&mut callback, &mut source);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source, &rendered, 2));
+    assert!(!control.status.playing.load(Acquire));
+    target.transport_epoch = control.status.transport_epoch.load(Acquire);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control.native_parameter_input.release().unwrap();
+    assert!(!control.status.publication_reserve_for_test());
+    let rendered = render(&mut callback, &mut source);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source, &rendered, 2));
+    assert_eq!(source, [[0.0; 2]]);
+    assert!(
+        !control.status.publication_reserve_for_test(),
+        "terminal remains control-owned until drained"
+    );
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { sequence: 1, .. })
+    ));
+    assert!(
+        matches!(control.native_parameter_input.try_receipt(), Some(Receipt::Aborted { target: actual, reason: AbortReason::TransportChanged }) if actual == target)
+    );
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(control.native_parameter_input.target().is_none());
+    assert!(
+        control.status.publication_reserve_for_test(),
+        "draining the terminal releases the existing shared reservation"
+    );
+    control.status.publication_clear_for_test();
+    shutdown(&mut control, &mut callback);
+}

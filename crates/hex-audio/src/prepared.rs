@@ -4046,7 +4046,7 @@ impl Callback {
             {
                 return Err(AbortReason::SourceChanged);
             }
-            if transport_epoch != target.transport_epoch {
+            if transport_epoch != target.transport_epoch || !active.playback.playing() {
                 return Err(AbortReason::TransportChanged);
             }
             Ok(())

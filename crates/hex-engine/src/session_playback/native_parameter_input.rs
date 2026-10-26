@@ -70,7 +70,7 @@ impl crate::SessionPlayback {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
@@ -91,7 +91,7 @@ mod tests {
             UTILITY_DEFINITION.default_state().unwrap(),
         )
     }
-    fn fixture_with_state(
+    pub(in crate::session_playback) fn fixture_with_state(
         owner: u8,
         target: DeviceAutomationTarget,
         limiter_before: Option<bool>,

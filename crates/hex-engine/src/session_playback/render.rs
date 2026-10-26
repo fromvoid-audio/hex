@@ -2927,3 +2927,87 @@ mod observed_page_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod native_input_transaction_tests {
+    use super::*;
+    use hex_lattice::{NativeTransientOperation, NativeTransientValue};
+    use hex_lattice_contract::{DeviceAutomationTarget, NativeDeviceMetadata, ParameterValue};
+
+    struct RefuseCapture(usize);
+    impl CaptureSink for RefuseCapture {
+        fn selects(&self, _: OutputCaptureId) -> bool {
+            true
+        }
+        fn add(
+            &mut self,
+            _: OutputCaptureId,
+            _: usize,
+            _: &[Frame],
+        ) -> Result<(), SessionPlaybackError> {
+            self.0 += 1;
+            Err(SessionPlaybackError::DeviceRuntime)
+        }
+    }
+
+    #[test]
+    fn native_input_late_capture_refusal_discards_application_and_retries_pristine_dsp() {
+        let definition = &hex_devices::utility::UTILITY_DEFINITION;
+        let state = definition
+            .patch_parameter(
+                &definition.default_state().unwrap(),
+                hex_devices::utility::parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let id = hex_devices::utility::parameter::GAIN;
+        let target = DeviceAutomationTarget::Parameter(id);
+        let (mut runtime, _) = super::super::native_parameter_input::tests::fixture_with_state(
+            0,
+            target,
+            None,
+            state.clone(),
+        );
+        let (mut pristine, _) =
+            super::super::native_parameter_input::tests::fixture_with_state(0, target, None, state);
+        let operation = NativeTransientOperation::Set(NativeTransientValue::Parameter {
+            id,
+            value: ParameterValue::Float(2.0),
+        });
+        runtime.set_native_parameter_input(operation).unwrap();
+        pristine.set_native_parameter_input(operation).unwrap();
+        let mut output = [[9.0; 2]; 16];
+        let mut capture = RefuseCapture(0);
+        assert!(
+            runtime
+                .render_internal::<dyn MediaPages>(
+                    &mut output,
+                    None,
+                    None,
+                    Some(&mut capture),
+                    None
+                )
+                .is_err()
+        );
+        assert_eq!(capture.0, 1, "refuse after the actual target was processed");
+        assert_eq!(output, [[0.0; 2]; 16]);
+        assert_eq!(
+            (runtime.performance_frame, runtime.arrangement_frame),
+            (0, 0)
+        );
+        assert!(runtime.take_native_parameter_application().is_none());
+        runtime.render(&mut output).unwrap();
+        let mut expected = [[0.0; 2]; 16];
+        pristine.render(&mut expected).unwrap();
+        assert_eq!(output, expected);
+        assert_ne!(
+            output[0], output[15],
+            "fixture must exercise retained filter history"
+        );
+        let applied = runtime.take_native_parameter_application().unwrap();
+        assert_eq!(
+            (applied.performance_frame, applied.arrangement_frame),
+            (0, 0)
+        );
+    }
+}

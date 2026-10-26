@@ -1,5 +1,8 @@
 //! One source-fenced native control endpoint. Commands and receipts carry Copy
 //! values only; engine processing and final checked sink delivery are separate.
+//! This endpoint requires playing transport; stopped monitoring/audition is not
+//! implemented. Callback admission refuses stopped requests without fabricating
+//! a content origin, retiring their normal credits and one aborted terminal.
 //! Sixty-four normal commands may be outstanding; Release and Cancel each keep
 //! a reserved terminal slot. There is no recording-duration/event lifetime cap.
 use crate::{
@@ -91,6 +94,10 @@ pub(crate) struct Callback {
     value: Option<NativeTransientOperation>,
     staged: Option<Command>,
     pending: Pending<Receipt>,
+    // Control issues strictly increasing gesture serials. Keep the terminal
+    // watermark after the owner is cleared: late old commands still owe a
+    // normal receipt, but cannot consume another reserved terminal slot.
+    last_terminated_gesture: u64,
     pub(crate) receipt_fault: bool,
 }
 pub(crate) fn channel() -> (Control, Callback) {
@@ -114,6 +121,7 @@ pub(crate) fn channel() -> (Control, Callback) {
             value: None,
             staged: None,
             pending: Pending::default(),
+            last_terminated_gesture: 0,
             receipt_fault: false,
         },
     )
@@ -130,6 +138,9 @@ impl Control {
     pub fn target(&self) -> Option<Target> {
         self.target
     }
+    /// Queue a playing-transport gesture. Queue acceptance is not application:
+    /// callback admission authoritatively refuses a stopped/stale source and
+    /// returns its credits/terminal through the same receipt channel.
     pub fn begin(
         &mut self,
         target: Target,
@@ -280,6 +291,9 @@ impl Callback {
         ChannelStorage::ring(self.commands.buffer())?
             .plus(ChannelStorage::ring(self.receipts.buffer())?)
     }
+    fn terminated(&self, target: Target) -> bool {
+        target.gesture_serial <= self.last_terminated_gesture
+    }
     fn emit(&mut self, receipt: Receipt) {
         if self.receipts.push(receipt).is_err() {
             self.receipt_fault = true;
@@ -307,6 +321,10 @@ impl Callback {
             let Ok(command) = self.commands.pop() else {
                 break;
             };
+            if self.terminated(command.target) {
+                self.discard(command);
+                continue;
+            }
             if matches!(command.kind, Kind::Cancel) {
                 if self.owner == Some(command.target) {
                     self.abort(AbortReason::Cancelled);
@@ -387,7 +405,9 @@ impl Callback {
         }
         while let Some(receipt) = self.pending.pop_due(end) {
             self.emit(receipt);
-            if matches!(receipt, Receipt::Finished { .. }) {
+            if let Receipt::Finished { target, .. } = receipt {
+                self.last_terminated_gesture =
+                    self.last_terminated_gesture.max(target.gesture_serial);
                 self.owner = None;
                 self.value = None;
             }
@@ -410,11 +430,14 @@ impl Callback {
         let count = self.commands.slots().min(CAPACITY);
         for _ in 0..count {
             if let Ok(command) = self.commands.pop() {
-                owner = owner.or(Some(command.target));
+                if !self.terminated(command.target) {
+                    owner = owner.or(Some(command.target));
+                }
                 self.discard(command);
             }
         }
-        if let Some(target) = owner {
+        if let Some(target) = owner.filter(|target| !self.terminated(*target)) {
+            self.last_terminated_gesture = self.last_terminated_gesture.max(target.gesture_serial);
             self.emit(Receipt::Aborted { target, reason });
         }
     }
