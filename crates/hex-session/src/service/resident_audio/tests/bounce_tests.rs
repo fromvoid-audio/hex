@@ -186,11 +186,7 @@ fn arrangement_bounce_publication_case(whole_track: bool) {
             .submit(Request::BounceArrangement {
                 project_generation: 0,
                 revision: revision + u64::from(stale),
-                target: if whole_track {
-                    hex_project::BounceTarget::Track(original.state.project.tracks()[0].id())
-                } else {
-                    hex_project::BounceTarget::Clips(vec![clip])
-                },
+                target: hex_project::BounceTarget::Track(original.state.project.tracks()[0].id()),
                 in_place: true,
                 control: control.clone(),
             })
