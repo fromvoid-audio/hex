@@ -358,6 +358,12 @@ public:
     void refresh_processing_parameters(ProcessingParameterSnapshot& current) {
         if(host) host->refresh_processing_snapshot(current);
     }
+    bool publish_parameter_feedback(ParameterFeedback& pending) {
+        return host && host->publish_parameter_feedback(pending);
+    }
+    bool synchronize_parameter_feedback_on_control() {
+        return opened && host && !quarantined.load() && host->synchronize_parameter_feedback(controller);
+    }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
 
     bool close() {

@@ -17,13 +17,26 @@ struct ParameterSnapshot {
 // Copied DSP-facing facts contain no controller pointers or strings. Main owns
 // the rich snapshot; its one processing reader uses these published copies.
 struct ProcessingParameterSnapshot {
-    struct Parameter { ParamID id=0; int32 steps=0,flags=0; };
+    struct Parameter { ParamID id=0; int32 flags=0; };
     std::array<Parameter,HOST_PARAMETER_COUNT> parameters{};
     uint32 count=0;
     uint64 revision=0;
     const Parameter* find(ParamID id) const {
         for(uint32 n=0;n<count;++n) if(parameters[n].id==id) return &parameters[n];
         return nullptr;
+    }
+};
+// Latest processor observations, coalesced by stable ID. This is controller
+// synchronization, not an authored gesture or callback-delivery acknowledgement.
+struct ParameterFeedback {
+    struct Value { ParamID id=0; ParamValue normalized=0; };
+    std::array<Value,HOST_PARAMETER_COUNT> values{};
+    uint32 count=0;
+    bool put(ParamID id,ParamValue value) {
+        if(id>0x7FFFFFFFu || !std::isfinite(value) || value<0 || value>1) return false;
+        for(uint32 n=0;n<count;++n) if(values[n].id==id) { values[n].normalized=value;return true; }
+        if(count==values.size()) return false;
+        values[count++]={id,value};return true;
     }
 };
 enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending };
@@ -59,11 +72,15 @@ class Host final : public IHostApplication, public IComponentHandler {
         ProcessingParameterSnapshot snapshot{};
     };
     std::array<ProcessingSlot,2> processing_snapshots{};
+    struct FeedbackSlot {
+        std::atomic<uint8_t> phase{Free};
+        ParameterFeedback snapshot{};
+    } feedback;
     static ProcessingParameterSnapshot compact(const ParameterSnapshot& source) {
         ProcessingParameterSnapshot result{};result.count=source.count;result.revision=source.revision;
         for(uint32 n=0;n<source.count;++n) {
             const auto& parameter=source.parameters[n];
-            result.parameters[n]={parameter.info.id,parameter.info.stepCount,parameter.info.flags};
+            result.parameters[n]={parameter.info.id,parameter.info.flags};
         }
         return result;
     }
@@ -244,6 +261,46 @@ public:
             if(slot.snapshot.revision>current.revision) current=slot.snapshot;
             slot.phase.store(Free,std::memory_order_release);
         }
+    }
+    // Single serialized producer (worker, or main after its epoch/join barrier);
+    // busy control reads leave pending
+    // observations with that worker. Replacing Ready merges unread IDs first.
+    bool publish_parameter_feedback(ParameterFeedback& pending) {
+        if(!pending.count) return true;
+        auto phase=feedback.phase.load(std::memory_order_acquire);
+        if((phase!=Free && phase!=Ready) ||
+            !feedback.phase.compare_exchange_strong(phase,Writing,std::memory_order_acq_rel)) return false;
+        auto staged=phase==Ready?feedback.snapshot:ParameterFeedback{};
+        for(uint32 n=0;n<pending.count;++n) {
+            const auto& value=pending.values[n];
+            if(!staged.put(value.id,value.normalized)) {
+                feedback.phase.store(phase,std::memory_order_release);return false;
+            }
+        }
+        feedback.snapshot=staged;pending.count=0;
+        feedback.phase.store(Ready,std::memory_order_release);return true;
+    }
+    bool synchronize_parameter_feedback(IEditController* controller) {
+        if(![NSThread isMainThread] || !accepting || dispatching) return false;
+        uint8_t phase=Ready;
+        if(!feedback.phase.compare_exchange_strong(phase,Reading,std::memory_order_acq_rel)) return true;
+        const auto staged=feedback.snapshot;
+        // Never hold a data slot across foreign code. Slow/refused SDK setters
+        // cannot stall the producer, and no SDK pointer crosses this handoff.
+        feedback.phase.store(Free,std::memory_order_release);
+        if(!controller || metadata.revision==std::numeric_limits<uint64>::max()) return false;
+        auto next=metadata;
+        dispatching=true;recursive=false;
+        struct Leave { bool& flag; ~Leave(){flag=false;} } leave{dispatching};
+        for(uint32 n=0;n<staged.count;++n) {
+            const auto& value=staged.values[n];
+            ParameterSnapshot::Parameter* destination=nullptr;
+            for(uint32 i=0;i<next.count;++i) if(next.parameters[i].info.id==value.id) destination=&next.parameters[i];
+            if(!destination || controller->setParamNormalized(value.id,value.normalized)!=kResultOk) return false;
+            destination->value=controller->getParamNormalized(value.id);
+            if(!std::isfinite(destination->value) || destination->value<0 || destination->value>1 || recursive) return false;
+        }
+        ++next.revision;metadata=next;return true;
     }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }

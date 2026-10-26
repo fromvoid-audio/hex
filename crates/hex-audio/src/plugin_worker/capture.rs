@@ -39,6 +39,7 @@ impl Default for Payload {
     }
 }
 pub(super) struct Slot {
+    pub(super) parameters: super::parameters::NativeParameterValues,
     ordinal: u64,
     phase: Phase,
     mode: Mode,
@@ -47,6 +48,7 @@ pub(super) struct Slot {
 impl Default for Slot {
     fn default() -> Self {
         Self {
+            parameters: super::parameters::NativeParameterValues::default(),
             ordinal: 0,
             phase: Phase::Idle,
             mode: Mode::Live,

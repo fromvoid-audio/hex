@@ -220,6 +220,42 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<26f", reply, 64), tuple(value * 4 for value in inputs))
         self.terminal(session, 0, message=session.stop())
 
+    def test_processor_feedback_reaches_original_controller_before_live_and_quiescent_capture(self):
+        session = self.session(variant=37)
+        self.ready(session, controller=True)
+        for n in range(32):
+            # Rapid changes may coalesce for display, but the final value must
+            # reach the real controller rather than just its copied Rust reply.
+            _, (magic, _) = session.render_parameters(7, [(6, 7, (n + 1) / 64)])
+            self.assertEqual(magic, b"HXVB")
+        def capture(magic, operation):
+            session.socket.sendall(struct.pack("<4sHHH6x7Q", magic, 1, 0, 0,
+                                              *BINDING, session.sequence, session.frames, operation))
+            return session.message()
+        magic, body = capture(b"HXVL", 1)
+        self.assertEqual(magic, b"HXVLCA01")
+        for _ in range(10000):
+            magic, body = capture(b"HXVP", 1)
+            self.assertEqual(magic, b"HXVLCA01")
+            if body[58]:
+                break
+        else:
+            self.fail("actual controller feedback/capture did not complete")
+        state = body[61:]
+        self.assertEqual(struct.unpack_from("<f", state, 104)[0], 2.0)
+        self.assertEqual(self.restore_observation()[6], struct.unpack("<i", struct.pack("<f", 2.0))[0])
+        _, (magic, _) = session.render_parameters(1, [(0, 7, .875)])
+        self.assertEqual(magic, b"HXVB")
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,
+                                          *BINDING, session.sequence, session.frames))
+        self.assertEqual(session.message()[0], b"HXVIQF02")
+        self.assertEqual(self.restore_observation()[6], struct.unpack("<i", struct.pack("<f", 3.5))[0])
+        magic, body = capture(b"HXVC", 1)
+        self.assertEqual(magic, b"HXVICS01")
+        self.assertEqual(struct.unpack_from("<f", body, 60 + 104)[0], 3.5)
+        self.terminal(session, 0, message=session.stop())
+        self.assertEqual(self.observation()[1], 0, "controller setters stay on main")
+
     def test_parameter_unknown_ids_offsets_and_nonfinite_values_refuse_before_sdk_processing(self):
         for point in [(0, 9999, .5), (8, 7, .5), (0, 7, float("nan")), (0, 0x80000000, .5)]:
             with self.subTest(point=point):

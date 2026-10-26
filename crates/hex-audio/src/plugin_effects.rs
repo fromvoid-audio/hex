@@ -410,8 +410,11 @@ impl ForeignProcessors for NativeEffectCallback {
                 frame[1] *= node.input_gain;
             }
         }
+        // The original joining worker retains processor parameter observations
+        // for control queries; the native helper mirrors them to its controller.
+        // Receiving that feedback here must not revoke an otherwise valid epoch.
         self.transport
-            .stage_segment(offset, &self.input[..frames.len()], &[], frames)
+            .stage_segment_with_parameters(offset, &self.input[..frames.len()], &[], &[], frames)
             .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.

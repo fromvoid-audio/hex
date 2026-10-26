@@ -12,6 +12,10 @@ use std::{
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod capture;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod parameters;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
@@ -56,6 +60,8 @@ struct State {
     native_error: Option<hex_plugin_host::Error>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     capture: capture::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    parameters: parameters::Work,
 }
 impl State {
     fn prepare_transport(&mut self) -> Result<(), Fault> {
@@ -204,6 +210,8 @@ fn spawn_processor_with(
         native_error: None,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         capture: capture::Work::default(),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        parameters: parameters::Work::default(),
     });
     let storage = storage::reserved_backing(&guard, &completed);
     let join = spawn(guard, published);
@@ -280,9 +288,14 @@ fn transport_runner_with_setup(
             };
             match state.worker.receive() {
                 Ok(Some(block)) => {
-                    let result = state
-                        .process(block)
-                        .and_then(|reply| state.worker.complete(reply));
+                    let result = state.process(block).and_then(|reply| {
+                        // Validate the complete reply before publishing a
+                        // read-only observation under this original owner.
+                        state.worker.complete(reply)?;
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        state.observe_parameter_reply(&reply)?;
+                        Ok(())
+                    });
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
@@ -300,6 +313,12 @@ fn transport_runner_with_setup(
                     fault = Some(error);
                     break;
                 }
+            }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Err(error) = state.publish_parameter_observations(&published) {
+                state.worker.revoke();
+                fault = Some(error);
+                break;
             }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             if let Err(error) = state.advance_capture(&published) {

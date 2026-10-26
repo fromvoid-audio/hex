@@ -161,7 +161,12 @@ public:
     tresult PLUGIN_API getParamValueByString(ParamID,TChar*,ParamValue&) override { return kNotImplemented; }
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID,ParamValue value) override { return value; }
     ParamValue PLUGIN_API plainParamToNormalized(ParamID,ParamValue value) override { return value; }
-    tresult PLUGIN_API setParamNormalized(ParamID,ParamValue) override { ++observed.violations;return kNotImplemented; }
+    tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
+        if(!control() || !context || !handler || id!=7 || !std::isfinite(value) || value<0 || value>1)
+            return kInvalidArgument;
+        component_gain=static_cast<float>(value*4.0);
+        restoration.controller_gain=bits(component_gain);trace(21);return kResultOk;
+    }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
 };
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {

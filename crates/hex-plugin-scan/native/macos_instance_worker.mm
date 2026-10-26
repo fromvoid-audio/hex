@@ -208,6 +208,7 @@ int main(int argc,char** argv) {
             const auto hello=ready_body(*config,state,*latency,*tail,presentation,supplied,restoration.restored());
             auto processing_parameters=instance.processing_parameters_on_control();
             hex_instance::ParameterChanges parameter_input,parameter_output;
+            hex_instance::ParameterFeedback parameter_feedback;
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             // One serialized epoch mailbox, never a second request reader. The
@@ -223,7 +224,7 @@ int main(int argc,char** argv) {
             // after Requested/acquire, then Complete/release transfers it back
             // to the original processing reader. No SDK wait, extra reader or
             // concurrent socket writer is added to the PCM path.
-            enum LiveCaptureStage { LiveIdle,LiveRequested,LiveComplete,LiveFailed };
+            enum LiveCaptureStage { LiveIdle,LiveFeedbackPending,LiveRequested,LiveComplete,LiveFailed };
             std::atomic<LiveCaptureStage> live_stage{LiveIdle};
             hex_instance::CapturedState live_state{};
             uint32_t live_failure=0;
@@ -249,13 +250,16 @@ int main(int argc,char** argv) {
                         phase.store(1,std::memory_order_release); // receiving a complete frame
                         const auto received=packet.read(channel,*config,blocks,frames);
                         if(worker_failure.load()) break;
+                        instance.publish_parameter_feedback(parameter_feedback);
+                        if(live_stage.load(std::memory_order_acquire)==LiveFeedbackPending && !parameter_feedback.count)
+                            live_stage.store(LiveRequested,std::memory_order_release);
                         if(received==6 || received==7) {
                             const auto stage=live_stage.load(std::memory_order_acquire);
                             if(received==6) {
                                 if(stage!=LiveIdle || live_operation==std::numeric_limits<uint64_t>::max() ||
                                     packet.capture_operation!=live_operation+1) { worker_failure.store(ProtocolFailure);break; }
                                 live_operation=packet.capture_operation;
-                                live_stage.store(LiveRequested,std::memory_order_release);
+                                live_stage.store(parameter_feedback.count?LiveFeedbackPending:LiveRequested,std::memory_order_release);
                             } else if(stage==LiveIdle || packet.capture_operation!=live_operation) {
                                 worker_failure.store(ProtocolFailure);break;
                             }
@@ -276,6 +280,8 @@ int main(int argc,char** argv) {
                         if(received==2) { normal_stop=true;break; }
                         if(received==0) std::_Exit(Cancelled); // EOF never claims cooperative close
                         if(received==3) {
+                            // Main's epoch handshake drains the last worker-owned
+                            // observations before state capture or resume.
                             phase.store(3,std::memory_order_release);
                             if(!instance.stop_processing()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                             started=false;
@@ -357,13 +363,15 @@ int main(int argc,char** argv) {
                         if(!processed) { worker_failure.store(Processing);break; }
                         for(size_t n=0;n<parameter_output.size();++n) {
                             hex_instance::ParameterPoint point{};
-                            if(!parameter_output.point(n,point) || !processing_parameters.find(point.id)) valid=false;
+                            if(!parameter_output.point(n,point) || !processing_parameters.find(point.id) ||
+                                !parameter_feedback.put(point.id,point.normalized)) valid=false;
                         }
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         for(size_t n=0;n<packet.frames;++n) {
                             wire::sample(packet.bytes.data()+wire::header_size+n*8,output_left[n]);
                             wire::sample(packet.bytes.data()+wire::header_size+n*8+4,output_right[n]);
                         }
+                        instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel,parameter_output)) { worker_failure.store(Cancelled);break; }
                         ++blocks;frames+=packet.frames;
                     }
@@ -401,11 +409,12 @@ int main(int argc,char** argv) {
                         // Do not dispatch more foreign callbacks after failure.
                         std::this_thread::yield();continue;
                     }
+                    if(!instance.synchronize_parameter_feedback_on_control()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
                     instance.dispatch_host_callbacks();
                     if(instance.host_refusals()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
                     if(live_stage.load(std::memory_order_acquire)==LiveRequested) {
                         try {
-                            const bool captured=instance.capture_current_state_on_control(live_state);
+                            const bool captured=instance.synchronize_parameter_feedback_on_control() && instance.capture_current_state_on_control(live_state);
                             instance.dispatch_host_callbacks();
                             live_failure=captured && !instance.host_refusals()?0:Capture;
                         } catch(...) { live_failure=Unexpected; }
@@ -421,6 +430,12 @@ int main(int argc,char** argv) {
                     EpochStage stage;
                     { std::lock_guard<std::mutex> lock(startup_mutex);stage=epoch_stage; }
                     if(stage==FactsRequested) {
+                        // The worker waits on this acknowledged epoch barrier;
+                        // its pending value buffer is exclusively borrowed here.
+                        if(!instance.publish_parameter_feedback(parameter_feedback) ||
+                            !instance.synchronize_parameter_feedback_on_control()) {
+                            error(channel,&*config,HostControl);std::_Exit(HostControl);
+                        }
                         latency=instance.reported_latency_on_control();
                         tail=instance.reported_tail_on_control();
                         available=instance.presentation_latency_available_on_control();
@@ -486,6 +501,8 @@ int main(int argc,char** argv) {
                 } catch(...) { error(channel,&*config,Unexpected);std::_Exit(Unexpected); }
             }
             worker.join();failure=worker_failure.load();
+            if(!failure && (!instance.publish_parameter_feedback(parameter_feedback) ||
+                !instance.synchronize_parameter_feedback_on_control() || instance.host_refusals())) failure=HostControl;
         } catch(const Refusal&) {
             error(channel,config?&*config:nullptr,failure);
         } catch(...) {
