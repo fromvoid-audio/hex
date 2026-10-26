@@ -620,3 +620,68 @@ fn independent_little_endian_record_contract_keeps_version_one_wire_stable() {
         "an abort never carries an end clock"
     );
 }
+
+#[test]
+#[ignore = "manual optimized profile of durable event I/O; no native callback or deadline claim"]
+fn profile_durable_automation_io() {
+    use std::time::Instant;
+    const WARM: usize = 2048;
+    const EVENTS: usize = 65536;
+    for trial in 0..3 {
+        let dir = TestDir::new();
+        let path = dir.path();
+        let (source, target, stamp) = fixture();
+        let mut writer = DraftWriter::create_new(&path, &source, target, stamp).unwrap();
+        let make = |index: usize| AppliedEvent {
+            sequence: index as u64 + 1,
+            performance_frame: index as u64 * 256,
+            content_frame: index as u64 * 256,
+            loop_pass: 0,
+            value: AutomationValue::new((index % 129) as f32 / 128.0).unwrap(),
+        };
+        let mut batch = [make(0); MAX_APPEND_EVENTS];
+        for start in (0..WARM).step_by(MAX_APPEND_EVENTS) {
+            for (offset, slot) in batch.iter_mut().enumerate() {
+                *slot = make(start + offset);
+            }
+            writer.append(&batch).unwrap();
+        }
+        let start = Instant::now();
+        for first in (WARM..WARM + EVENTS).step_by(MAX_APPEND_EVENTS) {
+            for (offset, slot) in batch.iter_mut().enumerate() {
+                *slot = make(first + offset);
+            }
+            writer.append(&batch).unwrap();
+        }
+        writer
+            .finish(DraftTerminal::Finished(DraftClock {
+                performance_frame: ((WARM + EVENTS) * 256) as u64,
+                content_frame: ((WARM + EVENTS) * 256) as u64,
+                loop_pass: 0,
+            }))
+            .unwrap();
+        let write_seconds = start.elapsed().as_secs_f64();
+        drop(writer);
+        let start = Instant::now();
+        let mut reader = open(&path);
+        let open_seconds = start.elapsed().as_secs_f64();
+        assert_eq!(reader.progress().durable_events, (WARM + EVENTS) as u64);
+        let start = Instant::now();
+        let mut page = [None; MAX_APPEND_EVENTS];
+        let mut at = 0;
+        loop {
+            let count = reader.read_events(at, &mut page).unwrap();
+            if count == 0 {
+                break;
+            }
+            at += count as u64;
+        }
+        let read_seconds = start.elapsed().as_secs_f64();
+        assert_eq!(at, (WARM + EVENTS) as u64);
+        println!(
+            "automation_draft_io trial={trial} synthetic_clock_rate=48000 synthetic_frame_stride=256 warmup_events={WARM} measured_events={EVENTS} batch_events={MAX_APPEND_EVENTS} record_bytes={RECORD_BYTES} write_sync_seconds={write_seconds:.6} events_per_second={:.3} validated_open_seconds={open_seconds:.6} ordinal_read_seconds={read_seconds:.6} file_bytes={}",
+            EVENTS as f64 / write_seconds,
+            fs::metadata(&path).unwrap().len()
+        );
+    }
+}
