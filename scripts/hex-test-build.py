@@ -829,6 +829,7 @@ def build(args) -> dict:
                 shutil.copy2(args.ci_report, contents / "Resources/local-ci-summary.json")
             verify_native_executable(contents / "MacOS/hex")
             receipt = {"schema": 2, "version": version, "source": source, "candidate": args.candidate,
+                       "diagnostic_capabilities": ["actions-v1", "audio-v1"],
                        "source_sha256": runner.summary["start_tree"]["content_sha256"],
                        "profile": "release", "build_argv": argv, "target_directory": str(runner.cargo_identity["target_directory"]),
                        "release_target_ownership": {key: release_ownership[key] for key in
