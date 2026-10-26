@@ -561,15 +561,17 @@ fn assert_host_automation_pcm(
 #[cfg(not(debug_assertions))]
 #[ignore = "run explicitly with --release --ignored --nocapture"]
 fn optimized_limiter_host_throughput() {
-    for (rate, mode, location) in [
-        (48000, 0, 0),
-        (48000, 1, 0),
-        (48000, 2, 0),
-        (48000, 0, 1),
-        (48000, 0, 2),
-        (192000, 2, 0),
+    for (rate, mode, location, tracks) in [
+        (48000, 0, 0, 16),
+        (48000, 1, 0, 16),
+        (48000, 2, 0, 16),
+        (48000, 0, 1, 16),
+        (48000, 0, 2, 16),
+        (192000, 2, 0, 16),
+        (48000, 0, 1, 100),
+        (48000, 0, 2, 100),
     ] {
-        let mut f = fixture_at_rate(&[&[] as &[u32]; 16], rate as usize * 2, rate);
+        let mut f = fixture_at_rate(&[&[] as &[u32]; 100][..tracks], rate as usize * 2, rate);
         for audio in f.media.values_mut() {
             *audio = Audio::new(
                 rate,
@@ -637,7 +639,7 @@ fn optimized_limiter_host_throughput() {
         }
         let elapsed = start.elapsed().as_secs_f64();
         eprintln!(
-            "limiter_host tracks=16 rate={rate} mode={mode} location={location} block=64 warmup=100 frames={} elapsed_s={elapsed:.6}",
+            "limiter_host tracks={tracks} rate={rate} mode={mode} location={location} block=64 warmup=100 frames={} elapsed_s={elapsed:.6}",
             blocks * 64
         );
     }
