@@ -1879,3 +1879,6 @@ fn held_f_keeps_authored_fade_knots_aligned_in_an_offset_loop(cx: &mut TestAppCo
         });
     }
 }
+
+#[path = "pointer_tests.rs"]
+mod pointer_tests;

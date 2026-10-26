@@ -22,6 +22,15 @@ pub(super) struct FadeGesture {
     origin_y: f32,
     pub(super) last_y: f32,
 }
+impl FadeGesture {
+    pub(super) fn pointer_cursor(self) -> gpui::CursorStyle {
+        if matches!(self.handle, Handle::InCurve | Handle::OutCurve) {
+            gpui::CursorStyle::Crosshair
+        } else {
+            gpui::CursorStyle::ResizeLeftRight
+        }
+    }
+}
 fn source_window(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> Option<(u64, u64)> {
     let start = root
         .event_source_frame_at(event.source, event.source_start, tempo)
@@ -639,20 +648,25 @@ impl EditorView {
                                         f32::from(e.position.x),
                                     )
                                 {
+                                    let fade = FadeGesture {
+                                        event,
+                                        handle,
+                                        original: controls,
+                                        source_frame_start: origin,
+                                        pointer_source_frame: anchor,
+                                        origin_y: f32::from(e.position.y),
+                                        last_y: f32::from(e.position.y),
+                                    };
+                                    if !v.capture_audio_event_pointer(Kind::Fade(fade), window, cx)
+                                    {
+                                        return;
+                                    }
                                     v.audio_event_editor.gesture = Some(Gesture {
                                         anchor: 0,
                                         pointer_x: f32::from(e.position.x),
                                         origin_x: f32::from(e.position.x),
                                         moved: false,
-                                        kind: Kind::Fade(FadeGesture {
-                                            event,
-                                            handle,
-                                            original: controls,
-                                            source_frame_start: origin,
-                                            pointer_source_frame: anchor,
-                                            origin_y: f32::from(e.position.y),
-                                            last_y: f32::from(e.position.y),
-                                        }),
+                                        kind: Kind::Fade(fade),
                                         operation: None,
                                     });
                                 }
