@@ -333,7 +333,8 @@ public:
         if (count<0 || count>64) return FlushResult::InvalidData;
         if (!count) return FlushResult::Empty;
         processing_thread=std::this_thread::get_id();
-        if (processor->process(data)!=kResultOk) { processing_fault.store(true); return FlushResult::Refused; }
+        const ProcessingShape shape(data);
+        if (processor->process(data)!=kResultOk || !shape.unchanged(data)) { processing_fault.store(true); return FlushResult::Refused; }
         return FlushResult::Applied;
     }
     bool stop_processing() {

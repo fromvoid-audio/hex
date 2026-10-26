@@ -256,6 +256,27 @@ class NativeInstanceTests(unittest.TestCase):
         self.terminal(session, 0, message=session.stop())
         self.assertEqual(self.observation()[1], 0, "controller setters stay on main")
 
+    def test_stopped_flush_rejects_live_stale_malformed_and_unknown_before_sdk_entry(self):
+        for mode in ("live", "operation", "prefix", "binding", "offset", "unknown", "duplicate"):
+            with self.subTest(mode=mode):
+                session=self.session(variant=37);self.ready(session, controller=True)
+                if mode!="live":
+                    session.socket.sendall(struct.pack("<4sHHH6x6Q",b"HXVQ",1,0,0,*BINDING,0,0))
+                    self.assertEqual(session.message()[0],b"HXVIQF02")
+                binding=(*BINDING[:3],99) if mode=="binding" else BINDING
+                operation=2 if mode=="operation" else 1
+                prefix=1 if mode=="prefix" else 0
+                packet=struct.pack("<4sHHHH4x7QHHId",b"HXVF",2,0,0,1,*binding,prefix,0,operation,
+                                   1 if mode=="offset" else 0,0,999 if mode=="unknown" else 7,.5)
+                session.socket.sendall(packet)
+                if mode=="duplicate":
+                    magic,body=session.message();self.assertEqual(magic,b"HXVIFL01")
+                    self.assertEqual(struct.unpack_from("<H7QBHId",body),(1,*BINDING,0,0,1,1,1,7,.5))
+                    session.socket.sendall(packet)
+                self.error(session,8);self.terminal(session,8)
+                self.assertEqual(self.observation()[10],0)
+                self.assertEqual(self.observation()[11],1 if mode=="duplicate" else 0)
+
     def test_parameter_unknown_ids_offsets_and_nonfinite_values_refuse_before_sdk_processing(self):
         for point in [(0, 9999, .5), (8, 7, .5), (0, 7, float("nan")), (0, 0x80000000, .5)]:
             with self.subTest(point=point):

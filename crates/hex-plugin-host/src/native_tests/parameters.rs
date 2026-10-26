@@ -109,3 +109,95 @@ fn actual_parameter_pcm_feedback_and_capture_keep_original_source_with_no_caller
         );
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_stopped_parameter_flush_synchronizes_original_controller_without_pcm_and_resumes_same_source()
+ {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(37),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    let initial = instance.ready().initial_state.clone();
+    instance
+        .exchange_on_worker(request(instance.configuration(), 0))
+        .unwrap();
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let (stopped, empty) = stopped
+        .flush_parameters_retained_on_control(&Parameters::default())
+        .unwrap();
+    assert_eq!(empty.disposition, protocol::FlushDisposition::Empty);
+    assert!(empty.as_slice().is_empty());
+    assert_eq!(
+        case.observation().unwrap()[11],
+        0,
+        "empty flush makes no SDK processing call"
+    );
+    let mut points = Parameters::default();
+    points
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.75,
+        })
+        .unwrap();
+    let (stopped, applied) = stopped
+        .flush_parameters_retained_on_control(&points)
+        .unwrap();
+    assert_eq!(applied.disposition, protocol::FlushDisposition::Applied);
+    assert_eq!(
+        applied.as_slice(),
+        &[protocol::FlushedParameter {
+            id: 7,
+            normalized: 0.75
+        }]
+    );
+    assert_eq!(stopped.child_id_on_control(), child);
+    assert_eq!(stopped.completed_blocks(), 1);
+    let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+    assert_eq!(
+        &decode(&captured).unwrap().component.unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    let observed = case.observation().unwrap();
+    assert_eq!(
+        (observed[8], observed[9], observed[10], observed[11]),
+        (1, 1, 1, 1)
+    );
+    assert_eq!(
+        case.restore_observation()[6],
+        i32::from_le_bytes(3.0_f32.to_le_bytes())
+    );
+    let previous = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    assert_eq!(instance.ready().initial_state, initial);
+    let input = request(instance.configuration(), 1);
+    let output = instance.exchange_on_worker(input).unwrap();
+    for n in 0..8 {
+        for channel in 0..2 {
+            assert_eq!(output.pcm[n][channel], input.pcm[n][channel] * 0.625 * 3.0);
+        }
+    }
+    let terminal = instance
+        .stop_and_reap_on_control()
+        .unwrap()
+        .terminal
+        .unwrap();
+    assert_eq!((terminal.blocks, terminal.frames), (2, 16));
+    assert_eq!(case.observation().unwrap()[1], 0);
+}

@@ -164,6 +164,7 @@ public:
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
         if(!control() || !context || !handler || id!=7 || !std::isfinite(value) || value<0 || value>1)
             return kInvalidArgument;
+        if(fault==76 && observed.flushes.load()) return kResultFalse;
         component_gain=static_cast<float>(value*4.0);
         restoration.controller_gain=bits(component_gain);trace(21);return kResultOk;
     }
@@ -386,12 +387,22 @@ public:
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);
             int32 offset=-1;ParamValue value=-1;
-            if (!queue || queue->getParameterId()!=0x1234 || queue->getPointCount()!=1 ||
+            if (!queue || queue->getParameterId()!=(fault>=37?7u:0x1234u) || queue->getPointCount()!=1 ||
                 queue->getPoint(0,offset,value)!=kResultOk || offset || !std::isfinite(value) || value<0 || value>1)
                 return kInvalidArgument;
             ++observed.flushes;
-            if (fault==11) return kResultFalse;
-            gain=static_cast<float>(value);return kResultOk;
+            if (fault==11 || fault==72) return kResultFalse;
+            if(fault==73) throw std::runtime_error("original stopped parameter flush exception");
+            if(fault==74) fault_hang(24);
+            if(fault==75) data.numSamples=1;
+            if(fault==77) data.inputParameterChanges->addRef();
+            gain=static_cast<float>(value*(fault>=37?4.0:1.0));
+            if(fault>=37 && data.outputParameterChanges) {
+                int32 index=-1;const ParamID id=7;
+                auto* feedback=data.outputParameterChanges->addParameterData(id,index);
+                if(!feedback || feedback->addPoint(0,value,index)!=kResultOk) return kResultFalse;
+            }
+            return kResultOk;
         }
         if (!processing || data.numSamples<1 || data.numSamples>maximum || data.inputEvents ||
             data.numInputs!=(mode==1 || (!input && data.numInputs==0)?0:1) ||
@@ -537,7 +548,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>71) return false;next_fault=value;
+        if (value>77) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

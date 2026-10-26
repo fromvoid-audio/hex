@@ -257,6 +257,32 @@ impl PublicationControl {
         self.candidate_root
             .capture_native_source_state(binding, is_cancelled)
     }
+    /// Apply parameter-only changes to Root's actual quiescent source after
+    /// graph and endpoint return. Binding names the renewed reservation; the
+    /// helper still validates its old physical epoch until normal resume.
+    /// Some is stopped DSP/controller readback, not a canonical edit or resume.
+    /// None is native failure/close retained for ordinary disposal; Err refuses
+    /// admission. Keep confirmed state on either refusal and recheck document
+    /// context before consuming the result. Never call on the audio callback.
+    pub fn flush_native_source_parameters_on_control(
+        &mut self,
+        binding: Binding,
+        parameters: &hex_plugin_host::transport::Parameters,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<hex_plugin_host::protocol::FlushedParameters>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        let result = self.candidate_root.flush_native_source_parameters(
+            binding,
+            parameters,
+            is_cancelled,
+        )?;
+        if self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
     /// Reserve fixed cells and per-cell variable DATA allowances before exposing
     /// the output. The whole pool's allowances remain charged, including vacant
     /// cells, so other admissions cannot spend that capacity. This is not actual

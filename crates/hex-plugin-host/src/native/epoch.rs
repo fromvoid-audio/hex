@@ -12,6 +12,7 @@ pub struct Quiescent {
     instance: Prepared,
     facts: Facts,
     capture_sequence: u64,
+    flush_sequence: u64,
 }
 impl Prepared {
     /// Check the actual child and cancellation state before transferring this
@@ -78,6 +79,7 @@ impl Prepared {
                 instance: self,
                 facts,
                 capture_sequence: 0,
+                flush_sequence: 0,
             }),
             Err(cause) => Err(self.refuse_epoch_retained(cause)),
         }
@@ -153,6 +155,81 @@ impl Quiescent {
         })();
         match result {
             Ok(state) => Ok((self, state)),
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
+        }
+    }
+    /// Flush zero-frame parameter changes on the original stopped SDK worker,
+    /// then acknowledge actual controller readback on its main lane. No audio
+    /// buffers, callback reentry, PCM prefix advance or canonical mutation occurs.
+    /// Any refusal keeps the cancelled original lease in existing failure custody.
+    pub fn flush_parameters_retained_on_control(
+        self,
+        parameters: &crate::transport::Parameters,
+    ) -> std::result::Result<(Self, protocol::FlushedParameters), PreparationFailure> {
+        self.flush_parameters_retained_while_on_control(parameters, || false)
+    }
+    /// Caller intent cancellation uses the same bounded channel loop. A late
+    /// cancellation retires this actual source; it does not pretend to undo DSP.
+    pub fn flush_parameters_retained_while_on_control(
+        mut self,
+        parameters: &crate::transport::Parameters,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<(Self, protocol::FlushedParameters), PreparationFailure> {
+        let result = (|| {
+            self.instance.require_live_epoch()?;
+            let operation = self
+                .flush_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("flush operation exhausted"))?;
+            let request = protocol::flush_request(
+                &self.instance.config,
+                self.instance.sequence,
+                operation,
+                parameters,
+            )?;
+            let until = end_after(self.instance.limits.startup)?;
+            let token = self.instance.lease.cancellation.clone();
+            let mut check = || {
+                token.check()?;
+                if is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            };
+            self.instance
+                .lease
+                .channel
+                .send(&request, until, &mut check)?;
+            self.instance
+                .lease
+                .channel
+                .read(&mut self.instance.packet, until, &mut check)?;
+            if self.instance.packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    self.instance.packet.body()?,
+                    self.instance.config.binding,
+                )?));
+            }
+            if self.instance.packet.magic() != b"HXVIFL01" {
+                return Err(Error::Protocol(
+                    "missing stopped parameter flush acknowledgement",
+                ));
+            }
+            let values = protocol::flushed_parameters(
+                self.instance.packet.body()?,
+                &self.instance.config,
+                self.instance.sequence,
+                operation,
+                parameters,
+            )?;
+            self.instance.require_live_epoch()?;
+            check()?;
+            self.flush_sequence = operation;
+            Ok(values)
+        })();
+        match result {
+            Ok(values) => Ok((self, values)),
             Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
         }
     }

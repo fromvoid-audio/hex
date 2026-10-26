@@ -215,10 +215,12 @@ int main(int argc,char** argv) {
             // processing lane is stopped and waiting at every epoch SDK step.
             // Live capture below has its own bounded nonwaiting slot in this
             // same worker. Mutex/condition waits live only in the epoch path.
-            enum EpochStage { Idle,FactsRequested,FactsSent,CaptureRequested,CaptureSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
+            enum EpochStage { Idle,FactsRequested,FactsSent,CaptureRequested,CaptureSent,FlushRequested,FlushSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
             EpochStage epoch_stage=Idle;
             uint64_t next_graph=0,next_epoch=0;
-            uint64_t capture_operation=0;
+            uint64_t capture_operation=0,flush_operation=0;
+            hex_instance::ParameterFeedback flushed_values;
+            bool flush_applied=false;
             std::optional<wire::Presentation> next_presentation;
             // Single live capture slot. Main exclusively writes its result
             // after Requested/acquire, then Complete/release transfers it back
@@ -292,8 +294,44 @@ int main(int argc,char** argv) {
                             }
                             phase.store(1,std::memory_order_release);
                             auto resumed=packet.read(channel,*config,blocks,frames);
-                            uint64_t captures=0;
-                            while(resumed==5) {
+                            uint64_t captures=0,flushes=0;
+                            while(resumed==5 || resumed==8) {
+                                if(resumed==8) {
+                                    if(flushes==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=flushes+1) { worker_failure.store(ProtocolFailure);break; }
+                                    instance.refresh_processing_parameters(processing_parameters);
+                                    if(!parameter_input.reset(0,false) || !parameter_output.reset(0,true)) { error(channel,&*config,Processing);std::_Exit(Processing); }
+                                    bool valid=true;
+                                    for(size_t n=0;n<packet.parameter_count;++n) {
+                                        const auto& point=packet.parameters[n];const auto* info=processing_parameters.find(point.id);
+                                        if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
+                                            !parameter_input.input(point.id,0,point.normalized)) valid=false;
+                                    }
+                                    if(!valid) { worker_failure.store(ProtocolFailure);break; }
+                                    if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) { error(channel,&*config,Processing);std::_Exit(Processing); }
+                                    ProcessData flush{};flush.processMode=kRealtime;flush.symbolicSampleSize=kSample32;
+                                    flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
+                                    phase.store(2,std::memory_order_release);
+                                    const auto result=instance.flush_stopped(flush);
+                                    const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
+                                    if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
+                                    if(result!=hex_instance::FlushResult::Applied && result!=hex_instance::FlushResult::Empty) { worker_failure.store(Processing);break; }
+                                    flushed_values={};
+                                    for(size_t n=0;n<packet.parameter_count;++n) {
+                                        const auto& point=packet.parameters[n];
+                                        valid=flushed_values.put(point.id,point.normalized) && valid;
+                                    }
+                                    for(size_t n=0;n<parameter_output.size();++n) {
+                                        hex_instance::ParameterPoint point{};
+                                        if(!parameter_output.point(n,point) || !processing_parameters.find(point.id) || !flushed_values.put(point.id,point.normalized)) valid=false;
+                                    }
+                                    if(!valid) { worker_failure.store(ProtocolFailure);break; }
+                                    {
+                                        std::unique_lock<std::mutex> lock(startup_mutex);
+                                        flush_operation=packet.capture_operation;flush_applied=result==hex_instance::FlushResult::Applied;epoch_stage=FlushRequested;
+                                        startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent;});
+                                    }
+                                    ++flushes;phase.store(1,std::memory_order_release);resumed=packet.read(channel,*config,blocks,frames);continue;
+                                }
                                 if(captures==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=captures+1) {
                                     worker_failure.store(ProtocolFailure);break;
                                 }
@@ -445,6 +483,31 @@ int main(int argc,char** argv) {
                         if(!wire::send(channel,"HXVIQF02",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=FactsSent;startup_changed.notify_all();
+                    } else if(stage==FlushRequested) {
+                        // The original worker is stopped and waiting at this
+                        // barrier. Synchronize controller values before ACK;
+                        // neither flush nor mirror advances the PCM prefix.
+                        auto pending=flushed_values;
+                        if(!instance.publish_parameter_feedback(pending) || !instance.synchronize_parameter_feedback_on_control()) {
+                            error(channel,&*config,HostControl);std::_Exit(HostControl);
+                        }
+                        instance.dispatch_host_callbacks();
+                        const auto current_latency=instance.reported_latency_on_control(),current_tail=instance.reported_tail_on_control();
+                        if(instance.host_refusals() || !current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail) {
+                            error(channel,&*config,HostControl);std::_Exit(HostControl);
+                        }
+                        const auto* snapshot=instance.parameter_snapshot();
+                        wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
+                        wire::number(body,flush_operation,8);wire::number(body,flush_applied?1:0,1);wire::number(body,flushed_values.count,2);
+                        for(uint32 n=0;n<flushed_values.count;++n) {
+                            const auto id=flushed_values.values[n].id;
+                            const hex_instance::ParameterSnapshot::Parameter* value=nullptr;
+                            if(snapshot) for(uint32 i=0;i<snapshot->count;++i) if(snapshot->parameters[i].info.id==id) value=&snapshot->parameters[i];
+                            if(!value) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
+                            wire::number(body,id,4);uint64_t bits=0;std::memcpy(&bits,&value->value,8);wire::number(body,bits,8);
+                        }
+                        if(!wire::send(channel,"HXVIFL01",body)) std::_Exit(Cancelled);
+                        std::lock_guard<std::mutex> lock(startup_mutex);epoch_stage=FlushSent;startup_changed.notify_all();
                     } else if(stage==CaptureRequested) {
                         hex_instance::CapturedState current{};
                         if(!instance.capture_current_state_on_control(current)) { error(channel,&*config,Capture);std::_Exit(Capture); }
