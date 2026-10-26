@@ -137,6 +137,9 @@ fn quiet(value: f64) -> f64 {
 /// for a compatible stable device instance. Finite PCM input is a caller contract.
 #[derive(Clone, Copy, Debug)]
 pub struct UtilityFilterProcessor {
+    dc_history_valid: bool,
+    bass_history_valid: bool,
+    automation: Option<crate::utility::UtilityAutomation>,
     prepared: PreparedUtilityFilters,
     dc_input: [f64; 2],
     dc_output: [f64; 2],
@@ -146,7 +149,16 @@ pub struct UtilityFilterProcessor {
 
 impl UtilityFilterProcessor {
     pub fn new(prepared: PreparedUtilityFilters) -> Self {
+        Self::with_automation(prepared, None)
+    }
+    pub(crate) fn with_automation(
+        prepared: PreparedUtilityFilters,
+        automation: Option<crate::utility::UtilityAutomation>,
+    ) -> Self {
         let runtime = Self {
+            dc_history_valid: true,
+            bass_history_valid: true,
+            automation,
             prepared,
             dc_input: [0.0; 2],
             dc_output: [0.0; 2],
@@ -162,6 +174,9 @@ impl UtilityFilterProcessor {
     // of silently making size_of_val omit a newly nested allocation/handle.
     fn check_inline_ownership(&self) {
         let Self {
+            dc_history_valid,
+            bass_history_valid,
+            automation,
             prepared,
             dc_input,
             dc_output,
@@ -169,6 +184,9 @@ impl UtilityFilterProcessor {
             mid_low,
         } = self;
         fn inline<T: Copy>(_: &T) {}
+        inline(dc_history_valid);
+        inline(bass_history_valid);
+        inline(automation);
         inline(prepared);
         inline(dc_input);
         inline(dc_output);
@@ -177,7 +195,16 @@ impl UtilityFilterProcessor {
     }
 
     pub fn reset(&mut self) {
-        *self = Self::new(self.prepared);
+        let automation = self.automation;
+        *self = Self::with_automation(self.prepared, automation);
+        if let Some(mut automation) = self.automation
+            && let Ok((matrix, filters)) =
+                automation.configuration(None, 0, self.prepared.sample_rate, None)
+        {
+            automation.matrix = matrix;
+            self.automation = Some(automation);
+            self.prepared = filters;
+        }
     }
 
     /// Preserve physical sample histories when coefficients/settings change.
@@ -198,40 +225,80 @@ impl UtilityFilterProcessor {
             self.reset();
             return false;
         }
-        self.dc_input = previous.dc_input;
-        self.dc_output = previous.dc_output;
-        self.side_high = previous.side_high;
-        self.mid_low = previous.mid_low;
+        self.dc_history_valid = previous.dc_history_valid;
+        self.bass_history_valid = previous.bass_history_valid;
+        self.dc_input = if previous.dc_history_valid {
+            previous.dc_input
+        } else {
+            [0.0; 2]
+        };
+        self.dc_output = if previous.dc_history_valid {
+            previous.dc_output
+        } else {
+            [0.0; 2]
+        };
+        self.side_high = if previous.bass_history_valid {
+            previous.side_high
+        } else {
+            [BiquadHistory::default(); 2]
+        };
+        self.mid_low = if previous.bass_history_valid {
+            previous.mid_low
+        } else {
+            [BiquadHistory::default(); 2]
+        };
+        if let (Some(target), Some(source)) = (&mut self.automation, previous.automation) {
+            target.matrix = source.matrix;
+            target.effective = source.effective;
+            self.prepared = previous.prepared;
+        }
         true
     }
 
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
+        let input = self
+            .automation
+            .map_or(input, |automation| automation.matrix.apply(input));
         let input = if self.prepared.output_muted {
             [0.0; 2]
         } else {
             input
         };
         let mut signal = [f64::from(input[0]), f64::from(input[1])];
-        // Histories advance even while each mode is bypassed. Enabling a mode
-        // therefore never resurrects an old signal; exact neutral output remains.
-        for (channel, sample) in signal.iter_mut().enumerate() {
-            let filtered = quiet(
-                *sample - self.dc_input[channel] + self.prepared.dc_pole * self.dc_output[channel],
-            );
-            self.dc_input[channel] = *sample;
-            self.dc_output[channel] = filtered;
-            if self.prepared.dc_enabled {
-                *sample = filtered;
+        // Modes which this revision can enable retain their dormant histories.
+        // A skipped mode is explicitly invalidated so a later revision starts it
+        // cleanly instead of resurrecting history from before the skipped span.
+        self.dc_history_valid = self
+            .automation
+            .is_none_or(|automation| automation.may_advance_dc())
+            || self.prepared.dc_enabled;
+        if self.dc_history_valid {
+            for (channel, sample) in signal.iter_mut().enumerate() {
+                let filtered = quiet(
+                    *sample - self.dc_input[channel]
+                        + self.prepared.dc_pole * self.dc_output[channel],
+                );
+                self.dc_input[channel] = *sample;
+                self.dc_output[channel] = filtered;
+                if self.prepared.dc_enabled {
+                    *sample = filtered;
+                }
             }
         }
         let mid = (signal[0] + signal[1]) * 0.5;
         let mut side = (signal[0] - signal[1]) * 0.5;
         let mut low_mid = mid;
-        for stage in &mut self.side_high {
-            side = stage.sample(side, self.prepared.high);
-        }
-        for stage in &mut self.mid_low {
-            low_mid = stage.sample(low_mid, self.prepared.low);
+        self.bass_history_valid = self
+            .automation
+            .is_none_or(|automation| automation.may_advance_bass())
+            || self.prepared.bass_enabled;
+        if self.bass_history_valid {
+            for stage in &mut self.side_high {
+                side = stage.sample(side, self.prepared.high);
+            }
+            for stage in &mut self.mid_low {
+                low_mid = stage.sample(low_mid, self.prepared.low);
+            }
         }
         let output = if !self.prepared.bass_enabled {
             if !self.prepared.dc_enabled {
@@ -272,6 +339,33 @@ impl UtilityFilterProcessor {
 }
 
 impl NativeProcessorRuntime for UtilityFilterProcessor {
+    fn supports_parameter_automation(&self, parameter: hex_lattice_contract::ParameterId) -> bool {
+        self.automation
+            .is_some_and(|automation| automation.supports(parameter))
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            if let Some(mut automation) = self.automation
+                && let Ok((matrix, filters)) = automation.configuration(
+                    Some(values),
+                    offset,
+                    self.prepared.sample_rate,
+                    Some(self.prepared),
+                )
+            {
+                automation.matrix = matrix;
+                self.automation = Some(automation);
+                self.reconfigure(filters);
+            }
+            *frame = self.process_frame(*frame);
+        }
+    }
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
@@ -300,7 +394,11 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
             .as_any()
             .downcast_ref::<Self>()
             .is_some_and(|previous| {
-                self.prepared.with_output_mute(false) == previous.prepared.with_output_mute(false)
+                self.prepared.sample_rate == previous.prepared.sample_rate
+                    && (self.automation.is_some()
+                        || previous.automation.is_some()
+                        || self.prepared.with_output_mute(false)
+                            == previous.prepared.with_output_mute(false))
             })
     }
 

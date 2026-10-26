@@ -269,6 +269,24 @@ in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
 
+## linked clip copies
+
+with whole clips selected, **d** makes independent copies and **command+d** makes
+linked copies. a small link icon in the clip title identifies each alias. linked
+audio shares its events, pitch and warp edits; linked midi shares its notes.
+each copy keeps its own arrangement position, trims, loop window and fades.
+
+press **i** or choose **make unique** from the clip menu to detach the selected
+copies. their current content and sound stay unchanged. **apply settings to aliases** in
+the clip menu copies the picked alias's local settings to every member of its
+group, preserving each arrangement position. there is no privileged original:
+removing the first clip leaves the other aliases intact. these edits support
+undo, redo and saving the project.
+
+in console, duplication uses the next empty cell on the same track and adds a
+scene when necessary. note editors, text fields, track headers and the computer
+midi keyboard keep their contextual shortcuts.
+
 ## arrangement automation view
 
 press **a** or use the toolbar's **a** control to show track-gain automation across

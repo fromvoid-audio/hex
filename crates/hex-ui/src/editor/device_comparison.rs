@@ -255,6 +255,7 @@ impl EditorView {
             Slot::B => ["switch to a", "copy b to a"],
         };
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,

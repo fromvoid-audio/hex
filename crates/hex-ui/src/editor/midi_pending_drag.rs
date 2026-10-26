@@ -1,4 +1,4 @@
-//! Immutable note-drag display custody from release to the matching Service
+//! Immutable note-drag/creation display custody from release to the matching Service
 //! terminal. Held input ends on release; this owner retains only view geometry,
 //! its exact typed command and the original source identity. Canonical note edits,
 //! overwrite resolution and history remain project/Session responsibilities.
@@ -8,13 +8,15 @@ use super::{
     midi_group_drag::GroupGesture,
     pending_edit::{Disposition, Receipt},
 };
-use hex_project::{ClipId, Command, MidiSourceIdentity, Project};
+use hex_project::{ClipId, Command, MidiNoteInsert, MidiSourceIdentity, Project};
 use hex_session::service::{Event, Request};
 
 pub(super) enum Frozen {
     Single(NoteGesture),
     Group(GroupGesture),
     Volume(hex_project::MidiClipVolume),
+    Creation(MidiNoteInsert),
+    Velocity(super::midi_velocity::Gesture),
 }
 
 pub(super) struct Pending {
@@ -43,6 +45,24 @@ impl Pending {
             return false;
         }
         match (&self.command, request) {
+            (
+                Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration,
+                    pitch,
+                    channel,
+                    velocity,
+                },
+                Request::Edit(Command::AddMidiNote {
+                    clip: c,
+                    start: s,
+                    duration: d,
+                    pitch: p,
+                    channel: ch,
+                    velocity: v,
+                }),
+            ) => (clip, start, duration, pitch, channel, velocity) == (c, s, d, p, ch, v),
             (
                 Command::UpdateMidiNote {
                     note,
@@ -130,36 +150,55 @@ impl EditorView {
 
     pub(super) fn displayed_midi_note_gesture(&self) -> Option<NoteGesture> {
         self.midi_note_gesture.or_else(|| {
-            self.pending_midi_drag
-                .as_ref()
-                .filter(|p| p.displayed(self))
-                .and_then(|p| match &p.preview {
-                    Frozen::Single(note) => Some(*note),
-                    Frozen::Group(_) | Frozen::Volume(_) => None,
-                })
+            let pending = self.pending_midi_drag.as_ref()?;
+            let Frozen::Single(note) = &pending.preview else {
+                return None;
+            };
+            pending.displayed(self).then_some(*note)
         })
     }
 
     pub(super) fn displayed_midi_group_gesture(&self) -> Option<&GroupGesture> {
         self.midi_group_gesture.as_ref().or_else(|| {
-            self.pending_midi_drag
-                .as_ref()
-                .filter(|p| p.displayed(self))
-                .and_then(|p| match &p.preview {
-                    Frozen::Group(group) => Some(group),
-                    Frozen::Single(_) | Frozen::Volume(_) => None,
-                })
+            let pending = self.pending_midi_drag.as_ref()?;
+            let Frozen::Group(group) = &pending.preview else {
+                return None;
+            };
+            pending.displayed(self).then_some(group)
         })
     }
 
     pub(super) fn pending_midi_volume(&self, clip: ClipId) -> Option<hex_project::MidiClipVolume> {
-        self.pending_midi_drag
-            .as_ref()
-            .filter(|p| p.clip == clip && p.displayed(self))
-            .and_then(|p| match &p.preview {
-                Frozen::Volume(volume) => Some(volume.clone()),
-                _ => None,
-            })
+        let pending = self.pending_midi_drag.as_ref()?;
+        let Frozen::Volume(volume) = &pending.preview else {
+            return None;
+        };
+        (pending.clip == clip && pending.displayed(self)).then(|| volume.clone())
+    }
+
+    /// Held input and accepted display custody are distinct. Only the existing
+    /// ordinary receipt/source owner can retire a released creation preview.
+    pub(super) fn displayed_midi_creation(&self) -> Option<MidiNoteInsert> {
+        self.midi_creation.as_ref().map(|c| c.preview).or_else(|| {
+            let pending = self.pending_midi_drag.as_ref()?;
+            let Frozen::Creation(note) = &pending.preview else {
+                return None;
+            };
+            pending.displayed(self).then_some(*note)
+        })
+    }
+
+    /// Released velocity values follow source/receipt custody, independent of
+    /// later selection, focus or viewport changes. This never owns input.
+    pub(super) fn pending_midi_velocity(
+        &self,
+        clip: ClipId,
+    ) -> Option<&super::midi_velocity::Gesture> {
+        let pending = self.pending_midi_drag.as_ref()?;
+        let Frozen::Velocity(gesture) = &pending.preview else {
+            return None;
+        };
+        (pending.clip == clip && pending.displayed(self)).then_some(gesture)
     }
 
     pub(super) fn pending_midi_drag_matches(&self, request: &Request) -> bool {

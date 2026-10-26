@@ -31,6 +31,26 @@ cargo run -r --locked
 cargo run -r --locked -- --demo
 ```
 
+For an instrumented production test, save and quit hex, then use
+`./launch --open --diagnostics` on a qualified installed build advertising diagnostic support; older bundles are
+refused with rebuild guidance. When building a
+new user-test candidate, use `./launch --test --diagnostics`. The recommended
+`--diagnostics` preset records semantic actions, requests/outcomes, pointer/key
+intent and observed view changes together with audio publication/readiness and
+transport. `--diagnostics=off` disables both; `--diagnostics=all` additionally
+records every callback timing sample and can overflow sooner. Raw source runs
+accept the same options after `--`.
+
+When a failure occurs, note what you heard and the approximate time. Keep the
+session's current log and its `.1.log` through `.3.log` siblings together; the
+header repeats source/build/flags and segment metadata. The log button opens the
+current file. Check loss counters before interpreting a missing event. New action
+records redact typed names/search contents and paths, with counts, IDs and numeric
+values retained. Existing status/error messages may contain paths or source text;
+review a capture before sharing it. Input tracing is not complete replay: rapid
+intermediate view changes, pointer movements, OS dialogs and text contents are
+excluded. Native listening and device stress still require testing.
+
 Detailed audio diagnostics are opt-in and written to the existing session log
 (**open session log** in the app):
 
@@ -50,6 +70,15 @@ trace push itself. Log timestamps are control receipt times, while frame fields
 are audio observations. The callback retains at most 256 resource-free records;
 control drains at most 64 per poll. Overflow loses diagnostics only and reports
 sequence gaps/loss counters. A log does not establish physical audio deadlines.
+
+Session log rows carry producer wall time, monotonic elapsed time and sequence
+numbers. Messages are quoted/escaped; loss and truncation are explicit. The
+active `.log` path stays stable as it rolls; `.1.log` through `.3.log` retain the
+preceding segments, newest first. Include those sibling files when capturing a
+failure. New sessions retain at most four 8 MiB segments plus one bounded
+rollover header, with ten sessions retained; older logs expire normally.
+A logging startup/shutdown timeout or file error reports incomplete logging.
+
 
 The desktop is the default workspace member. Plain `cargo build` and `cargo test`
 also select it; use `--workspace` to select all members or `-p` for a specific crate.

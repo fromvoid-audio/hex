@@ -5,6 +5,9 @@
 //! Middle-drag or explicit pan mode moves both axes without editing.
 //! Every paint, hit and captured edit context carries the same pitch span.
 //! Passive hover reuses click/resize hits and never changes musical selection.
+#[path = "midi_note_pointer.rs"]
+mod note_pointer;
+
 use super::midi_drag::{self, NotePreview};
 use super::midi_draw::StrokeModifiers;
 use super::{EditorView, midi::NoteField};
@@ -235,7 +238,7 @@ impl EditorView {
             .midi_stroke
             .as_ref()
             .map(|stroke| stroke.shared_preview());
-        let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
+        let draw_creation = self.displayed_midi_creation();
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
         let draw_step = self.midi_step_preview();
@@ -320,7 +323,40 @@ impl EditorView {
                 if width <= 0.0 || height <= 0.0 {
                     return;
                 }
+                entity.read(cx).renew_midi_note_pointer(
+                    super::midi_stroke::CanvasBounds {
+                        x: f32::from(bounds.origin.x),
+                        y: f32::from(bounds.origin.y),
+                        width,
+                        height,
+                    },
+                    clip_id,
+                    entity.entity_id(),
+                    window,
+                );
                 entity.read(cx).renew_midi_time_selection_capture(
+                    super::midi_stroke::CanvasBounds {
+                        x: f32::from(bounds.origin.x),
+                        y: f32::from(bounds.origin.y),
+                        width,
+                        height,
+                    },
+                    clip_id,
+                    entity.entity_id(),
+                    window,
+                );
+                entity.read(cx).renew_piano_pan_capture(
+                    super::midi_stroke::CanvasBounds {
+                        x: f32::from(bounds.origin.x),
+                        y: f32::from(bounds.origin.y),
+                        width,
+                        height,
+                    },
+                    clip_id,
+                    entity.entity_id(),
+                    window,
+                );
+                entity.read(cx).renew_midi_creation_capture(
                     super::midi_stroke::CanvasBounds {
                         x: f32::from(bounds.origin.x),
                         y: f32::from(bounds.origin.y),
@@ -870,6 +906,8 @@ impl EditorView {
                                 rendered_context.bounds,
                                 [f32::from(event.position.x), f32::from(event.position.y)],
                                 event.button,
+                                window,
+                                view_cx,
                             ) {
                                 view_cx.notify();
                             }
@@ -985,33 +1023,45 @@ impl EditorView {
                                     return;
                                 }
                                 view.midi_note_gesture = None;
-                                view.midi_group_gesture =
-                                    super::midi_group_drag::GroupGesture::begin(
-                                        super::midi_group_drag::GroupStart {
-                                            copy: event.modifiers.alt,
-                                            kind,
-                                            generation,
-                                            revision,
-                                            clip: clip_id,
-                                            selection_epoch: view.midi_selection.epoch(),
-                                            originals,
-                                            pointer: [
-                                                f32::from(event.position.x),
-                                                f32::from(event.position.y),
-                                            ],
-                                            bounds: gesture_bounds,
-                                            beat_start: beat_start.raw(),
-                                            beat_span: beat_span.raw(),
-                                            pitch_low,
-                                            pitch_rows,
-                                            clip_length: clip_len.raw(),
-                                            grid,
-                                        },
-                                    );
+                                let gesture = super::midi_group_drag::GroupGesture::begin(
+                                    super::midi_group_drag::GroupStart {
+                                        copy: event.modifiers.alt,
+                                        kind,
+                                        generation,
+                                        revision,
+                                        clip: clip_id,
+                                        selection_epoch: view.midi_selection.epoch(),
+                                        originals,
+                                        pointer: [
+                                            f32::from(event.position.x),
+                                            f32::from(event.position.y),
+                                        ],
+                                        bounds: gesture_bounds,
+                                        beat_start: beat_start.raw(),
+                                        beat_span: beat_span.raw(),
+                                        pitch_low,
+                                        pitch_rows,
+                                        clip_length: clip_len.raw(),
+                                        grid,
+                                    },
+                                );
+                                if let Some(gesture) = gesture
+                                    && view.capture_midi_note_pointer(
+                                        rendered_context,
+                                        note.id,
+                                        gesture.kind(),
+                                        gesture.is_copy(),
+                                        window,
+                                        view_cx,
+                                    )
+                                {
+                                    view.midi_group_gesture = Some(gesture);
+                                    view_cx.stop_propagation();
+                                }
                                 view_cx.notify();
                                 return;
                             }
-                            view.midi_note_gesture = Some(midi_drag::GestureStart {
+                            let gesture = Some(midi_drag::GestureStart {
                                 generation,
                                 revision,
                                 clip: clip_id,
@@ -1034,6 +1084,19 @@ impl EditorView {
                                 grid,
                             })
                             .and_then(midi_drag::begin);
+                            if let Some(gesture) = gesture
+                                && view.capture_midi_note_pointer(
+                                    rendered_context,
+                                    note.id,
+                                    kind,
+                                    false,
+                                    window,
+                                    view_cx,
+                                )
+                            {
+                                view.midi_note_gesture = Some(gesture);
+                                view_cx.stop_propagation();
+                            }
                             view_cx.notify();
                             return;
                         }
@@ -1105,7 +1168,7 @@ impl EditorView {
                         view.clear_midi_time_selection();
                         view.midi_time_selection.cancel();
                         view.cancel_all_midi_marquees();
-                        view.begin_midi_creation(
+                        if view.begin_midi_creation(
                             rendered_context,
                             f32::from(event.position.x),
                             hex_project::MidiNoteInsert {
@@ -1116,7 +1179,11 @@ impl EditorView {
                                 velocity: 100,
                             },
                             StrokeModifiers::from_platform(event.modifiers),
-                        );
+                            window,
+                            view_cx,
+                        ) {
+                            view_cx.stop_propagation();
+                        }
                         view_cx.notify();
                     });
                 });
@@ -1134,9 +1201,6 @@ impl EditorView {
                         }
                         mouse_move_entity.update(cx, |view, view_cx| {
                             if view.cancel_all_midi_marquees() {
-                                view_cx.notify();
-                            }
-                            if view.midi_pan.gesture.take().is_some() {
                                 view_cx.notify();
                             }
                             let target = if hover_allowed
@@ -1168,27 +1232,7 @@ impl EditorView {
                         return;
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
-                        if view.midi_pan.gesture.is_some() {
-                            if view.update_piano_pan(
-                                rendered_context.bounds,
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                event.pressed_button,
-                            ) {
-                                view_cx.notify();
-                            }
-                            return;
-                        }
                         if event.pressed_button == Some(MouseButton::Middle) {
-                            return;
-                        }
-                        if view.midi_creation.is_some() {
-                            if view.update_midi_creation(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.x),
-                                StrokeModifiers::from_platform(event.modifiers),
-                            ) {
-                                view_cx.notify();
-                            }
                             return;
                         }
                         if let Some(mut marquee) = view.midi_marquee.take() {
@@ -1221,9 +1265,8 @@ impl EditorView {
                             view_cx.notify();
                             return;
                         }
-                        let pending = view.edit_pending();
-                        if view.midi_stroke.is_some() {
-                            if view.update_midi_draw(
+                        if view.midi_stroke.is_some()
+                            && view.update_midi_draw(
                                 [
                                     f32::from(bounds.origin.x),
                                     f32::from(bounds.origin.y),
@@ -1232,80 +1275,6 @@ impl EditorView {
                                 ],
                                 [f32::from(event.position.x), f32::from(event.position.y)],
                                 StrokeModifiers::from_platform(event.modifiers),
-                            ) {
-                                view_cx.notify();
-                            }
-                            return;
-                        }
-                        let detail_clip = view.detail_clip_id();
-                        view.update_midi_copy_modifier(event.modifiers.alt);
-                        if let Some(gesture) = &mut view.midi_group_gesture {
-                            let current =
-                                gesture.is_current(super::midi_group_drag::GroupContext {
-                                    generation,
-                                    revision,
-                                    clip: detail_clip,
-                                    selection_epoch: view.midi_selection.epoch(),
-                                    beat_start: beat_start.raw(),
-                                    beat_span: beat_span.raw(),
-                                    pitch_low,
-                                    pitch_rows,
-                                    grid,
-                                    bounds: [
-                                        f32::from(bounds.origin.x),
-                                        f32::from(bounds.origin.y),
-                                        f32::from(bounds.size.width),
-                                        f32::from(bounds.size.height),
-                                    ],
-                                    pending,
-                                });
-                            if !current {
-                                view.midi_group_gesture = None;
-                                view_cx.notify();
-                                return;
-                            }
-                            if gesture.update(
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                event.modifiers.platform,
-                            ) {
-                                view_cx.notify();
-                            }
-                            return;
-                        }
-                        let context = midi_drag::GestureContext {
-                            generation,
-                            revision,
-                            selected_clip: view.detail_clip_id(),
-                            selected_note: view.midi_selection.primary(),
-                            clip_contains_note: false,
-                            pending: false,
-                            beat_start: beat_start.raw(),
-                            beat_span: beat_span.raw(),
-                            pitch_low,
-                            pitch_rows,
-                            grid,
-                            bounds: [
-                                f32::from(bounds.origin.x),
-                                f32::from(bounds.origin.y),
-                                f32::from(bounds.size.width),
-                                f32::from(bounds.size.height),
-                            ],
-                        };
-                        let current = view.midi_note_gesture.as_ref().is_some_and(|gesture| {
-                            view.midi_note_gesture_current(gesture, context)
-                        });
-                        if !current {
-                            if view.midi_note_gesture.take().is_some() {
-                                view_cx.notify();
-                            }
-                            return;
-                        }
-                        if let Some(gesture) = &mut view.midi_note_gesture
-                            && midi_drag::update_with_modifier(
-                                gesture,
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                                event.modifiers.platform,
                             )
                         {
                             view_cx.notify();
@@ -1318,25 +1287,7 @@ impl EditorView {
                         return;
                     }
                     mouse_up_entity.update(cx, |view, view_cx| {
-                        if view.finish_piano_pan(
-                            rendered_context.bounds,
-                            [f32::from(event.position.x), f32::from(event.position.y)],
-                            event.button,
-                        ) {
-                            view_cx.notify();
-                            return;
-                        }
                         if event.button != MouseButton::Left {
-                            return;
-                        }
-                        if view.midi_creation.is_some() {
-                            view.finish_midi_creation(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.x),
-                                bounds.contains(&event.position),
-                                StrokeModifiers::from_platform(event.modifiers),
-                            );
-                            view_cx.notify();
                             return;
                         }
                         if view.midi_stroke.is_some() {
@@ -1397,129 +1348,7 @@ impl EditorView {
                                 view.error = Some(error.into());
                             }
                             view_cx.notify();
-                            return;
                         }
-                        view.update_midi_copy_modifier(event.modifiers.alt);
-                        if let Some(mut gesture) = view.midi_group_gesture.take() {
-                            let pending = view.edit_pending();
-                            let context = super::midi_group_drag::GroupContext {
-                                generation,
-                                revision,
-                                clip: view.detail_clip_id(),
-                                selection_epoch: view.midi_selection.epoch(),
-                                beat_start: beat_start.raw(),
-                                beat_span: beat_span.raw(),
-                                pitch_low,
-                                pitch_rows,
-                                grid,
-                                bounds: [
-                                    f32::from(bounds.origin.x),
-                                    f32::from(bounds.origin.y),
-                                    f32::from(bounds.size.width),
-                                    f32::from(bounds.size.height),
-                                ],
-                                pending,
-                            };
-                            let _ = gesture.update(
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                event.modifiers.platform,
-                            );
-                            if gesture.is_current(context)
-                                && !gesture.is_noop()
-                                && midi_drag::point_is_inside(
-                                    gesture.bounds(),
-                                    f32::from(event.position.x),
-                                    f32::from(event.position.y),
-                                )
-                            {
-                                if gesture.is_copy() {
-                                    match gesture.copied_notes() {
-                                        Ok(insert) => {
-                                            view.submit_midi_drag_preview(
-                                                clip_id,
-                                                super::midi_pending_drag::Frozen::Group(gesture),
-                                                Command::EditMidiNotesWithSourceExtent {
-                                                    clip: clip_id,
-                                                    remove: Vec::new(),
-                                                    insert,
-                                                },
-                                            );
-                                        }
-                                        Err(error) => view.error = Some(error.into()),
-                                    }
-                                    view_cx.notify();
-                                    return;
-                                }
-                                match gesture.updates() {
-                                    Ok(notes) => {
-                                        view.submit_midi_drag_preview(
-                                            clip_id,
-                                            super::midi_pending_drag::Frozen::Group(gesture),
-                                            Command::UpdateMidiNotes {
-                                                clip: clip_id,
-                                                notes,
-                                            },
-                                        );
-                                    }
-                                    Err(error) => view.error = Some(error.into()),
-                                }
-                            }
-                            view_cx.notify();
-                            return;
-                        }
-                        let Some(mut gesture) = view.midi_note_gesture.take() else {
-                            return;
-                        };
-                        let context = midi_drag::GestureContext {
-                            generation,
-                            revision,
-                            selected_clip: view.detail_clip_id(),
-                            selected_note: view.midi_selection.primary(),
-                            clip_contains_note: false,
-                            pending: false,
-                            beat_start: beat_start.raw(),
-                            beat_span: beat_span.raw(),
-                            pitch_low,
-                            pitch_rows,
-                            grid,
-                            bounds: [
-                                f32::from(bounds.origin.x),
-                                f32::from(bounds.origin.y),
-                                f32::from(bounds.size.width),
-                                f32::from(bounds.size.height),
-                            ],
-                        };
-                        if !view.midi_note_gesture_current(&gesture, context)
-                            || !midi_drag::release_is_inside(
-                                &gesture,
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                            )
-                        {
-                            view_cx.notify();
-                            return;
-                        }
-                        midi_drag::update_with_modifier(
-                            &mut gesture,
-                            f32::from(event.position.x),
-                            f32::from(event.position.y),
-                            event.modifiers.platform,
-                        );
-                        if !midi_drag::is_noop(&gesture) {
-                            view.submit_midi_drag_preview(
-                                clip_id,
-                                super::midi_pending_drag::Frozen::Single(gesture),
-                                Command::UpdateMidiNote {
-                                    note: gesture.note,
-                                    start: BeatTime::from_raw(gesture.preview.start),
-                                    duration: BeatTime::from_raw(gesture.preview.duration),
-                                    pitch: gesture.preview.pitch,
-                                    channel: gesture.channel,
-                                    velocity: gesture.velocity,
-                                },
-                            );
-                        }
-                        view_cx.notify();
                     });
                 });
             },

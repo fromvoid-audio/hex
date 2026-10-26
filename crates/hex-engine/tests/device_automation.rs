@@ -24,7 +24,7 @@ fn all_canonical_device_owners_refuse_unconsumed_curves_without_changing_source(
             panic!("track");
         };
         let state =
-            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
+            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.overdrive"))
                 .unwrap();
         let device = match owner {
             0 => match editor

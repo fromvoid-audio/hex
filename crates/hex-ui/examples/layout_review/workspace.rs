@@ -263,6 +263,7 @@ impl Workspace {
         let focus = cx.focus_handle();
         focus.focus(window);
         self.menu = Some(PopupMenu {
+            scroll: Default::default(),
             position,
             icon_grid: grid.then(|| vec!["○", "△", "□", "+"]),
             items,

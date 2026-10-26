@@ -168,6 +168,62 @@ impl EditorView {
         self.focus.focus(window);
         cx.notify();
     }
+    pub(super) fn clip_has_alias(&self, clip: ClipId) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|s| s.project.clip_alias(clip).is_some())
+    }
+
+    pub(super) fn clip_alias_indicator(
+        &self,
+        clip: ClipId,
+        fill: u32,
+    ) -> Option<gpui::Stateful<gpui::Div>> {
+        if !self.clip_has_alias(clip) {
+            return None;
+        }
+        let ink = rgb(theme::readable_text(fill, 0x000000));
+        Some(
+            div()
+                .id(("clip-alias", clip.value()))
+                .debug_selector(move || format!("clip-alias-{}", clip.value()))
+                .absolute()
+                .right(px(2.0))
+                .top(px(2.0))
+                .w(px(10.0))
+                .h(px(10.0))
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(3.0))
+                        .w(px(7.0))
+                        .h(px(6.0))
+                        .border_1()
+                        .border_color(ink)
+                        .rounded(px(1.0)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(3.0))
+                        .top(px(0.0))
+                        .w(px(7.0))
+                        .h(px(6.0))
+                        .border_1()
+                        .border_color(ink)
+                        .rounded(px(1.0)),
+                )
+                .tooltip(|_, cx| {
+                    cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
+                        description: "alias clip · shared content".into(),
+                    })
+                    .into()
+                }),
+        )
+    }
+
     pub(super) fn clip_name_label(&self, clip: ClipId, name: &str) -> gpui::AnyElement {
         if let Some(edit) = &self.clip_name_edit
             && edit.clip == clip
@@ -254,7 +310,9 @@ impl EditorView {
                     },
                 ))
             })
+            .when(self.clip_has_alias(clip), |header| header.pr(px(15.0)))
             .child(self.clip_name_label(clip, name))
+            .children(self.clip_alias_indicator(clip, fill))
     }
 }
 

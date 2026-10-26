@@ -15,6 +15,18 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Copy Arrangement placements while retaining explicit shared content.
+    DuplicateAliasClips(Vec<ClipId>),
+    /// Detach selected members without copying decoded media.
+    MakeClipsUnique(Vec<ClipId>),
+    /// Copy current local clip settings to its group, preserving every placement.
+    ApplyClipSettingsToAliases(ClipId),
+    /// Copy a Console cell to the next empty cell, adding a scene if necessary.
+    DuplicateSessionCell {
+        track: TrackId,
+        scene: crate::SceneId,
+        alias: bool,
+    },
     /// Register an independent, currently unassigned native source chain.
     /// Exactly one device is designated as the instrument; other devices are
     /// source-owned processing, never copied from a track implicitly.
@@ -1698,6 +1710,16 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::DuplicateAliasClips(clips) => crate::clip_duplicate::apply_alias(self, clips),
+            Command::MakeClipsUnique(clips) => crate::clip_alias_commands::unique(self, clips),
+            Command::ApplyClipSettingsToAliases(clip) => {
+                crate::clip_alias_commands::apply_settings(self, clip)
+            }
+            Command::DuplicateSessionCell {
+                track,
+                scene,
+                alias,
+            } => crate::clip_alias_commands::duplicate_console(self, track, scene, alias),
             source_command @ (Command::CreateNativeSource { .. }
             | Command::BindTrackSource { .. }
             | Command::SetNativeSourceReceiver { .. }
