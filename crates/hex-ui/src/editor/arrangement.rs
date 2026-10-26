@@ -664,7 +664,7 @@ impl EditorView {
         }
         body.children(
             self.time_selection_cursor_layer()
-                .map(|layer| layer.left(px(header_width))),
+                .map(|layer| layer.right(px(header_width))),
         )
     }
 

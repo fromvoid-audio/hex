@@ -96,6 +96,9 @@ impl EditorView {
         if self.time_selection_key_held && !self.time_selection_tool_has_focus(window) {
             self.time_selection_key_held = false;
             cx.notify();
+            // Focus listeners run after frame swap. Retire the hover overlay
+            // through the next effect cycle without requiring pointer movement.
+            cx.defer_in(window, |_, _, cx| cx.notify());
         }
     }
 }
@@ -257,8 +260,14 @@ mod tests {
         assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(down, None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         key(&mut visual, false);
-        assert_ne!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(CursorStyle::ResizeUpDown)
+        );
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(v.midi_time_selection_bounds().is_some());
