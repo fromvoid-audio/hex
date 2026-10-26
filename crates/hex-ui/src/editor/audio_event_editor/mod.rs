@@ -4,6 +4,9 @@
 mod fades;
 mod paint;
 mod pending;
+mod playhead;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod playhead_tests;
 mod pointer;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
