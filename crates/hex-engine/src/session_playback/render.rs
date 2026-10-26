@@ -332,8 +332,34 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        let result =
-            self.render_internal_borrowed(output, pages, observer, capture, sources, foreign);
+        let result = if self.device_metering {
+            // Keep bounded scratch outside the mutable playback borrow; the
+            // revision remains owned by playback until scratch is restored.
+            let revision = Arc::clone(&self.revision);
+            let mut cells = std::mem::take(&mut self.meter_cells);
+            let mut meter = super::meter_capture::MeterCapture {
+                revision: &revision,
+                cells: &mut cells,
+                downstream: capture,
+                offset: None,
+                invalidated: false,
+            };
+            let result = self.render_internal_borrowed(
+                output,
+                pages,
+                observer,
+                Some(&mut meter),
+                sources,
+                foreign,
+            );
+            if result.is_err() {
+                meter.invalidate();
+            }
+            self.meter_cells = cells;
+            result
+        } else {
+            self.render_internal_borrowed(output, pages, observer, capture, sources, foreign)
+        };
         if result.is_err() {
             foreign.reject_callback();
             output.fill([0.0; 2]);
@@ -1057,9 +1083,9 @@ impl SessionPlayback {
                 || mutable_active
                 || !track.sends().is_empty()
                 || track.has_gain_automation()
-                || metered_instrument;
+                || self.device_metering;
             let ordered = shared_source || live_target || track.requires_ordered_processing();
-            let already_mixed = metered_instrument
+            let already_mixed = self.device_metering
                 && !ordered
                 && !stateful_effects
                 && track.sends().is_empty()
@@ -1480,12 +1506,14 @@ impl SessionPlayback {
                     } else {
                         mix
                     };
-                    if already_mixed {
+                    let contribution = if already_mixed {
                         // Preserve the analytic per-voice fader summation order.
                         output[frame_index][0] += source[0];
                         output[frame_index][1] += source[1];
+                        *source
                     } else if track.sends().is_empty() {
                         mix.add_frame(&mut output[frame_index], *source);
+                        mix.apply_frame(*source)
                     } else {
                         let contribution = mix.apply_frame(*source);
                         output[frame_index][0] += contribution[0];
@@ -1498,9 +1526,10 @@ impl SessionPlayback {
                             target[frame_index][0] += contribution[0] * send.gain;
                             target[frame_index][1] += contribution[1] * send.gain;
                         }
-                    }
-                    if capture.is_some() && !already_mixed {
-                        *source = mix.apply_frame(*source);
+                        contribution
+                    };
+                    if capture.is_some() || self.device_metering {
+                        *source = contribution;
                     }
                 }
                 if let Some(capture) = capture.as_mut() {
@@ -1509,7 +1538,8 @@ impl SessionPlayback {
             } else {
                 let selected = capture
                     .as_ref()
-                    .is_some_and(|capture| capture.selects(capture_id));
+                    .is_some_and(|capture| capture.selects(capture_id))
+                    && matches!(self.route_scratch[index].owner, RouteOwner::Arrangement);
                 if selected {
                     let mut captured = [[0.0; 2]; 256];
                     for release in &self.release_scratch[first_release..release_cursor] {
@@ -1653,7 +1683,7 @@ impl SessionPlayback {
                 if bus.muted {
                     frames.fill([0.0; 2]);
                 } else {
-                    for frame in frames {
+                    for frame in frames.iter_mut() {
                         frame[0] *= bus.gain;
                         frame[1] *= bus.gain;
                     }
@@ -1747,7 +1777,7 @@ impl SessionPlayback {
                     destination[1] += source[1] * bus.gain;
                 }
             }
-            if let Some(capture) = capture.as_mut() {
+            if capture.is_some() || self.device_metering {
                 for frame in frames.iter_mut() {
                     *frame = if bus.muted {
                         [0.0; 2]
@@ -1755,6 +1785,8 @@ impl SessionPlayback {
                         [frame[0] * bus.gain, frame[1] * bus.gain]
                     };
                 }
+            }
+            if let Some(capture) = capture.as_mut() {
                 capture.add(OutputCaptureId::Return(bus.id), frame_offset, frames)?;
             }
         }
