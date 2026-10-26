@@ -16,6 +16,11 @@ impl SaturatorDefinition {
         }
         let mut automation_mask = 0u8;
         for parameter in parameters {
+            let binding = crate::parameter_binding::binding(&BINDINGS, *parameter)?;
+            binding.semantics.validate(binding.descriptor)?;
+            if !runtime_parameter_automation_supported(*parameter) {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
             let shift = parameter
                 .value()
                 .checked_sub(1)
@@ -40,11 +45,12 @@ impl SaturatorDefinition {
 
 impl PreparedSaturator {
     pub(super) fn supports(&self, parameter: ParameterId) -> bool {
-        parameter
-            .value()
-            .checked_sub(1)
-            .and_then(|shift| 1u8.checked_shl(shift))
-            .is_some_and(|bit| self.automation_mask & bit != 0)
+        runtime_parameter_automation_supported(parameter)
+            && parameter
+                .value()
+                .checked_sub(1)
+                .and_then(|shift| 1u8.checked_shl(shift))
+                .is_some_and(|bit| self.automation_mask & bit != 0)
     }
     pub(super) fn check_inline_ownership(&self) {
         let Self {
@@ -54,12 +60,8 @@ impl PreparedSaturator {
             drive_gain,
             output_gain,
         } = self;
-        fn inline<T: Copy>(_: &T) {}
-        inline(automation_mask);
-        inline(settings);
-        inline(sample_rate);
-        inline(drive_gain);
-        inline(output_gain);
+        let _: (&u8, &u32, &f64, &f64) = (automation_mask, sample_rate, drive_gain, output_gain);
+        settings.check_inline();
     }
 }
 
@@ -67,49 +69,27 @@ impl SaturatorRuntime {
     pub(super) fn check_inline_ownership(&self) {
         let Self {
             base,
+            controls,
             settings,
             sample_rate,
             drive_gain,
             output_gain,
         } = self;
-        fn inline<T: Copy>(_: &T) {}
-        inline(base);
-        inline(settings);
-        inline(sample_rate);
-        inline(drive_gain);
-        inline(output_gain);
+        base.check_inline_ownership();
+        controls.check_inline(SaturatorSettings::check_inline);
+        settings.check_inline();
+        let _: (&u32, &f64, &f64) = (sample_rate, drive_gain, output_gain);
     }
     pub(super) fn apply_automation(
         &mut self,
         values: &dyn hex_lattice::NativeParameterAutomation,
+        resolved: &mut crate::parameter_binding::Resolved<4>,
         offset: usize,
     ) -> Result<(), DeviceContractError> {
-        let mut settings = self.base.settings;
-        for &parameter in values.parameter_ids() {
-            if !self.base.supports(parameter) {
-                return Err(DeviceContractError::UnknownParameter);
-            }
-            let Some(value) = values.value_at(parameter, offset) else {
-                continue;
-            };
-            let descriptor = DESCRIPTORS
-                .iter()
-                .find(|descriptor| descriptor.id == parameter)
-                .ok_or(DeviceContractError::UnknownParameter)?;
-            descriptor.validate(value)?;
-            match (parameter, value) {
-                (parameter::DRIVE, ParameterValue::Float(value)) => settings.drive_db = value,
-                (parameter::OUTPUT, ParameterValue::Float(value)) => settings.output_db = value,
-                (parameter::DRY_WET, ParameterValue::Float(value)) => settings.dry_wet = value,
-                (parameter::CURVE, ParameterValue::Choice(0)) => {
-                    settings.curve = SaturationCurve::SoftClip
-                }
-                (parameter::CURVE, ParameterValue::Choice(1)) => {
-                    settings.curve = SaturationCurve::DigitalClip
-                }
-                _ => return Err(DeviceContractError::InvalidParameterValue),
-            }
-        }
+        let Some(next) = self.controls.sample(&BINDINGS, resolved, values, offset)? else {
+            return Ok(());
+        };
+        let settings = next.effective();
         // Constant/held controls reuse scalar coefficients; only a changing dB
         // value evaluates the original bounded gain conversion.
         let drive = if settings.drive_db == self.settings.drive_db {
@@ -122,9 +102,22 @@ impl SaturatorRuntime {
         } else {
             amplitude_from_db(settings.output_db)?
         };
+        self.controls.install(next);
         self.settings = settings;
         self.drive_gain = drive;
         self.output_gain = output;
         Ok(())
+    }
+}
+
+impl SaturatorSettings {
+    fn check_inline(&self) {
+        let Self {
+            drive_db,
+            output_db,
+            dry_wet,
+            curve,
+        } = self;
+        let _: (&f32, &f32, &f32, &SaturationCurve) = (drive_db, output_db, dry_wet, curve);
     }
 }
