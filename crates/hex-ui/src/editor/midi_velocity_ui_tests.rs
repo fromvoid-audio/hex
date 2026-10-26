@@ -986,3 +986,6 @@ fn externally_collapsed_velocity_lane_retires_held_time_selection(cx: &mut TestA
         );
     });
 }
+
+#[path = "midi_velocity_preview_ui_tests.rs"]
+mod preview_tests;
