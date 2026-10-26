@@ -351,19 +351,20 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
     let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
     let separator_selector =
         Box::leak(format!("lane-separator-{}", track.value()).into_boxed_str());
-    for enlarged in [false, true] {
-        if enlarged {
+    for target_height in [44.0, 88.0, 23.0] {
+        let current_height = f32::from(visual.debug_bounds(lane_selector).unwrap().size.height);
+        if current_height != target_height {
             let selector =
                 Box::leak(format!("track-height-resize-{}", track.value()).into_boxed_str());
             let down = visual.debug_bounds(selector).unwrap().center();
-            let up = gpui::point(down.x, down.y + gpui::px(44.0));
+            let up = gpui::point(down.x, down.y + gpui::px(target_height - current_height));
             visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
         }
         let lane = visual.debug_bounds(lane_selector).unwrap();
-        assert!((f32::from(lane.size.height) - if enlarged { 88.0 } else { 44.0 }).abs() < 0.1);
+        assert!((f32::from(lane.size.height) - target_height).abs() < 0.1);
         let selectors = clips
             .iter()
             .map(|(id, prefix)| {
