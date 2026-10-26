@@ -328,7 +328,7 @@ impl EditorView {
             .child(
                 canvas(
                     |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-                    move |bounds, hitbox, window, _| {
+                    move |bounds, hitbox, window, cx| {
                         let captured = Context {
                             scene: key,
                             bounds: bounds_of(bounds),
@@ -338,6 +338,12 @@ impl EditorView {
                         if !captured.bounds.is_valid() {
                             return;
                         }
+                        entity.read(cx).renew_midi_time_selection_capture(
+                            captured.bounds,
+                            key.clip,
+                            entity.entity_id(),
+                            window,
+                        );
                         let width = captured.bounds.width;
                         let height = captured.bounds.height;
                         let gesture = gesture
@@ -538,6 +544,8 @@ impl EditorView {
                                             captured.bounds,
                                             f32::from(event.position.x),
                                             event.modifiers.platform,
+                                            window,
+                                            cx,
                                         );
                                     }
                                     cx.stop_propagation();
@@ -608,10 +616,6 @@ impl EditorView {
                                     return;
                                 }
                                 movement.update(cx, |view, cx| {
-                                    if view.midi_velocity_time_selection_active() {
-                                        view.midi_time_selection.cancel();
-                                        cx.notify();
-                                    }
                                     if let Some(marquee) = view.midi_velocity.marquee.take() {
                                         view.cancel_live_midi_marquee(marquee);
                                         cx.notify();
@@ -641,20 +645,6 @@ impl EditorView {
                                 return;
                             }
                             movement.update(cx, |view, cx| {
-                                if view.midi_velocity_time_selection_active() {
-                                    if event.pressed_button == Some(MouseButton::Left) {
-                                        view.update_midi_time_selection(
-                                            captured.bounds,
-                                            f32::from(event.position.x),
-                                            event.modifiers.platform,
-                                        );
-                                    } else {
-                                        view.midi_time_selection.cancel();
-                                    }
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                    return;
-                                }
                                 if let Some(mut marquee) = view.midi_velocity.marquee.take() {
                                     let last = [
                                         f32::from(event.position.x - bounds.origin.x),
@@ -723,16 +713,6 @@ impl EditorView {
                                 return;
                             }
                             release.update(cx, |view, cx| {
-                                if view.midi_velocity_time_selection_active() {
-                                    view.finish_midi_time_selection(
-                                        captured.bounds,
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    );
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                    return;
-                                }
                                 if let Some(mut marquee) = view.midi_velocity.marquee.take() {
                                     let last = [
                                         f32::from(event.position.x - bounds.origin.x),

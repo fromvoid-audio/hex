@@ -514,6 +514,14 @@ impl EditorView {
                     entity
                         .read(cx)
                         .renew_midi_ruler_capture(b, entity.entity_id(), window);
+                    if let Some(context) = rendered {
+                        entity.read(cx).renew_midi_time_selection_capture(
+                            b,
+                            context.clip,
+                            entity.entity_id(),
+                            window,
+                        );
+                    }
                     let down_entity = entity.clone();
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.bubble()
@@ -535,46 +543,10 @@ impl EditorView {
                                 context,
                                 f32::from(event.position.x),
                                 event.modifiers.platform,
+                                window,
+                                cx,
                             )) {
                                 view.midi_focus.focus(window);
-                                cx.notify();
-                                cx.stop_propagation();
-                            }
-                        });
-                    });
-                    let move_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if !phase.bubble() {
-                            return;
-                        }
-                        move_entity.update(cx, |view, cx| {
-                            if view.midi_ruler_time_selection_active() {
-                                if event.pressed_button == Some(MouseButton::Left) {
-                                    view.update_midi_time_selection(
-                                        b,
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    );
-                                } else {
-                                    view.midi_time_selection.cancel();
-                                }
-                                cx.notify();
-                                cx.stop_propagation();
-                            }
-                        });
-                    });
-                    let up_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                        if !phase.bubble() || event.button != MouseButton::Left {
-                            return;
-                        }
-                        up_entity.update(cx, |view, cx| {
-                            if view.midi_ruler_time_selection_active() {
-                                view.finish_midi_time_selection(
-                                    b,
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
-                                );
                                 cx.notify();
                                 cx.stop_propagation();
                             }
@@ -955,3 +927,7 @@ mod time_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_ruler_capture_tests.rs"]
 mod capture_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_time_selection_capture_tests.rs"]
+mod time_capture_tests;

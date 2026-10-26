@@ -2,6 +2,8 @@
 //! selection owner. Drag selection does not seek or reflect Arrangement state;
 //! stationary ruler clicks delegate playback cueing to the existing cue owner,
 //! while stationary piano/velocity clicks only move the insertion cursor.
+//! The Window lease owns held mouse input only; committed selection and canonical
+//! edits retain their existing epoch and ordinary worker-receipt owners.
 use super::*;
 use hex_project::BeatTime;
 
@@ -172,6 +174,57 @@ impl EditorView {
         context: Context,
         x: f32,
         invert: bool,
+        window: &mut gpui::Window,
+        cx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.begin_midi_time_capture(context, x, invert, Surface::Ruler, window, cx)
+    }
+    /// A stationary grid click moves only the insertion cursor, never playback.
+    pub(in crate::editor) fn begin_midi_grid_time_selection(
+        &mut self,
+        bounds: CanvasBounds,
+        x: f32,
+        invert: bool,
+        window: &mut gpui::Window,
+        cx: &mut ViewContext<Self>,
+    ) -> bool {
+        let Some(context) = self.midi_ruler_context(bounds) else {
+            return false;
+        };
+        self.begin_midi_time_capture(context, x, invert, Surface::Piano, window, cx)
+    }
+    pub(in crate::editor) fn begin_midi_velocity_time_selection(
+        &mut self,
+        bounds: CanvasBounds,
+        x: f32,
+        invert: bool,
+        window: &mut gpui::Window,
+        cx: &mut ViewContext<Self>,
+    ) -> bool {
+        let Some(context) = self.midi_ruler_context(bounds) else {
+            return false;
+        };
+        self.begin_midi_time_capture(context, x, invert, Surface::Velocity, window, cx)
+    }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in crate::editor) fn midi_velocity_time_selection_active(&self) -> bool {
+        self.midi_time_selection
+            .gesture
+            .is_some_and(|g| g.surface == Surface::Velocity)
+    }
+    fn owns_midi_time_capture(&self, context: Context, surface: Surface, down_x: f32) -> bool {
+        self.midi_time_selection
+            .gesture
+            .is_some_and(|g| g.context == context && g.surface == surface && g.down_x == down_x)
+    }
+    fn begin_midi_time_capture(
+        &mut self,
+        context: Context,
+        x: f32,
+        invert: bool,
+        surface: Surface,
+        window: &mut gpui::Window,
+        cx: &mut ViewContext<Self>,
     ) -> bool {
         if !x.is_finite()
             || self.midi_ruler_context(context.bounds) != Some(context)
@@ -179,64 +232,109 @@ impl EditorView {
         {
             return false;
         }
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        if !window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            gpui::CursorStyle::Crosshair,
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<MouseUpEvent>()
+                    .filter(|e| e.button == MouseButton::Left);
+                let Some(position) = moved
+                    .map(|e| e.position)
+                    .or_else(|| released.map(|e| e.position))
+                else {
+                    return;
+                };
+                let _ = owner.update(cx, |view, cx| {
+                    if !view.owns_midi_time_capture(context, surface, x) {
+                        return;
+                    }
+                    if !view.clip_view_open
+                        || view.device_panel_active
+                        || !view.midi_focus.is_focused(window)
+                        || !f32::from(position.x).is_finite()
+                        || !f32::from(position.y).is_finite()
+                    {
+                        view.midi_time_selection.cancel();
+                    } else {
+                        let invert = moved
+                            .map(|e| e.modifiers.platform)
+                            .or_else(|| released.map(|e| e.modifiers.platform))
+                            .unwrap_or(false);
+                        if released.is_some() {
+                            view.finish_midi_time_selection(
+                                context.bounds,
+                                f32::from(position.x),
+                                invert,
+                            );
+                        } else {
+                            view.update_midi_time_selection(
+                                context.bounds,
+                                f32::from(position.x),
+                                invert,
+                            );
+                        }
+                    }
+                    cx.notify();
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.owns_midi_time_capture(context, surface, x) {
+                        view.midi_time_selection.cancel();
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        ) {
+            return false;
+        }
         self.cancel_midi_note_gesture();
+        self.midi_hover = None;
         self.midi_time_selection.gesture = Some(Capture {
             context,
             note_epoch: self.midi_selection.epoch(),
             down_x: x,
             last_x: x,
             invert,
-            surface: Surface::Ruler,
+            surface,
         });
         true
     }
-    /// The grid shares range capture with the ruler, but a stationary grid click
-    /// moves only the insertion cursor; it must never cue playback.
-    pub(in crate::editor) fn midi_grid_time_selection_active(&self) -> bool {
-        self.midi_time_selection
-            .gesture
-            .is_some_and(|capture| capture.surface == Surface::Piano)
-    }
-    pub(in crate::editor) fn begin_midi_grid_time_selection(
-        &mut self,
+    /// Each surface witnesses only its actual bounds. Pending edits and stored
+    /// selection never renew another gesture's lease on the shared Editor entity.
+    pub(in crate::editor) fn renew_midi_time_selection_capture(
+        &self,
         bounds: CanvasBounds,
-        x: f32,
-        invert: bool,
-    ) -> bool {
-        let Some(context) = self.midi_ruler_context(bounds) else {
-            return false;
-        };
-        if !self.begin_midi_time_selection(context, x, invert) {
-            return false;
+        clip: ClipId,
+        owner: gpui::EntityId,
+        window: &mut gpui::Window,
+    ) {
+        if self.clip_view_open
+            && !self.device_panel_active
+            && self.midi_focus.is_focused(window)
+            && let Some(g) = self.midi_time_selection.gesture
+            && g.context.bounds == bounds
+            && g.context.generation == self.project_generation
+            && clip == g.context.clip
+            && !self.edit_pending()
+            && self.context_menu.is_none()
+            && self.piano_beat_start.raw() == g.context.start
+            && self.piano_beat_span.raw() == g.context.span
+            && self.midi_snap_grid == g.context.grid
+            && self.midi_selection.epoch() == g.note_epoch
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|s| s.revision == g.context.revision)
+        {
+            window.renew_pointer_capture(owner, gpui::CursorStyle::Crosshair);
         }
-        if let Some(capture) = self.midi_time_selection.gesture.as_mut() {
-            capture.surface = Surface::Piano;
-        }
-        true
-    }
-    pub(in crate::editor) fn midi_ruler_time_selection_active(&self) -> bool {
-        self.midi_time_selection
-            .gesture
-            .is_some_and(|capture| capture.surface == Surface::Ruler)
-    }
-    pub(in crate::editor) fn midi_velocity_time_selection_active(&self) -> bool {
-        self.midi_time_selection
-            .gesture
-            .is_some_and(|capture| capture.surface == Surface::Velocity)
-    }
-    pub(in crate::editor) fn begin_midi_velocity_time_selection(
-        &mut self,
-        bounds: CanvasBounds,
-        x: f32,
-        invert: bool,
-    ) -> bool {
-        if !self.begin_midi_grid_time_selection(bounds, x, invert) {
-            return false;
-        }
-        if let Some(capture) = self.midi_time_selection.gesture.as_mut() {
-            capture.surface = Surface::Velocity;
-        }
-        true
     }
     pub(in crate::editor) fn update_midi_time_selection(
         &mut self,
