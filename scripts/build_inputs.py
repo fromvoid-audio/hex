@@ -116,7 +116,8 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
             observe(manifest.parent / "build.rs")
             observe(manifest.parent / "build_support")
     for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml",
-                 "scripts/local-ci.py", "scripts/build_inputs.py", "scripts/ci_plan.py"):
+                 "scripts/local-ci.py", "scripts/build_inputs.py", "scripts/ci_plan.py",
+                 "scripts/ci_target_storage.py"):
         observe(root / name)
     config_dirs = {p / ".cargo" for p in root.resolve().parents} | {root / ".cargo"}
     # Build observers run with a member crate as cwd. Include every observed

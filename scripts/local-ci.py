@@ -44,6 +44,11 @@ if _CHECKPOINT_SPEC is None or _CHECKPOINT_SPEC.loader is None:
     raise RuntimeError("CI checkpoint helper unavailable")
 ci_checkpoint = importlib.util.module_from_spec(_CHECKPOINT_SPEC)
 _CHECKPOINT_SPEC.loader.exec_module(ci_checkpoint)
+_STORAGE_SPEC = importlib.util.spec_from_file_location("hex_ci_target_storage", Path(__file__).with_name("ci_target_storage.py"))
+if _STORAGE_SPEC is None or _STORAGE_SPEC.loader is None:
+    raise RuntimeError("Cargo target storage helper unavailable")
+ci_target_storage = importlib.util.module_from_spec(_STORAGE_SPEC)
+_STORAGE_SPEC.loader.exec_module(ci_target_storage)
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
@@ -821,6 +826,18 @@ class LocalCiRunner:
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(path)
 
+    def _check_target_filesystem(self, target: Path) -> None:
+        try:
+            observation = ci_target_storage.inspect(target, self.env)
+        except ValueError as error:
+            raise TargetCacheError(str(error) + "; target preparation refused before cleanup") from error
+        self.summary["target_filesystem"] = observation
+        if observation.get("filesystem_type") == "exfat":
+            raise TargetCacheError(
+                "macOS ExFAT Cargo targets are unsupported: cleanup can fail on AppleDouble entries "
+                "and test executables have exhibited launch stalls; choose a fresh APFS "
+                "CARGO_TARGET_DIR and rerun normal local CI. The target and previous owner were preserved")
+
     def _prepare_target_cache(self) -> bool:
         if self.cargo_identity is None or self.git_identity is None:
             self.summary["target_cache_error"] = "Cargo or Git identity is unavailable"
@@ -841,6 +858,7 @@ class LocalCiRunner:
             return False
         self.target_lock = lock
         try:
+            self._check_target_filesystem(target)
             malformed_owner = False
             try:
                 owner_record = self._load_target_owner(owner_path, target)
@@ -1288,6 +1306,7 @@ class LocalCiRunner:
         lock.acquire()
         self.target_lock = lock
         try:
+            self._check_target_filesystem(target)
             replacement = expected_recreated_target_identity
             if replacement is not None:
                 if (not adopt or expected_owner_sha256 is None
@@ -1509,6 +1528,7 @@ class LocalCiRunner:
         return {"path": str(resolved), "sha256": digest.hexdigest()}
 
     def _run_target_cleanup(self, argv: list[str]) -> bool:
+        started = time.monotonic()
         log_path = self.output_dir / "target-handoff-clean.log"
         try:
             with log_path.open("w", encoding="utf-8") as log:
@@ -1525,6 +1545,8 @@ class LocalCiRunner:
             self.summary["target_cache"]["cleanup_error"] = str(error)  # type: ignore[index]
             self.summary["target_cache"]["cleanup_log"] = str(log_path.relative_to(self.root))  # type: ignore[index]
             return False
+        finally:
+            self.summary["target_cache"]["cleanup_duration_seconds"] = round(time.monotonic() - started, 6)
         target_cache = self.summary["target_cache"]
         assert isinstance(target_cache, dict)
         target_cache["cleanup_exit_code"] = result.returncode
@@ -1683,6 +1705,21 @@ class LocalCiRunner:
         status = self.summary.get("status")
         if status not in {"failed", "interrupted", "stale", "incomplete"}:
             return
+        preparation = self.summary.get("target_preparation_failure")
+        if preparation:
+            cache = self.summary.get("target_cache", {})
+            log = cache.get("cleanup_log")
+            details = [f"local ci diagnostic: {status}", f"profile: {self.mode}",
+                       "step: cargo-target-preparation (preflight refusal)",
+                       f"before step: {preparation['before_step']}",
+                       f"summary: {self.summary_path}",
+                       f"log: {self.root / log if log else 'no cleanup started; see summary'}",
+                       str(self.summary.get("target_cache_error", "target preparation refused"))]
+            if cache.get("cleanup_argv"):
+                details.append("cleanup command: " + shlex.join(cache["cleanup_argv"])[:2000])
+            details.append("rerun the original local CI invocation after resolving the refusal; prior passing stages are not a complete check set")
+            print(self._diagnostic_text("\n".join(details)), flush=True)
+            return
         executed = [s for s in self.summary["steps"] if s["status"] != "not_run"]
         step = next((s for s in executed if s["status"] in {"failed", "interrupted"}),
                     executed[-1] if executed else None)
@@ -1821,6 +1858,7 @@ class LocalCiRunner:
                         break
                     if self._uses_cargo_target(step) and self.target_lock is None:
                         if not self._prepare_target_cache():
+                            self.summary["target_preparation_failure"] = {"before_step": step.step_id}
                             print(
                                 self.summary.get("target_cache_error", "could not prepare Cargo target ownership"),
                                 file=sys.stderr,
