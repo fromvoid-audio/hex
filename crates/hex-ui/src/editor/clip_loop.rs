@@ -21,6 +21,7 @@ struct Pending {
     clip: ClipId,
     preview: Preview,
     receipt: Receipt,
+    start_camera: Option<super::audio_event_editor::PlayStartCamera>,
 }
 enum Preview {
     Audio { clip: Clip, edit: AudioEdit },
@@ -167,6 +168,7 @@ impl EditorView {
             generation: self.project_generation,
             clip,
             preview: Preview::Midi(values),
+            start_camera: None,
             receipt: Receipt::new(self.project_generation),
         });
         if !self.enqueue(Request::Edit(command)) {
@@ -205,9 +207,16 @@ impl EditorView {
             }
             None => return,
         };
+        let start_camera = matches!(
+            edit,
+            AudioEdit::Resize(AudioViewResizeOperation::PlayStart { .. })
+        )
+        .then(|| self.audio_play_start_camera(clip))
+        .flatten();
         self.clip_loop.pending = Some(Pending {
             generation: self.project_generation,
             clip,
+            start_camera,
             preview: Preview::Audio {
                 clip: preview,
                 edit,
@@ -305,14 +314,30 @@ impl EditorView {
         if event.project_replaced {
             self.cancel_audio_loop_gesture();
         }
-        if let Some(p) = &mut self.clip_loop.pending
-            && p.receipt.observe(
-                self.project_generation,
-                event.project_replaced,
-                event.request_complete,
-            ) != Disposition::Waiting
-        {
-            self.retire_pending_clip_loop();
+        let disposition = self
+            .clip_loop
+            .pending
+            .as_mut()
+            .map_or(Disposition::Waiting, |p| {
+                p.receipt.observe(
+                    self.project_generation,
+                    event.project_replaced,
+                    event.request_complete,
+                )
+            });
+        if disposition != Disposition::Waiting {
+            if let Some(pending) = self.clip_loop.pending.take() {
+                if disposition == Disposition::Terminal {
+                    if let Some(camera) = pending.start_camera {
+                        self.install_audio_play_start_camera(
+                            pending.clip,
+                            pending.generation,
+                            camera,
+                            &event.state.project,
+                        );
+                    }
+                }
+            }
         }
     }
 }

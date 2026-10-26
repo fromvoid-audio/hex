@@ -644,6 +644,11 @@ impl<'a> AudioViewProjection<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioViewResizeOperation {
+    /// Move the first read cursor in the retained root clock without moving the
+    /// outer placement or either cycle boundary. Once retains its silent tail.
+    PlayStart {
+        position: u64,
+    },
     /// Select a processing-root cycle without changing the outer placement.
     /// Positions use this clip's AudioDomainClock (frames or raw BeatTime).
     /// Source processing, hidden events and original media remain retained.
@@ -716,6 +721,84 @@ pub fn preview_view_resize(
         },
     );
     let start = reference_start_raw.unwrap_or(i128::from(clip.start));
+    if let AudioViewResizeOperation::PlayStart { position } = operation {
+        if clip
+            .audio_edit()
+            .is_some_and(|edit| edit.content_view.is_some())
+            || (old.is_none() && clip.looping())
+        {
+            return Err(Invalid("this audio view's play start is read-only"));
+        }
+        if position < view_start || position >= view_end {
+            return Err(Invalid("play start must be inside the retained cycle"));
+        }
+        let mut outer_length = old.map_or(
+            match clock {
+                AudioDomainClock::Frames(_) => AudioDomainClock::Frames(view_end - view_start),
+                AudioDomainClock::Beats(_) => {
+                    AudioDomainClock::Beats(BeatTime::from_raw(view_end - view_start))
+                }
+            },
+            |p| p.outer_length,
+        );
+        let phase = position - view_start;
+        let mut reference_start_raw = reference_start_raw;
+        let mut start = start;
+        let mut displacement = displacement;
+        if let Some(edit) = clip.audio_edit()
+            && matches!(edit.timing, AudioClipTiming::Frozen { .. })
+        {
+            // Frozen processing owns the old map and root origin. Move its
+            // carrier reference with the phase, then retain the exact outer
+            // frame gate instead of re-timing the source or its destination.
+            let reference = edit
+                .processing_origin()?
+                .checked_add(i128::from(view_start))
+                .and_then(|value| value.checked_add(i128::from(phase)))
+                .ok_or(Invalid("frozen play start reference overflow"))?;
+            let first = audio_projection_frame(tempo, reference)?;
+            let end = first
+                .checked_add(i128::from(clip.duration()))
+                .ok_or(Invalid("frozen play start end overflow"))?;
+            let end = audio_projection_beat(tempo, end)?;
+            let length = end
+                .checked_sub(reference)
+                .and_then(|length| u64::try_from(length).ok())
+                .filter(|length| *length > 0)
+                .ok_or(Invalid(
+                    "frozen play start must retain a positive outer gate",
+                ))?;
+            outer_length = AudioDomainClock::Beats(BeatTime::from_raw(length));
+            reference_start_raw = Some(reference);
+            start = reference;
+            displacement = i128::from(clip.start())
+                .checked_sub(first)
+                .ok_or(Invalid("frozen play start displacement overflow"))?;
+        }
+        let placement = AudioViewPlacement {
+            mode: old.map_or(AudioViewMode::Once, |p| p.mode),
+            outer_length,
+            cycle_phase: phase,
+        };
+        let projected = AudioViewProjection::from_parts(
+            clip,
+            tempo,
+            clock,
+            view_start..view_end,
+            start,
+            Some(placement),
+            displacement,
+        )?;
+        let (frame_start, frame_end) = projected.outer_frame_bounds();
+        return Ok(AudioViewResize {
+            view_start,
+            view_end,
+            reference_start_raw,
+            placement,
+            frame_start,
+            frame_end,
+        });
+    }
     if let AudioViewResizeOperation::CycleRange {
         start: first,
         end: last,
@@ -766,8 +849,9 @@ pub fn preview_view_resize(
         AudioViewResizeOperation::OuterEnd { project_frame }
         | AudioViewResizeOperation::RepeatOuterEnd { project_frame }
         | AudioViewResizeOperation::CycleEnd { project_frame } => project_frame,
-        AudioViewResizeOperation::CycleRange { .. } => {
-            return Err(Invalid("clip loop range was not resolved"));
+        AudioViewResizeOperation::CycleRange { .. }
+        | AudioViewResizeOperation::PlayStart { .. } => {
+            return Err(Invalid("clip-local audio operation was not resolved"));
         }
     };
     let position = if reference_start_raw.is_some() {
@@ -786,8 +870,9 @@ pub fn preview_view_resize(
         cycle_phase: 0,
     });
     match operation {
-        AudioViewResizeOperation::CycleRange { .. } => {
-            return Err(Invalid("clip loop range was not resolved"));
+        AudioViewResizeOperation::CycleRange { .. }
+        | AudioViewResizeOperation::PlayStart { .. } => {
+            return Err(Invalid("clip-local audio operation was not resolved"));
         }
         AudioViewResizeOperation::OuterEnd { .. }
         | AudioViewResizeOperation::RepeatOuterEnd { .. } => {
@@ -922,7 +1007,18 @@ pub fn preview_audio_view_resize(
     operation: AudioViewResizeOperation,
 ) -> Result<Clip, Invalid> {
     let next = preview_view_resize(clip, tempo, operation)?;
-    materialize_view_resize(clip, tempo, asset_playback_frames, next)
+    let unchanged_start = matches!(operation, AudioViewResizeOperation::PlayStart { .. })
+        && clip
+            .audio_edit()
+            .and_then(|edit| edit.placement)
+            .map_or(0, |p| p.cycle_phase)
+            == next.placement.cycle_phase;
+    let preview = materialize_view_resize(clip, tempo, asset_playback_frames, next)?;
+    Ok(if unchanged_start {
+        clip.clone()
+    } else {
+        preview
+    })
 }
 
 fn materialize_view_resize(
@@ -957,11 +1053,14 @@ pub(crate) fn resize_view(
 ) -> Result<crate::Created, Invalid> {
     let original = project.clip(id).ok_or(Invalid("audio clip is missing"))?;
     // Only the operation is admitted. Recompute all scalars from current state.
-    let next = preview_view_resize(original, project.tempo_map(), operation)?;
     let asset = project
         .asset(original.asset())
         .ok_or(Invalid("audio media missing"))?;
-    let clip =
-        materialize_view_resize(original, project.tempo_map(), asset.playback_frames(), next)?;
+    let clip = preview_audio_view_resize(
+        original,
+        project.tempo_map(),
+        asset.playback_frames(),
+        operation,
+    )?;
     crate::clip_group::replace_audio(project, clip)
 }
