@@ -566,6 +566,9 @@ impl Command {
             | Self::MoveTrackDevice { .. }
             | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }
+            | Self::ManualDeviceEdit { .. }
+            | Self::SetDeviceAutomationReadSelection { .. }
+            | Self::ReenableDeviceAutomation
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }

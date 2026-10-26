@@ -134,7 +134,14 @@ pub(in crate::editor) fn rows(
             .filter(|(selected, _)| *selected == target)
             .and_then(|(_, beat)| points.iter().find(|point| point.beat == beat))
             .map_or(entry.base, |point| point.value.get());
-        let name = format!("{} · {}", entry.label, entry.format(value));
+        let overridden = view.device_automation_read_selection(target)
+            == Some(hex_project::AutomationReadSelection::Base);
+        let name = format!(
+            "{} · {}{}",
+            entry.label,
+            entry.format(value),
+            if overridden { " · overridden" } else { "" }
+        );
         let header = div()
             .w(px(view.track_header_width()))
             .flex_shrink_0()
@@ -440,6 +447,11 @@ impl EditorView {
                 "step segment",
                 Action::Shape(target, AutomationInterpolation::Step),
             ));
+        }
+        if self.device_automation_read_selection(target)
+            == Some(hex_project::AutomationReadSelection::Base)
+        {
+            actions.push(("re-enable automation", Action::Reenable(target)));
         }
         actions.push(("clear automation", Action::Clear(target)));
         actions.push((
