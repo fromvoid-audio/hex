@@ -882,3 +882,6 @@ fn h_overview_topology_prunes_both_height_maps_and_generation_restarts_normal_la
 
 #[path = "track_layout/capture_tests.rs"]
 mod capture_tests;
+
+#[path = "main_track_size_ui_tests.rs"]
+mod main_size_tests;
