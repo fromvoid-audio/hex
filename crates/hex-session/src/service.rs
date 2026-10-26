@@ -464,6 +464,18 @@ pub enum Request {
         revision: u64,
         clips: Vec<hex_project::ClipId>,
     },
+    DuplicateAliasClips {
+        project_generation: u64,
+        revision: u64,
+        clips: Vec<hex_project::ClipId>,
+    },
+    DuplicateSessionCell {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        scene: hex_project::SceneId,
+        alias: bool,
+    },
     /// Captured Arrangement selection to consolidate as one clip. The project
     /// command validates track and media-kind representability atomically.
     GroupClips {
@@ -2352,6 +2364,11 @@ fn run_worker(
                 project_generation: captured_generation,
                 revision: captured_revision,
                 clips,
+            }
+            | Request::DuplicateAliasClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                clips,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("clip duplication canceled · project changed".to_owned())
@@ -2363,7 +2380,33 @@ fn run_worker(
                 {
                     Err("finish or cancel the active gesture before duplicating clips".into())
                 } else {
-                    Ok(Command::DuplicateClips(clips.clone()))
+                    Ok(if matches!(&request, Request::DuplicateAliasClips { .. }) {
+                        Command::DuplicateAliasClips(clips.clone())
+                    } else {
+                        Command::DuplicateClips(clips.clone())
+                    })
+                },
+            ),
+            Request::DuplicateSessionCell {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                scene,
+                alias,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("console duplication canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before duplicating clips".into())
+                } else {
+                    Ok(Command::DuplicateSessionCell {
+                        track: *track,
+                        scene: *scene,
+                        alias: *alias,
+                    })
                 },
             ),
             Request::GroupClips {
@@ -3293,7 +3336,9 @@ fn run_worker(
                 Request::CopyArrangementClipToConsoleTrack { .. } => {
                     error = Some("console clip target was not resolved".into());
                 }
-                Request::DuplicateClips { .. } => {
+                Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. } => {
                     error = Some("clip duplication target was not resolved".into());
                 }
                 Request::GroupClips { .. } | Request::GroupTimeRange { .. } => {

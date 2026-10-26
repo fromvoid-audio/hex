@@ -2,6 +2,8 @@
 use hex_project::{Command, Editor, SessionAudioLoop, SessionCellContent};
 use hex_storage::{decode, encode, load_with_token, save_new};
 use serde_json::{Value, json};
+#[allow(dead_code)]
+mod common;
 const OLD: &[u8] = include_bytes!("fixtures/native-sources/schema47-console-one-shot.json");
 fn fixture() -> Editor {
     Editor::new(decode(OLD).unwrap(), 16).unwrap()
@@ -36,6 +38,7 @@ fn schema47_migrates_every_field_and_preserves_original_document_and_media() {
             .unwrap()
             .is_empty()
     );
+    common::remove_empty_aliases(&mut current);
     current["version"] = 47.into();
     assert_eq!(
         current,
@@ -179,6 +182,7 @@ fn authentic_schema48_migrates_complete_loop_and_singleton_source_without_rewrit
             .unwrap()
             .is_empty()
     );
+    common::remove_empty_aliases(&mut current);
     current["version"] = 48.into();
     assert_eq!(
         current, old,

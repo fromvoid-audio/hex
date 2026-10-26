@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 51;
+pub const CURRENT_SCHEMA_VERSION: u32 = 52;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -149,12 +149,12 @@ impl From<serde_json::Error> for StorageError {
 /// Encode the current schema with complete hierarchy, audio roots, event fades,
 /// directed views, activation, MIDI, tuning, device state and retained native sources
 /// with explicit per-track source bindings, Console audio cycles and bounded
-/// faded Arrangement overlaps (schema51).
+/// faded Arrangement overlaps and explicit shared clip content (schema52).
 /// There is no blanket
 /// byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::crossfades::encode(project)?)
+    encode_document(&schema::clip_aliases::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -170,6 +170,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::clip_aliases::require_legacy_compatible(project)?;
     schema::crossfades::require_legacy_disjoint(project)?;
     if project.has_device_automation() {
         return Err(StorageError::Invalid(
@@ -256,6 +257,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
+/// Schema52 requires explicit shared source/member inventories; schema51 and older
+/// acquire empty aliases while preserving their own strict format contracts.
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
@@ -300,7 +303,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::crossfades::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::clip_aliases::decode(bytes),
+        51 => schema::crossfades::decode(bytes),
         50 => schema::device_automation::decode(bytes),
         49 => schema::session_audio_loops::decode49(bytes),
         48 => schema::session_audio_loops::decode48(bytes),
@@ -324,6 +328,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if header.version < 52 {
+        schema::clip_aliases::require_legacy_compatible(&project)?;
+    }
     if header.version < 51 {
         schema::crossfades::require_legacy_disjoint(&project)?;
     }

@@ -32,16 +32,43 @@ pub enum MidiOneShotBoundary {
     LoopEnd,
 }
 
-/// Independently-owned MIDI event source shared by Arrangement and Session clips.
+/// Authored notes and their finite source extent. Playback windows belong to
+/// `MidiSource`, so changing a window can retain this immutable content backing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MidiContent {
+    pub(crate) source_length: BeatTime,
+    pub(crate) notes: Vec<MidiNote>,
+}
+impl MidiContent {
+    pub fn source_length(&self) -> BeatTime {
+        self.source_length
+    }
+    pub fn notes(&self) -> &[MidiNote] {
+        &self.notes
+    }
+}
+
+/// Effective MIDI source: immutable content with independent playback markers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSource {
-    pub(crate) source_length: BeatTime,
+    pub(crate) content: Arc<MidiContent>,
     pub(crate) source_start: BeatTime,
     pub(crate) loop_start: BeatTime,
     pub(crate) loop_end: BeatTime,
     pub(crate) looping: bool,
     pub(crate) one_shot_boundary: MidiOneShotBoundary,
-    pub(crate) notes: Vec<MidiNote>,
+}
+
+impl std::ops::Deref for MidiSource {
+    type Target = MidiContent;
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
+}
+impl std::ops::DerefMut for MidiSource {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.content)
+    }
 }
 
 /// Stable owning key for detecting an unchanged copy-on-write source.
@@ -57,18 +84,26 @@ impl MidiSourceIdentity {
     /// PCM, allocation identity, exclusive ownership, or a closed-storage proof.
     pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
         std::mem::size_of::<MidiSource>()
+            .checked_add(std::mem::size_of::<MidiContent>())?
             .checked_add(
                 self.0
                     .notes
                     .capacity()
                     .checked_mul(std::mem::size_of::<MidiNote>())?,
             )?
-            .checked_add(2usize.checked_mul(std::mem::size_of::<usize>())?)?
+            .checked_add(4usize.checked_mul(std::mem::size_of::<usize>())?)?
             .checked_add(
                 std::mem::align_of::<usize>()
                     .max(std::mem::align_of::<MidiSource>())
                     .checked_sub(1)?,
             )
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    std::mem::align_of::<usize>()
+                        .max(std::mem::align_of::<MidiContent>())
+                        .checked_sub(1)?,
+                )
+            })
     }
 }
 impl PartialEq for MidiSourceIdentity {
@@ -133,13 +168,15 @@ impl MidiSource {
     }
     pub(crate) fn defaults(length: BeatTime) -> Self {
         Self {
-            source_length: length,
+            content: Arc::new(MidiContent {
+                source_length: length,
+                notes: Vec::new(),
+            }),
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
             one_shot_boundary: MidiOneShotBoundary::SourceEnd,
-            notes: Vec::new(),
         }
     }
 }
@@ -819,13 +856,15 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 length: right_length,
                 volume: right_volume,
                 source: Arc::new(MidiSource {
+                    content: std::sync::Arc::new(crate::MidiContent {
+                        source_length: right_length,
+                        notes,
+                    }),
                     one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-                    source_length: right_length,
                     source_start: BeatTime::ZERO,
                     loop_start: BeatTime::ZERO,
                     loop_end: right_length,
                     looping: false,
-                    notes,
                 }),
             };
             let clips = &mut project.track_mut(track)?.content.midi_clips;
@@ -871,7 +910,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .map(|view| view.resized(0, length.raw()))
                 .transpose()?;
             target.length = length;
-            target.source_length = source_length;
+            if target.source_length != source_length {
+                target.source_length = source_length;
+            }
             target.source_start = source_start;
             target.loop_start = loop_start;
             target.loop_end = loop_end;
@@ -1156,7 +1197,7 @@ fn apply_note_update(note: &mut MidiNote, update: MidiNoteUpdate) {
     note.velocity = update.velocity;
 }
 
-fn clip_count(project: &Project) -> usize {
+pub(crate) fn clip_count(project: &Project) -> usize {
     project
         .tracks
         .iter()
@@ -1175,20 +1216,32 @@ fn clip_count(project: &Project) -> usize {
             .count()
 }
 pub(crate) fn note_count(project: &Project) -> usize {
-    project
-        .tracks
-        .iter()
-        .flat_map(Track::midi_clips)
-        .map(|c| c.source.notes.len())
-        .sum::<usize>()
+    let shared: usize = project
+        .aliases
+        .sources
+        .values()
+        .map(|content| match content {
+            crate::clip_alias::Content::Midi(content) => content.notes.len(),
+            _ => 0,
+        })
+        .sum();
+    shared
+        + project
+            .tracks
+            .iter()
+            .flat_map(Track::midi_clips)
+            .filter(|clip| project.clip_alias(clip.id).is_none())
+            .map(|clip| clip.notes().len())
+            .sum::<usize>()
         + project
             .session
             .cells
             .iter()
             .map(|cell| match &cell.content {
-                crate::SessionCellContent::Midi(clip) => clip.source.notes.len(),
-                crate::SessionCellContent::Audio(_) => 0,
-                crate::SessionCellContent::Stop => 0,
+                crate::SessionCellContent::Midi(clip) if project.clip_alias(clip.id).is_none() => {
+                    clip.source.notes.len()
+                }
+                _ => 0,
             })
             .sum::<usize>()
 }
@@ -1280,13 +1333,15 @@ fn materialize_overwrite_ranges_inner(
                 ),
             )?,
             source: Arc::new(MidiSource {
+                content: std::sync::Arc::new(crate::MidiContent {
+                    source_length: length,
+                    notes: Vec::new(),
+                }),
                 one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-                source_length: length,
                 source_start: BeatTime::ZERO,
                 loop_start: BeatTime::ZERO,
                 loop_end: length,
                 looping: false,
-                notes: Vec::new(),
             }),
         });
     }
@@ -1393,3 +1448,7 @@ mod retained_metadata_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "midi_content_tests.rs"]
+mod content_tests;
