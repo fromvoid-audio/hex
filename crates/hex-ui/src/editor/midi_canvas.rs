@@ -1971,16 +1971,24 @@ impl EditorView {
         context.generation == self.project_generation && midi_drag::is_current(gesture, context)
     }
 
-    fn piano_keys(&self, low: u8, cx: &mut Context<Self>) -> Div {
+    fn piano_keys(&self, low: u8, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.piano_pitch_rows;
         let held = self.midi_live_pitches();
         let entity = cx.entity();
-        let mut keys = div()
+        let input = self.piano_pitch_input(cx);
+        let pointer_layer = input.pointer_layer();
+        let mut keys = input
+            .handle(
+                "midi-piano-keys".into(),
+                hex_widgets::SplitterHandleConfig::thin(
+                    hex_widgets::SplitterAxis::Vertical,
+                    theme::color(theme::PaletteRole::Surface),
+                ),
+            )
             .relative()
-            .w(px(38.0))
+            .w(px(38.))
             .h_full()
-            .flex_shrink_0()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)));
+            .flex_shrink_0();
         for row in 0..rows {
             let pitch = low.saturating_add(rows - 1).saturating_sub(row);
             let black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
@@ -2021,89 +2029,38 @@ impl EditorView {
                     .child(theme::text(label)),
             );
         }
-        keys.cursor(gpui::CursorStyle::ResizeUpDown)
-            .debug_selector(|| "midi-piano-keys".into())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|v, event: &MouseDownEvent, window, cx| {
-                    if v.context_menu.is_some() || !f32::from(event.position.y).is_finite() {
-                        return;
-                    }
-                    v.cancel_midi_note_gesture();
-                    v.midi_focus.focus(window);
-                    v.piano_pitch_zoom = Some((
-                        f32::from(event.position.y),
-                        v.piano_pitch_low,
-                        v.piano_pitch_rows,
-                    ));
-                    cx.notify();
-                    cx.stop_propagation();
-                }),
-            )
-            .child(
-                canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, _| {
-                        let wheel_entity = entity.clone();
-                        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
-                            if !phase.capture()
-                                || !event.modifiers.alt
-                                || !bounds.contains(&event.position)
-                            {
-                                return;
+        keys.children([pointer_layer]).child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let wheel_entity = entity.clone();
+                    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+                        if !phase.capture()
+                            || !event.modifiers.alt
+                            || !bounds.contains(&event.position)
+                        {
+                            return;
+                        }
+                        let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
+                        if !delta.is_finite() || delta == 0.0 {
+                            return;
+                        }
+                        cx.stop_propagation();
+                        wheel_entity.update(cx, |view, cx| {
+                            if view.zoom_piano_pitch_wheel_at(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.y),
+                                delta,
+                            ) {
+                                cx.notify();
                             }
-                            let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
-                            if !delta.is_finite() || delta == 0.0 {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            wheel_entity.update(cx, |view, cx| {
-                                if view.zoom_piano_pitch_wheel_at(
-                                    gesture_bounds_from(bounds),
-                                    f32::from(event.position.y),
-                                    delta,
-                                ) {
-                                    cx.notify();
-                                }
-                            });
                         });
-                        let entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                            if !phase.capture() {
-                                return;
-                            }
-                            entity.update(cx, |v, cx| {
-                                let Some((down, low, rows)) = v.piano_pitch_zoom else {
-                                    return;
-                                };
-                                if event.pressed_button != Some(MouseButton::Left) {
-                                    v.piano_pitch_zoom = None;
-                                    return;
-                                }
-                                let delta = f32::from(event.position.y) - down;
-                                if !delta.is_finite() {
-                                    return;
-                                }
-                                let next = (f32::from(rows)
-                                    * (delta / 120.0).clamp(-8.0, 8.0).exp2())
-                                .round()
-                                .clamp(1.0, 128.0) as u8;
-                                let next_low = (i16::from(low)
-                                    + (i16::from(rows) - i16::from(next)) / 2)
-                                    .clamp(0, 128 - i16::from(next))
-                                    as u8;
-                                if (v.piano_pitch_low, v.piano_pitch_rows) != (next_low, next) {
-                                    v.piano_pitch_low = next_low;
-                                    v.piano_pitch_rows = next;
-                                    cx.notify();
-                                }
-                            });
-                        });
-                    },
-                )
-                .absolute()
-                .size_full(),
+                    });
+                },
             )
+            .absolute()
+            .size_full(),
+        )
     }
 
     pub(super) fn midi_button(
