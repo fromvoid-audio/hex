@@ -703,13 +703,17 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                if !view.tuning_audition_down(event, window, cx)
+                if !view.time_selection_key_down(event, window, cx)
+                    && !view.tuning_audition_down(event, window, cx)
                     && !view.fade_key_down(event, window, cx)
                 {
                     view.computer_keyboard_down(event, window, cx);
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.time_selection_key_up(event, cx) {
+                    cx.stop_propagation();
+                }
                 super::device_panel::selection_key_up(view, event, window, cx);
                 if view.tuning_audition_up(&event.keystroke.key) {
                     cx.stop_propagation();

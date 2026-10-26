@@ -456,6 +456,24 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            if view.time_selection_key_held {
+                                let started = view.begin_main_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                    event.modifiers.shift,
+                                ) || view.begin_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                    event.modifiers.shift,
+                                );
+                                if started {
+                                    view.focus.focus(window);
+                                    cx.notify();
+                                }
+                                return (started, false);
+                            }
                             if view.begin_section_pointer(
                                 x,
                                 y,

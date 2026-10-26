@@ -538,6 +538,21 @@ impl EditorView {
                                 {
                                     return;
                                 }
+                                if view.time_selection_key_held {
+                                    view.cancel_all_midi_marquees();
+                                    view.midi_focus.focus(window);
+                                    if view.begin_midi_velocity_time_selection(
+                                        captured.bounds,
+                                        f32::from(event.position.x),
+                                        event.modifiers.platform,
+                                        window,
+                                        cx,
+                                    ) {
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                    return;
+                                }
                                 let position = [
                                     f32::from(event.position.x - bounds.origin.x),
                                     f32::from(event.position.y - bounds.origin.y),

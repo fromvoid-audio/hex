@@ -143,7 +143,7 @@ impl EditorView {
 
     fn range_input_available(&self) -> bool {
         self.mode == EditorMode::Arrangement
-            && !self.automation_view.enabled
+            && (!self.automation_view.enabled || self.time_selection_key_held)
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.track_name.is_editing()
@@ -417,7 +417,9 @@ impl EditorView {
             return false;
         };
         let (ordinary_handle, priority_control) = self.clip_pointer_handles(track, x, y, viewport);
-        if priority_control || ((extend || !inside_selection) && ordinary_handle) {
+        if !self.time_selection_key_held
+            && (priority_control || ((extend || !inside_selection) && ordinary_handle))
+        {
             return false;
         }
         let anchor = self.time_selection_cursor_anchor(extend);
