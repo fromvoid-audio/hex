@@ -66,6 +66,61 @@ fn pcm(revision: Arc<hex_engine::PreparedRevision>, frames: usize) -> Vec<hex_en
     }
     samples
 }
+
+#[test]
+fn isolated_bounce_retains_selected_alias_notes_and_excludes_console_members() {
+    let (mut session, track, clip) = fixture();
+    session
+        .command(Command::DuplicateAliasClips(vec![clip]))
+        .unwrap();
+    let Created::Scene(scene) = session
+        .command(Command::AddScene {
+            name: "console".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    session
+        .command(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "console notes".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap();
+    session
+        .command(Command::DuplicateSessionCell {
+            track,
+            scene,
+            alias: true,
+        })
+        .unwrap();
+    let original = session.project().clone();
+    for (target, members) in [
+        (
+            BounceTarget::Range(hex_project::TimeRange::new(vec![track], 30_013, 50_007).unwrap()),
+            2,
+        ),
+        (BounceTarget::Clips(vec![clip]), 1),
+    ] {
+        let plan = original.plan_arrangement_bounce(&target, false).unwrap();
+        let projected = isolated(&original, &target, &plan[0]).unwrap();
+        assert!(projected.session_cells().is_empty());
+        assert_eq!(
+            projected.midi_clip(clip).unwrap().notes(),
+            original.midi_clip(clip).unwrap().notes()
+        );
+        assert_eq!(projected.clip_alias(clip), original.clip_alias(clip));
+        assert_eq!(projected.snapshot().aliases.sources.len(), 1);
+        assert_eq!(projected.snapshot().aliases.members.len(), members);
+    }
+    assert_eq!(
+        session.project(),
+        &original,
+        "projection never edits the document"
+    );
+}
 #[test]
 fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_processing() {
     for (inplace, whole_track) in [(false, false), (true, false), (true, true)] {

@@ -292,6 +292,32 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(launch.launch_installed(self.root), app)
         self.assertEqual(self.calls, [("open", "-a", str(app))])
 
+    def test_diagnostics_forwards_flag_only_to_inactive_verified_app(self):
+        app = self.root.resolve() / "artifacts/hex.app"
+        with patch.object(launch.sys, "platform", "darwin"), \
+                patch.object(launch, "command", side_effect=self.command), \
+                patch.object(launch.delivery, "verify", return_value={"source": "c" * 40, "profile": "release", "diagnostic_capabilities": ["actions-v1", "audio-v1"]}), \
+                patch.object(launch.delivery, "assert_inactive") as inactive:
+            launch.launch_installed(self.root, diagnostics=True)
+            inactive.assert_called_once_with(app)
+        self.assertEqual(self.calls[-1], ("open", "-a", str(app), "--args", "--diagnostics"))
+        self.calls.clear()
+        with patch.object(launch.sys, "platform", "darwin"), \
+                patch.object(launch, "command", side_effect=self.command), \
+                patch.object(launch.delivery, "verify", return_value={"source": "c" * 40, "profile": "release", "diagnostic_capabilities": ["actions-v1", "audio-v1"]}), \
+                patch.object(launch.delivery, "assert_inactive", side_effect=launch.delivery.DeliveryError("running")):
+            with self.assertRaisesRegex(launch.delivery.DeliveryError, "running"):
+                launch.launch_installed(self.root, diagnostics=True)
+        self.assertFalse(any(call[0] == "open" for call in self.calls))
+
+    def test_diagnostics_refuses_older_receipt_before_opening_app(self):
+        with patch.object(launch.sys, "platform", "darwin"), \
+                patch.object(launch, "command", side_effect=self.command), \
+                patch.object(launch.delivery, "verify", return_value={"source": "c" * 40, "profile": "release"}):
+            with self.assertRaisesRegex(launch.LaunchError, "does not advertise"):
+                launch.launch_installed(self.root, diagnostics=True)
+        self.assertEqual(self.calls, [])
+
     def test_installed_app_target_resolves_linked_worktree_without_git(self):
         worktree = self.root / "linked"
         (worktree / "scripts").mkdir(parents=True)

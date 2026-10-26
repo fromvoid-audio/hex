@@ -775,3 +775,38 @@ fn alias_keys_leave_text_and_foreground_automation_ownership_intact(cx: &mut Tes
         );
     });
 }
+
+#[gpui::test]
+fn diagnostics_reconstruct_real_pointer_shortcut_and_worker_receipt_without_text(
+    cx: &mut TestAppContext,
+) {
+    let directory =
+        std::env::temp_dir().join(format!("hex-input-action-log-{}", std::process::id()));
+    let mut log =
+        hex_diagnostics::SessionLog::start_with_context(directory.clone(), "fixture source")
+            .unwrap();
+    cx.update(|cx| {
+        crate::install_session_log(cx, Ok(log.handle()));
+        crate::install_action_diagnostics(cx, true);
+    });
+    let (_files, handle, editor, originals) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, originals[0], false);
+    press(&editor, &mut visual);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_ne!(view.selected_clip, Some(originals[0]));
+    });
+    log.shutdown().unwrap();
+    let text = std::fs::read_to_string(log.path()).unwrap();
+    assert!(text.contains("stage=pointer_down"), "{text}");
+    assert!(text.contains("stage=key"), "{text}");
+    assert!(text.contains("stage=handler"), "{text}");
+    assert!(text.contains("duplicate_clips"), "{text}");
+    assert!(text.contains("ui_action_id: Some("), "{text}");
+    assert!(text.contains("ClientReceived"), "{text}");
+    assert!(text.contains("stage=view_observed"), "{text}");
+    println!("diagnostic fixture log:\n{text}");
+    std::fs::remove_dir_all(directory).unwrap();
+}
