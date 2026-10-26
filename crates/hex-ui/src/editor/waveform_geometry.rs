@@ -617,7 +617,9 @@ pub(super) fn prepare_waveform_geometry(
                     // viewport. Peak-only sources and wider views use the
                     // existing bounded summary path.
                     const DETAIL_FRAME_BUDGET: usize = 4_194_304;
-                    let detail_budget = DETAIL_FRAME_BUDGET / grid.columns;
+                    const DETAIL_COLUMN_BUDGET: usize = 4_096;
+                    let detail_budget =
+                        (DETAIL_FRAME_BUDGET / grid.columns).min(DETAIL_COLUMN_BUDGET);
                     if matches!(mapping, WaveformMapping::GainedSource { detail: true, .. }) {
                         waveform
                             .bounded_exact_peaks_for_frames(start, end, detail_budget)
