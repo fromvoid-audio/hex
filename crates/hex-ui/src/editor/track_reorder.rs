@@ -4,6 +4,8 @@
 //! bounded row metadata; it never clones the project, prepares audio or moves a
 //! track. Release sends one source-stamped worker request. The final insertion
 //! line stays owned by its exact ordinary receipt until canonical installation.
+//! A name press remains a normal Click candidate until the existing drag threshold.
+//! Only moved input claims the Window lease; pending receipt feedback never renews it.
 use super::{
     EditorMode, EditorView,
     pending_edit::{Disposition, Receipt},
@@ -33,6 +35,14 @@ struct Gesture {
     moved: bool,
     destination: Option<Destination>,
     last_scroll: Instant,
+}
+impl Gesture {
+    fn crosses_threshold(&self, pointer: (f32, f32)) -> bool {
+        (pointer.0 - self.origin.0)
+            .abs()
+            .max((pointer.1 - self.origin.1).abs())
+            >= 4.0
+    }
 }
 #[derive(Clone, Copy)]
 struct Destination {
@@ -127,6 +137,59 @@ impl EditorView {
             last_scroll: Instant::now(),
         });
     }
+    fn capture_track_reorder(&self, window: &mut Window, cx: &Context<Self>) -> bool {
+        let Some(g) = self.track_reorder.gesture.as_ref() else {
+            return false;
+        };
+        let generation = g.generation;
+        let revision = g.revision;
+        let track = g.track;
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            gpui::CursorStyle::ClosedHand,
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<MouseUpEvent>()
+                    .filter(|e| e.button == MouseButton::Left);
+                let Some(position) = moved
+                    .map(|e| e.position)
+                    .or_else(|| released.map(|e| e.position))
+                else {
+                    return;
+                };
+                let _ = owner.update(cx, |view, cx| {
+                    if !view.track_reorder.gesture.as_ref().is_some_and(|g| {
+                        g.generation == generation && g.revision == revision && g.track == track
+                    }) {
+                        return;
+                    }
+                    if !view.track_header_focused(window) {
+                        view.cancel_track_reorder();
+                    } else if released.is_some() {
+                        view.finish_track_reorder(position);
+                    } else {
+                        view.update_track_reorder(position);
+                    }
+                    cx.notify();
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.track_reorder.gesture.as_ref().is_some_and(|g| {
+                        g.generation == generation && g.revision == revision && g.track == track
+                    }) {
+                        view.cancel_track_reorder();
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        )
+    }
     fn track_reorder_current(&self, g: &Gesture) -> bool {
         self.mode == EditorMode::Arrangement
             && g.generation == self.project_generation
@@ -218,14 +281,12 @@ impl EditorView {
         let Some(mut g) = self.track_reorder.gesture.take() else {
             return false;
         };
-        if !self.track_reorder_current(&g) {
+        let pointer = (f32::from(position.x), f32::from(position.y));
+        if !pointer.0.is_finite() || !pointer.1.is_finite() || !self.track_reorder_current(&g) {
             return true;
         }
-        g.pointer = (f32::from(position.x), f32::from(position.y));
-        g.moved |= (g.pointer.0 - g.origin.0)
-            .abs()
-            .max((g.pointer.1 - g.origin.1).abs())
-            >= 4.0;
+        g.pointer = pointer;
+        g.moved |= g.crosses_threshold(pointer);
         g.destination = g
             .moved
             .then(|| self.track_reorder_destination(g.pointer, &g.tracks))
@@ -371,14 +432,44 @@ impl EditorView {
         let entity = cx.entity();
         canvas(
             |_, _, _| (),
-            move |_, _, window, _| {
+            move |_, _, window, cx| {
+                let view = entity.read(cx);
+                if view.mode == EditorMode::Arrangement
+                    && view.track_header_focused(window)
+                    && let Some(g) = view.track_reorder.gesture.as_ref()
+                    && g.moved
+                    && g.generation == view.project_generation
+                    && view
+                        .state
+                        .as_ref()
+                        .is_some_and(|s| s.revision == g.revision)
+                {
+                    window.renew_pointer_capture(entity.entity_id(), gpui::CursorStyle::ClosedHand);
+                }
                 let moved = entity.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     if !phase.capture() {
                         return;
                     }
                     moved.update(cx, |v, cx| {
-                        let changed = if event.pressed_button == Some(MouseButton::Left) {
+                        let pointer = (f32::from(event.position.x), f32::from(event.position.y));
+                        let activates = event.pressed_button == Some(MouseButton::Left)
+                            && pointer.0.is_finite()
+                            && pointer.1.is_finite()
+                            && v.track_reorder
+                                .gesture
+                                .as_ref()
+                                .is_some_and(|g| !g.moved && g.crosses_threshold(pointer));
+                        if activates && !v.capture_track_reorder(window, cx) {
+                            // Another owner retained the pointer; preserve its event.
+                            if v.cancel_track_reorder() {
+                                cx.notify();
+                            }
+                            return;
+                        }
+                        let changed = if !v.track_header_focused(window) {
+                            v.cancel_track_reorder()
+                        } else if event.pressed_button == Some(MouseButton::Left) {
                             v.update_track_reorder(event.position)
                         } else {
                             v.cancel_track_reorder()
@@ -395,8 +486,14 @@ impl EditorView {
                         return;
                     }
                     up.update(cx, |v, cx| {
-                        if v.finish_track_reorder(event.position) {
+                        let candidate = v.track_reorder.gesture.is_some();
+                        let captured = v.finish_track_reorder(event.position);
+                        if candidate {
+                            // Publish availability when the Click candidate ends,
+                            // including when release falls outside its header.
                             cx.notify();
+                        }
+                        if captured {
                             cx.stop_propagation();
                         }
                     });
