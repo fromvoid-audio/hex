@@ -342,6 +342,17 @@ impl EditorView {
                     entity.entity_id(),
                     window,
                 );
+                entity.read(cx).renew_midi_creation_capture(
+                    super::midi_stroke::CanvasBounds {
+                        x: f32::from(bounds.origin.x),
+                        y: f32::from(bounds.origin.y),
+                        width,
+                        height,
+                    },
+                    clip_id,
+                    entity.entity_id(),
+                    window,
+                );
                 let marquee_context = super::midi_selection::MarqueeContext {
                     scene: canvas_scene.key(),
                     bounds: super::midi_stroke::CanvasBounds {
@@ -1118,7 +1129,7 @@ impl EditorView {
                         view.clear_midi_time_selection();
                         view.midi_time_selection.cancel();
                         view.cancel_all_midi_marquees();
-                        view.begin_midi_creation(
+                        if view.begin_midi_creation(
                             rendered_context,
                             f32::from(event.position.x),
                             hex_project::MidiNoteInsert {
@@ -1129,7 +1140,11 @@ impl EditorView {
                                 velocity: 100,
                             },
                             StrokeModifiers::from_platform(event.modifiers),
-                        );
+                            window,
+                            view_cx,
+                        ) {
+                            view_cx.stop_propagation();
+                        }
                         view_cx.notify();
                     });
                 });
@@ -1179,16 +1194,6 @@ impl EditorView {
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
                         if event.pressed_button == Some(MouseButton::Middle) {
-                            return;
-                        }
-                        if view.midi_creation.is_some() {
-                            if view.update_midi_creation(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.x),
-                                StrokeModifiers::from_platform(event.modifiers),
-                            ) {
-                                view_cx.notify();
-                            }
                             return;
                         }
                         if let Some(mut marquee) = view.midi_marquee.take() {
@@ -1319,16 +1324,6 @@ impl EditorView {
                     }
                     mouse_up_entity.update(cx, |view, view_cx| {
                         if event.button != MouseButton::Left {
-                            return;
-                        }
-                        if view.midi_creation.is_some() {
-                            view.finish_midi_creation(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.x),
-                                bounds.contains(&event.position),
-                                StrokeModifiers::from_platform(event.modifiers),
-                            );
-                            view_cx.notify();
                             return;
                         }
                         if view.midi_stroke.is_some() {
