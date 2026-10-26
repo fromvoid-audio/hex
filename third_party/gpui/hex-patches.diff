@@ -5067,7 +5067,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3821,174 @@
+@@ -3576,6 +3821,176 @@
              .unwrap_or_else(|| action.name().to_string())
      }
  
@@ -5153,7 +5153,9 @@ diff --git a/src/window.rs b/src/window.rs
 +    /// mouse input goes only to `listener`, including movement outside its bounds;
 +    /// keyboard dispatch stays unchanged. The initiating press keeps its normal
 +    /// propagation, including gesture-owned ancestor selection. Subsequent mouse
-+    /// input is exclusive. Refuses a different owner, an absent or
++    /// input is exclusive. Escape reaches existing key handlers before lease
++    /// retirement, preserving their cancellation/propagation guards. Refuses a
++    /// different owner, an absent or
 +    /// mismatched press, and an existing typed drag. Call before mutating the gesture.
 +    ///
 +    /// The owner must call `renew_pointer_capture` while painting its held gesture.
@@ -5242,7 +5244,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3585,6 +3998,66 @@
+@@ -3585,6 +4000,63 @@
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
  
@@ -5280,9 +5282,6 @@ diff --git a/src/window.rs b/src/window.rs
 +            {
 +                self.cancel_pointer_capture(cx);
 +            }
-+            PlatformInput::KeyDown(key) if key.keystroke.key == "escape" => {
-+                self.cancel_pointer_capture(cx);
-+            }
 +            _ => {}
 +        }
 +        match &event {
@@ -5309,7 +5308,7 @@ diff --git a/src/window.rs b/src/window.rs
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
              // API for the mouse position can only occur on the main thread.
-@@ -3662,10 +4135,51 @@
+@@ -3662,10 +4134,60 @@
              PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
          };
  
@@ -5337,6 +5336,15 @@ diff --git a/src/window.rs b/src/window.rs
 +            self.invalidate_pointer_hover();
 +        }
 +
++        if let PlatformInput::KeyDown(key) = &event
++            && key.keystroke.key == "escape"
++        {
++            // Existing widget key handlers must see their held state so their
++            // cancellation/propagation guards still run. Retire any remaining
++            // lease afterward; the owner may already have cancelled its model.
++            self.cancel_pointer_capture(cx);
++        }
++
 +        if let PlatformInput::MouseUp(up) = &event {
 +            if self
 +                .pointer_capture
@@ -5362,7 +5370,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
  
          DispatchEventResult {
-@@ -3674,17 +4188,50 @@
+@@ -3674,17 +4196,50 @@
          }
      }
  
