@@ -13,12 +13,33 @@ use hex_session::service::{
 };
 mod restore;
 use restore::Restore;
+mod edits;
+mod reopen;
+mod save;
+use reopen::Reopen;
 
+enum SourceOperation {
+    Insertion(Arc<PluginEffectControl>),
+    Reopen,
+    Edit(AudioSourceContext),
+}
+impl SourceOperation {
+    fn insertion(&self) -> Option<&Arc<PluginEffectControl>> {
+        match self {
+            Self::Insertion(control) => Some(control),
+            _ => None,
+        }
+    }
+    fn is_reopen(&self) -> bool {
+        matches!(self, Self::Reopen)
+    }
+}
 struct Source {
     binding: Binding,
     owner: ProcessorChainOwner,
     device: u64,
-    operation: Arc<PluginEffectControl>,
+    project_generation: u64,
+    operation: SourceOperation,
     accepted: bool,
     retiring: bool,
     queued: bool,
@@ -78,6 +99,7 @@ pub(super) struct PreparationObservation {
     pub(super) retiring: bool,
     pub(super) native: Option<Progress>,
     pub(super) attempts: u64,
+    pub(super) restore_refused: bool,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -104,6 +126,9 @@ pub(super) struct Plugins {
     sources: Vec<Source>,
     pending: Option<Pending>,
     restore: Option<Restore>,
+    reopen: Option<Reopen>,
+    edit: Option<AudioSourceContext>,
+    pub(super) catalog: Option<std::path::PathBuf>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -135,6 +160,12 @@ impl Plugins {
             return;
         }
         self.initialized = true;
+        self.catalog = std::env::var_os("HOME")
+            .map(|home| {
+                hex_preferences::browser_places_path(std::path::Path::new(&home))
+                    .with_file_name("plugin-catalog.json")
+            })
+            .filter(|path| path.is_absolute() && path.as_os_str().len() <= 4096);
         match Hosting::current_on_control() {
             Ok(host) => self.host = Some(host),
             Err(error) => self.unavailable = Some(error),
@@ -199,7 +230,17 @@ impl Plugins {
             .checked_mul(std::mem::size_of::<Source>())
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
             .and_then(|n| n.checked_add(self.host.as_ref()?.control_data_bytes()?))
+            .and_then(|n| {
+                n.checked_add(
+                    self.catalog
+                        .as_ref()
+                        .map_or(0, std::path::PathBuf::capacity),
+                )
+            })
             .and_then(|n| n.checked_add(8192))
+            .and_then(|n| {
+                n.checked_add(hex_audio::plugin_effects::EffectSourceMetadata::MAX_DATA_BYTES)
+            })
             .ok_or("vst3 control data overflow")?;
         if control_bytes > crate::audio_policy::PLUGIN_CONTROL_DATA_BYTES {
             return Err("vst3 control data reservation exceeded".into());
@@ -212,7 +253,9 @@ impl Plugins {
         Ok(())
     }
     pub fn ready(&self) -> bool {
-        self.pending.as_ref().is_some_and(|p| p.result.is_some())
+        // Session queries this only for its held insertion. No Root binding yet
+        // means a contended admission must retry, not wait for nonexistent facts.
+        self.pending.as_ref().is_none_or(|p| p.result.is_some())
     }
     pub fn prepare(
         &mut self,
@@ -226,8 +269,8 @@ impl Plugins {
                 return Err("another vst3 source operation is pending".into());
             }
         } else {
-            if self.restore.is_some() {
-                return Err("stopped vst3 restoration is pending".into());
+            if self.restore.is_some() || self.reopen.is_some() {
+                return Err("vst3 restoration is pending".into());
             }
             if !self.configured {
                 return Err(self
@@ -257,7 +300,7 @@ impl Plugins {
                 .editor_revision
                 .checked_add(1)
                 .ok_or("vst3 graph revision exhausted")?;
-            let binding = host.begin_on_control(
+            let binding = match host.begin_on_control(
                 control,
                 EffectSelection {
                     module: &selection.module,
@@ -271,7 +314,17 @@ impl Plugins {
                 graph,
                 output.sample_rate,
                 None,
-            )?;
+            ) {
+                Ok(binding) => binding,
+                // Root's contended Work mutex refuses before reserving a slot
+                // or native owner. Retain the existing ordered request and retry
+                // through its normal continuation, as project reopen does.
+                Err(reason) if reason == "native preparation is busy" => {
+                    edits::poll_control(control);
+                    return Ok(PluginEffectPreparationState::Preparing);
+                }
+                Err(reason) => return Err(reason),
+            };
             #[cfg(all(test, feature = "allocation-probe"))]
             if let Some(gate) = self.facts_gate.as_mut() {
                 gate.binding = Some(binding);
@@ -280,7 +333,8 @@ impl Plugins {
                 binding,
                 owner,
                 device: input.device_id,
-                operation: Arc::clone(&input.insertion.control),
+                project_generation: input.insertion.context.project_generation,
+                operation: SourceOperation::Insertion(Arc::clone(&input.insertion.control)),
                 accepted: false,
                 retiring: false,
                 queued: false,
@@ -316,11 +370,11 @@ impl Plugins {
         {
             self.facts_gate = None;
         }
-        if let Some(source) = self
-            .sources
-            .iter_mut()
-            .find(|s| Arc::ptr_eq(&s.operation, operation))
-        {
+        if let Some(source) = self.sources.iter_mut().find(|s| {
+            s.operation
+                .insertion()
+                .is_some_and(|current| Arc::ptr_eq(current, operation))
+        }) {
             source.accepted = accepted
                 && pending
                     .as_ref()
@@ -404,8 +458,9 @@ impl Plugins {
             }
         }
         // Refused operations retain their original binding until actual report
-        // recovery. Accepted sources stay warm for canonical Undo/Redo, bounded
-        // by this document's finite source pool, until output retirement.
+        // recovery. Latest accepted sources stay warm for canonical Undo/Redo;
+        // a restored successor retires superseded versions through Root's
+        // original graph/tail/endpoint return checks, keeping the pool bounded.
         let mut index = 0;
         // Renewal's bounded indices refer to this original record set. Leave
         // refused records in control custody until the epoch operation retires;
@@ -430,6 +485,7 @@ impl Plugins {
                 && let Ok(mut observed) = observed.try_lock()
             {
                 let source = self.sources.first();
+                let restore_refused = observed.restore_refused;
                 *observed = PreparationObservation {
                     output: control.output_identity(),
                     binding: source.map(|source| source.binding),
@@ -440,6 +496,7 @@ impl Plugins {
                     native: source.and_then(|source| {
                         control.native_source_preparation_progress(source.binding)
                     }),
+                    restore_refused,
                 };
             }
             if let Some(queued) = &self.queued {
@@ -454,31 +511,123 @@ impl Plugins {
         }
     }
     pub fn compile(
-        &self,
-        output: &mut WorkerPreparedOutput,
+        &mut self,
+        output: Option<&mut WorkerPreparedOutput>,
         input: ResidentEffectPreparation<'_>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+        cancellation: Option<&hex_session::service::RequestCancellation>,
         prepare: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<PreparedRevision>, String> {
+        if self.reopen.as_ref().is_some_and(|restore| {
+            restore.context.project_generation == input.context().project_generation
+                && (!restore.ready
+                    || restore.context != input.context()
+                    || !input.restoring_plugin_state())
+        }) {
+            return Err("vst3 state restoration is pending".into());
+        }
+        let mut output = output;
+        if input.preparing_edit() {
+            input.visit_plugin_effects(|owner, device, state| {
+                self.prepare_edit_source(
+                    output.as_deref_mut().ok_or("native output closed")?,
+                    &input,
+                    owner,
+                    device,
+                    state,
+                    desired,
+                    cancellation,
+                )
+                .map_err(bounded_error)
+            })?;
+        }
         let mut bindings = Vec::new();
         bindings
             .try_reserve_exact(self.sources.len())
             .map_err(|_| "vst3 compiler selection unavailable")?;
-        input.visit_plugin_effects(|owner, device| {
-            let source = self
-                .sources
-                .iter()
-                .find(|s| s.owner == owner && s.device == device && !s.retiring)
-                .ok_or("original vst3 source unavailable for this device")?;
-            bindings.push(source.binding);
+        let context = input.context();
+        let mut unavailable = Vec::new();
+        input.visit_plugin_effects(|owner, device, state| {
+            let source = match output
+                .as_deref_mut()
+                .and_then(|output| output.publication.control())
+            {
+                Some(control) => self.matching_edit_source(
+                    control,
+                    &input,
+                    owner,
+                    device,
+                    state,
+                    desired,
+                    cancellation,
+                )?,
+                None => None,
+            };
+            if let Some(binding) = source {
+                bindings.push(binding);
+                return Ok(());
+            }
+            // A staged document can preserve unresolved state, as can later
+            // edits retaining that same canonical device. This is never an
+            // admission path for a new unsupported same-document effect edit.
+            let mut preserved = desired.is_some_and(|source| {
+                source.context().project_generation.checked_add(1)
+                    == Some(context.project_generation)
+            });
+            if let Some(source) = desired
+                .filter(|source| source.context().project_generation == context.project_generation)
+            {
+                source.effect_preparation().visit_plugin_effects(
+                    |old_owner, old_device, old_state| {
+                        preserved |= old_owner == owner
+                            && old_device == device
+                            && old_state.processing_eq(state);
+                        preserved |= input.preparing_edit() && old_state.processing_eq(state);
+                        Ok(())
+                    },
+                )?;
+            }
+            if !preserved {
+                return Err("original vst3 source unavailable for this device".into());
+            }
+            unavailable
+                .try_reserve(1)
+                .map_err(|_| "unavailable vst3 metadata allocation refused")?;
+            unavailable.push(hex_audio::plugin_effects::UnavailableEffect {
+                owner,
+                device_id: device,
+                state,
+            });
             Ok(())
         })?;
-        if bindings.is_empty() {
+        if bindings.is_empty() && unavailable.is_empty() {
             return Ok(None);
         }
-        let control = output.publication.control().ok_or("native output closed")?;
-        Hosting::prepare_on_control(control, &bindings, prepare).map(Some)
+        if bindings.is_empty() {
+            return Hosting::prepare_unavailable_on_control(&unavailable, prepare).map(Some);
+        }
+        let control = output
+            .and_then(|output| output.publication.control())
+            .ok_or("native output closed")?;
+        loop {
+            match Hosting::prepare_on_control(control, &bindings, &unavailable, prepare) {
+                Err(error)
+                    if input.preparing_edit()
+                        && matches!(
+                            error.as_str(),
+                            "native effect preparation is busy" | "native effect selection is busy"
+                        ) =>
+                {
+                    // Root has not borrowed/called the compiler while its Work
+                    // or bank is contended by original-source reclamation.
+                    edits::check_cancel(cancellation)?;
+                    edits::poll_control(control);
+                }
+                result => return result.map(Some),
+            }
+        }
     }
 }
 

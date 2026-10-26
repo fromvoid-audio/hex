@@ -1,0 +1,165 @@
+//! Existing 32-slot FIFO, with a scalar accepted-source-intent stamp. This
+//! permits ordered native preparation to poll cancellation without consuming a
+//! later request, adding a queue or emitting an out-of-order ordinary terminal.
+use super::*;
+use std::sync::atomic::AtomicU64;
+
+pub(super) struct QueuedRequest {
+    pub request: Request,
+    pub document_intent: u64,
+}
+impl QueuedRequest {
+    pub(super) fn continuation(request: Request, intent: &AtomicU64) -> Self {
+        Self {
+            request,
+            document_intent: intent.load(Ordering::Acquire),
+        }
+    }
+}
+
+/// Read-only cancellation of control-side preparation. This is neither a
+/// canonical generation nor publication authority. Admission can win before a
+/// later source intent; callers must recheck at their actual admission hook.
+#[derive(Clone)]
+pub struct RequestCancellation {
+    shutdown: Arc<AtomicBool>,
+    document_intent: Arc<AtomicU64>,
+    expected_intent: u64,
+}
+impl RequestCancellation {
+    pub(super) fn new(
+        shutdown: Arc<AtomicBool>,
+        document_intent: Arc<AtomicU64>,
+        expected_intent: u64,
+    ) -> Self {
+        Self {
+            shutdown,
+            document_intent,
+            expected_intent,
+        }
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+            || self.document_intent.load(Ordering::Acquire) != self.expected_intent
+    }
+}
+
+/// Sole UI producer, like Service (which is not Sync). Only a successfully
+/// queued New/Open/audio restart advances cancellation intent. Full/closed sends return the
+/// original request without cancelling any admitted operation. No extra queue.
+pub(super) struct Sender {
+    channel: SyncSender<QueuedRequest>,
+    document_intent: Arc<AtomicU64>,
+    single_producer: std::marker::PhantomData<std::cell::Cell<()>>,
+}
+impl Sender {
+    pub(super) fn new(channel: SyncSender<QueuedRequest>, document_intent: Arc<AtomicU64>) -> Self {
+        Self {
+            channel,
+            document_intent,
+            single_producer: std::marker::PhantomData,
+        }
+    }
+    #[allow(clippy::result_large_err)] // Exact original request on bounded admission refusal.
+    pub(super) fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        let replaces_document = matches!(
+            request,
+            Request::NewWithAudioMode { .. }
+                | Request::Open(_)
+                | Request::OpenWith { .. }
+                | Request::OpenWithAudioMode { .. }
+                | Request::RestartAudio { .. }
+        );
+        let intent = self.document_intent.load(Ordering::Acquire);
+        let next = if replaces_document {
+            let Some(next) = intent.checked_add(1) else {
+                return Err(SubmitError::Busy(request));
+            };
+            Some(next)
+        } else {
+            None
+        };
+        match self.channel.try_send(QueuedRequest {
+            request,
+            document_intent: intent,
+        }) {
+            Ok(()) => {
+                if let Some(next) = next {
+                    // Cancellation linearizes here, after successful queue
+                    // admission and before submit returns. The worker may have
+                    // already won its own admission; that remains accepted.
+                    self.document_intent.store(next, Ordering::Release);
+                }
+                Ok(())
+            }
+            Err(TrySendError::Full(queued)) => Err(SubmitError::Full(queued.request)),
+            Err(TrySendError::Disconnected(queued)) => Err(SubmitError::Closed(queued.request)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_document_intent_cancels_earlier_work_without_reordering_fifo() {
+        let (channel, receiver) = mpsc::sync_channel(3);
+        let intent = Arc::new(AtomicU64::new(0));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let sender = Sender::new(channel, Arc::clone(&intent));
+        sender.submit(Request::Undo).unwrap();
+        let earlier = receiver.recv().unwrap();
+        let cancellation = RequestCancellation::new(
+            Arc::clone(&shutdown),
+            Arc::clone(&intent),
+            earlier.document_intent,
+        );
+        assert!(!cancellation.is_cancelled());
+        sender.submit(Request::Redo).unwrap();
+        sender
+            .submit(Request::Open(PathBuf::from("later.hex")))
+            .unwrap();
+        assert!(cancellation.is_cancelled());
+        assert!(matches!(receiver.recv().unwrap().request, Request::Redo));
+        assert!(matches!(receiver.recv().unwrap().request, Request::Open(_)));
+        sender.submit(Request::Undo).unwrap();
+        let next = receiver.recv().unwrap();
+        let cancellation =
+            RequestCancellation::new(Arc::clone(&shutdown), intent, next.document_intent);
+        assert!(!cancellation.is_cancelled());
+        sender
+            .submit(Request::RestartAudio {
+                project_generation: 0,
+                request_id: 1,
+            })
+            .unwrap();
+        assert!(cancellation.is_cancelled());
+        let next = receiver.recv().unwrap();
+        assert!(matches!(next.request, Request::RestartAudio { .. }));
+        let cancellation = RequestCancellation::new(
+            Arc::clone(&shutdown),
+            Arc::clone(&sender.document_intent),
+            sender.document_intent.load(Ordering::Acquire),
+        );
+        assert!(!cancellation.is_cancelled());
+        shutdown.store(true, Ordering::Release);
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn refused_document_requests_do_not_cancel_or_consume_the_original_request() {
+        let (channel, receiver) = mpsc::sync_channel(0);
+        let intent = Arc::new(AtomicU64::new(0));
+        let sender = Sender::new(channel, Arc::clone(&intent));
+        assert!(
+            matches!(sender.submit(Request::Open(PathBuf::from("full.hex"))), Err(SubmitError::Full(Request::Open(path))) if path == Path::new("full.hex"))
+        );
+        assert_eq!(intent.load(Ordering::Acquire), 0);
+        drop(receiver);
+        assert!(
+            matches!(sender.submit(Request::Open(PathBuf::from("closed.hex"))), Err(SubmitError::Closed(Request::Open(path))) if path == Path::new("closed.hex"))
+        );
+        assert_eq!(intent.load(Ordering::Acquire), 0);
+    }
+}

@@ -27,6 +27,8 @@ struct Inputs<'a> {
     shutdown: &'a AtomicBool,
     cancel: Option<&'a AtomicBool>,
     plugin_effect: Option<&'a PluginEffectControl>,
+    restoring_plugin_state: bool,
+    preparing_edit: bool,
     admission: sampler_export::Admission<'a>,
     current: Option<&'a Snapshot>,
     predecessor: Option<&'a Session>,
@@ -220,15 +222,23 @@ impl Inputs<'_> {
         };
         let mut invoked = false;
         let hosted = sink
-            .prepare_resident_effects(ResidentEffectPreparation { project }, &mut |effects| {
-                if invoked {
-                    return Err(hex_engine::Invalid(
-                        "host effect compiler was invoked more than once",
-                    ));
-                }
-                invoked = true;
-                prepare(Some(effects))
-            })
+            .prepare_resident_effects(
+                ResidentEffectPreparation {
+                    project,
+                    context,
+                    restoring_plugin_state: self.restoring_plugin_state,
+                    preparing_edit: self.preparing_edit,
+                },
+                &mut |effects| {
+                    if invoked {
+                        return Err(hex_engine::Invalid(
+                            "host effect compiler was invoked more than once",
+                        ));
+                    }
+                    invoked = true;
+                    prepare(Some(effects))
+                },
+            )
             .map_err(SessionError::NativeAudio)?;
         let prepared = match (hosted, invoked) {
             (Some(prepared), true) => prepared,
@@ -836,6 +846,8 @@ pub(super) fn prepare_bounce_import(
 ) -> Result<Snapshot, SessionError> {
     let inputs = Inputs {
         plugin_effect: None,
+        restoring_plugin_state: false,
+        preparing_edit: false,
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
         limits: input.limits.ok_or(SessionError::Invalid(
@@ -1075,6 +1087,8 @@ impl Session {
             |project, media, table, transforms, waveforms, stage, _| {
                 let inputs = Inputs {
                     plugin_effect: None,
+                    restoring_plugin_state: false,
+                    preparing_edit: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1101,6 +1115,8 @@ impl Session {
             |project, snapshot, stage| {
                 let inputs = Inputs {
                     plugin_effect: None,
+                    restoring_plugin_state: false,
+                    preparing_edit: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1326,6 +1342,8 @@ impl Session {
     ) -> Result<Inputs<'a>, SessionError> {
         Ok(Inputs {
             plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1356,6 +1374,8 @@ impl Session {
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
             plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
                 "resident resource reservation unavailable",
@@ -1412,6 +1432,8 @@ impl Session {
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
             plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1450,7 +1472,31 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
-        let inputs = self.resident_seek_inputs(admission, current, None)?;
+        self.restore_resident_snapshot_with_metadata(context, sink, admission, current, true)
+    }
+
+    /// Recompile only after the fresh output restored the same opaque plugin
+    /// state. This changes neither the canonical revision nor musical history.
+    pub(super) fn restore_plugin_state_snapshot(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Snapshot, SessionError> {
+        self.restore_resident_snapshot_with_metadata(context, sink, admission, current, false)
+    }
+
+    fn restore_resident_snapshot_with_metadata(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        stopped_restore: bool,
+    ) -> Result<Snapshot, SessionError> {
+        let mut inputs = self.resident_seek_inputs(admission, current, None)?;
+        inputs.restoring_plugin_state = !stopped_restore;
         let mut snapshot = inputs.prepare(
             self.project(),
             sink,
@@ -1465,7 +1511,7 @@ impl Session {
             device_preview: None,
             tuning_preview: None,
             seek_request: None,
-            stopped_restore: true,
+            stopped_restore,
             computer_keyboard_request: None,
             gain_recording_track: snapshot.prepared.gain_recording_track(),
             requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
@@ -1476,7 +1522,11 @@ impl Session {
             sink,
             admission,
             metadata,
-            ResidentPublicationPolicy::InstallFreshRuntime,
+            if stopped_restore {
+                ResidentPublicationPolicy::InstallFreshRuntime
+            } else {
+                ResidentPublicationPolicy::RestorePluginState
+            },
             selected,
             None,
         )?;
@@ -1702,6 +1752,8 @@ impl Session {
         }
         let inputs = Inputs {
             plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1793,6 +1845,8 @@ impl Session {
         };
         let inputs = Inputs {
             plugin_effect: plugin_control.as_deref(),
+            restoring_plugin_state: false,
+            preparing_edit: !matches!(&transition, Transition::PluginEffect { .. }),
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1900,7 +1954,7 @@ impl Session {
             }
             Ok(snapshot)
         };
-        match transition {
+        let result = match transition {
             Transition::Command(command)
             | Transition::PluginEffect { command, .. }
             | Transition::SectionCommand { command, .. } => self
@@ -1918,10 +1972,12 @@ impl Session {
                     self.editor.redo_prepared_transition(prepare)
                 } else {
                     self.editor.undo_prepared_transition(prepare)
-                }?;
-                Ok(result.map(|snapshot| (Created::None, snapshot)))
+                };
+                result.map(|result| result.map(|snapshot| (Created::None, snapshot)))
             }
-        }
+        };
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        result
     }
 }
 

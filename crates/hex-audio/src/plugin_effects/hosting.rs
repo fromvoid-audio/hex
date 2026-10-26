@@ -53,6 +53,15 @@ pub struct Hosting {
     limits: native::Limits,
 }
 impl Hosting {
+    /// Inspect the saved envelope's copied class/binary identity. This resolves
+    /// no file, grants no native source and never replaces opaque state.
+    pub fn saved_identity_on_control(
+        state: &NativeDeviceState,
+    ) -> Result<hex_plugin_state::Identity, String> {
+        hex_plugin_state::decode(state)
+            .map(|state| state.identity)
+            .map_err(|error| error.to_string())
+    }
     /// Listed retained helper provenance, inline host metadata and one bounded
     /// captured state payload for the pending consumer response. Inventory
     /// map-node/allocator backing remains an opaque bounded obligation as in
@@ -135,7 +144,9 @@ impl Hosting {
     pub(crate) fn from_test_build(build: InstanceBuild, limits: native::Limits) -> Self {
         Self { build, limits }
     }
-    /// Begin an explicit user-selected effect on an already configured output.
+    /// Begin an explicit user-selected effect, including restoration of its
+    /// saved identity from a user-opened project, on a configured output.
+    /// A catalog match remains copied metadata; this revalidates the files.
     /// Quantum comes from that output, never the UI. Root allocates the actual
     /// binding/cancellation for the captured owner/planned canonical device.
     #[allow(clippy::too_many_arguments)] // Complete selected source and destination.
@@ -207,15 +218,35 @@ impl Hosting {
     pub fn prepare_on_control(
         output: &PublicationControl,
         bindings: &[Binding],
+        unavailable: &[super::UnavailableEffect<'_>],
         prepare: &mut dyn FnMut(
             &AudioCandidateEffects<'_, '_>,
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<hex_engine::PreparedRevision, String> {
         output.with_native_effect_definition(bindings, |definition| {
-            AudioCandidateEffects::with_host_definitions(&[definition], prepare)
+            let definition = definition
+                .including_unavailable(unavailable)
+                .map_err(|error| error.to_string())?;
+            AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
                 .map_err(|error| error.to_string())
         })
+    }
+
+    /// Preserve validated opaque devices without claiming native processing.
+    /// The prepared graph contains identity placeholders, not foreign factories.
+    /// Callers must expose their absence through the applied graph observation.
+    pub fn prepare_unavailable_on_control(
+        unavailable: &[super::UnavailableEffect<'_>],
+        prepare: &mut dyn FnMut(
+            &AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<hex_engine::PreparedRevision, String> {
+        let definition =
+            NativeEffectDefinition::unavailable(unavailable).map_err(|error| error.to_string())?;
+        AudioCandidateEffects::with_host_definitions(&[&definition], prepare)
+            .map_err(|error| error.to_string())
     }
 }
 
