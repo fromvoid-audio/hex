@@ -1,6 +1,8 @@
 //! Arrangement-only layout state; resizing never edits the project or audio.
 //! Header overview has a separate transient height map: temporary resizing never
-//! overwrites normal custom heights. Main shares the row-height and rollback map;
+//! overwrites normal custom heights. Option-wheel changes only the hovered row
+//! through the same height map and limits; nested controls and held input retain
+//! ownership. Main shares the row-height and rollback map;
 //! its top resize edge preserves the pinned bottom. Stable track IDs survive topology changes;
 //! project replacement clears both layouts. Plain H belongs to this workspace
 //! only while the computer MIDI keyboard is disabled. Held sizing uses the shared
@@ -11,7 +13,7 @@ use super::{
 };
 use gpui::{
     Context, Div, KeyDownEvent, ListState, Modifiers, MouseButton, MouseMoveEvent, MouseUpEvent,
-    Window, canvas, div, prelude::*, px,
+    ScrollWheelEvent, Window, canvas, div, prelude::*, px,
 };
 use hex_project::TrackId;
 use std::collections::BTreeMap;
@@ -367,6 +369,79 @@ impl EditorView {
     pub(super) fn track_resize_active(&self) -> bool {
         self.track_layout.drag.is_some()
     }
+    /// Option-only wheel is local sizing; ordinary scrolling keeps its platform delta.
+    pub(super) fn row_size_wheel(event: &ScrollWheelEvent) -> bool {
+        event.modifiers.alt
+            && !event.modifiers.shift
+            && !event.modifiers.control
+            && !event.modifiers.platform
+            && !event.modifiers.function
+    }
+    /// Bubbling dispatch lets nested controls own their wheel input first. Main
+    /// shares normal/overview maps; Returns deliberately retain their fixed size.
+    pub(super) fn resize_row_wheel(
+        &mut self,
+        track: Option<TrackId>,
+        event: &ScrollWheelEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::row_size_wheel(event)
+            || !self.arrangement_view_change_available(cx)
+            || !f32::from(event.position.x).is_finite()
+            || !f32::from(event.position.y).is_finite()
+            || track.is_some_and(|id| {
+                self.state
+                    .as_ref()
+                    .is_none_or(|s| s.project.track(id).is_none())
+            })
+        {
+            return;
+        }
+        // Physical upward motion grows the row regardless of natural-scroll
+        // preference. One wheel line = 16px; pixel deltas stay continuous and
+        // each event is bounded to 32px, including accelerated trackpads.
+        let delta = f32::from(event.physical_delta().pixel_delta(px(64.)).y) * 0.25;
+        if !delta.is_finite() || delta == 0. {
+            return;
+        }
+        cx.stop_propagation();
+        let row = track.map_or(Row::Main, Row::Track);
+        let (original, maximum) = self.row_resize_geometry(row);
+        let height = (original + delta.clamp(-32., 32.)).clamp(HEADER_ONLY_HEIGHT, maximum);
+        if height == original {
+            return;
+        }
+        self.track_layout.active_heights_mut().insert(row, height);
+        self.invalidate_track_size(track);
+        cx.notify();
+    }
+    fn row_resize_geometry(&self, row: Row) -> (f32, f32) {
+        let original = if row == Row::Main {
+            // Flex may reduce Main after window resizing; its painted lane
+            // excludes the one-pixel top border, just as edge resizing does.
+            self.main_track_lane_bounds
+                .filter(|lane| {
+                    self.main_track_lane_epoch == self.drag_layout_generation
+                        && lane.height.is_finite()
+                        && lane.height > 0.
+                })
+                .map_or_else(|| self.main_track_height(), |lane| lane.height + 1.)
+        } else {
+            self.row_body_height(row)
+        };
+        let available = self
+            .arrangement_bounds
+            .filter(|body| body.height.is_finite())
+            .map_or(TRACK_ROW_HEIGHT, |body| body.height.max(TRACK_ROW_HEIGHT));
+        (
+            original,
+            if row == Row::Main {
+                available.max(original)
+            } else {
+                available
+            },
+        )
+    }
     pub(super) fn track_body_height(&self, track: TrackId) -> f32 {
         self.row_body_height(Row::Track(track))
     }
@@ -583,36 +658,10 @@ impl EditorView {
             return;
         }
         let revision = state.revision;
-        let original = track.map_or_else(
-            || self.track_header_width(),
-            |row| {
-                if row == Row::Main {
-                    // Flex may reduce the pinned row after window resizing.
-                    // Its painted lane excludes the one-pixel top border.
-                    self.main_track_lane_bounds
-                        .filter(|lane| {
-                            self.main_track_lane_epoch == self.drag_layout_generation
-                                && lane.height.is_finite()
-                                && lane.height > 0.
-                        })
-                        .map_or_else(|| self.main_track_height(), |lane| lane.height + 1.)
-                } else {
-                    self.row_body_height(row)
-                }
-            },
+        let (original, maximum) = track.map_or_else(
+            || (self.track_header_width(), self.maximum_header_width()),
+            |row| self.row_resize_geometry(row),
         );
-        let maximum = if track.is_some() {
-            let available = self
-                .arrangement_bounds
-                .map_or(TRACK_ROW_HEIGHT, |body| body.height.max(TRACK_ROW_HEIGHT));
-            if track == Some(Row::Main) {
-                available.max(original)
-            } else {
-                available
-            }
-        } else {
-            self.maximum_header_width()
-        };
         if !self.capture_track_resize(track, revision, window, cx) {
             return;
         }
