@@ -105,6 +105,9 @@ pub(super) fn editor_window(
             });
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
+                // Geometry fixtures use a fixed frame span, independent of the
+                // application's default trailing navigation allowance.
+                view.viewport = Some(super::viewport::Viewport::fit(TIMELINE_FRAMES));
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,

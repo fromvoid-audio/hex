@@ -321,7 +321,7 @@ fn empty_arrangement_fits_existing_horizon_and_restores_without_a_musical_edit(
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
-            Viewport::fit(v.state.as_ref().unwrap().timeline_frames)
+            Viewport::fit(v.normal_navigation_horizon(v.state.as_ref().unwrap().timeline_frames))
         )
     });
     visual.simulate_keystrokes("x");
@@ -416,5 +416,302 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
     editor.read_with(&visual, |v, _| {
         assert!(v.zoom_fit.midi.is_none());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+}
+
+#[gpui::test]
+fn shortening_edit_preserves_arranger_view_through_real_ack_and_repaints(cx: &mut TestAppContext) {
+    use crate::editor::loop_selection_ui_test::{click, fixture, pump};
+    let (handle, editor, audio, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (track, asset) = editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        (p.tracks()[0].id(), p.clip(audio).unwrap().asset())
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::PlaceClip {
+            track,
+            asset,
+            start: 9_000_000,
+            duration: 48_000,
+            source_offset: 0,
+            source_length: 48_000,
+            looping: false,
+        })));
+    });
+    pump(&editor, &mut visual);
+    let tail = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .iter()
+            .find(|c| c.start() == 9_000_000)
+            .unwrap()
+            .id()
+    });
+    let expected = Viewport {
+        start: 8_900_000,
+        length: 200_000,
+    };
+    editor.update(&mut visual, |v, cx| {
+        v.viewport = Some(expected);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(&mut visual, tail, false);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_clip, Some(tail));
+        assert_eq!(
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+            expected
+        );
+    });
+    visual.simulate_keystrokes("backspace");
+    pump(&editor, &mut visual);
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            assert!(
+                state.project.clip(tail).is_none(),
+                "actual delete reached canonical state"
+            );
+            assert!(
+                state.project.clip(audio).is_some(),
+                "original audio retained"
+            );
+            assert_eq!(
+                v.visible_viewport(state.timeline_frames),
+                expected,
+                "shortening must not clamp the visible anchor or zoom"
+            );
+        });
+    }
+    let after_delete =
+        editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    // Fit may deliberately leave the old tail, while Back restores the exact
+    // saved view. This explicit restoration is separate from ordinary scrolling.
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_ne!(
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+            expected
+        )
+    });
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+            expected
+        )
+    });
+    visual.simulate_keystrokes("alt-left");
+    visual.run_until_parked();
+    let panned = Viewport {
+        start: expected.start - expected.length / 2,
+        ..expected
+    };
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert_eq!(
+            v.visible_viewport(state.timeline_frames),
+            panned,
+            "retirement must not add a second navigation jump"
+        );
+        assert_eq!(
+            v.viewport_horizon(state.timeline_frames),
+            panned.end().unwrap()
+        );
+        assert_eq!(
+            v.overview_cache.borrow().as_ref().unwrap().horizon(),
+            v.viewport_horizon(state.timeline_frames),
+            "overview uses the same retired extent"
+        );
+    });
+    visual.simulate_keystrokes("alt-right");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+            panned,
+            "scrolling cannot revisit retired space"
+        )
+    });
+    for _ in 0..100 {
+        visual.simulate_keystrokes("alt-left");
+    }
+    visual.run_until_parked();
+    let origin_view = editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        let normal = v.normal_navigation_horizon(state.timeline_frames);
+        assert_eq!(v.viewport_horizon(state.timeline_frames), normal);
+        assert_eq!(
+            normal,
+            state.timeline_frames + 6 * 48_000,
+            "existing two-second buffer gains six seconds; empty minimum gains the same allowance"
+        );
+        assert!(
+            normal >= 120_000 + 8 * 48_000,
+            "eight seconds remain beyond all fixture content"
+        );
+        assert_eq!(
+            state.project.snapshot(),
+            after_delete,
+            "navigation never edits project content"
+        );
+        let visible = v.visible_viewport(state.timeline_frames);
+        assert_eq!(visible.start, 0);
+        visible
+    });
+    visual.simulate_resize(gpui::size(px(1100.0), px(740.0)));
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+            origin_view
+        )
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert!(
+            state.project.clip(tail).is_some(),
+            "undo restores far content"
+        );
+        assert!(v.viewport_horizon(state.timeline_frames) > expected.end().unwrap());
+        assert_eq!(
+            v.visible_viewport(state.timeline_frames),
+            origin_view,
+            "growth remains reachable without refitting"
+        );
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert!(state.project.clip(tail).is_none());
+        assert_eq!(v.visible_viewport(state.timeline_frames), origin_view);
+    });
+    visual.simulate_keystrokes("cmd--");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert_eq!(
+            v.visible_viewport(state.timeline_frames),
+            Viewport {
+                start: 0,
+                length: origin_view.length * 2
+            }
+        );
+        assert_eq!(
+            v.viewport_horizon(state.timeline_frames),
+            v.normal_navigation_horizon(state.timeline_frames),
+            "zoom-out retires an obsolete offscreen tail without extra movement"
+        );
+    });
+    visual.simulate_keystrokes("cmd-0");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        let normal = v.normal_navigation_horizon(state.timeline_frames);
+        assert_eq!(
+            v.viewport_horizon(state.timeline_frames),
+            normal,
+            "explicit fit retires the obsolete tail"
+        );
+        assert_eq!(
+            v.visible_viewport(state.timeline_frames),
+            Viewport::fit(normal)
+        );
+    });
+}
+
+#[gpui::test]
+fn arranger_bounds_include_unfocused_automation_and_empty_project_buffer(cx: &mut TestAppContext) {
+    use crate::editor::loop_selection_ui_test::{fixture, pump};
+    let (handle, editor, _, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let track = editor.read_with(&visual, |v, _| {
+        assert!(v.gain_lane.track.is_none());
+        v.state.as_ref().unwrap().project.tracks()[1].id()
+    });
+    let beat = BeatTime::from_quarters(100).unwrap();
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::ReplaceTrackGainEnvelope {
+            track,
+            points: vec![hex_project::GainPoint {
+                incoming_gain: None,
+                beat,
+                gain: 0.5,
+                outgoing: hex_project::GainInterpolation::Linear
+            }],
+        })))
+    });
+    pump(&editor, &mut visual);
+    visual.simulate_keystrokes("cmd-0");
+    visual.run_until_parked();
+    let before_empty = editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert!(
+            v.gain_lane.track.is_none(),
+            "lane need not be focused to keep its authored extent reachable"
+        );
+        let expected = state.project.tempo_map().beat_to_frame(beat).unwrap() + 8 * 48_000;
+        assert_eq!(v.viewport_horizon(state.timeline_frames), expected);
+        assert_eq!(
+            v.visible_viewport(state.timeline_frames),
+            Viewport::fit(expected)
+        );
+        expected
+    });
+    editor.update(&mut visual, |v, _| {
+        let tracks = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .map(|t| t.id())
+            .collect();
+        assert!(v.enqueue(Request::Edit(Command::RemoveTracks(tracks))));
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert!(state.project.tracks().is_empty());
+        assert_eq!(
+            v.visible_viewport(state.timeline_frames),
+            Viewport::fit(before_empty),
+            "even emptying the project retains the current view"
+        );
+    });
+    visual.simulate_keystrokes("cmd-0");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        let normal = 14 * 48_000; // Existing eight-second minimum plus six seconds.
+        assert_eq!(
+            state.timeline_frames,
+            8 * 48_000,
+            "canonical query/export bounds are unchanged"
+        );
+        assert_eq!(v.viewport_horizon(state.timeline_frames), normal);
+        assert_eq!(
+            v.visible_viewport(state.timeline_frames),
+            Viewport::fit(normal)
+        );
+        assert_eq!(
+            v.overview_cache.borrow().as_ref().unwrap().horizon(),
+            normal
+        );
     });
 }
