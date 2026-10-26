@@ -31,14 +31,6 @@ pub(in crate::audio_preparation) struct ChainCustody {
     construction_overlap: usize,
 }
 impl ChainCustody {
-    #[cfg(test)]
-    pub(in crate::audio_preparation) fn quote(
-        &self,
-        devices: &[hex_project::Device],
-        rate: u32,
-    ) -> Result<(usize, usize), AudioStorageError> {
-        self.quote_with_input(devices, rate, None)
-    }
     /// Quotes only this closed constructor's DATA and transient Vec overlap.
     /// No foreign provider is invoked and no source/worker claim is produced.
     pub(in crate::audio_preparation) fn quote_with_input(

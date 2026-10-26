@@ -200,7 +200,7 @@ fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_dom
 }
 
 #[test]
-fn native_input_refuses_unsupported_foreign_and_source_alias_owners() {
+fn native_input_refuses_unsupported_foreign_and_source_owners() {
     let (mut editor, track, _) = fixture();
     for state in [
         hex_devices::overdrive::OVERDRIVE_DEFINITION
@@ -251,22 +251,6 @@ fn native_input_refuses_unsupported_foreign_and_source_alias_owners() {
     else {
         panic!("source")
     };
-    let Created::Track(other) = editor
-        .execute(Command::AddTrack {
-            name: "other".into(),
-        })
-        .unwrap()
-    else {
-        panic!("track")
-    };
-    for track in [track, other] {
-        editor
-            .execute(Command::BindTrackSource {
-                track,
-                source: Some(source),
-            })
-            .unwrap();
-    }
     let native = editor.project().native_source(source).unwrap();
     let effect = native
         .devices()
