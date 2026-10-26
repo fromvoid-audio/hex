@@ -480,7 +480,7 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
 }
 
 #[gpui::test]
-fn option_wheel_accumulates_independently_clamps_and_cancels_stale_marquee(
+fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
     cx: &mut TestAppContext,
 ) {
     use gpui::{Modifiers, MouseButton};
@@ -578,9 +578,21 @@ fn option_wheel_accumulates_independently_clamps_and_cancels_stale_marquee(
     );
     editor.read_with(&visual, |v, _| assert!(v.midi_marquee.is_some()));
     wheel(&mut visual, -80.0, true);
-    editor.read_with(&visual, |v, _| assert!(v.midi_marquee.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.midi_marquee.is_some(),
+            "wheel cannot cancel held selection"
+        );
+        assert_eq!(v.piano_pitch_rows, 1, "wheel cannot zoom during capture");
+    });
+    visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    wheel(&mut visual, -80.0, true);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_marquee.is_none());
+        assert!(v.piano_pitch_rows > 1, "fresh wheel works after release");
+    });
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.2)
     });

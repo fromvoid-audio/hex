@@ -323,6 +323,18 @@ impl EditorView {
                 if width <= 0.0 || height <= 0.0 {
                     return;
                 }
+                entity.read(cx).renew_midi_marquee_pointer(
+                    false,
+                    super::midi_stroke::CanvasBounds {
+                        x: f32::from(bounds.origin.x),
+                        y: f32::from(bounds.origin.y),
+                        width,
+                        height,
+                    },
+                    clip_id,
+                    entity.entity_id(),
+                    window,
+                );
                 entity.read(cx).renew_midi_note_pointer(
                     super::midi_stroke::CanvasBounds {
                         x: f32::from(bounds.origin.x),
@@ -1119,7 +1131,7 @@ impl EditorView {
                                 view.clear_midi_time_selection();
                                 view.midi_time_selection.cancel();
                                 view.midi_marker = Some(local_beat.raw());
-                                view.midi_marquee = view
+                                if let Some(marquee) = view
                                     .midi_marquee_context(rendered_context.bounds)
                                     .and_then(|context| {
                                         super::midi_selection::Marquee::begin(
@@ -1128,7 +1140,19 @@ impl EditorView {
                                             true,
                                             &view.midi_selection,
                                         )
-                                    });
+                                    })
+                                    && view.capture_midi_marquee_pointer(
+                                        &marquee,
+                                        super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
+                                            &event_scene,
+                                        )),
+                                        window,
+                                        view_cx,
+                                    )
+                                {
+                                    view.midi_marquee = Some(marquee);
+                                    view_cx.stop_propagation();
+                                }
                             } else {
                                 view.begin_midi_grid_time_selection(
                                     rendered_context.bounds,
@@ -1200,9 +1224,6 @@ impl EditorView {
                             return;
                         }
                         mouse_move_entity.update(cx, |view, view_cx| {
-                            if view.cancel_all_midi_marquees() {
-                                view_cx.notify();
-                            }
                             let target = if hover_allowed
                                 && hitbox.is_hovered(window)
                                 && view.project_generation == generation
@@ -1233,36 +1254,6 @@ impl EditorView {
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
                         if event.pressed_button == Some(MouseButton::Middle) {
-                            return;
-                        }
-                        if let Some(mut marquee) = view.midi_marquee.take() {
-                            let last = [
-                                f32::from(event.position.x - bounds.origin.x),
-                                f32::from(event.position.y - bounds.origin.y),
-                            ];
-                            let previous = marquee.hits();
-                            let result = view
-                                .midi_marquee_context(rendered_context.bounds)
-                                .ok_or("midi marquee source changed")
-                                .and_then(|context| {
-                                    marquee.update(
-                                        context,
-                                        &view.midi_selection,
-                                        &hover_scene,
-                                        last,
-                                    )
-                                })
-                                .and_then(|_| {
-                                    view.apply_live_midi_marquee(&mut marquee, &previous)
-                                });
-                            match result {
-                                Ok(_) => view.midi_marquee = Some(marquee),
-                                Err(error) => {
-                                    view.cancel_live_midi_marquee(marquee);
-                                    view.error = Some(error.into());
-                                }
-                            }
-                            view_cx.notify();
                             return;
                         }
                         if view.midi_stroke.is_some()
@@ -1302,51 +1293,6 @@ impl EditorView {
                                 bounds.contains(&event.position),
                                 StrokeModifiers::from_platform(event.modifiers),
                             );
-                            view_cx.notify();
-                            return;
-                        }
-                        if view.project_generation != generation
-                            || view
-                                .state
-                                .as_ref()
-                                .is_none_or(|state| state.revision != revision)
-                            || view.detail_clip_id() != Some(clip_id)
-                            || (view.edit_pending()
-                                && view.midi_marquee.is_none()
-                                && !view.velocity_marquee_active())
-                        {
-                            view.midi_note_gesture = None;
-                            view.midi_group_gesture = None;
-                            view.cancel_all_midi_marquees();
-                            view_cx.notify();
-                            return;
-                        }
-                        if let Some(mut marquee) = view.midi_marquee.take() {
-                            let last = [
-                                f32::from(event.position.x - bounds.origin.x),
-                                f32::from(event.position.y - bounds.origin.y),
-                            ];
-                            let previous = marquee.hits();
-                            let result = view
-                                .midi_marquee_context(rendered_context.bounds)
-                                .ok_or("midi marquee source changed")
-                                .and_then(|context| {
-                                    marquee.update(
-                                        context,
-                                        &view.midi_selection,
-                                        &canvas_scene_events,
-                                        last,
-                                    )
-                                })
-                                .and_then(|_| {
-                                    view.apply_live_midi_marquee(&mut marquee, &previous)
-                                });
-                            // Release keeps the live membership. Only a previously
-                            // unobserved final pointer position can add an audition.
-                            if let Err(error) = result {
-                                view.cancel_live_midi_marquee(marquee);
-                                view.error = Some(error.into());
-                            }
                             view_cx.notify();
                         }
                     });
