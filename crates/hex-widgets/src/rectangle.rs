@@ -182,13 +182,16 @@ impl<K: Copy + PartialEq> RectangleCapture<K> {
 /// Display-only composition. Fractions are projected by the owner; invalid
 /// geometry is hidden instead of emitting nonfinite layout values. Children,
 /// styling, selection paint and held/released preview content remain composable.
+/// `pixel_width` is the owner's projection of the interval onto the full lane.
+/// It controls the standard one-point border, never a minimum layout width:
+/// omit that border below two points so it cannot widen the interval itself.
 /// No pointer cancellation can clear a separately supplied pending display.
-pub fn rectangle_surface(left: f32, width: f32, minimum: f32) -> Div {
+pub fn rectangle_surface(left: f32, width: f32, pixel_width: f32) -> Div {
     let valid = left.is_finite()
         && width.is_finite()
         && width > 0.0
-        && minimum.is_finite()
-        && minimum >= 0.0;
+        && pixel_width.is_finite()
+        && pixel_width >= 0.0;
     div()
         .absolute()
         .top_0()
@@ -196,7 +199,7 @@ pub fn rectangle_surface(left: f32, width: f32, minimum: f32) -> Div {
         .overflow_hidden()
         .left(relative(if valid { left } else { 0.0 }))
         .w(relative(if valid { width } else { 0.0 }))
-        .min_w(px(if valid { minimum } else { 0.0 }))
+        .when(valid && pixel_width >= 2.0, |surface| surface.border_1())
         .when(!valid, |this| this.invisible())
 }
 
@@ -251,8 +254,8 @@ pub fn rectangle_pointer<K: Copy + PartialEq>(
 
 /// Absolute pixel counterpart for a floating or cross-lane preview. It uses
 /// the same clipped rectangle composition as in-lane normalized displays.
-/// Preserve horizontal endpoints even below handle size; callers must not add
-/// layout borders wider than that interval.
+/// Preserve horizontal endpoints even below handle size, with the same
+/// room-dependent standard border as the normalized surface.
 pub fn rectangle_surface_pixels(left: f32, top: f32, width: f32, height: f32) -> Div {
     let valid = left.is_finite()
         && top.is_finite()
@@ -267,5 +270,6 @@ pub fn rectangle_surface_pixels(left: f32, top: f32, width: f32, height: f32) ->
         .top(px(if valid { top } else { 0.0 }))
         .w(px(if valid { width } else { 0.0 }))
         .h(px(if valid { height.max(3.0) } else { 0.0 }))
+        .when(valid && width >= 2.0, |surface| surface.border_1())
         .when(!valid, |this| this.invisible())
 }

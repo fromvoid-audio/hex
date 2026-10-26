@@ -1633,14 +1633,13 @@ impl EditorView {
             });
             let mut element = hex_widgets::rectangle_surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
-                (end - start) as f32 / viewport.length as f32, 0.0,
+                (end - start) as f32 / viewport.length as f32, pixel_width,
             )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))
                 .top_0()
                 .bottom_0()
                 .cursor(gpui::CursorStyle::Arrow)
-                .when(pixel_width >= 2.0, |surface| surface.border_1())
                 .border_color(rgb(border))
                 .bg(section_fill(colors.0))
                 .text_color(rgb(colors.1))

@@ -290,7 +290,7 @@ impl Render for RectangleDemo {
             }
             let part = RectanglePart::Body;
             let selected = self.selected[index];
-            let mut rect = rectangle_surface(start, end - start, 3.0)
+            let mut rect = rectangle_surface(start, end - start, width * (end - start))
                 .id(("rectangle", index))
                 .debug_selector({
                     let id = self.id.clone();
@@ -298,7 +298,6 @@ impl Render for RectangleDemo {
                 })
                 .bg(rgb(if selected { style.accent } else { style.border }))
                 .opacity(if self.enabled { 1.0 } else { 0.4 })
-                .border_1()
                 .border_color(rgb(if self.focus.is_focused(window) {
                     style.text
                 } else {
