@@ -99,9 +99,23 @@ pub fn restore_pre_binding_instruments(value: &mut Value) -> usize {
     promoted
 }
 
+/// Historical comparisons may omit only an actually empty alias inventory.
+pub fn remove_empty_aliases(value: &mut Value) {
+    for field in ["alias_sources", "alias_members"] {
+        if let Some(rows) = value.as_object_mut().unwrap().remove(field) {
+            assert_eq!(
+                rows,
+                json!([]),
+                "historical comparison cannot discard clip aliases"
+            );
+        }
+    }
+}
+
 /// Remove the schema48 cycle layer and any newer empty automation inventory
 /// when constructing a frozen pre-cycle envelope. Never discard authored data.
 pub fn remove_audio_cycles(value: &mut Value) {
+    remove_empty_aliases(value);
     if let Some(automation) = value.as_object_mut().unwrap().remove("device_automation") {
         assert_eq!(
             automation,

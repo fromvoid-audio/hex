@@ -155,7 +155,12 @@ impl ClipEdit {
             Self::Active { .. } | Self::Flavor { .. } | Self::Rename { .. } | Self::Delete
         )
     }
-    fn command(&self, project: &Project, clip: ClipId, midi: bool) -> Result<Command, Invalid> {
+    pub(crate) fn command(
+        &self,
+        project: &Project,
+        clip: ClipId,
+        midi: bool,
+    ) -> Result<Command, Invalid> {
         Ok(match self {
             Self::Active { active } => Command::SetClipActive {
                 clip,
@@ -383,7 +388,9 @@ pub(crate) fn apply(
     for (track, original) in candidate.tracks.iter_mut().zip(rows) {
         track.content = original;
     }
-    Project::from_snapshot(candidate.snapshot())?;
+    if candidate.aliases.sources.is_empty() {
+        Project::from_snapshot(candidate.snapshot())?;
+    }
     *project = candidate;
     Ok(Created::None)
 }
@@ -513,6 +520,10 @@ impl Command {
             | Self::GroupTimeRange(_)
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
+            | Self::DuplicateAliasClips(_)
+            | Self::MakeClipsUnique(_)
+            | Self::ApplyClipSettingsToAliases(_)
+            | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }

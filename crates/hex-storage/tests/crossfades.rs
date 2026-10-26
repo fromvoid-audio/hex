@@ -1,6 +1,9 @@
 //! The new overlap semantics use a fresh format; pre51 remains strictly disjoint.
 use hex_project::{Command, Created, Editor, Project, TimeRange};
 
+#[allow(dead_code)]
+mod common;
+
 fn fixture() -> (Editor, hex_project::TrackId) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Imported { track, clip, .. } = editor
@@ -60,6 +63,7 @@ fn current_crossfade_roundtrip_and_historical_disjoint_migration_are_complete() 
     // Schema51 changes only overlap admission; the retained frozen50 writer
     // has the identical field layout. This disjoint document remains valid50.
     let mut old: serde_json::Value = serde_json::from_slice(&disjoint).unwrap();
+    common::remove_empty_aliases(&mut old);
     old["version"] = 50.into();
     let bytes = serde_json::to_vec(&old).unwrap();
     let saved_bytes = bytes.clone();
@@ -80,9 +84,10 @@ fn current_crossfade_roundtrip_and_historical_disjoint_migration_are_complete() 
     let after = editor.project().snapshot();
     let encoded = hex_storage::encode(editor.project()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(value["version"], 51);
+    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
     // Relabeling cannot smuggle the newly valid overlap into an old schema.
+    common::remove_empty_aliases(&mut value);
     value["version"] = 50.into();
     assert!(
         hex_storage::decode(&serde_json::to_vec(&value).unwrap())
