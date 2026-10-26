@@ -524,3 +524,38 @@ fn all_native_abort_reasons_round_trip_without_end_clocks() {
         assert_eq!(reader.progress().durable_events, 0);
     }
 }
+
+#[test]
+fn page_reads_recheck_integrity_after_open_and_refuse_partial_output() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, stamp) = fixture();
+    let mut writer = DraftWriter::create_new(&path, &source, target, stamp).unwrap();
+    writer.append(&[event(0), event(1)]).unwrap();
+    writer
+        .finish(DraftTerminal::Finished(clock(event(2))))
+        .unwrap();
+    drop(writer);
+    let mut reader = open(&path);
+    // Simulate a noncooperating external write after the initial full-chain validation.
+    // The changed value is still well-typed; only integrity can distinguish it.
+    let offset = reader.records_start + RECORD_BYTES as u64 + 40;
+    let mut external = OpenOptions::new().write(true).open(&path).unwrap();
+    external.seek(SeekFrom::Start(offset)).unwrap();
+    external
+        .write_all(&u64::from(0.75_f32.to_bits()).to_le_bytes())
+        .unwrap();
+    external.sync_all().unwrap();
+    let damaged = fs::read(&path).unwrap();
+    let mut page = [None; 2];
+    assert!(
+        reader.read_events(0, &mut page).is_err(),
+        "a reader must not expose data changed after validation"
+    );
+    assert_eq!(page, [None; 2]);
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        damaged,
+        "read failure preserves original bytes"
+    );
+}
