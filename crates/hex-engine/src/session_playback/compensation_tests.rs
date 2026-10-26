@@ -1,6 +1,7 @@
 //! Whole requested-output transaction and exact content-origin tests.
 use super::*;
 use crate::signal_graph::tests::{fixture, prepare};
+use crate::{Audio, SineTable};
 #[test]
 fn compensation_late_failure_rolls_back_all_rings_and_node_histories() {
     let f = fixture(&[&[], &[7]], 1024);
