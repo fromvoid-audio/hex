@@ -235,7 +235,8 @@ pub(super) fn view(
                         cx.notify();
                     })),
             )
-            .child(control),
+            .child(control)
+            .children(source_view.then(|| source_navigation(view, cx))),
     );
     if !source_view {
         waveform_panel =
@@ -257,7 +258,6 @@ pub(super) fn view(
         )));
     }
     let viewport = view.audio_source_viewport();
-    waveform_panel = waveform_panel.children([source_navigation(view, cx)]);
     waveform_panel = waveform_panel.child(time_ruler(window, viewport));
     let mut canvas_region = div()
         .id("arrangement-audio-waveform")
@@ -681,7 +681,7 @@ fn source_marker(frame: u64, viewport: Viewport, id: &'static str, color: u32) -
 
 fn source_navigation(view: &EditorView, cx: &mut Context<EditorView>) -> Div {
     let mut toolbar = div()
-        .h(px(22.0))
+        .h(px(20.0))
         .flex_shrink_0()
         .flex()
         .items_center()
