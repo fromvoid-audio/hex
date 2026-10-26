@@ -342,6 +342,22 @@ fn actual_ordinary_second_stop_cannot_install_an_already_revoked_native_successo
     // Queue acceptance preceded Stop; the callback must still refuse this
     // now-revoked pair rather than install a graph that cannot process on Play.
     f.control.stop();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(status) = f.control.native_source_endpoint_status(f.binding) {
+            assert_eq!(
+                status,
+                (true, true),
+                "Stop has not yet revoked the successor before the callback"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "native source observation remained busy"
+        );
+        std::thread::yield_now();
+    }
     let mut output = [[9.0; 2]; 8];
     let mut host = [9.0_f32; 16];
     allocation_free(|| {
