@@ -44,7 +44,7 @@ enum Content {
     },
     Audio {
         asset: u64,
-        payload: AudioPayload,
+        payload: Box<AudioPayload>,
     },
     ConsoleAudio {
         asset: u64,
@@ -236,7 +236,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
                     .ok_or(StorageError::Invalid("alias audio source has no member"))?;
                 Content::Audio {
                     asset,
-                    payload: extract_audio(&value, &index, representative)?,
+                    payload: Box::new(extract_audio(&value, &index, representative)?),
                 }
             }
             AliasContentSnapshot::ConsoleAudio { asset } => Content::ConsoleAudio { asset },
