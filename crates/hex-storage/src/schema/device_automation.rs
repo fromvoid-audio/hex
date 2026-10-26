@@ -322,7 +322,7 @@ mod tests {
         );
         assert_eq!(crate::decode(&bytes).unwrap().snapshot(), snapshot);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["version"], 50);
+        assert_eq!(value["version"], crate::CURRENT_SCHEMA_VERSION);
         assert_eq!(
             value["device_automation"].as_array().unwrap().len(),
             2,

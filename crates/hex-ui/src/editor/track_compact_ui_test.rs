@@ -139,8 +139,18 @@ fn resize_all(f: &mut Fixture, delta: f32) {
     f.visual
         .simulate_mouse_down(edge, MouseButton::Left, option);
     f.visual.simulate_mouse_move(end, MouseButton::Left, option);
-    f.visual.simulate_mouse_up(end, MouseButton::Left, option);
+    // A real held repaint may cache a compact body without editing controls.
+    // Release must invalidate that admission state without a project mutation.
     f.visual.run_until_parked();
+    f.editor
+        .read_with(&f.visual, |v, _| assert!(v.track_resize_active()));
+    f.visual.simulate_mouse_up(end, MouseButton::Left, option);
+    for _ in 0..3 {
+        f.visual.run_until_parked();
+        f.editor.update(&mut f.visual, |_, cx| cx.notify());
+    }
+    f.editor
+        .read_with(&f.visual, |v, _| assert!(!v.track_resize_active()));
 }
 
 fn compact(f: &mut Fixture) {
