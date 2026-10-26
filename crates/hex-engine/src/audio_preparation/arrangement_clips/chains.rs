@@ -67,8 +67,7 @@ impl ChainCustody {
                     .migrate_state(state)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
                 let processor = if !device
-                    .automation()
-                    .iter()
+                    .reading_automation()
                     .any(|lane| lane.target.provider_parameter().is_some())
                 {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
@@ -157,16 +156,14 @@ impl ChainCustody {
             .iter()
             .map(|device| {
                 let provider = device
-                    .automation()
-                    .iter()
+                    .reading_automation()
                     .filter(|lane| !lane.target.is_host())
                     .count();
                 hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
                     provider,
-                    device.automation().len().checked_sub(provider)?,
+                    device.reading_automation().count().checked_sub(provider)?,
                     device
-                        .automation()
-                        .iter()
+                        .reading_automation()
                         .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
                 )
             })
@@ -217,16 +214,14 @@ impl ChainCustody {
             .iter()
             .map(|device| {
                 let provider = device
-                    .automation()
-                    .iter()
+                    .reading_automation()
                     .filter(|lane| !lane.target.is_host())
                     .count();
                 hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
                     provider,
-                    device.automation().len().checked_sub(provider)?,
+                    device.reading_automation().count().checked_sub(provider)?,
                     device
-                        .automation()
-                        .iter()
+                        .reading_automation()
                         .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
                 )
             })
@@ -696,6 +691,7 @@ mod tests {
                     .push(hex_project::DeviceSnapshot {
                         automation: if automated {
                             vec![hex_project::DeviceAutomation {
+                                read_selection: hex_project::AutomationReadSelection::Authored,
                                 target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
                                     if auto_pan {
                                         hex_devices::auto_pan::parameter::AMOUNT
@@ -739,6 +735,7 @@ mod tests {
                         hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
                     ] {
                         device.automation.push(hex_project::DeviceAutomation {
+                            read_selection: hex_project::AutomationReadSelection::Authored,
                             target,
                             points: vec![
                                 hex_project::AutomationPoint {

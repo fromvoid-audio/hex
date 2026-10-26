@@ -193,9 +193,7 @@ impl EditorView {
         owner: gpui::EntityId,
         window: &mut Window,
     ) {
-        if !self.marquee_pointer_visible(velocity, window)
-            || self.selected_clip.or(self.retained_detail_identity()) != Some(clip)
-        {
+        if !self.marquee_pointer_visible(velocity, window) || self.detail_clip_id() != Some(clip) {
             return;
         }
         let Some(state) = &self.state else {
