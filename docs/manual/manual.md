@@ -375,11 +375,11 @@ curve.
 
 ## clip loop resizing
 
-hover the lower part of a clip's right edge to show the loop cursor, then drag
+hover the lower part of a clip's right edge to show the circular-arrow cursor, then drag
 to repeat its source. the rest of the edge keeps ordinary trimming. audio and
 midi clips use the same gesture; no loop icon is painted inside the clip. looped
-clips have rounded bottom corners. drag the first repeat boundary to change the
-cycle while keeping the outer duration; directed clips retain only the outer
+clips have rounded bottom corners. the first repeat boundary uses left/right
+arrows; drag it to change the cycle while keeping the outer duration; directed clips retain only the outer
 repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
 
 clips and sections keep their actual timeline width when zoomed out. zoom in
