@@ -452,7 +452,7 @@ impl EditorView {
             last_tick: Instant::now(),
         });
         self.retain_clip_detail_for_time_selection();
-        self.select_lane_track(track);
+        self.select_lane_span(selection.anchor_track, track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
         true
@@ -1022,7 +1022,7 @@ impl EditorView {
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
         if !self.time_selection_project_scope {
-            self.select_lane_track(track);
+            self.select_lane_span(next.anchor_track, track);
         }
         self.selected_clip = None;
         true
