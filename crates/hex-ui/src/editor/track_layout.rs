@@ -7,7 +7,7 @@
 //! Window pointer lease; its local snapshot owns complete cancellation rollback.
 use super::{
     EditorView,
-    tracks::{TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT},
+    tracks::{DEFAULT_TRACK_HEADER_WIDTH, TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT},
 };
 use gpui::{
     Context, Div, KeyDownEvent, ListState, Modifiers, MouseButton, MouseMoveEvent, MouseUpEvent,
@@ -361,7 +361,7 @@ impl EditorView {
     pub(super) fn track_header_width(&self) -> f32 {
         self.track_layout
             .width
-            .unwrap_or(TRACK_HEADER_WIDTH)
+            .unwrap_or(DEFAULT_TRACK_HEADER_WIDTH)
             .clamp(TRACK_HEADER_WIDTH, self.maximum_header_width())
     }
     pub(super) fn track_resize_active(&self) -> bool {

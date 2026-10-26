@@ -253,13 +253,20 @@ one **command+z** undoes all cuts. without a time range, **e** splits at the edi
 cursor. main section focus keeps its section-split behavior; the audio event
 editor uses its own local selection. **command+e** is not assigned.
 
-drag the bottom edge of a track header to resize that row. hold **option** while
-resizing to give all ordinary tracks the same height. at the minimum height, rows
+the colored name area shows each ordinary track's name. click its blank area to
+select and focus the header; existing command/shift selection and **command+r**
+rename shortcuts also apply. drag the header width edge to show more of a long
+name. narrow headers truncate the label and keep its full-name tooltip.
+
+drag the bottom edge of an ordinary track header, or the top edge of pinned main,
+to resize that row. hold **option** while resizing to give visible ordinary tracks
+and main the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.
 with the computer midi keyboard off, press **h** in arrange to toggle a compact
 overview. press **h** again to restore each track's previous height. resizing in
 the overview is temporary; it does not replace normal heights. these view sizes
-last for the current editor session. return and main rows retain their own size.
+last for the current editor session. main shares the compact overview; return
+rows retain their fixed height.
 with the computer midi keyboard on, **h** continues to play its note.
 
 right-click a track header or the track area and choose **insert track** or
