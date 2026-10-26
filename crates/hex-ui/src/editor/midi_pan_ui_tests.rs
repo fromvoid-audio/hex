@@ -108,6 +108,17 @@ fn pan_mode_intercepts_drawing_and_cancelled_creation_never_commits(cx: &mut Tes
     editor.read_with(&visual, |v, _| assert!(v.midi_creation.is_some()));
     // A middle press retires an already captured edit before any movement.
     visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.midi_creation.is_none(),
+            "middle navigation retires the unleased creation"
+        );
+        assert!(
+            v.midi_pan.gesture.is_none(),
+            "no unleased pan when the original left press prevents admission"
+        );
+        assert!(!v.edit_pending());
+    });
     visual.simulate_mouse_move(
         point(roll.center().x - px(20.0), roll.center().y),
         Some(MouseButton::Middle),

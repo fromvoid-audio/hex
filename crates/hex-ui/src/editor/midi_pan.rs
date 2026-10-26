@@ -125,6 +125,13 @@ impl EditorView {
             button,
         };
         if !self.capture_piano_pan(gesture, window, cx) {
+            // A secondary middle press cannot replace Window's original left
+            // press. Still retire its unleased note edit: a later left release
+            // must not commit the creation that the navigation request cancelled.
+            // Another leased owner never dispatches this press to the canvas.
+            if button == MouseButton::Middle && self.cancel_midi_note_gesture() {
+                cx.notify();
+            }
             return false;
         }
         self.cancel_midi_note_gesture();
