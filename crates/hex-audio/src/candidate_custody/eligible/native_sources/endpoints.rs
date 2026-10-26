@@ -522,27 +522,34 @@ mod tests {
         use std::time::{Duration, Instant};
         if std::env::var_os("HEX_ROOT_GRAPH_PARAMETERS").is_none() {
             let name = std::thread::current().name().unwrap().to_owned();
-            let result = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    &name,
-                    "--ignored",
-                    "--test-threads=1",
-                    "--nocapture",
-                ])
-                .env("HEX_ROOT_GRAPH_PARAMETERS", "1")
-                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
-                .output()
-                .unwrap();
-            assert!(
-                result.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&result.stdout),
-                String::from_utf8_lossy(&result.stderr)
-            );
-            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+            for variant in ["37", "80"] {
+                let result = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        &name,
+                        "--ignored",
+                        "--test-threads=1",
+                        "--nocapture",
+                    ])
+                    .env("HEX_ROOT_GRAPH_PARAMETERS", variant)
+                    .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+            }
             return;
         }
+        let parameter_id = if std::env::var("HEX_ROOT_GRAPH_PARAMETERS").unwrap() == "80" {
+            0
+        } else {
+            7
+        };
         let root = root();
         let binding = ready(&root);
         let (identity, prepared, configuration) = {
@@ -585,7 +592,7 @@ mod tests {
             let mut frames = [[0.5, -0.25]; 8];
             let points = [ForeignParameterPoint {
                 frame: 2,
-                id: 7,
+                id: parameter_id,
                 normalized: (block + 1) as f64 / 8.0,
             }];
             let render = || {
@@ -644,7 +651,7 @@ mod tests {
                     assert_eq!(
                         values.as_slice(),
                         &[crate::plugin_worker::NativeParameterValue {
-                            id: 7,
+                            id: parameter_id,
                             normalized: (block + 1) as f64 / 8.0
                         }]
                     );
@@ -676,7 +683,7 @@ mod tests {
             &mut refused,
             &[ForeignParameterPoint {
                 frame: 0,
-                id: 7,
+                id: parameter_id,
                 normalized: 0.875,
             }],
             None,

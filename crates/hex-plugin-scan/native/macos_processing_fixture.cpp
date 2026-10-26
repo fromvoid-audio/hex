@@ -79,6 +79,14 @@ static void fault_crash(int stage) { trace(stage);std::raise(SIGSEGV);std::_Exit
 struct MainThreadTail { bool enabled=false;~MainThreadTail(){if(enabled)fault_hang(13);} };
 static void arm_main_thread_tail(){static thread_local MainThreadTail tail;tail.enabled=true;}
 const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12};
+// Original one-parameter SDK fixtures preserve the same opaque state shape.
+// Distinct variants exercise actual metadata and processing, not host guesses.
+static ParamID parameter_id(int variant) { return variant==80?0u:7u; }
+static double parameter_value(int variant,double value) {
+    if(variant==81) return std::round(value*3.0)/3.0;
+    if(variant==82) return value>=0.5?1.0:0.0;
+    return value;
+}
 class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
@@ -148,11 +156,16 @@ public:
     int32 PLUGIN_API getParameterCount() override { return control() && context?1:-1; }
     tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo& info) override {
         if (!control() || !context || index) return kInvalidArgument;
-        ++restoration.info_reads;info={};info.id=7;info.defaultNormalizedValue=0.25;
+        ++restoration.info_reads;info={};info.id=parameter_id(fault);info.defaultNormalizedValue=fault==81?1.0/3.0:(fault==82?0.0:0.25);
+        if(fault==80 || fault==81 || fault==82) info.flags=ParameterInfo::kCanAutomate;
+        if(fault==81) info.stepCount=3;
+        if(fault==82) {info.stepCount=1;info.flags|=ParameterInfo::kIsBypass;}
+        if(fault==83 || fault==84) info.flags=ParameterInfo::kIsReadOnly;
+        if(fault==84) info.flags|=ParameterInfo::kIsHidden;
         const char16_t name[]=u"gain";std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));return kResultOk;
     }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
-        if (!control() || !context || id!=7) {++observed.violations;return 0;}
+        if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
         ++restoration.value_reads;trace(19);
         if(fault==57)fault_hang(19);
         return fault==56?std::numeric_limits<double>::quiet_NaN():component_gain/4.0;
@@ -162,10 +175,10 @@ public:
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID,ParamValue value) override { return value; }
     ParamValue PLUGIN_API plainParamToNormalized(ParamID,ParamValue value) override { return value; }
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override {
-        if(!control() || !context || !handler || id!=7 || !std::isfinite(value) || value<0 || value>1)
+        if(!control() || !context || !handler || id!=parameter_id(fault) || !std::isfinite(value) || value<0 || value>1)
             return kInvalidArgument;
         if(fault==76 && observed.flushes.load()) return kResultFalse;
-        component_gain=static_cast<float>(value*4.0);
+        component_gain=static_cast<float>(parameter_value(fault,value)*4.0);
         restoration.controller_gain=bits(component_gain);trace(21);return kResultOk;
     }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
@@ -188,7 +201,11 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     pthread_t worker{};
     bool same_worker() const { return !thread_bound || pthread_equal(worker,pthread_self()); }
 public:
-    ProcessingProcessor() { ++observed.created; }
+    ProcessingProcessor() {
+        if(fault==81) gain.store(4.0f/3.0f);
+        if(fault==82) gain.store(0);
+        ++observed.created;
+    }
     ~ProcessingProcessor() {
         if (initialized || active || processing) ++observed.violations;
         if (retained_stream && fault!=16 && fault!=52) retained_stream->release();
@@ -387,7 +404,7 @@ public:
                 return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);
             int32 offset=-1;ParamValue value=-1;
-            if (!queue || queue->getParameterId()!=(fault>=37?7u:0x1234u) || queue->getPointCount()!=1 ||
+            if (!queue || queue->getParameterId()!=(fault>=37?parameter_id(fault):0x1234u) || queue->getPointCount()!=1 ||
                 queue->getPoint(0,offset,value)!=kResultOk || offset || !std::isfinite(value) || value<0 || value>1)
                 return kInvalidArgument;
             ++observed.flushes;
@@ -396,9 +413,10 @@ public:
             if(fault==74) fault_hang(24);
             if(fault==75) data.numSamples=1;
             if(fault==77) data.inputParameterChanges->addRef();
+            value=parameter_value(fault,value);
             gain=static_cast<float>(value*(fault>=37?4.0:1.0));
             if(fault>=37 && data.outputParameterChanges) {
-                int32 index=-1;const ParamID id=7;
+                int32 index=-1;const ParamID id=parameter_id(fault);
                 auto* feedback=data.outputParameterChanges->addParameterData(id,index);
                 if(!feedback || feedback->addPoint(0,value,index)!=kResultOk) return kResultFalse;
             }
@@ -419,7 +437,7 @@ public:
         if(data.inputParameterChanges) {
             if(data.inputParameterChanges->getParameterCount()!=1) return kInvalidArgument;
             auto* queue=data.inputParameterChanges->getParameterData(0);
-            if(!queue || queue->getParameterId()!=7) return kInvalidArgument;
+            if(!queue || queue->getParameterId()!=parameter_id(fault)) return kInvalidArgument;
             point_count=queue->getPointCount();
             if(point_count<1 || point_count>static_cast<int32>(points.size())) return kInvalidArgument;
             for(int32 n=0;n<point_count;++n) {
@@ -449,16 +467,17 @@ public:
                     value+=(right_point.second-left_value)*static_cast<double>(frame-left_offset)/
                         static_cast<double>(right_point.first-left_offset);
                 }
-                current_gain=value*4.0;
+                current_gain=parameter_value(fault,value)*4.0;
             }
             // Independent internal change at offset0; later host automation
             // still reaches its endpoint at the end of this actual SDK block.
             if(fault==79 && point_count && frame==0) current_gain=1.0;
+            if(fault==83 || fault==84) current_gain=2.0;
             // Read all inputs for this sample before writing any aliased output.
             const double left=mode==1?0.25:(input?(precision==kSample32?data.inputs[0].channelBuffers32[0][frame]:data.inputs[0].channelBuffers64[0][frame]):0.0);
             const double right=mode==1?0.25:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
             if (output) for (int32 channel=0;channel<outputs;++channel) {
-                double value=(channel?right:left)*scale*current_gain;
+                double value=(channel?right:left)*(fault==82?(current_gain>=2.0?1.0:scale):scale*current_gain);
 #if HEX_FIXTURE_RESIDUAL_ECHO
                 // Original three-frame FIR echo. Store the immediate sample,
                 // not the summed result: zero input has a genuinely finite tail.
@@ -483,12 +502,12 @@ public:
             residual_cursor=(residual_cursor+1)%residual.size();
 #endif
         }
-        if(point_count) {
+        if(point_count || fault==83 || fault==84) {
             gain.store(static_cast<float>(current_gain));
             if(data.outputParameterChanges && fault!=78) {
-                int32 index=-1;const ParamID id=7;
+                int32 index=-1;const ParamID id=parameter_id(fault);
                 auto* queue=data.outputParameterChanges->addParameterData(id,index);
-                if(!queue || queue->addPoint(fault==79?0:data.numSamples-1,fault==79?0.25:current_gain/4.0,index)!=kResultOk) return kResultFalse;
+                if(!queue || queue->addPoint(fault==79 || fault==83 || fault==84?0:data.numSamples-1,fault==79?0.25:current_gain/4.0,index)!=kResultOk) return kResultFalse;
             }
         }
         if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
@@ -551,7 +570,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>79) return false;next_fault=value;
+        if (value>84) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

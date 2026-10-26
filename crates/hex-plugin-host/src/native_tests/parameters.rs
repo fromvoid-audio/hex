@@ -276,3 +276,200 @@ fn actual_host_input_updates_controller_without_fabricating_optional_processor_f
         assert_eq!(case.observation().unwrap()[1], 0);
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_zero_id_stepped_and_bypass_apply_exact_offsets_and_stopped_readback() {
+    for variant in [80, 81, 82] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        let child = instance.child_id_on_control();
+        let initial = instance.ready().initial_state.clone();
+        let id = if variant == 80 { 0 } else { 7 };
+        let (first, last) = match variant {
+            80 => (0.25, 0.75),
+            81 => (0.49, 0.84),
+            _ => (0.0, 1.0),
+        };
+        let mut input = request(instance.configuration(), 0);
+        for (frame, normalized) in [(0, first), (3, first), (4, last), (7, last)] {
+            input
+                .parameters
+                .push(ParameterPoint {
+                    frame,
+                    id,
+                    normalized,
+                })
+                .unwrap();
+        }
+        let output = instance.exchange_on_worker(input).unwrap();
+        let end = if variant == 80 { 0.75 } else { 1.0 };
+        assert_eq!(
+            output.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: 7,
+                id,
+                normalized: end
+            }]
+        );
+        for (n, actual) in output.pcm[..8].iter().enumerate() {
+            let factor = match (variant, n < 4) {
+                (80, true) => 0.5,
+                (80, false) => 1.5,
+                (81, true) => 2.0 / 3.0,
+                (81, false) => 2.0,
+                (82, true) => 0.5,
+                _ => 1.0,
+            };
+            for (actual, input) in actual.iter().zip(input.pcm[n]) {
+                assert!(
+                    (f64::from(*actual) - f64::from(input) * factor).abs() < 1e-6,
+                    "variant{variant}/frame{n}"
+                );
+            }
+        }
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let mut points = Parameters::default();
+        points
+            .push(ParameterPoint {
+                frame: 0,
+                id,
+                normalized: 0.6,
+            })
+            .unwrap();
+        let (stopped, values) = stopped
+            .flush_parameters_retained_on_control(&points)
+            .unwrap();
+        let expected = match variant {
+            80 => 0.6,
+            81 => 2.0 / 3.0,
+            _ => 1.0,
+        };
+        assert_eq!(values.as_slice().len(), 1);
+        assert_eq!(values.as_slice()[0].id, id);
+        assert!((values.as_slice()[0].normalized - expected).abs() < 1e-6);
+        let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+        let state = decode(&captured).unwrap();
+        let gain = f32::from_le_bytes(state.component.unwrap()[8..12].try_into().unwrap());
+        assert!((f64::from(gain) - expected * 4.0).abs() < 1e-6);
+        assert_eq!(
+            case.restore_observation()[6],
+            i32::from_le_bytes(gain.to_le_bytes())
+        );
+        assert_eq!(stopped.child_id_on_control(), child);
+        assert_eq!(stopped.completed_blocks(), 1);
+        assert_ne!(
+            initial, captured,
+            "capture is fresh data, startup history is retained separately"
+        );
+        assert!(stopped.retire_on_control().unwrap().status.success());
+        assert_eq!(case.observation().unwrap()[1], 0);
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_readonly_and_hidden_accept_processor_updates_but_refuse_live_and_stopped_host_input() {
+    for variant in [83, 84] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        let input = request(instance.configuration(), 0);
+        let output = instance.exchange_on_worker(input).unwrap();
+        assert_eq!(&output.pcm[..8], &input.pcm[..8]);
+        assert_eq!(
+            output.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: 0,
+                id: 7,
+                normalized: 0.5
+            }]
+        );
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+        assert_eq!(
+            &decode(&captured).unwrap().component.unwrap()[8..12],
+            &2.0_f32.to_le_bytes()
+        );
+        assert_eq!(
+            case.restore_observation()[6],
+            i32::from_le_bytes(2.0_f32.to_le_bytes())
+        );
+        assert!(stopped.retire_on_control().unwrap().status.success());
+        for stopped in [false, true] {
+            let case = Case::new();
+            let mut instance = Prepared::prepare(
+                &build(),
+                source(),
+                options(),
+                PreparationCancellation::new_on_control().unwrap(),
+                case.setup_restore(variant),
+            )
+            .unwrap();
+            let initial = instance.ready().initial_state.clone();
+            let mut points = Parameters::default();
+            points
+                .push(ParameterPoint {
+                    frame: 0,
+                    id: 7,
+                    normalized: 0.75,
+                })
+                .unwrap();
+            if stopped {
+                let source = instance.quiesce_retained_on_control().unwrap();
+                let mut failure = match source.flush_parameters_retained_on_control(&points) {
+                    Err(failure) => failure,
+                    Ok(_) => panic!("read-only stopped input must refuse"),
+                };
+                assert!(matches!(failure.cause(), Error::Worker(8)));
+                let until = Instant::now() + Duration::from_secs(3);
+                loop {
+                    if let Some(PreparationDisposal::Reaped(retired)) =
+                        failure.poll_disposal_on_control().unwrap()
+                    {
+                        assert!(!retired.status.success());
+                        break;
+                    }
+                    assert!(Instant::now() < until);
+                    thread::yield_now();
+                }
+            } else {
+                let mut input = request(instance.configuration(), 0);
+                input.parameters = points;
+                assert!(matches!(
+                    instance.exchange_on_worker(input),
+                    Err(Error::Worker(8))
+                ));
+                assert!(
+                    !instance
+                        .cancel_and_reap_on_control()
+                        .unwrap()
+                        .status
+                        .success()
+                );
+            }
+            assert_eq!(
+                &decode(&initial).unwrap().component.unwrap()[8..12],
+                &1.0_f32.to_le_bytes()
+            );
+            assert_eq!(
+                case.observation().unwrap()[10],
+                0,
+                "read-only/hidden input refuses before actual DSP entry"
+            );
+        }
+    }
+}
