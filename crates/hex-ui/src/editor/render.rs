@@ -1359,12 +1359,8 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.trace(|view, _: &super::BounceInPlace, window, cx| {
-                view.bounce_arrangement_selection(true, window);
-                cx.notify();
-            }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
-                view.bounce_arrangement_selection(false, window);
+                view.bounce_arrangement_selection(window);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &LoopSelection, window, cx| {
