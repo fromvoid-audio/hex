@@ -213,7 +213,23 @@ fn note_input_loss_discards_matching_draft_without_stale_edit_or_late_up(cx: &mu
                     cx.notify();
                 }),
                 "revision" => editor.update(&mut visual, |v, cx| {
-                    v.state.as_mut().unwrap().revision += 1;
+                    let state = v.state.as_ref().unwrap();
+                    v.state = Some(Arc::new(hex_session::service::ViewState {
+                        canonical_audio_source: state.canonical_audio_source.clone(),
+                        comparison_audio: None,
+                        project: Arc::clone(&state.project),
+                        waveforms: state.waveforms.clone(),
+                        source_overviews: state.source_overviews.clone(),
+                        audio_clip_waveforms: state.audio_clip_waveforms.clone(),
+                        midi_preview: Arc::clone(&state.midi_preview),
+                        gain_preview: state.gain_preview.clone(),
+                        timeline_frames: state.timeline_frames,
+                        can_undo: state.can_undo,
+                        can_redo: state.can_redo,
+                        revision: state.revision + 1,
+                        unsaved: state.unsaved,
+                        document_path: state.document_path.clone(),
+                    }));
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
