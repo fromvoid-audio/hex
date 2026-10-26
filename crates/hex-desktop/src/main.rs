@@ -145,6 +145,19 @@ mod diagnostics_flag_tests {
     use super::*;
     use hex_audio::audio_diagnostics::AudioDiagnosticsFlags as Flags;
     #[test]
+    fn ordinary_development_startup_enables_failure_and_action_diagnostics() {
+        for args in [vec![], vec!["--demo"]] {
+            let (flags, actions) =
+                diagnostic_options(args.into_iter().map(std::ffi::OsString::from)).unwrap();
+            assert!(actions);
+            assert!(flags.contains(Flags::PUBLICATION));
+            assert!(flags.contains(Flags::TRANSPORT));
+            assert!(flags.contains(Flags::READINESS));
+            assert!(!flags.contains(Flags::TIMING));
+        }
+    }
+
+    #[test]
     fn tracing_is_opt_in_and_categories_or_explicit_off_survive_other_flags() {
         let parse = |args: &[&str]| {
             diagnostic_options(args.iter().map(|arg| std::ffi::OsString::from(*arg)))

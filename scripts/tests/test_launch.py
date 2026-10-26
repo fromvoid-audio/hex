@@ -310,6 +310,19 @@ class LaunchTests(unittest.TestCase):
                 launch.launch_installed(self.root, diagnostics=True)
         self.assertFalse(any(call[0] == "open" for call in self.calls))
 
+    def test_diagnostics_opt_out_and_all_preserve_mode_through_launcher(self):
+        app = self.root.resolve() / "artifacts/hex.app"
+        for mode in ("off", "all"):
+            with self.subTest(mode=mode), patch.object(launch.sys, "platform", "darwin"), \
+                    patch.object(launch, "command", side_effect=self.command), \
+                    patch.object(launch.delivery, "verify", return_value={"source": "c" * 40, "profile": "release", "diagnostic_capabilities": ["actions-v1", "audio-v1"]}), \
+                    patch.object(launch.delivery, "assert_inactive"):
+                launch.launch_installed(self.root, diagnostics=mode)
+                self.assertEqual(self.calls[-1], ("open", "-a", str(app), "--args", f"--diagnostics={mode}"))
+            with patch.object(launch, "launch_installed") as opened:
+                self.assertEqual(launch.main(["--open", f"--diagnostics={mode}"]), 0)
+                opened.assert_called_once_with(diagnostics=mode)
+
     def test_diagnostics_refuses_older_receipt_before_opening_app(self):
         with patch.object(launch.sys, "platform", "darwin"), \
                 patch.object(launch, "command", side_effect=self.command), \
