@@ -135,12 +135,32 @@ fn enter(visual: &mut VisualTestContext, value: &str) {
 }
 #[gpui::test]
 fn pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen(cx: &mut TestAppContext) {
-    use super::super::super::trim::resize_release_tests::{fixture_at_rate, pump};
+    use super::super::super::clip_drag_ui_test::{pump_move as pump, upper_rail_owned_fixture};
     use hex_session::service::Request;
     cx.update(hex_widgets::bind_numeric_control_keys);
-    let (_files, handle, editor, clip) = fixture_at_rate(cx, 8000);
+    let (environment, handle, editor) = upper_rail_owned_fixture(cx);
+    let clip = editor.read_with(cx, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find_map(|t| t.clips().first().map(|c| c.id()))
+            .unwrap()
+    });
     editor.update(cx, |v, cx| {
         v.clip_view_open = true;
+        v.selected_clip = Some(clip);
+        v.selected_track = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|t| t.clips().iter().any(|c| c.id() == clip))
+            .map(|t| t.id());
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -207,7 +227,7 @@ fn pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen(cx: &m
     });
     enter(&mut visual, "-123 ct");
     pump(&editor, &mut visual);
-    let save = editor.read_with(cx, |v, _| v.browser.directory.join("pitch-knob.hex"));
+    let save = environment.root().join("pitch-knob.hex");
     editor.update(cx, |v, _| {
         assert!(v.enqueue(Request::SaveNew(save.clone())))
     });
@@ -218,19 +238,27 @@ fn pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen(cx: &m
     pump(&editor, &mut visual);
     editor.update(cx, |v, _| assert!(v.enqueue(Request::Open(save))));
     pump(&editor, &mut visual);
-    let (track, asset) = editor.read_with(cx, |v, _| {
+    let (track, asset, sample_rate) = editor.read_with(cx, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
         assert_eq!(pitch(p, clip), -123);
-        (p.tracks()[0].id(), p.clip(clip).unwrap().asset())
+        (
+            p.tracks()
+                .iter()
+                .find(|t| t.clips().iter().any(|c| c.id() == clip))
+                .unwrap()
+                .id(),
+            p.clip(clip).unwrap().asset(),
+            u64::from(p.sample_rate()),
+        )
     });
     editor.update(cx, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::PlaceClip {
             track,
             asset,
-            start: 48_000,
-            duration: 8000,
+            start: sample_rate * 4,
+            duration: sample_rate,
             source_offset: 0,
-            source_length: 8000,
+            source_length: sample_rate,
             looping: false
         })))
     });
@@ -252,6 +280,9 @@ fn pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen(cx: &m
     pump(&editor, &mut visual);
     editor.update(cx, |v, cx| {
         v.clip_view_open = true;
+        v.viewport = Some(super::super::super::viewport::Viewport::fit(
+            v.state.as_ref().unwrap().timeline_frames,
+        ));
         cx.notify();
     });
     visual.run_until_parked();
