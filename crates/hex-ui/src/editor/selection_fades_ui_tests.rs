@@ -231,3 +231,118 @@ fn cmd_f_respects_focused_context_and_explicit_search_intent(cx: &mut TestAppCon
         }
     }
 }
+
+#[gpui::test]
+fn crossfade_controls_remain_editable_above_overlapping_clip_bodies(cx: &mut TestAppContext) {
+    let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    let (track, left) = editor.read_with(&visual, |v, _| {
+        let track = &v.state.as_ref().unwrap().project.tracks()[0];
+        (track.id(), track.clips()[0].id())
+    });
+    for command in [
+        Command::SetClipLooping {
+            clip: left,
+            looping: true,
+        },
+        Command::CopyClipTo {
+            clip: left,
+            track,
+            start: 96_000,
+        },
+        Command::CreateArrangementFades {
+            range: hex_project::TimeRange::new(vec![track], 88_000, 104_000).unwrap(),
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(hex_session::service::Request::Edit(command)));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| assert!(v.error.is_none(), "{:?}", v.error));
+    }
+    let accepted = editor.update(&mut visual, |v, cx| {
+        v.viewport = Some(Viewport {
+            start: 0,
+            length: 192_000,
+        });
+        v.snap_grid = SnapGrid::Off;
+        v.selected_clip = Some(left);
+        cx.notify();
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.read(cx).focus.focus(window);
+    });
+    visual.run_until_parked();
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("f").unwrap(),
+        is_held: false,
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(format!("fade-out-curve-{}", left.value()).into_boxed_str());
+    let at = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.fade_curve_active(left),
+            "the selected outgoing curve must receive input above the incoming clip"
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("f").unwrap(),
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted);
+    });
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("f").unwrap(),
+        is_held: false,
+    });
+    visual.run_until_parked();
+    let at = visual.debug_bounds(selector).unwrap().center();
+    let to = point(at.x, at.y + px(8.0));
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("f").unwrap(),
+    });
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                v.fade_curve_active(left),
+                "pending curve retains its foreground owner"
+            );
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted);
+        });
+        assert!(visual.debug_bounds(selector).is_some());
+        editor.update(&mut visual, |_, cx| cx.notify());
+    }
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert_ne!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(left)
+                .unwrap()
+                .fade()
+                .out_curve(),
+            0
+        );
+        assert!(!v.fade_curve_active(left));
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted);
+    });
+}

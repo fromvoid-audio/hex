@@ -331,6 +331,8 @@ one undo restores the whole command, including both crossfade clips. source file
 remain intact. a crossfade permits at most two overlapping audio voices, with
 opposing fades covering their intersection. removing a required fade while the
 clips still overlap is refused; undo the creation or separate the clips first.
+crossfaded clips can be split or duplicated together. grouping overlapping clips
+into a source-event container is currently unsupported.
 
 outside a focused audio time-selection context, **command+f** keeps browser search.
 plain **f** keeps its momentary fade-handle behavior.

@@ -461,6 +461,18 @@ fn current_model_still_refuses_unfaded_and_third_voice_overlaps() {
         })
         .unwrap();
     let accepted = editor.project().snapshot();
+    let clips = editor.project().tracks()[0]
+        .clips()
+        .iter()
+        .map(|clip| clip.id())
+        .collect();
+    let error = editor.execute(Command::GroupClips(clips)).unwrap_err();
+    assert!(
+        error
+            .0
+            .contains("grouping overlapping audio crossfades is unsupported")
+    );
+    assert_eq!(editor.project().snapshot(), accepted);
     let mut unfaded = editor.project().clone();
     let duration = unfaded.clip(left).unwrap().duration();
     unfaded.clip_mut(left).unwrap().fade = ClipFade::neutral(duration).unwrap();

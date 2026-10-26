@@ -242,6 +242,25 @@ fn audio(
     if duration > crate::MAX_AUDIO_DOMAIN_FRAMES {
         return Err(Invalid("grouped audio exceeds bounded preparation length"));
     }
+    // Retained source events still have disjoint, replacement semantics.
+    // Top-level crossfades must not be silently flattened into that program.
+    let mut previous_end = start;
+    for clip in &clips {
+        let first = clip.start().max(start);
+        let last = clip
+            .start()
+            .checked_add(clip.duration())
+            .ok_or(Invalid("grouped audio end overflow"))?
+            .min(end);
+        if first < last {
+            if first < previous_end {
+                return Err(Invalid(
+                    "grouping overlapping audio crossfades is unsupported; keep the clips separate",
+                ));
+            }
+            previous_end = last;
+        }
+    }
     if clips.iter().any(|c| c.active() != first.active()) {
         return Err(Invalid("grouped clips must have the same activation state"));
     }
