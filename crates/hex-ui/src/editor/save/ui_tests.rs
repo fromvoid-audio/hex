@@ -136,6 +136,13 @@ fn fixture(
             Some(serde_json::json!([]))
         );
     }
+    // Schema53 host automation must be empty before comparing this old envelope.
+    assert_eq!(
+        old.get("host_automation"),
+        Some(&serde_json::json!([])),
+        "historical fixture cannot discard host automation"
+    );
+    old.as_object_mut().unwrap().remove("host_automation");
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();
