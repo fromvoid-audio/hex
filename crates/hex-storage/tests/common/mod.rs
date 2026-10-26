@@ -117,7 +117,12 @@ pub fn remove_empty_host_automation(value: &mut Value) {
     // A historical projection may erase only the actually equivalent authored
     // selection. Base would change playback and must never be discarded.
     for inventory in ["device_automation", "host_automation"] {
-        for row in value[inventory].as_array_mut().unwrap() {
+        // Some historical comparisons have already asserted and removed the
+        // empty provider inventory before removing the newer host layer.
+        let Some(rows) = value.get_mut(inventory) else {
+            continue;
+        };
+        for row in rows.as_array_mut().unwrap() {
             assert_eq!(
                 row.as_object_mut().unwrap().remove("read_selection"),
                 Some(json!("authored")),
