@@ -175,11 +175,9 @@ mod tests {
         (editor, audio_track, midi_track)
     }
 
-    fn intervals(
-        project: &Project,
-        audio: TrackId,
-        midi: TrackId,
-    ) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
+    type Intervals = Vec<(u64, u64)>;
+
+    fn intervals(project: &Project, audio: TrackId, midi: TrackId) -> (Intervals, Intervals) {
         let audio = project
             .track(audio)
             .unwrap()
