@@ -1135,7 +1135,7 @@ pub struct Callback {
     processor_audition_lease: Option<processor_audition::ProcessorAuditionTarget>,
     processor_audition_rejected_epoch: u64,
     gain_recording: crate::gain_recording::Callback,
-    native_parameter_input: crate::native_parameter_input::Callback,
+    native_parameter_input: Box<crate::native_parameter_input::Callback>,
     midi_recording: crate::midi_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stages: SpectrumStages,

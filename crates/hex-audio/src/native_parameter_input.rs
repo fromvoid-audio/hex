@@ -100,7 +100,10 @@ pub(crate) struct Callback {
     last_terminated_gesture: u64,
     pub(crate) receipt_fault: bool,
 }
-pub(crate) fn channel() -> (Control, Callback) {
+/// Allocate the entire native endpoint on control. Its fixed pending receipts
+/// must not inflate every outer prepared-callback constructor/move stack frame.
+/// The existing prepared callback retains and retires this Box on control.
+pub(crate) fn channel() -> (Control, Box<Callback>) {
     let (commands, incoming) = RingBuffer::new(CAPACITY);
     let (returning, receipts) = RingBuffer::new(CAPACITY);
     (
@@ -114,7 +117,7 @@ pub(crate) fn channel() -> (Control, Callback) {
             finishing: None,
             status: None,
         },
-        Callback {
+        Box::new(Callback {
             commands: incoming,
             receipts: returning,
             owner: None,
@@ -123,13 +126,14 @@ pub(crate) fn channel() -> (Control, Callback) {
             pending: Pending::default(),
             last_terminated_gesture: 0,
             receipt_fault: false,
-        },
+        }),
     )
 }
 pub(crate) fn constructor_storage_quote() -> Option<usize> {
     use crate::native_callback_owner::ChannelStorage;
     ChannelStorage::ring_bytes::<Command>(CAPACITY)?
-        .checked_add(ChannelStorage::ring_bytes::<Receipt>(CAPACITY)?)
+        .checked_add(ChannelStorage::ring_bytes::<Receipt>(CAPACITY)?)?
+        .checked_add(std::mem::size_of::<Callback>())
 }
 impl Control {
     pub(crate) fn bind_status(&mut self, status: Arc<Status>) {
@@ -289,7 +293,14 @@ impl Callback {
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
         use crate::native_callback_owner::ChannelStorage;
         ChannelStorage::ring(self.commands.buffer())?
-            .plus(ChannelStorage::ring(self.receipts.buffer())?)
+            .plus(ChannelStorage::ring(self.receipts.buffer())?)?
+            .plus(ChannelStorage {
+                // Exact private channel factory Box backing. The enclosing
+                // prepared owner separately counts its one Box pointer.
+                data_bytes: std::mem::size_of_val(self),
+                shared_groups: 0,
+                shared_handles: 0,
+            })
     }
     fn terminated(&self, target: Target) -> bool {
         target.gesture_serial <= self.last_terminated_gesture
@@ -440,5 +451,38 @@ impl Callback {
             self.last_terminated_gesture = self.last_terminated_gesture.max(target.gesture_serial);
             self.emit(Receipt::Aborted { target, reason });
         }
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    #[test]
+    fn native_channel_quote_accounts_for_actual_boxed_callback_and_ring_backing() {
+        let (_control, callback) = channel();
+        let actual = callback.constructor_channel_storage().unwrap();
+        let rings = crate::native_callback_owner::ChannelStorage::ring_bytes::<Command>(CAPACITY)
+            .unwrap()
+            .checked_add(
+                crate::native_callback_owner::ChannelStorage::ring_bytes::<Receipt>(CAPACITY)
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(actual.data_bytes, constructor_storage_quote().unwrap());
+        assert_eq!(
+            actual.data_bytes - rings,
+            std::mem::size_of_val(callback.as_ref()),
+            "exclusive Box pointee is counted once in addition to both real rings"
+        );
+        assert_eq!((actual.shared_groups, actual.shared_handles), (2, 4));
+        println!(
+            "native callback={} pending={} command={} receipt={} rings={} total={}",
+            std::mem::size_of::<Callback>(),
+            std::mem::size_of::<Pending<Receipt>>(),
+            std::mem::size_of::<Command>(),
+            std::mem::size_of::<Receipt>(),
+            rings,
+            actual.data_bytes
+        );
     }
 }
