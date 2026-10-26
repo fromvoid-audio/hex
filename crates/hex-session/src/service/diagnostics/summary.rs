@@ -207,6 +207,22 @@ pub(super) fn created(value: &hex_project::Created) -> Description {
 
 pub(super) fn command(value: &Command) -> Description {
     match value {
+        Command::DuplicateAliasClips(value0) => {
+            describe!("duplicate_alias_clips"; ["value0_count" => value0.len()]; omitted="")
+        }
+        Command::MakeClipsUnique(value0) => {
+            describe!("make_clips_unique"; ["value0_count" => value0.len()]; omitted="")
+        }
+        Command::ApplyClipSettingsToAliases(value0) => {
+            describe!("apply_clip_settings_to_aliases"; ["value0" => value0.value()]; omitted="")
+        }
+        Command::DuplicateSessionCell {
+            track,
+            scene,
+            alias,
+        } => {
+            describe!("duplicate_session_cell"; ["track" => track.value(), "scene" => scene.value(), "alias" => alias]; omitted="")
+        }
         Command::CreateNativeSource {
             name,
             devices,
@@ -1126,6 +1142,22 @@ pub(super) fn request(value: &Request) -> Description {
             clips,
         } => {
             describe!("duplicate_clips"; ["project_generation" => project_generation, "revision" => revision, "clips_count" => clips.len()]; omitted="")
+        }
+        Request::DuplicateAliasClips {
+            project_generation,
+            revision,
+            clips,
+        } => {
+            describe!("duplicate_alias_clips"; ["project_generation" => project_generation, "revision" => revision, "clips_count" => clips.len()]; omitted="")
+        }
+        Request::DuplicateSessionCell {
+            project_generation,
+            revision,
+            track,
+            scene,
+            alias,
+        } => {
+            describe!("duplicate_session_cell"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "scene" => scene.value(), "alias" => alias]; omitted="")
         }
         Request::GroupClips {
             project_generation,

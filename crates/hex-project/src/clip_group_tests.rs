@@ -1420,13 +1420,15 @@ fn group_bounds_occurrence_enumeration_separately_from_tiny_retained_tail() {
             .find(|c| c.id() == id)
             .unwrap();
         victim.source = std::sync::Arc::new(crate::MidiSource {
+            content: std::sync::Arc::new(crate::MidiContent {
+                source_length: length,
+                notes: vec![note],
+            }),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-            source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: true,
-            notes: vec![note],
         });
         assert!(crate::midi::overwrite_occurrence_count(victim).unwrap() > MAX_NOTES);
         assert_eq!(Project::from_snapshot(p.snapshot()).unwrap(), p);
