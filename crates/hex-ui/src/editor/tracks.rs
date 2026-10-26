@@ -2193,9 +2193,9 @@ impl EditorView {
                     looping,
                 );
                 if raise_fade {
-                    foreground = foreground.child(layer);
+                    foreground = foreground.children([layer]);
                 } else {
-                    content = content.child(layer);
+                    content = content.children([layer]);
                 }
             }
         }
@@ -2308,7 +2308,7 @@ impl EditorView {
                         .right(px(border))
                         .top(px(border))
                         .bottom(px(border))
-                        .child(foreground),
+                        .children([foreground]),
                 )
         });
         (content, foreground)

@@ -1,6 +1,6 @@
 //! Schema51 admits only model-validated, two-voice Arrangement audio overlaps
 //! covered by opposing authored fade ramps. Its fields are exactly schema50's
-//! receiver/cycle layout; older readers reject that overlap semantics. Keep the
+//! device-automation inventory and receiver/cycle layout; older readers reject that overlap semantics. Keep the
 //! frozen schema50 codec and explicitly enforce its disjoint occupancy rule on
 //! every older import. No overlap is repaired and no original bytes are written.
 use crate::{Project, StorageError};
