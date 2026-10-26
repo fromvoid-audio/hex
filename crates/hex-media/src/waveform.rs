@@ -77,6 +77,36 @@ impl Waveform {
         })
     }
 
+    /// Exact resident-PCM extrema for a caller-bounded range. Returns `None`
+    /// when PCM is not retained or the range exceeds the caller's work limit.
+    pub fn exact_peaks_for_frames(
+        &self,
+        start: usize,
+        end: usize,
+        max_frames: usize,
+    ) -> Option<[Peak; 2]> {
+        let start = start.min(self.source_frames);
+        let end = end.min(self.source_frames);
+        if start >= end || end - start > max_frames {
+            return None;
+        }
+        let frames = self.samples.as_ref()?.frames().get(start..end)?;
+        let mut peaks = frames.first()?.map(|sample| Peak {
+            min: sample,
+            max: sample,
+        });
+        for frame in &frames[1..] {
+            merge(
+                &mut peaks,
+                frame.map(|sample| Peak {
+                    min: sample,
+                    max: sample,
+                }),
+            );
+        }
+        Some(peaks)
+    }
+
     /// Signed channel extrema for a half-open source range, with no allocation.
     /// Deep zoom reads at most 64 shared PCM frames; wider queries use cached
     /// pairwise extrema and conservatively include intersecting boundary bins.
@@ -200,6 +230,66 @@ pub fn summarize_peaks(audio: &Audio, requested_bins: usize) -> Result<Waveform,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_exact_peaks_respect_residency_limits_and_ranges() {
+        let mut frames = vec![[0.0, 0.0]; 1_000];
+        frames[300] = [0.75, -0.5];
+        let audio = Audio::new(48_000, frames).unwrap();
+        let resident = summarize(&audio, 1).unwrap();
+        let peak_only = summarize_peaks(&audio, 1).unwrap();
+        let zero = [Peak { min: 0.0, max: 0.0 }; 2];
+        assert_eq!(resident.exact_peaks_for_frames(200, 300, 100), Some(zero));
+        assert_eq!(resident.exact_peaks_for_frames(200, 301, 100), None);
+        assert_eq!(
+            resident.exact_peaks_for_frames(300, 301, 1).unwrap()[0].max,
+            0.75
+        );
+        assert_eq!(
+            resident.exact_peaks_for_frames(900, usize::MAX, 100),
+            Some(zero)
+        );
+        assert_eq!(resident.exact_peaks_for_frames(1_000, 1_001, 100), None);
+        assert_eq!(peak_only.exact_peaks_for_frames(200, 300, 100), None);
+    }
+
+    #[test]
+    #[ignore = "manual optimized waveform query comparison"]
+    fn event_detail_query_profile() {
+        use std::{hint::black_box, time::Instant};
+        let frames: Vec<_> = (0..2_048_000)
+            .map(|i| {
+                let v = ((i % 257) as f32 / 128.0) - 1.0;
+                [v, -v]
+            })
+            .collect();
+        let audio = Audio::new(48_000, frames).unwrap();
+        let waveform = summarize(&audio, 1_024).unwrap();
+        let run = |exact: bool| {
+            let start = Instant::now();
+            for _ in 0..50 {
+                for column in 0..2_000 {
+                    let left = column * 1_024;
+                    let right = left + 1_024;
+                    let peaks = if exact {
+                        waveform.exact_peaks_for_frames(left, right, 2_097_152)
+                    } else {
+                        waveform.peaks_for_frames(left, right)
+                    };
+                    black_box(peaks);
+                }
+            }
+            start.elapsed()
+        };
+        // Warm both paths; each pass queries 2,048,000 frames.
+        black_box(run(false));
+        black_box(run(true));
+        println!(
+            "summary={:?} exact={:?} passes=50 frames_per_pass=2048000 columns=2000",
+            run(false),
+            run(true)
+        );
+    }
     #[test]
     fn nondivisible_source_keeps_every_transient_and_stereo_extrema() {
         let audio = Audio::new(

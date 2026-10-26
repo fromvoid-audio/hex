@@ -329,6 +329,7 @@ pub(super) fn view(
                 viewport.start,
                 end,
                 window.gain,
+                false,
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
             );
             canvas_region = canvas_region.child(
