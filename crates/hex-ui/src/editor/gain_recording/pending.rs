@@ -35,11 +35,11 @@ impl SealedTake {
     }
 }
 impl Recorder {
-    pub(super) fn has_sealed_take(&self) -> bool {
+    pub(in crate::editor) fn has_sealed_take(&self) -> bool {
         self.sealed.is_some()
     }
     /// Lifecycle loss can retire capture/bindings, never a sealed delivered take.
-    pub(super) fn audio_lost(&mut self) {
+    pub(in crate::editor) fn audio_lost(&mut self) {
         if self.sealed.is_some() {
             self.target = None;
             self.pending_gain = None;
@@ -199,13 +199,13 @@ impl EditorView {
             self.status = "gain take retained · retry or discard".into();
         }
     }
-    pub(super) fn pending_gain_take_matches(&self, request: &Request) -> bool {
+    pub(in crate::editor) fn pending_gain_take_matches(&self, request: &Request) -> bool {
         self.gain_recorder
             .sealed
             .as_ref()
             .is_some_and(|take| take.matches(request))
     }
-    pub(super) fn gain_take_submitted(&mut self) {
+    pub(in crate::editor) fn gain_take_submitted(&mut self) {
         if let Some(receipt) = self
             .gain_recorder
             .sealed
@@ -215,7 +215,7 @@ impl EditorView {
             receipt.submitted(self.worker_requests_pending);
         }
     }
-    pub(super) fn gain_take_not_submitted(&mut self, request: &Request) {
+    pub(in crate::editor) fn gain_take_not_submitted(&mut self, request: &Request) {
         if self.pending_gain_take_matches(request) {
             if let Some(take) = self.gain_recorder.sealed.as_mut() {
                 take.pending = None;
@@ -224,7 +224,7 @@ impl EditorView {
             self.status = "gain take retained · retry or discard".into();
         }
     }
-    pub(super) fn gain_take_service_disconnected(&mut self) {
+    pub(in crate::editor) fn gain_take_service_disconnected(&mut self) {
         if let Some(take) = self.gain_recorder.sealed.as_mut() {
             if let Some(receipt) = take.pending.take() {
                 take.outcome_unknown = !receipt.is_queued();
@@ -234,7 +234,7 @@ impl EditorView {
             self.status = "project worker stopped · gain take retained".into();
         }
     }
-    pub(super) fn gain_take_request_complete(&mut self, event: &Event) {
+    pub(in crate::editor) fn gain_take_request_complete(&mut self, event: &Event) {
         let Some(take) = self.gain_recorder.sealed.as_mut() else {
             return;
         };
@@ -271,7 +271,7 @@ impl EditorView {
             self.status = "gain take retained · retry or discard".into();
         }
     }
-    pub(super) fn gain_take_state_installed(&mut self) {
+    pub(in crate::editor) fn gain_take_state_installed(&mut self) {
         let committed = self.gain_recorder.sealed.as_ref().is_some_and(|take| {
             self.project_generation == take.target.project_generation
                 && take

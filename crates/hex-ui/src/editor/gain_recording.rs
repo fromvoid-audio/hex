@@ -409,9 +409,12 @@ impl EditorView {
 }
 
 /// Recovery stays visible even when the recorded track/source was replaced.
-pub(super) fn retained_controls(view: &mut EditorView, cx: &mut Context<EditorView>) -> Div {
+pub(super) fn retained_controls(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+) -> gpui::AnyElement {
     if !view.gain_recorder.has_sealed_take() {
-        return div();
+        return div().into_any_element();
     }
     let retry_available = view.gain_take_retry_available();
     let waiting = view
@@ -436,7 +439,7 @@ pub(super) fn retained_controls(view: &mut EditorView, cx: &mut Context<EditorVi
                 } else {
                     "retry unavailable · keep or explicitly discard the retained gain take"
                 },
-                "gain-take-retry",
+                ("gain-take-retry", 0),
             )
             .opacity(if retry_available { 1.0 } else { 0.4 })
             .on_click(cx.listener(|view, _, _, cx| {
@@ -448,7 +451,7 @@ pub(super) fn retained_controls(view: &mut EditorView, cx: &mut Context<EditorVi
             super::waveform::button(
                 "×",
                 "explicitly discard retained gain take · unavailable while applying",
-                "gain-take-discard",
+                ("gain-take-discard", 0),
             )
             .opacity(if waiting { 0.4 } else { 1.0 })
             .on_click(cx.listener(|view, _, _, cx| {
@@ -456,6 +459,7 @@ pub(super) fn retained_controls(view: &mut EditorView, cx: &mut Context<EditorVi
                 cx.notify();
             })),
         )
+        .into_any_element()
 }
 
 pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<EditorView>) -> Div {
