@@ -151,11 +151,11 @@ fn option_wheel_main_and_overview_share_existing_heights_and_held_resize_exclude
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, tracks) = fixture(cx, 2);
-    let main = visual.debug_bounds("main-track-header").unwrap();
+    let main = visual.debug_bounds("pinned-main-track").unwrap();
     wheel(&mut visual, main.center(), line(1.), option());
     assert_eq!(
         visual
-            .debug_bounds("main-track-header")
+            .debug_bounds("pinned-main-track")
             .unwrap()
             .size
             .height,
@@ -183,7 +183,7 @@ fn option_wheel_main_and_overview_share_existing_heights_and_held_resize_exclude
     );
     assert_eq!(
         visual
-            .debug_bounds("main-track-header")
+            .debug_bounds("pinned-main-track")
             .unwrap()
             .size
             .height,
