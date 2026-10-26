@@ -549,6 +549,7 @@ impl RevisionAssembly {
             current_sampler_scope: _,
             extraction_attempted: _,
             extracted: _,
+            native_parameter_input: _,
             #[cfg(test)]
                 fail_after: _,
             #[cfg(test)]
