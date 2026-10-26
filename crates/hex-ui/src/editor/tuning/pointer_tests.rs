@@ -146,6 +146,8 @@ fn pitch_capture_loss_cancels_without_late_commit_or_new_source_edit(cx: &mut Te
             "button" => visual.simulate_mouse_move(moved, None, gpui::Modifiers::default()),
             "focus" => visual.update(|w, cx| editor.update(cx, |v, _| v.focus.focus(w))),
             "focus-before-paint" => visual.update(|w, cx| {
+                // Keep both operations in one update: simulator helpers may
+                // otherwise complete a repaint between focus and mouse-up.
                 editor.update(cx, |v, _| v.focus.focus(w));
                 w.dispatch_input(
                     gpui::PlatformInput::MouseUp(MouseUpEvent {
