@@ -11,6 +11,7 @@ fn start_fixture(start: u64, duration: u64, limiter: Option<bool>) -> Arc<Prepar
     let project = with_test_instrument(&project(1.0, start, duration), definition.metadata.id, 0);
     let mut snapshot = project.snapshot();
     let device = DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: snapshot.next_id,
         bypassed: false,
@@ -280,6 +281,7 @@ fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs
         let mut snapshot = editor.project().snapshot();
         if let Some(main) = limiter {
             let device = DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
