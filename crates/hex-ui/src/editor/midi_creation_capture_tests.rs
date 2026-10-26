@@ -214,3 +214,88 @@ fn creation_loss_never_adds_a_note_or_leaks_release(cx: &mut TestAppContext) {
         });
     }
 }
+
+#[gpui::test]
+fn linked_alias_creation_keeps_receipt_geometry_and_shared_one_step_history(
+    cx: &mut TestAppContext,
+) {
+    let Fixture {
+        mut visual,
+        editor,
+        _environment,
+        ..
+    } = open(cx);
+    let original = editor.read_with(&visual, |v, _| v.detail_clip_id().unwrap());
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::DuplicateAliasClips(vec![original]))));
+    });
+    pump(&editor, &mut visual);
+    let alias = editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        let alias = p.tracks()[0]
+            .midi_clips()
+            .iter()
+            .find(|c| c.id() != original)
+            .unwrap()
+            .id();
+        assert!(p.clip_alias(original).is_some());
+        assert_eq!(p.clip_alias(original), p.clip_alias(alias));
+        alias
+    });
+    visual.update(|w, cx| {
+        editor.update(cx, |v, cx| {
+            v.selected_clip = Some(alias);
+            v.piano_view_clip = None;
+            v.midi_focus.focus(w);
+            cx.notify();
+        })
+    });
+    repaint(&editor, &mut visual);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = position(&editor, &mut visual, 1., 60);
+    let end = position(&editor, &mut visual, 2., 60);
+    super::super::creation_tests::double_down(&mut visual, down, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    repaint(&editor, &mut visual);
+    let held = bodies(&editor, &mut visual);
+    assert_eq!(held.len(), 1);
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    let reply = terminal(&editor, &mut visual);
+    assert!(reply.error.is_none());
+    for _ in 0..3 {
+        repaint(&editor, &mut visual);
+        assert_eq!(bodies(&editor, &mut visual), held);
+        assert!(!visual.update(|w, _| w.is_pointer_dragging()));
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(reply);
+        cx.notify();
+    });
+    repaint(&editor, &mut visual);
+    assert_eq!(bodies(&editor, &mut visual), held);
+    let after = editor.read_with(&visual, |v, _| {
+        assert!(v.pending_midi_drag.is_none());
+        let p = &v.state.as_ref().unwrap().project;
+        assert_eq!(p.midi_source(alias).unwrap().notes().len(), 1);
+        assert_eq!(
+            p.midi_source(alias).unwrap().notes(),
+            p.midi_source(original).unwrap().notes()
+        );
+        p.snapshot()
+    });
+    for (request, expected) in [(Request::Undo, before), (Request::Redo, after)] {
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(request)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let actual = v.state.as_ref().unwrap().project.snapshot();
+            let mut expected = expected;
+            assert!(actual.next_id >= expected.next_id);
+            expected.next_id = actual.next_id;
+            assert_eq!(actual, expected);
+        });
+    }
+    assert_eq!(bodies(&editor, &mut visual), held);
+}
