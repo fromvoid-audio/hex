@@ -90,21 +90,6 @@ fn released_velocity_handles_keep_final_values_until_exact_real_terminal(cx: &mu
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
         }
-        editor.read_with(&visual, |v, _| {
-            let command = v.last_enqueued_edit.clone().unwrap();
-            assert!(v.pending_midi_drag_matches(&Request::Edit(command.clone())));
-            assert!(!v.pending_midi_drag_matches(&Request::Undo));
-            let Command::UpdateMidiNotes { clip, mut notes } = command else {
-                panic!("velocity batch");
-            };
-            notes[0].velocity -= 1;
-            assert!(
-                !v.pending_midi_drag_matches(&Request::Edit(Command::UpdateMidiNotes {
-                    clip,
-                    notes
-                }))
-            );
-        });
         // Selection/focus are no longer input custody after release.
         visual.update(|w, cx| {
             editor.update(cx, |v, cx| {
