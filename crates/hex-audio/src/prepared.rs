@@ -60,6 +60,11 @@ impl Callback {
 mod admission;
 mod eligible_publication;
 mod endpoints;
+pub(crate) mod retired_scalar_receipts;
+pub use retired_scalar_receipts::{
+    RetiredReceiptFailure, RetiredScalarReceiptBatch, RetiredScalarReceipts, ScalarReceipt,
+    ScalarReceiptTarget, ScalarReceiptTerminal,
+};
 mod native_effects;
 pub(crate) use native_effects::NativeEffectWindow;
 mod midi_recording;

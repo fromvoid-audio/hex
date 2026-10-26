@@ -21,6 +21,7 @@ impl Command {
                 | Self::DuplicateMidiSourceRange { .. }
                 | Self::UpdateMidiNote { .. }
                 | Self::UpdateMidiNotes { .. }
+                | Self::SetMidiNotesActive { .. }
                 | Self::RemoveMidiNote(_)
                 | Self::RemoveMidiNotes { .. }
                 | Self::ReplaceMidiClipVolume { .. }
@@ -33,6 +34,32 @@ impl Command {
     pub fn prepare_sampler_midi_edit(&mut self, project: &Project) -> Result<bool, Invalid> {
         const MISSING: Invalid = Invalid("midi edit target is unavailable");
         match self {
+            Self::SetMidiNotesActive {
+                clip,
+                notes,
+                active,
+            } => {
+                if notes.is_empty() || notes.len() > crate::MAX_NOTES {
+                    return Err(Invalid("invalid midi activation batch size"));
+                }
+                notes.sort_unstable();
+                if notes.windows(2).any(|pair| pair[0] == pair[1]) {
+                    return Err(Invalid("duplicate midi activation note"));
+                }
+                let source = project.midi_source(*clip).ok_or(MISSING)?;
+                let mut matched = 0usize;
+                let mut changed = false;
+                for note in &source.notes {
+                    if notes.binary_search(&note.id).is_ok() {
+                        matched += 1;
+                        changed |= note.active != *active;
+                    }
+                }
+                if matched != notes.len() {
+                    return Err(MISSING);
+                }
+                return Ok(changed);
+            }
             Self::ReplaceMidiClipVolume { clip, volume } => {
                 let source = project.midi_source(*clip).ok_or(MISSING)?;
                 volume.validate_source_length(source.source_length())?;

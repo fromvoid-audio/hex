@@ -85,6 +85,7 @@ impl From<Note> for MidiNoteSnapshot {
     fn from(note: Note) -> Self {
         Self {
             id: note.id,
+            active: true,
             start_raw: note.start_raw,
             duration_raw: note.duration_raw,
             pitch: note.pitch,

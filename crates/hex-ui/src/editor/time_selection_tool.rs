@@ -231,6 +231,7 @@ mod tests {
             assert!(v.enqueue(Request::Edit(Command::AddMidiNotes {
                 clip,
                 notes: vec![MidiNoteInsert {
+                    active: true,
                     start: BeatTime::ONE,
                     duration: BeatTime::ONE,
                     pitch: 60,

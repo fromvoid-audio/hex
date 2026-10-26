@@ -29,7 +29,8 @@ fn option_wheel_targets_hovered_header_and_lane_without_editing_or_zooming(
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, tracks) = fixture(cx, 2);
-    let first = bounds(&mut visual, "arrangement-track-header", tracks[0]);
+    // Select via the name: a resized header's center may be a mixer control.
+    let first = bounds(&mut visual, "track-name", tracks[0]);
     visual.simulate_click(first.center(), Modifiers::default());
     let original = editor.read_with(&visual, |v, _| {
         (

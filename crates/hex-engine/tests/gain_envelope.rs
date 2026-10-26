@@ -389,6 +389,7 @@ fn automated_hybrid_track_matches_static_unity_oracle_and_tempo_edit_reprepares_
         .execute(Command::AddMidiNotes {
             clip,
             notes: vec![hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::ZERO,
                 duration: BeatTime::ONE,
                 pitch: 60,

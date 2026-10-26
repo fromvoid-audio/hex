@@ -58,6 +58,7 @@ pub fn project_with_operators(
         let mut notes = Vec::with_capacity(notes_per_track);
         for note_index in 0..notes_per_track {
             notes.push(MidiNoteSnapshot {
+                active: true,
                 id: take_id(&mut next_id)?,
                 start_raw: 0,
                 duration_raw: note_duration,

@@ -60,6 +60,7 @@ fn fixture(notes: usize, duration: u64) -> Project {
     let authored = |first: u64| {
         (0..notes)
             .map(|index| MidiNoteSnapshot {
+                active: true,
                 id: first + index as u64,
                 start_raw: 0,
                 duration_raw: duration,

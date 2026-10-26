@@ -570,13 +570,18 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
                     "track-return-sends",
                 ] {
                     let control = bounds(&mut visual, prefix, track);
+                    assert!(
+                        control.size.width >= px(14.0),
+                        "{prefix} keeps a usable target"
+                    );
                     assert!(control.left() >= header.left() && control.right() <= header.right());
                     assert!(control.bottom() <= height_handle.top());
                     assert!(
                         control.right() <= slider.left()
                             || control.left() >= slider.right()
                             || control.bottom() <= slider.top()
-                            || control.top() >= slider.bottom()
+                            || control.top() >= slider.bottom(),
+                        "midi={midi} expanded={expanded} {prefix} {control:?} overlaps volume {slider:?} in {header:?}"
                     );
                 }
             }
@@ -735,6 +740,11 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     assert!((activator.left() - whole.left()).abs() <= px(1.0));
     assert!(activator.bottom() <= whole.top());
     assert_eq!(arm.right(), pan.right());
+    let meter = self::bounds(&mut visual, "track-output-meter", track);
+    assert!(
+        pan.right() <= meter.left(),
+        "pan {pan:?} overlaps meter {meter:?}"
+    );
     for rect in [whole, pan, activator, solo, arm] {
         assert!(rect.left() >= header.left() && rect.right() <= header.right());
         assert!(rect.top() >= header.top() && rect.bottom() <= header.bottom());
