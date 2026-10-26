@@ -228,7 +228,7 @@ fn ordinary_existing_authored_identity_marker_or_owner_changes_remain_strict() {
 #[test]
 fn section_duplicate_undo_restores_prefix_without_chasing_a_past_gate() {
     registry_test(|registry, id| {
-        for looped in [false, true] {
+        for (looped, shared) in [(false, false), (true, false), (false, true), (true, true)] {
             for elapsed in [64, 48_064] {
                 let mut snapshot =
                     with_test_instrument(&project(1.0, 0, 6 << 32), id, 0).snapshot();
@@ -237,6 +237,43 @@ fn section_duplicate_undo_restores_prefix_without_chasing_a_past_gate() {
                 }
                 let mut editor =
                     Editor::new(Project::from_legacy_snapshot(snapshot).unwrap(), 8).unwrap();
+                if shared {
+                    let source = editor.project().tracks()[0].source_id().unwrap();
+                    let Created::Track(peer) = editor
+                        .execute(Command::AddMidiTrack {
+                            name: "peer".into(),
+                        })
+                        .unwrap()
+                    else {
+                        panic!("peer")
+                    };
+                    editor
+                        .execute(Command::BindTrackSource {
+                            track: peer,
+                            source: Some(source),
+                        })
+                        .unwrap();
+                    let Created::Clip(clip) = editor
+                        .execute(Command::PlaceMidiClip {
+                            track: peer,
+                            start: BeatTime::ZERO,
+                            length: BeatTime::from_quarters(8).unwrap(),
+                        })
+                        .unwrap()
+                    else {
+                        panic!("clip")
+                    };
+                    editor
+                        .execute(Command::AddMidiNote {
+                            clip,
+                            start: BeatTime::ZERO,
+                            duration: BeatTime::from_quarters(8).unwrap(),
+                            pitch: 67,
+                            channel: 0,
+                            velocity: 100,
+                        })
+                        .unwrap();
+                }
                 let Created::ArrangementSection(section) = editor
                     .execute(Command::AddArrangementSection {
                         name: "intro".into(),
@@ -263,7 +300,7 @@ fn section_duplicate_undo_restores_prefix_without_chasing_a_past_gate() {
                 let mut conflicting = editor.project().snapshot();
                 arrangement(&mut conflicting)[0].notes[0].pitch += 1;
                 let mut refused = ordinary_mutable_playback(
-                    &Project::from_legacy_snapshot(conflicting).unwrap(),
+                    &Project::from_snapshot(conflicting).unwrap(),
                     registry,
                 );
                 assert_eq!(

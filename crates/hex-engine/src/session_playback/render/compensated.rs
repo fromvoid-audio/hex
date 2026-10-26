@@ -110,22 +110,7 @@ impl SessionPlayback {
                             pages.as_deref_mut(),
                             SourceStage::Audio,
                         )?;
-                        for release in &self.release_scratch {
-                            if release.location.track_index() == index
-                                && release.location.tail_group().is_none()
-                            {
-                                render_release_raw(
-                                    release,
-                                    self.revision.session().sine_table(),
-                                    self.revision.arrangement().shared_contexts(),
-                                    &self.retained_contexts,
-                                    &self.analytic_continuations,
-                                    performance_frame,
-                                    &mut generator,
-                                )?;
-                            }
-                        }
-                        render_route_source_chunk(
+                        render_source_instrument_chunk(
                             RouteSourceContext {
                                 revision: &self.revision,
                                 midi: crate::session_inventory::EffectiveSessionMidi::new(
@@ -145,13 +130,38 @@ impl SessionPlayback {
                                 timing: &timing,
                                 table: self.revision.session().sine_table(),
                             },
+                            &self.route_scratch,
+                            self.historical_floor,
+                            &self.route_historical_floors,
                             &mut self.spans,
                             performance_frame,
                             arrangement_frame,
                             &mut generator,
-                            pages.as_deref_mut(),
-                            SourceStage::Instrument,
                         )?;
+                        if self.source_input_receiver() == Some(index) {
+                            let authored = self
+                                .revision
+                                .source_routing()
+                                .contributors(index)
+                                .iter()
+                                .try_fold(0usize, |sum, &contributor| {
+                                    sum.checked_add(
+                                        self.source_voice_envelope(usize::from(contributor)),
+                                    )
+                                })
+                                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                            source_live::render_source_live_input(
+                                self.computer_keyboard.as_mut().map(Box::as_mut),
+                                self.mutable_instruments[index].as_mut(),
+                                &mut self.mutable_onsets,
+                                &mut self.mutable_events,
+                                authored,
+                                performance_frame,
+                                &mut generator,
+                                &timing,
+                                true,
+                            )?;
+                        }
                         render_mutable_instrument_chunk(
                             MutableInstrumentChunkContext {
                                 revision: &self.revision,
@@ -182,11 +192,69 @@ impl SessionPlayback {
                             &mut generator,
                         )?;
                     }
-                    if let Some(keyboard) = self
-                        .computer_keyboard
-                        .as_mut()
-                        .filter(|keyboard| keyboard.track() == route.id)
-                    {
+                    for release in &self.release_scratch {
+                        if release.location.track_index() == index
+                            && release.location.tail_group().is_none()
+                        {
+                            render_release_raw(
+                                release,
+                                self.revision.session().sine_table(),
+                                self.revision.arrangement().shared_contexts(),
+                                &self.retained_contexts,
+                                &self.analytic_continuations,
+                                performance_frame,
+                                self.playing,
+                                &mut generator,
+                            )?;
+                        }
+                    }
+                    if !self.playing {
+                        if self.source_input_receiver() == Some(index) {
+                            source_live::render_source_live_input(
+                                self.computer_keyboard.as_mut().map(Box::as_mut),
+                                self.mutable_instruments[index].as_mut(),
+                                &mut self.mutable_onsets,
+                                &mut self.mutable_events,
+                                0,
+                                performance_frame,
+                                &mut generator,
+                                &timing,
+                                false,
+                            )?;
+                        } else if let Some(runtime) = self.mutable_instruments[index]
+                            .as_mut()
+                            .filter(|runtime| runtime.is_source_owner())
+                        {
+                            self.mutable_onsets.clear();
+                            let source_clock = runtime
+                                .source_monitor_clock(
+                                    timing
+                                        .frame_to_beat(self.performance_frame)
+                                        .map_err(|_| SessionPlaybackError::TempoConversion)?
+                                        .raw(),
+                                    timing
+                                        .tempo_micro_bpm_at_frame(self.performance_frame)
+                                        .ok_or(SessionPlaybackError::TempoConversion)?,
+                                    timing.sample_rate(),
+                                )
+                                .map_err(|error| error.render_error())?;
+                            runtime
+                                .process_source_segment(
+                                    performance_frame,
+                                    &mut generator,
+                                    &mut self.mutable_onsets,
+                                    &[],
+                                    &mut self.mutable_events,
+                                    Some(&source_clock),
+                                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                                    None,
+                                )
+                                .map_err(|error| error.render_error())?;
+                        }
+                    }
+                    if let Some(keyboard) = self.computer_keyboard.as_mut().filter(|keyboard| {
+                        !keyboard.is_source_input() && keyboard.track() == route.id
+                    }) {
                         let clock = keyboard
                             .musical_clock(&timing, performance_frame, self.playing)
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -313,8 +381,8 @@ impl SessionPlayback {
         }
         // Only zero-latency routed layouts admit detached old chains. Positive
         // latency revisions refuse those transitions before moving audible owners.
+        self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
         if self.playing {
-            self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
             self.return_effect_tails
                 .render_chunk(output, frame_offset, capture, foreign)?;
         }

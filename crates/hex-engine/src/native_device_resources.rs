@@ -419,9 +419,10 @@ pub fn requires_private_sampler_state(state: &hex_lattice_contract::NativeDevice
 }
 pub fn requires_private_sampler_sources(project: &hex_project::Project) -> bool {
     project.tracks().iter().any(|track| {
-        track
-            .instrument()
-            .is_some_and(|device| requires_private_sampler_state(device.state()))
+        track.receives_source_audio()
+            && track
+                .instrument()
+                .is_some_and(|device| requires_private_sampler_state(device.state()))
     })
 }
 #[cfg(feature = "instrument-test-support")]

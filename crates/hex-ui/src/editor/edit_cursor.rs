@@ -1,4 +1,5 @@
-//! View-only Arrangement insertion position, distinct from the audio playhead.
+//! View-only Arrangement insertion position and scoped canonical split dispatch.
+//! Selection normalization stays with time_selection; project/session own cuts and history.
 use super::{EditorMode, EditorView, time_selection::TimeSelection};
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px};
@@ -275,9 +276,31 @@ impl EditorView {
         )
     }
 
-    pub(super) fn split_at_edit_cursor(&mut self) {
+    pub(super) fn split_arrangement_clips(&mut self, window: &Window, cx: &Context<Self>) {
         if self.mode != EditorMode::Arrangement {
             self.error = Some("split is available in arrangement".into());
+            return;
+        }
+        // Ordinary track headers belong to the same arranger editing scope.
+        let arranger_focused = self.focus.is_focused(window) || self.track_header_focused(window);
+        if (!arranger_focused && !self.midi_focus.is_focused(window))
+            || !self.arrangement_view_change_available(cx)
+            || self.device_panel.has_pending_draft(cx)
+            || (arranger_focused && self.automation_view.enabled)
+        {
+            return;
+        }
+        if arranger_focused
+            && self
+                .time_selection
+                .is_some_and(|s| s.anchor_frame != s.end_frame)
+        {
+            let Some(range) = self.normalized_time_selection() else {
+                self.error = Some("time selection is no longer available".into());
+                return;
+            };
+            self.cancel_duplicate_chain();
+            self.enqueue(Request::Edit(Command::SplitTimeRange { range }));
             return;
         }
         let Some(cursor) = self

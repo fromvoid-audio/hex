@@ -579,6 +579,13 @@ impl Project {
         if snapshot.next_id <= max_id {
             return Err(Invalid("next project id must exceed all existing ids"));
         }
+        // Historical inline formats did not carry a receiver. Reconstruct it
+        // from their authoritative singleton binding, including removed/moved
+        // inline instruments between frozen migration layers.
+        for source in &mut snapshot.native_sources {
+            source.receiver = None;
+        }
+        let mut legacy_bindings = BTreeSet::new();
         for track in &snapshot.tracks {
             let Some(instrument) = &track.instrument else {
                 continue;
@@ -588,12 +595,18 @@ impl Project {
                 .iter_mut()
                 .find(|s| s.devices.iter().any(|d| d.id == instrument.id))
             {
+                if !legacy_bindings.insert(source.id) {
+                    return Err(Invalid("legacy snapshots cannot share source bindings"));
+                }
                 if source.devices.len() != 1 || source.instrument_index != 0 {
                     return Err(Invalid(
                         "legacy instrument does not identify a singleton source",
                     ));
                 }
                 source.devices[0] = instrument.clone();
+                if source.receiver.is_none() {
+                    source.receiver = Some(track.id);
+                }
             } else {
                 if snapshot.native_sources.len() >= crate::MAX_NATIVE_SOURCES {
                     return Err(Invalid("native source limit reached"));
@@ -607,7 +620,9 @@ impl Project {
                     name: track.name.clone(),
                     devices: vec![instrument.clone()],
                     instrument_index: 0,
+                    receiver: Some(track.id),
                 });
+                legacy_bindings.insert(id);
             }
         }
         Self::from_snapshot(snapshot)
@@ -739,6 +754,7 @@ impl Project {
                 source.name,
                 devices,
                 source.instrument_index,
+                source.receiver.map(TrackId),
             )?);
         }
         let mut total_notes = 0_usize;
