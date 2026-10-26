@@ -4,7 +4,10 @@ use super::super::{
     test_environment::Environment,
 };
 use super::*;
-use gpui::{Entity, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
+use gpui::{
+    Entity, Modifiers, MouseUpEvent, ScrollDelta, ScrollWheelEvent, TestAppContext,
+    VisualTestContext,
+};
 use hex_project::{BeatTime, ClipId, Command, MidiNoteInsert};
 use hex_session::service::{Event, Request, Service};
 use std::{
