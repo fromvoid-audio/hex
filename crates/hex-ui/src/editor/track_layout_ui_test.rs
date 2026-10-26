@@ -879,3 +879,6 @@ fn h_overview_topology_prunes_both_height_maps_and_generation_restarts_normal_la
     visual.simulate_keystrokes("h");
     assert_heights(&mut visual, &tracks, &[44.0; 3]);
 }
+
+#[path = "track_layout/capture_tests.rs"]
+mod capture_tests;
