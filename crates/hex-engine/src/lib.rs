@@ -109,7 +109,8 @@ pub use native_device_view::{
 
 mod device_automation;
 pub use device_automation::{
-    DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, native_parameter_automation_supported,
+    DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, native_device_automation_target_supported,
+    native_parameter_automation_supported, project_device_automation_target_supported,
 };
 mod gain_envelope;
 pub use gain_envelope::{
@@ -1344,6 +1345,7 @@ impl Track {
                     .is_some_and(|effects| {
                         effects.iter().any(|effect| {
                             effect.definition.is_some()
+                                || !effect.automation.is_empty()
                                 || effect.matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]
                         })
                     })

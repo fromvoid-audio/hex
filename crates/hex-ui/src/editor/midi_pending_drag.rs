@@ -16,6 +16,7 @@ pub(super) enum Frozen {
     Group(GroupGesture),
     Volume(hex_project::MidiClipVolume),
     Creation(MidiNoteInsert),
+    Velocity(super::midi_velocity::Gesture),
 }
 
 pub(super) struct Pending {
@@ -185,6 +186,19 @@ impl EditorView {
             };
             pending.displayed(self).then_some(*note)
         })
+    }
+
+    /// Released velocity values follow source/receipt custody, independent of
+    /// later selection, focus or viewport changes. This never owns input.
+    pub(super) fn pending_midi_velocity(
+        &self,
+        clip: ClipId,
+    ) -> Option<&super::midi_velocity::Gesture> {
+        let pending = self.pending_midi_drag.as_ref()?;
+        let Frozen::Velocity(gesture) = &pending.preview else {
+            return None;
+        };
+        (pending.clip == clip && pending.displayed(self)).then_some(gesture)
     }
 
     pub(super) fn pending_midi_drag_matches(&self, request: &Request) -> bool {

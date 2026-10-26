@@ -19,8 +19,9 @@ pub use foreign_processor::{
     ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
 };
 pub use parameter_automation::{
-    NativeParameterAutomation, ParameterAutomationBlock, ParameterAutomationLane,
-    ParameterAutomationPoint, PreparedParameterAutomation, PreparedParameterAutomationLane,
+    HostAutomationLane, NativeParameterAutomation, ParameterAutomationBlock,
+    ParameterAutomationLane, ParameterAutomationPoint, PreparedParameterAutomation,
+    PreparedParameterAutomationLane,
 };
 mod resources;
 mod runtime_ownership;
@@ -486,6 +487,10 @@ impl fmt::Debug for PreparedProcessorInstance {
 struct RuntimeEntry {
     automation: PreparedParameterAutomation,
     automation_frozen: bool,
+    // Host effective trims are transactional too: a late render refusal cannot
+    // freeze speculative controls into a retained output suffix.
+    committed_host_gains: [f32; 2],
+    scratch_host_gains: [f32; 2],
     meter: std::sync::Arc<DeviceMeter>,
     metering: bool,
     input_gain: f32,
@@ -594,6 +599,8 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
         let RuntimeEntry {
             automation: _,
             automation_frozen: _,
+            committed_host_gains: _,
+            scratch_host_gains: _,
             meter: _,
             metering: _,
             input_gain: _,
@@ -814,6 +821,14 @@ impl NativeRuntimeChain {
             {
                 return Err(DeviceContractError::ForeignProcessingUnavailable);
             }
+            if instance.automation.has_host_targets()
+                && (matches!(
+                    instance.definition,
+                    Some(PreparedProcessorFactory::Foreign(_))
+                ) || instance.configuration.is_none())
+            {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             for &parameter in instance.automation.parameter_ids() {
                 if instance.definition.as_ref().is_none_or(|factory| {
@@ -828,6 +843,12 @@ impl NativeRuntimeChain {
             entries.push(RuntimeEntry {
                 automation: instance.automation,
                 automation_frozen: false,
+                committed_host_gains: instance.configuration.as_ref().map_or([1.0; 2], |state| {
+                    [state.input_gain_linear(), state.output_gain_linear()]
+                }),
+                scratch_host_gains: instance.configuration.as_ref().map_or([1.0; 2], |state| {
+                    [state.input_gain_linear(), state.output_gain_linear()]
+                }),
                 meter: instance.meter,
                 metering: false,
                 input_gain: instance
@@ -950,7 +971,9 @@ impl NativeRuntimeChain {
     }
 
     pub fn has_stateful_processors(&self) -> bool {
-        self.entries.iter().any(|entry| entry.runtime.is_stateful())
+        self.entries
+            .iter()
+            .any(|entry| entry.runtime.is_stateful() || !entry.automation.is_empty())
     }
 
     /// Preflight and apply a transient audition to the exact current processor
@@ -1400,6 +1423,7 @@ impl NativeRuntimeChain {
     /// Start a transactional block by copying committed histories into twins.
     pub fn begin_block(&mut self) {
         for entry in &mut self.entries {
+            entry.scratch_host_gains = entry.committed_host_gains;
             entry.runtime.begin();
         }
     }
@@ -1696,11 +1720,8 @@ impl NativeRuntimeChain {
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), DeviceContractError> {
         let is_foreign = matches!(entry.runtime, RuntimeOwnership::Foreign(_));
-        if !entry.bypassed && !is_foreign && entry.input_gain != 1.0 {
-            for frame in frames.iter_mut() {
-                frame[0] *= entry.input_gain;
-                frame[1] *= entry.input_gain;
-            }
+        if !entry.bypassed && !is_foreign {
+            Self::apply_host_gain(entry, frames, clock, true);
         }
         if entry.metering {
             if is_foreign {
@@ -1736,7 +1757,7 @@ impl NativeRuntimeChain {
         } else if entry.bypassed {
             if entry.runtime.is_stateful() {
                 if entry.matrix.is_identity() {
-                    if !entry.automation.is_empty() && !entry.automation_frozen {
+                    if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
                         let values = entry.automation.block(clock, frames.len());
                         entry
                             .runtime
@@ -1766,7 +1787,7 @@ impl NativeRuntimeChain {
             }
         } else {
             entry.matrix.apply_block(frames);
-            if !entry.automation.is_empty() && !entry.automation_frozen {
+            if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
                 let values = entry.automation.block(clock, frames.len());
                 entry
                     .runtime
@@ -1775,11 +1796,8 @@ impl NativeRuntimeChain {
                 entry.runtime.process_with_clock(frames, clock)?;
             }
         }
-        if !entry.bypassed && entry.output_gain != 1.0 {
-            for frame in frames.iter_mut() {
-                frame[0] *= entry.output_gain;
-                frame[1] *= entry.output_gain;
-            }
+        if !entry.bypassed {
+            Self::apply_host_gain(entry, frames, clock, false);
         }
         if entry.metering {
             entry.meter.observe_output(frames);
@@ -1787,9 +1805,55 @@ impl NativeRuntimeChain {
         Ok(())
     }
 
+    fn apply_host_gain(
+        entry: &mut RuntimeEntry,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        input: bool,
+    ) {
+        let index = if input { 0 } else { 1 };
+        let base = if input {
+            entry.input_gain
+        } else {
+            entry.output_gain
+        };
+        let target = if input {
+            hex_lattice_contract::DeviceAutomationTarget::HostInputGain
+        } else {
+            hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
+        };
+        if entry.automation_frozen || !entry.automation.has_host_target(target) {
+            let gain = if entry.automation_frozen {
+                entry.committed_host_gains[index]
+            } else {
+                base
+            };
+            if gain != 1.0 {
+                for frame in frames.iter_mut() {
+                    frame[0] *= gain;
+                    frame[1] *= gain;
+                }
+            }
+            if !frames.is_empty() {
+                entry.scratch_host_gains[index] = gain;
+            }
+            return;
+        }
+        let values = entry.automation.block(clock, frames.len());
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let gain = values.host_gain_at(target, offset).unwrap_or(base);
+            if gain != 1.0 {
+                frame[0] *= gain;
+                frame[1] *= gain;
+            }
+            entry.scratch_host_gains[index] = gain;
+        }
+    }
+
     /// Commit histories after all render chunks and source reads succeeded.
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
+            entry.committed_host_gains = entry.scratch_host_gains;
             entry.runtime.commit();
             let reading = entry.runtime.take_dynamics_meter();
             if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
@@ -1800,6 +1864,7 @@ impl NativeRuntimeChain {
     /// Restore every speculative effect after a later host render stage refuses.
     pub fn rollback_block(&mut self) {
         for entry in &mut self.entries {
+            entry.scratch_host_gains = entry.committed_host_gains;
             entry.runtime.rollback();
         }
     }
@@ -1807,6 +1872,8 @@ impl NativeRuntimeChain {
     /// Reset both committed and speculative state at a hard discontinuity.
     pub fn reset(&mut self) {
         for entry in &mut self.entries {
+            entry.committed_host_gains = [entry.input_gain, entry.output_gain];
+            entry.scratch_host_gains = entry.committed_host_gains;
             entry.runtime.reset();
         }
     }

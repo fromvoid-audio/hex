@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 52;
+pub const CURRENT_SCHEMA_VERSION: u32 = 53;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -149,13 +149,13 @@ impl From<serde_json::Error> for StorageError {
 /// Encode the current schema with complete hierarchy, audio roots, event fades,
 /// directed views, activation, MIDI, tuning, device state and retained native sources
 /// with explicit per-track source bindings, Console audio cycles and bounded
-/// faded Arrangement overlaps and explicit shared clip content (schema52).
-/// There is no blanket
+/// faded Arrangement overlaps, explicit shared clip content (schema52), and
+/// typed host gain envelopes (schema53). There is no blanket
 /// byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     refuse_unimplemented_prints(project)?;
-    encode_document(&schema::clip_aliases::encode(project)?)
+    encode_document(&schema::host_automation::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -274,6 +274,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
+/// Schema53 requires a typed host-gain inventory; schema52 and older migrate
+/// with no authored host targets. Provider numeric identities are unchanged.
 /// Schema52 requires explicit shared source/member inventories; schema51 and older
 /// acquire empty aliases while preserving their own strict format contracts.
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
@@ -320,7 +322,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::clip_aliases::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::host_automation::decode(bytes),
+        52 => schema::clip_aliases::decode(bytes),
         51 => schema::crossfades::decode(bytes),
         50 => schema::device_automation::decode(bytes),
         49 => schema::session_audio_loops::decode49(bytes),
