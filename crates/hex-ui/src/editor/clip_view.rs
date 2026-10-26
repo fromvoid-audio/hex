@@ -184,6 +184,7 @@ impl EditorView {
     ) -> Div {
         self.reconcile_clip_detail_resize(window, cx);
         self.reconcile_velocity_size(window, cx);
+        self.reconcile_piano_pitch_zoom(window, cx);
         self.reconcile_piano_pan();
         self.reconcile_midi_ruler();
         self.reconcile_audio_loop();

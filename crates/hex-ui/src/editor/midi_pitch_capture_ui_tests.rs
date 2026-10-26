@@ -12,10 +12,11 @@ struct Host {
 }
 impl Render for Host {
     fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        let editor = self.editor.clone();
         let down = self.actions.clone();
         let up = self.actions.clone();
         let wheel = self.actions.clone();
-        div().size_full().child(self.editor.clone()).child(
+        div().size_full().child(editor).child(
             div()
                 .absolute()
                 .left_0()
