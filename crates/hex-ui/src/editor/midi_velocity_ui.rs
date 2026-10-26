@@ -1,5 +1,6 @@
 //! Compact velocity-lane view. The pure model owns geometry/preview validation;
 //! this adapter captures GPUI input and submits one canonical batch on release.
+//! Accepted velocity values remain with midi_pending_drag until its exact reply.
 use super::{
     EditorView,
     midi_group_drag::{GroupNote, capture_selected_notes},
@@ -12,7 +13,6 @@ use gpui::{
     ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use hex_project::{Command, NoteId};
-use hex_session::service::Request;
 use std::sync::Arc;
 
 pub(super) struct State {
@@ -298,6 +298,7 @@ impl EditorView {
             return Some(row);
         }
         let gesture = self.midi_velocity.gesture.clone();
+        let pending = self.pending_midi_velocity(clip).cloned();
         let marquee = self.midi_velocity.marquee.clone();
         let time_selection = self.midi_time_selection_bounds();
         let selection = self
@@ -349,6 +350,7 @@ impl EditorView {
                         let gesture = gesture
                             .as_ref()
                             .filter(|gesture| gesture.is_current(captured));
+                        let preview = gesture.or(pending.as_ref());
                         let marquee = marquee.as_ref().filter(|m| {
                             let context = m.context();
                             context.bounds == captured.bounds
@@ -429,7 +431,7 @@ impl EditorView {
                                 }))
                         {
                             let selected = selection.binary_search(&point.note.id).is_ok();
-                            let velocity = gesture
+                            let velocity = preview
                                 .and_then(|gesture| gesture.preview(point.note.id))
                                 .unwrap_or(point.note.velocity);
                             let Some(y) = midi_velocity::handle_y(velocity, height) else {
@@ -761,10 +763,11 @@ impl EditorView {
                                         .and_then(|_| gesture.updates(current))
                                     {
                                         Ok(Some(notes)) => {
-                                            view.enqueue(Request::Edit(Command::UpdateMidiNotes {
+                                            view.submit_midi_drag_preview(
                                                 clip,
-                                                notes,
-                                            }));
+                                                super::midi_pending_drag::Frozen::Velocity(gesture),
+                                                Command::UpdateMidiNotes { clip, notes },
+                                            );
                                         }
                                         Ok(None) => {}
                                         Err(error) => view.error = Some(error.into()),
