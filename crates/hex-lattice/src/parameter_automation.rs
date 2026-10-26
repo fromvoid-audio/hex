@@ -4,9 +4,9 @@
 //! Missing content-origin clocks use base values (None), never performance beats.
 use crate::NativeInstrumentClock;
 use hex_lattice_contract::{
-    DeviceAutomationTarget, DeviceContractError as Error, ParameterAccess, ParameterAutomation,
-    ParameterDescriptor, ParameterId, ParameterKind, ParameterSemantics, ParameterStepping,
-    ParameterValue,
+    DeviceAutomationTarget, DeviceContractError as Error, HostGain, ParameterAccess,
+    ParameterAutomation, ParameterDescriptor, ParameterId, ParameterKind, ParameterSemantics,
+    ParameterStepping, ParameterValue,
 };
 
 pub const MAX_AUTOMATION_LANES: usize = 256;
@@ -48,6 +48,7 @@ pub struct PreparedParameterAutomationLane {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mapping {
+    HostGain,
     Float {
         min: f64,
         max: f64,
@@ -99,8 +100,11 @@ impl Mapping {
     fn discrete(self) -> bool {
         matches!(self, Self::Bool | Self::Choice { .. })
     }
-    fn value(self, normalized: f32) -> ParameterValue {
-        match self {
+    // Provider queries never expose a host target as a ParameterValue. Host
+    // queries below decode the same borrowed normalized value through HostGain.
+    fn value(self, normalized: f32) -> Result<ParameterValue, Error> {
+        Ok(match self {
+            Self::HostGain => return Err(Error::InvalidDescriptor),
             Self::Bool => ParameterValue::Bool(normalized >= 0.5),
             Self::Choice { last } => {
                 ParameterValue::Choice((normalized * last as f32).round() as u32)
@@ -125,7 +129,7 @@ impl Mapping {
                 });
                 ParameterValue::Float(value as f32)
             }
-        }
+        })
     }
 }
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -230,12 +234,7 @@ impl PreparedParameterAutomation {
             end = lane.points.end;
             prepared.push(PreparedParameterAutomationLane {
                 descriptor: None,
-                mapping: Mapping::Float {
-                    min: -60.0,
-                    max: 24.0,
-                    ratio: None,
-                    increment: Some(0.001),
-                },
+                mapping: Mapping::HostGain,
                 points: lane.points,
             });
         }
@@ -337,18 +336,27 @@ pub struct ParameterAutomationBlock<'a> {
 impl ParameterAutomationBlock<'_> {
     /// Effective host trim in linear amplitude units. Missing clock falls back
     /// to immutable base at the chain owner; no provider receives host targets.
+    /// Authored normalized values have already passed new_with_host validation;
+    /// this uses the same integer millidB decode and linear law as canonical state.
     pub fn host_gain_at(&self, target: DeviceAutomationTarget, offset: usize) -> Option<f32> {
         let index = match target {
             DeviceAutomationTarget::HostInputGain => self.program.host_input?,
             DeviceAutomationTarget::HostOutputGain => self.program.host_output?,
             DeviceAutomationTarget::Parameter(_) => return None,
         };
-        let ParameterValue::Float(db) = self.value_at_index(index, offset)? else {
-            return None;
-        };
-        Some(10.0_f32.powf(db / 20.0))
+        HostGain::from_normalized(self.normalized_at_index(index, offset)?)
+            .ok()
+            .map(HostGain::linear)
     }
     fn value_at_index(&self, index: usize, offset: usize) -> Option<ParameterValue> {
+        self.program
+            .lanes
+            .get(index)?
+            .mapping
+            .value(self.normalized_at_index(index, offset)?)
+            .ok()
+    }
+    fn normalized_at_index(&self, index: usize, offset: usize) -> Option<f32> {
         if offset >= self.frames {
             return None;
         }
@@ -372,7 +380,7 @@ impl ParameterAutomationBlock<'_> {
                 _ => left.normalized,
             }
         };
-        Some(lane.mapping.value(normalized))
+        Some(normalized)
     }
 }
 impl NativeParameterAutomation for ParameterAutomationBlock<'_> {

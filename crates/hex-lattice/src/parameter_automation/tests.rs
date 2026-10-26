@@ -407,3 +407,40 @@ fn memoryless_host_chain_runs_without_provider_optin_and_freezes_only_committed_
         .unwrap();
     assert_eq!(dry, [[1.0, 0.5]; 32]);
 }
+
+#[test]
+fn host_gain_uses_exact_integer_law_and_rejects_malformed_prepared_points() {
+    let target = DeviceAutomationTarget::HostInputGain;
+    let make = |normalized| {
+        PreparedParameterAutomation::new_with_host(
+            Vec::new(),
+            vec![HostAutomationLane {
+                target,
+                points: 0..1,
+            }],
+            vec![ParameterAutomationPoint {
+                beat_raw: 0,
+                normalized,
+                step: false,
+            }],
+        )
+    };
+    for millidb in [-60_000, -6_000, 0, 3_000, 24_000] {
+        let gain = HostGain::from_millidb(millidb).unwrap();
+        let program = make(gain.normalized()).unwrap();
+        assert_eq!(
+            program.block(Some(&Clock), 1).host_gain_at(target, 0),
+            Some(gain.linear())
+        );
+    }
+    assert_eq!(
+        make(HostGain::ZERO.normalized())
+            .unwrap()
+            .block(Some(&Clock), 1)
+            .host_gain_at(target, 0),
+        Some(1.0)
+    );
+    for value in [f32::NAN, f32::INFINITY, -0.001, 1.001] {
+        assert!(make(value).is_err());
+    }
+}

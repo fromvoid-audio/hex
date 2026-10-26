@@ -598,7 +598,7 @@ pub enum Request {
         project_generation: u64,
         revision: u64,
         device: hex_project::DeviceId,
-        parameter: hex_lattice_contract::ParameterId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
         points: Vec<hex_project::AutomationPoint>,
     },
     DeviceGesture(GestureRequest),
@@ -2210,34 +2210,27 @@ fn run_worker(
                 project_generation: generation,
                 revision: source_revision,
                 device,
-                parameter,
+                target,
                 points,
             } => {
                 Some(
                     if *generation != project_generation || *source_revision != revision {
                         Err("automation edit refused · project changed".into())
-                    } else if session
-                        .project()
-                        .device(*device)
-                        .zip(session.native_device_class(*device).ok())
-                        .is_none_or(|(source, class)| {
-                            !hex_engine::native_parameter_automation_supported(
-                                class,
-                                source.state(),
-                                *parameter,
-                            )
-                        })
-                    {
-                        Err("automation edit refused · parameter no longer available".into())
+                    } else if !hex_engine::project_device_automation_target_supported(
+                        session.project(),
+                        *device,
+                        *target,
+                    ) {
+                        Err("automation edit refused · target no longer available".into())
                     } else if pending_sampler_parameter.is_some()
                         || device_gesture.snapshot().is_some()
                         || tuning_gesture.snapshot().is_some()
                     {
                         Err("finish or cancel the active parameter gesture before editing automation".into())
                     } else {
-                        Ok(Command::ReplaceDeviceAutomation {
+                        Ok(Command::ReplaceDeviceAutomationTarget {
                             device: *device,
-                            parameter: *parameter,
+                            target: *target,
                             points: points.clone(),
                         })
                     },

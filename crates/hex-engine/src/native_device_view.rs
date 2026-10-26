@@ -176,8 +176,8 @@ pub const DEVICE_OUTPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
         id: hex_lattice_contract::ParameterId::from_static(u32::MAX),
         label: "output gain",
         kind: hex_lattice_contract::ParameterKind::Float {
-            min: -60.0,
-            max: 24.0,
+            min: hex_lattice_contract::HostGain::MIN_DB,
+            max: hex_lattice_contract::HostGain::MAX_DB,
             unit: Some("db"),
         },
         default: ParameterValue::Float(0.0),
@@ -189,8 +189,8 @@ pub const DEVICE_INPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
         id: hex_lattice_contract::ParameterId::from_static(u32::MAX - 1),
         label: "input gain",
         kind: hex_lattice_contract::ParameterKind::Float {
-            min: -60.0,
-            max: 24.0,
+            min: hex_lattice_contract::HostGain::MIN_DB,
+            max: hex_lattice_contract::HostGain::MAX_DB,
             unit: Some("db"),
         },
         default: ParameterValue::Float(0.0),

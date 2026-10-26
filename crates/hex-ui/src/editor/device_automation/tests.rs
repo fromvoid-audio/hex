@@ -1,4 +1,5 @@
 use super::*;
+use hex_lattice_contract::ParameterId;
 use hex_project::{Command, Created, Editor};
 fn project() -> (Project, hex_project::TrackId, DeviceId, ParameterId) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
@@ -33,16 +34,32 @@ fn project() -> (Project, hex_project::TrackId, DeviceId, ParameterId) {
 #[test]
 fn parameter_identity_quantization_and_empty_presentation_preserve_canonical_state() {
     let (project, track, device, parameter) = project();
-    let entry = Entry::read(&project, 4, Owner::Track(track), device, parameter).unwrap();
+    let entry = Entry::read(
+        &project,
+        4,
+        Owner::Track(track),
+        device,
+        DeviceAutomationTarget::Parameter(parameter),
+    )
+    .unwrap();
     assert!(entry.target.current(&project, 5).is_none());
-    assert!(Entry::read(&project, 4, Owner::Main, device, parameter).is_none());
+    assert!(
+        Entry::read(
+            &project,
+            4,
+            Owner::Main,
+            device,
+            DeviceAutomationTarget::Parameter(parameter)
+        )
+        .is_none()
+    );
     assert!(entry.quantize(0.25).unwrap().is_finite());
     let boolean = Entry::read(
         &project,
         4,
         Owner::Track(track),
         device,
-        ParameterId::from_static(5),
+        DeviceAutomationTarget::Parameter(ParameterId::from_static(5)),
     )
     .unwrap();
     assert_eq!(boolean.quantize(0.49), Some(0.0));
@@ -52,7 +69,7 @@ fn parameter_identity_quantization_and_empty_presentation_preserve_canonical_sta
         4,
         Owner::Track(track),
         device,
-        ParameterId::from_static(4),
+        DeviceAutomationTarget::Parameter(ParameterId::from_static(4)),
     )
     .unwrap();
     let normalized = choice.quantize(0.4).unwrap();
@@ -65,6 +82,48 @@ fn parameter_identity_quantization_and_empty_presentation_preserve_canonical_sta
     let mut model = Editor::new(project, 16).unwrap();
     model.execute(Command::RemoveDevice(device)).unwrap();
     assert!(entry.target.current(model.project(), 4).is_none());
+}
+
+#[test]
+fn host_metadata_has_no_provider_id_and_keeps_identity_across_native_provider_change() {
+    let (project, track, device, _) = project();
+    let host = Entry::read(
+        &project,
+        4,
+        Owner::Track(track),
+        device,
+        DeviceAutomationTarget::HostInputGain,
+    )
+    .unwrap();
+    assert_eq!(host.base, HostGain::ZERO.normalized());
+    assert_eq!(host.quantize(host.base), Some(host.base));
+    assert_eq!(host.quantize(1.01), None);
+    assert_eq!(host.quantize(f32::NAN), None);
+    assert_eq!(host.format(host.base), "0.000 db");
+    assert_eq!(host.target.provider, None);
+    assert!(
+        Entry::read(
+            &project,
+            4,
+            Owner::Track(track),
+            device,
+            DeviceAutomationTarget::Parameter(hex_engine::DEVICE_INPUT_GAIN.id)
+        )
+        .is_none()
+    );
+    let mut editor = Editor::new(project, 16).unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.overdrive",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let refreshed = host.refreshed(editor.project(), 4).unwrap();
+    assert_eq!(refreshed.target, host.target);
+    assert!(refreshed.label.contains("overdrive"));
 }
 
 #[cfg(feature = "ui-test-support")]
@@ -137,7 +196,7 @@ mod native {
                     view.project_generation,
                     Owner::Track(next),
                     device,
-                    parameter
+                    DeviceAutomationTarget::Parameter(parameter)
                 )
                 .is_some()
             );
@@ -180,7 +239,7 @@ mod native {
                     view.project_generation,
                     Owner::Track(track),
                     device,
-                    parameter,
+                    DeviceAutomationTarget::Parameter(parameter),
                 )
                 .unwrap();
                 view.automation_menu_action(Action::Show(entry, true), window, cx);
@@ -295,7 +354,7 @@ mod native {
                         view.project_generation,
                         owner,
                         device,
-                        parameter,
+                        DeviceAutomationTarget::Parameter(parameter),
                     )
                     .unwrap();
                     view.automation_menu_action(Action::Show(entry, true), window, cx);
@@ -414,7 +473,7 @@ mod native {
                     view.project_generation,
                     Owner::Track(track),
                     device,
-                    parameter,
+                    DeviceAutomationTarget::Parameter(parameter),
                 )
                 .unwrap();
                 let actions = (0..64)
@@ -541,7 +600,7 @@ mod native {
                     view.project_generation,
                     Owner::Track(track),
                     device,
-                    parameter,
+                    DeviceAutomationTarget::Parameter(parameter),
                 )
                 .unwrap();
                 view.automation_menu_action(Action::Show(entry.clone(), true), window, cx);

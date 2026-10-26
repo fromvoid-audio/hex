@@ -3,7 +3,9 @@ use hex_engine::{
     Audio, NativeDeviceClass, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand,
     SineTable, compile,
 };
-use hex_lattice_contract::{DeviceAutomationTarget as Target, DeviceTypeId, NativeDeviceState};
+use hex_lattice_contract::{
+    DeviceAutomationTarget as Target, DeviceTypeId, HostGain, NativeDeviceState,
+};
 use hex_project::{
     AutomationInterpolation as Curve, AutomationPoint, AutomationValue, BeatTime, Command, Created,
     DeviceId, Editor, Project,
@@ -13,7 +15,7 @@ const RATE: u32 = 8_000;
 fn point(beat: BeatTime, db: f32) -> AutomationPoint {
     AutomationPoint {
         beat,
-        value: AutomationValue::new((db + 60.0) / 84.0).unwrap(),
+        value: AutomationValue::new(HostGain::from_db(db).unwrap().normalized()).unwrap(),
         outgoing: Curve::Linear,
     }
 }
@@ -355,4 +357,58 @@ fn shared_source_and_instrument_host_targets_are_retained_but_refused_before_pla
         hex_engine::DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED
     );
     assert_eq!(e.project().snapshot(), snapshot);
+}
+
+#[test]
+fn nonlinear_host_positions_match_static_millidb_and_zero_db_is_bit_exact() {
+    let mut f = fixture(hex_devices::overdrive::OVERDRIVE_TYPE_ID, 513);
+    let base = f.e.project().device(f.device).unwrap().state().clone();
+    let original = render(&f, false, 513, 31);
+    state(&mut f, base.clone().with_input_gain_millidb(-6000).unwrap());
+    let pre = render(&f, false, 513, 31);
+    state(
+        &mut f,
+        base.clone().with_output_gain_millidb(-6000).unwrap(),
+    );
+    let post = render(&f, false, 513, 31);
+    assert!(
+        pre.iter()
+            .zip(&post)
+            .any(|(a, b)| (a[0] - b[0]).abs() > 1e-5),
+        "nonlinear fixture distinguishes pre from post gain"
+    );
+    state(
+        &mut f,
+        base.clone()
+            .with_input_gain_millidb(-6000)
+            .unwrap()
+            .with_output_gain_millidb(3000)
+            .unwrap(),
+    );
+    let expected = render(&f, false, 513, 31);
+    state(&mut f, base);
+    lane(
+        &mut f,
+        Target::HostInputGain,
+        vec![point(BeatTime::ZERO, -6.0)],
+    );
+    lane(
+        &mut f,
+        Target::HostOutputGain,
+        vec![point(BeatTime::ZERO, 3.0)],
+    );
+    close(&render(&f, false, 513, 17), &expected);
+    close(&render(&f, true, 513, 63), &expected);
+    lane(
+        &mut f,
+        Target::HostInputGain,
+        vec![point(BeatTime::ZERO, 0.0)],
+    );
+    lane(
+        &mut f,
+        Target::HostOutputGain,
+        vec![point(BeatTime::ZERO, 0.0)],
+    );
+    assert_eq!(render(&f, false, 513, 31), original);
+    assert_eq!(render(&f, true, 513, 31), original);
 }
