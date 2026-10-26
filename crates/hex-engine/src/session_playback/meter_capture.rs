@@ -8,8 +8,9 @@ pub(super) struct Cell {
     key: (u8, u64),
     frames: [Frame; 256],
     peak: f32,
-    touched: bool,
+    offset: Option<usize>,
     len: usize,
+    discarded: bool,
 }
 impl Cell {
     pub(super) fn new(id: OutputCaptureId) -> Self {
@@ -17,8 +18,18 @@ impl Cell {
             key: key(id),
             frames: [[0.0; 2]; 256],
             peak: 0.0,
-            touched: false,
+            offset: None,
             len: 0,
+            discarded: false,
+        }
+    }
+    fn finish(&mut self) {
+        if self.offset.take().is_some() {
+            for value in self.frames[..self.len].iter().flatten() {
+                if value.is_finite() {
+                    self.peak = self.peak.max(value.abs());
+                }
+            }
         }
     }
 }
@@ -36,7 +47,6 @@ pub(super) struct MeterCapture<'a, 'b> {
     pub revision: &'a PreparedRevision,
     pub cells: &'a mut [Cell],
     pub downstream: Option<&'b mut dyn CaptureSink>,
-    pub offset: Option<usize>,
     pub invalidated: bool,
 }
 impl MeterCapture<'_, '_> {
@@ -46,13 +56,8 @@ impl MeterCapture<'_, '_> {
             .ok()
     }
     fn flush(&mut self) {
-        for cell in self.cells.iter_mut().filter(|cell| cell.touched) {
-            for value in cell.frames[..cell.len].iter().flatten() {
-                if value.is_finite() {
-                    cell.peak = cell.peak.max(value.abs());
-                }
-            }
-            cell.touched = false;
+        for cell in self.cells.iter_mut() {
+            cell.finish();
         }
     }
 }
@@ -70,10 +75,6 @@ impl CaptureSink for MeterCapture<'_, '_> {
         offset: usize,
         frames: &[Frame],
     ) -> Result<(), SessionPlaybackError> {
-        if self.offset.is_some_and(|old| old != offset) {
-            self.flush();
-        }
-        self.offset = Some(offset);
         if let Some(index) = self.index(id) {
             let cell = self
                 .cells
@@ -82,11 +83,24 @@ impl CaptureSink for MeterCapture<'_, '_> {
             if frames.len() > cell.frames.len() {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
-            if !cell.touched {
+            // Contributions for one owner arrive in nondecreasing block
+            // offsets. Keep its current span open so retained tails at the
+            // same offset are summed before calculating the peak.
+            if cell.offset.is_some_and(|previous| offset < previous) {
+                // A broken ordering contract must not turn optional metering
+                // into an audio failure or publish a misleading partial peak.
+                cell.offset = None;
+                cell.peak = 0.0;
+                cell.discarded = true;
+            }
+            if !cell.discarded && cell.offset.is_some_and(|previous| offset > previous) {
+                cell.finish();
+            }
+            if !cell.discarded && cell.offset.is_none() {
                 cell.frames[..frames.len()].copy_from_slice(frames);
                 cell.len = frames.len();
-                cell.touched = true;
-            } else {
+                cell.offset = Some(offset);
+            } else if !cell.discarded {
                 if frames.len() > cell.len {
                     cell.frames[cell.len..frames.len()].fill([0.0; 2]);
                     cell.len = frames.len();
@@ -111,17 +125,23 @@ impl CaptureSink for MeterCapture<'_, '_> {
                 .and_then(|id| self.index(OutputCaptureId::Track(id)))
             {
                 let cell = &mut self.cells[index];
-                track
-                    .instrument_meter
-                    .observe_track_output(&[[cell.peak, 0.0]]);
+                if !cell.discarded {
+                    track
+                        .instrument_meter
+                        .observe_track_output(&[[cell.peak, 0.0]]);
+                }
                 cell.peak = 0.0;
+                cell.discarded = false;
             }
         }
         for bus in arrangement.return_buses() {
             if let Some(index) = self.index(OutputCaptureId::Return(bus.id)) {
                 let cell = &mut self.cells[index];
-                bus.output_meter.observe_track_output(&[[cell.peak, 0.0]]);
+                if !cell.discarded {
+                    bus.output_meter.observe_track_output(&[[cell.peak, 0.0]]);
+                }
                 cell.peak = 0.0;
+                cell.discarded = false;
             }
         }
         if let Some(sink) = self.downstream.as_mut() {
@@ -135,7 +155,8 @@ impl CaptureSink for MeterCapture<'_, '_> {
         self.invalidated = true;
         for cell in self.cells.iter_mut() {
             cell.peak = 0.0;
-            cell.touched = false;
+            cell.offset = None;
+            cell.discarded = false;
         }
         if let Some(sink) = self.downstream.as_mut() {
             sink.invalidate();
