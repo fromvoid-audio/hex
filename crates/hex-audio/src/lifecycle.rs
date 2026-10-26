@@ -669,8 +669,16 @@ fn retire_prepared_output(mut retirement: Retirement) {
             match result {
                 Ok(Ok(true)) => return,
                 Ok(Ok(false)) => {}
-                Ok(Err(())) => retirement.failed = true,
+                Ok(Err(())) => {
+                    if let Some(native) = retirement.native.as_ref() {
+                        native.fail_scalar_receipts();
+                    }
+                    retirement.failed = true;
+                }
                 Err(payload) => {
+                    if let Some(native) = retirement.native.as_ref() {
+                        native.fail_scalar_receipts();
+                    }
                     retirement.first_panic = Some(payload);
                     retirement.failed = true;
                 }

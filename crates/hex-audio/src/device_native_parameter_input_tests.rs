@@ -57,7 +57,7 @@ fn write(
         )
     })
 }
-fn fixture(limiter: bool) -> (prepared::Control, prepared::Callback, Target) {
+pub(crate) fn fixture(limiter: bool) -> (prepared::Control, prepared::Callback, Target) {
     fixture_with_setup(limiter, |_| {})
 }
 fn fixture_with_setup(
@@ -174,7 +174,7 @@ fn fixture_with_target(
     };
     (control, callback, target)
 }
-fn value(gain: f32) -> NativeTransientValue {
+pub(crate) fn value(gain: f32) -> NativeTransientValue {
     NativeTransientValue::Parameter {
         id: parameter::GAIN,
         value: ParameterValue::Float(gain),
