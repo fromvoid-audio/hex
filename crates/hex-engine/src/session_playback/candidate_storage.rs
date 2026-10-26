@@ -19,6 +19,7 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            native_parameter_state,
             compensation,
             device_metering: _,
             revision,
@@ -36,6 +37,7 @@ impl SessionPlayback {
             return_chains,
             main_chain,
             return_scratch,
+            meter_cells,
             return_effect_tails,
             mutable_instruments,
             mutable_onsets,
@@ -97,6 +99,19 @@ impl SessionPlayback {
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        if native_parameter_state.is_some() != revision.native_parameter_input_target().is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if let Some(state) = native_parameter_state.as_deref() {
+            if !state.is_empty() {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+            l.bytes(
+                Owner::exclusive(state),
+                Location("native-parameter-input-state", 0),
+                Self::native_parameter_input_state_bytes(),
+            )?;
+        }
         l.existing_shared(
             revision,
             Owner::exclusive(revision),
@@ -107,6 +122,7 @@ impl SessionPlayback {
         l.vec(device_chains)?;
         l.vec(return_chains)?;
         l.vec(return_scratch)?;
+        l.vec(meter_cells)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
         for (index, runtime) in mutable_instruments.iter().enumerate() {

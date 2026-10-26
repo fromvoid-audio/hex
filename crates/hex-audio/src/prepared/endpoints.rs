@@ -21,6 +21,7 @@ pub(crate) struct ClientEndpoints {
     spectrum_target: spectrum_target::SpectrumTargetControl,
     processor_audition: processor_audition::ProcessorAuditionTargetControl,
     gain_recording: crate::gain_recording::Control,
+    native_parameter_input: crate::native_parameter_input::Control,
     midi_recording: crate::midi_recording::Control,
     pub(super) status: Arc<Status>,
     command_ticket: u64,
@@ -43,6 +44,7 @@ impl Control {
             spectrum_target,
             processor_audition,
             gain_recording,
+            native_parameter_input,
             midi_recording,
             command_ticket,
             mut publication,
@@ -66,6 +68,7 @@ impl Control {
             spectrum_target,
             processor_audition,
             gain_recording,
+            native_parameter_input,
             midi_recording,
             status,
             command_ticket,
@@ -332,6 +335,52 @@ impl Client {
         self.endpoints
             .owner_mut()
             .and_then(|e| e.midi_recording.try_receipt())
+    }
+    pub fn native_parameter_target(&self) -> Option<crate::native_parameter_input::Target> {
+        self.endpoints
+            .owner_ref()
+            .and_then(|e| e.native_parameter_input.target())
+    }
+    pub fn native_parameter_begin(
+        &mut self,
+        target: crate::native_parameter_input::Target,
+        value: hex_lattice::NativeTransientValue,
+    ) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .native_parameter_input
+            .begin(target, value)
+    }
+    pub fn native_parameter_change(
+        &mut self,
+        value: hex_lattice::NativeTransientValue,
+    ) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .native_parameter_input
+            .change(value)
+    }
+    pub fn native_parameter_release(&mut self) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .native_parameter_input
+            .release()
+    }
+    pub fn native_parameter_cancel(&mut self) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .native_parameter_input
+            .cancel()
+    }
+    pub fn native_parameter_receipt(&mut self) -> Option<crate::native_parameter_input::Receipt> {
+        self.endpoints
+            .owner_mut()?
+            .native_parameter_input
+            .try_receipt()
     }
     pub fn gain_target(&self) -> Option<crate::gain_recording::Target> {
         self.endpoints

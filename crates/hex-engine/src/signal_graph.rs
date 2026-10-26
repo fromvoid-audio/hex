@@ -913,6 +913,7 @@ impl SignalRuntime {
             offset,
             &mut hex_lattice::RefuseForeign,
             observer,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -923,6 +924,7 @@ impl SignalRuntime {
         offset: usize,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
     ) -> Result<(), Invalid> {
         if frames.len() != 1 || chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
@@ -932,34 +934,19 @@ impl SignalRuntime {
             let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
             let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
             let output_clock = OriginClock(output_stamp);
-            if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_foreign(
-                    index..index + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    Some(&output_clock),
-                    foreign,
-                    &mut |owner, device, kind, phase, offset, frames| {
-                        observer(
-                            crate::PostNodeIdentity::new(owner, device, kind),
-                            phase,
-                            offset,
-                            frames,
-                        );
-                    },
-                )
-            } else {
-                chain.process_range_with_foreign(
-                    index..index + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    Some(&output_clock),
-                    foreign,
-                )
-            }
-            .map_err(|_| Invalid("main effect runtime failed"))?;
+            crate::native_parameter_input::process_range(
+                input.as_deref_mut(),
+                chain,
+                index..index + 1,
+                frames,
+                offset,
+                Some(&clock),
+                Some(&output_clock),
+                planned.input_arrival_frames,
+                planned.output_arrival_frames,
+                foreign,
+                observer,
+            )?;
             if output_stamp.is_none() {
                 frames.fill([0.0; 2]);
             }
@@ -988,6 +975,7 @@ impl SignalRuntime {
             metered,
             &mut hex_lattice::RefuseForeign,
             observer,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -1002,6 +990,7 @@ impl SignalRuntime {
         metered: bool,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
     ) -> Result<Frame, Invalid> {
         audio = self.edge(self.graph.tracks[index].source_input, audio)?;
         audio[0] += self.inputs[index][0];
@@ -1015,6 +1004,7 @@ impl SignalRuntime {
             offset,
             foreign,
             observer,
+            input.as_deref_mut(),
         )?;
         track.apply_instrument_input_gain(std::slice::from_mut(&mut audio));
         if metered {
@@ -1046,6 +1036,7 @@ impl SignalRuntime {
             offset,
             foreign,
             observer,
+            input,
         )?;
         Ok(mixed)
     }
@@ -1066,6 +1057,7 @@ impl SignalRuntime {
             offset,
             &mut hex_lattice::RefuseForeign,
             observer,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -1078,6 +1070,7 @@ impl SignalRuntime {
         offset: usize,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
     ) -> Result<(), Invalid> {
         for (local, &node) in nodes.iter().enumerate() {
             let planned = &self.graph.plan.nodes()[node];
@@ -1085,34 +1078,19 @@ impl SignalRuntime {
             let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
             let output_clock = OriginClock(output_stamp);
             let frames = std::slice::from_mut(frame);
-            if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_foreign(
-                    start + local..start + local + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    Some(&output_clock),
-                    foreign,
-                    &mut |owner, device, kind, phase, offset, frames| {
-                        observer(
-                            crate::PostNodeIdentity::new(owner, device, kind),
-                            phase,
-                            offset,
-                            frames,
-                        )
-                    },
-                )
-            } else {
-                chain.process_range_with_foreign(
-                    start + local..start + local + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    Some(&output_clock),
-                    foreign,
-                )
-            }
-            .map_err(|_| Invalid("compensated native device range is invalid"))?;
+            crate::native_parameter_input::process_range(
+                input.as_deref_mut(),
+                chain,
+                start + local..start + local + 1,
+                frames,
+                offset,
+                Some(&clock),
+                Some(&output_clock),
+                planned.input_arrival_frames,
+                planned.output_arrival_frames,
+                foreign,
+                observer,
+            )?;
             if output_stamp.is_none() {
                 *frame = [0.0; 2];
             }

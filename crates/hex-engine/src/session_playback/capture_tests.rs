@@ -203,6 +203,7 @@ fn selected_outputs_keep_shared_unselected_sends_and_independent_post_mix_pcm() 
     for (muted, solo) in [(false, false), (true, false), (false, true)] {
         let revision = audio_fixture(true, muted, solo);
         let mut runtime = linear(Arc::clone(&revision));
+        runtime.set_device_metering(true);
         let mut main_only = linear(Arc::clone(&revision));
         let track = runtime.routes[0].id;
         let bus = revision.arrangement().return_buses()[0].id;
@@ -220,6 +221,23 @@ fn selected_outputs_keep_shared_unselected_sends_and_independent_post_mix_pcm() 
         runtime
             .render_with_capture(&mut main, &mut capture)
             .unwrap();
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        for (index, meter) in [
+            observation.return_output_meter(bus).unwrap(),
+            observation.track_output_meter(track).unwrap(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected = capture
+                .output(index)
+                .unwrap()
+                .iter()
+                .flatten()
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            assert_eq!(meter.take_track_output(), expected);
+        }
         assert_eq!(capture.valid_frames(), 512);
         let mut expected_main = [[0.0; 2]; 512];
         main_only.render(&mut expected_main).unwrap();
@@ -1091,6 +1109,11 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
                 super::return_effect_tails::ReturnEffectTail::new(chain, bus),
             );
         }
+        tested.set_device_metering(true);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        let track_id = tested.routes[0].id;
+        let return_id = revision.arrangement().return_buses()[0].id;
         tested.arrangement_frame = u64::MAX - 300;
         let mut observed = 0;
         let mut actual = [[9.0; 2]; 512];
@@ -1107,6 +1130,20 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
             "failure must follow speculative effect processing"
         );
         assert_eq!(actual, [[0.0; 2]; 512]);
+        assert_eq!(
+            observation
+                .track_output_meter(track_id)
+                .unwrap()
+                .take_track_output(),
+            0.0
+        );
+        assert_eq!(
+            observation
+                .return_output_meter(return_id)
+                .unwrap()
+                .take_track_output(),
+            0.0
+        );
         assert_eq!(tested.performance_frame, 4);
         let candidate = linear(revision);
         // This provider forbids inheriting an open transaction. A next-begin
