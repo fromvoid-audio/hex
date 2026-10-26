@@ -440,7 +440,8 @@ impl DraftInput {
         &self.shared.path
     }
     /// Once-only recovery custody, including after the joining owner was dropped.
-    /// None means pending or already taken; inspect progress.finished to distinguish them.
+    /// None means pending, already taken, or unavailable after an unexpected worker failure;
+    /// inspect progress.finished/failed and preserve the file in that last case.
     /// This never waits or joins. The worker releases its file before publishing the outcome.
     pub fn try_take_outcome(&mut self) -> Option<DraftWorkerOutcome> {
         self.shared.state().outcome.take()
@@ -588,9 +589,12 @@ impl DraftWorker {
     fn join(&mut self) -> Result<(), String> {
         let _ = self.shared.finish(DraftTerminal::Interrupted);
         if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| "automation writer failed; recover its retained file".to_owned())?;
+            if thread.join().is_err() {
+                let mut state = self.shared.state();
+                state.failed = true;
+                state.finished = true;
+                return Err("automation writer failed; recover its retained file".to_owned());
+            }
         }
         Ok(())
     }

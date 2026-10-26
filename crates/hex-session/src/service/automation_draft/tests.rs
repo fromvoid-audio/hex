@@ -378,3 +378,18 @@ fn failed_control_gate_keeps_admitted_batches_available_without_a_false_terminal
     assert_eq!(outcome.retained[1].events(), &[event(2)]);
     assert_eq!(reader(&path).outcome(), DraftOutcome::Interrupted);
 }
+
+#[test]
+fn unexpected_worker_failure_is_visible_after_join_and_leaves_the_source_file() {
+    let files = Files::new();
+    let path = files.path("worker-failure.hex-automation-draft");
+    let (project, target, stamp) = fixture();
+    let writer = DraftWriter::create_new(&path, &project, target, stamp).unwrap();
+    let (input, worker) =
+        spawn_with_start(writer, || panic!("controlled startup failure")).unwrap();
+    assert!(worker.join_on_control().is_err());
+    assert!(input.progress().failed);
+    assert!(input.progress().finished);
+    assert_eq!(input.progress().terminal_durable, None);
+    assert_eq!(reader(&path).outcome(), DraftOutcome::Interrupted);
+}
