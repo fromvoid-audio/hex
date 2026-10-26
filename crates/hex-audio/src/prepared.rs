@@ -68,6 +68,8 @@ mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
+#[cfg(all(test, feature = "allocation-probe"))]
+mod alias_tests;
 mod applied_source;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod delay_tests;

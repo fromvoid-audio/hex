@@ -590,3 +590,32 @@ fn unrelated_edits_retain_effective_source_identity_for_every_alias() {
         &editor.project().midi_clip(alias).unwrap().source
     ));
 }
+
+/// Control-side metadata/history workload; no audio rendering or native deadlines.
+#[test]
+#[ignore = "release-only control metadata measurement"]
+fn profile_alias_gain_history() {
+    let (mut editor, track, mut last) = midi();
+    for _ in 1..1_000 {
+        last = duplicate(&mut editor, last);
+    }
+    let mut timings = Vec::with_capacity(400);
+    for index in 0..430 {
+        let start = std::time::Instant::now();
+        editor
+            .execute(Command::Gain {
+                track,
+                gain: if index % 2 == 0 { 0.5 } else { 1.0 },
+            })
+            .unwrap();
+        std::hint::black_box(editor.project());
+        if index >= 30 {
+            timings.push(start.elapsed().as_nanos());
+        }
+    }
+    timings.sort_unstable();
+    println!(
+        "alias_control_gain clips=1000 groups=1 history=32 sample_rate=48000 warmup=30 measured=400 p50_ns={} p95_ns={} p99_ns={} max_ns={}",
+        timings[200], timings[380], timings[396], timings[399]
+    );
+}

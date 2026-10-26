@@ -395,6 +395,81 @@ fn strict_schema51_writer_migrates_complete_state_and_original_bytes_are_unchang
 }
 
 #[test]
+fn aliases_coexist_with_native_sources_automation_crossfades_and_track_groups() {
+    let (mut e, _, _, _, _) = fixture();
+    let Created::Track(instrument) = e
+        .execute(Command::InsertTrackWithDevice {
+            name: "native source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument")
+    };
+    let device = e
+        .project()
+        .track(instrument)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    e.execute(Command::ReplaceDeviceAutomation {
+        device,
+        parameter: hex_lattice_contract::ParameterId::from_static(7),
+        points: vec![hex_project::AutomationPoint {
+            beat: BeatTime::ZERO,
+            value: hex_project::AutomationValue::new(0.25).unwrap(),
+            outgoing: hex_project::AutomationInterpolation::Linear,
+        }],
+    })
+    .unwrap();
+    let Created::Imported { track, clip, .. } = e
+        .execute(Command::ImportAudioTrack {
+            name: "crossfade".into(),
+            path: "missing-crossfade.wav".into(),
+            sample_rate: 48_000,
+            frames: 96_000,
+        })
+        .unwrap()
+    else {
+        panic!("audio")
+    };
+    e.execute(Command::SetClipLooping {
+        clip,
+        looping: true,
+    })
+    .unwrap();
+    e.execute(Command::SetClipSourcePhase { clip, phase: 16 })
+        .unwrap();
+    e.execute(Command::CopyClipTo {
+        clip,
+        track,
+        start: 96_000,
+    })
+    .unwrap();
+    e.execute(Command::CreateArrangementFades {
+        range: hex_project::TimeRange::new(vec![track], 92_000, 100_000).unwrap(),
+    })
+    .unwrap();
+    e.execute(Command::GroupTracks {
+        tracks: hex_project::TrackSelectionIds::new(&[track, instrument]).unwrap(),
+        name: "group".into(),
+    })
+    .unwrap();
+    assert!(!e.project().snapshot().native_sources.is_empty());
+    assert!(e.project().has_group_tracks());
+    assert!(e.project().has_clip_aliases());
+    let encoded = encode(e.project()).unwrap();
+    assert_eq!(decode(&encoded).unwrap(), *e.project());
+    assert!(e.undo());
+    assert_eq!(decode(&encode(e.project()).unwrap()).unwrap(), *e.project());
+    assert!(e.redo());
+    assert_eq!(encode(e.project()).unwrap(), encoded);
+}
+
+#[test]
 fn grouped_audio_aliases_retain_child_roots_once_and_preserve_hierarchy() {
     let (mut e, track, audio, midi) = independent();
     let asset = e.project().clip(audio).unwrap().asset();
