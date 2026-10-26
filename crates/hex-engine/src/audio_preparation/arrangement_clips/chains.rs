@@ -14,6 +14,7 @@ use hex_lattice_contract::NativeDeviceMetadata;
 use std::sync::Arc;
 
 struct Entry {
+    automation_bytes: usize,
     device_id: u64,
     owner: ProcessorChainOwner,
     device_type: hex_lattice_contract::DeviceTypeId,
@@ -54,6 +55,9 @@ impl ChainCustody {
             .ok_or(AudioStorageError::Overflow)?;
         let mut largest_copy = 0;
         for device in devices {
+            retained = retained
+                .checked_add(crate::device_automation::quote(device)?)
+                .ok_or(AudioStorageError::Overflow)?;
             let state = device.state();
             state
                 .require_asset_free_processing()
@@ -62,10 +66,17 @@ impl ChainCustody {
                 let migrated = hex_devices::utility::UTILITY_DEFINITION
                     .migrate_state(state)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-                let processor =
+                let processor = if device.automation().is_empty() {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?
-                        .is_some();
+                        .is_some()
+                } else {
+                    hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter(
+                        &migrated, rate,
+                    )
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                    true
+                };
                 let bytes = processor
                     .then(|| {
                         parts(OwnedShared::<
@@ -106,10 +117,27 @@ impl ChainCustody {
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
+        let automation_overlap = devices
+            .iter()
+            .try_fold(0usize, |sum, device| {
+                sum.checked_add(crate::device_automation::quote(device).ok()?)
+            })
+            .ok_or(AudioStorageError::Overflow)?;
+        let automation_staging = devices
+            .iter()
+            .map(|device| {
+                hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes(
+                    device.automation().len(),
+                )
+            })
+            .try_fold(0usize, |largest, value| Some(largest.max(value?)))
+            .ok_or(AudioStorageError::Overflow)?;
         let overlap = devices
             .len()
             .checked_mul(std::mem::size_of::<PreparedRuntimeInstance>())
             .and_then(|n| n.checked_add(largest_copy))
+            .and_then(|n| n.checked_add(automation_overlap))
+            .and_then(|n| n.checked_add(automation_staging))
             .ok_or(AudioStorageError::Overflow)?;
         Ok((retained, overlap))
     }
@@ -145,6 +173,15 @@ impl ChainCustody {
         prepared
             .try_reserve_exact(devices.len())
             .map_err(|_| AudioStorageError::Allocation)?;
+        let automation_staging = devices
+            .iter()
+            .map(|device| {
+                hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes(
+                    device.automation().len(),
+                )
+            })
+            .try_fold(0usize, |largest, value| Some(largest.max(value?)))
+            .ok_or(AudioStorageError::Overflow)?;
         self.construction_overlap = prepared
             .capacity()
             .checked_mul(std::mem::size_of::<PreparedRuntimeInstance>())
@@ -165,11 +202,20 @@ impl ChainCustody {
                 )
             })
             .ok_or(AudioStorageError::Overflow)?;
+        self.construction_overlap = self
+            .construction_overlap
+            .checked_add(automation_staging)
+            .ok_or(AudioStorageError::Overflow)?;
         if prepared.capacity() != devices.len() {
             return Err(AudioStorageError::UnknownStorage);
         }
         let mut admission = StereoMatrix::identity();
         for device in devices {
+            let automation = crate::device_automation::prepare(device)
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let automation_bytes = automation
+                .storage_bytes()
+                .ok_or(AudioStorageError::Overflow)?;
             device
                 .state()
                 .require_asset_free_processing()
@@ -227,7 +273,7 @@ impl ChainCustody {
                     _ => return Err(AudioStorageError::UnsupportedGraph),
                 }
             };
-            let matrix = if device.bypassed() || !native {
+            let matrix = if device.bypassed() || !native || !automation.is_empty() {
                 StereoMatrix::identity()
             } else if reverb {
                 hex_devices::reverb::REVERB_DEFINITION
@@ -250,9 +296,16 @@ impl ChainCustody {
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
             let processor = if utility {
-                hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
-                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
-                    .map(|value| OwnedShared::new_owned(value).into_processor_parts_on_control())
+                (if automation.is_empty() {
+                    hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
+                } else {
+                    hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter_for_parameters(
+                        &migrated, rate, automation.parameter_ids(),
+                    )
+                    .map(Some)
+                })
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                .map(|value| OwnedShared::new_owned(value).into_processor_parts_on_control())
             } else if reverb {
                 Some(
                     OwnedShared::new_owned(
@@ -287,6 +340,7 @@ impl ChainCustody {
             let (meter, meter_declaration) = meter.into_paired_parts_on_control();
             let handles = [handle()?, handle()?, handle()?, handle()?];
             self.entries.push(Entry {
+                automation_bytes,
                 device_id: device.id().value(),
                 owner,
                 device_type: migrated_type,
@@ -298,6 +352,7 @@ impl ChainCustody {
                 handles,
             });
             prepared.push(PreparedRuntimeInstance {
+                automation,
                 meter,
                 owner,
                 device_id: device.id().value(),
@@ -322,7 +377,8 @@ impl ChainCustody {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (value, pair) in chain.iter().zip(&self.entries) {
-            if value.device_id != pair.device_id
+            if value.automation.storage_bytes() != Some(pair.automation_bytes)
+                || value.device_id != pair.device_id
                 || value.owner != pair.owner
                 || value.device_type != pair.device_type
                 || match (&value.definition, pair.foreign, pair.processor.is_some()) {
@@ -361,6 +417,9 @@ impl ChainCustody {
             .checked_mul(std::mem::size_of::<Entry>())
             .ok_or(AudioStorageError::Overflow)?;
         for (value, pair) in chain.iter().zip(&self.entries) {
+            bytes = bytes
+                .checked_add(pair.automation_bytes)
+                .ok_or(AudioStorageError::Overflow)?;
             let state = value
                 .configuration
                 .as_ref()
@@ -424,6 +483,10 @@ impl ChainCustody {
         use crate::audio_storage::{Location, Owner};
         self.validate(chain)?;
         for (value, pair) in chain.iter().zip(&self.entries) {
+            let (ids, lanes, points) = value.automation.storage_vectors();
+            l.vec(ids)?;
+            l.vec(lanes)?;
+            l.vec(points)?;
             let state = value
                 .configuration
                 .as_ref()
@@ -499,94 +562,126 @@ mod tests {
         if !crate::audio_storage_constructor_layout_supported() {
             return;
         }
-        let (project, mut bank) = crate::audio_preparation::tests::fixture(2);
-        bank.reservation.handle_obligations = 32;
-        let original = bank.sources.as_ptr();
-        let original_capacity = bank.sources.capacity();
-        let mut snapshot = project.snapshot();
-        snapshot.tracks[0].gain = 0.5;
-        snapshot.tracks[0].balance = -0.25;
-        let definition = &hex_devices::utility::UTILITY_DEFINITION;
-        let state = definition
-            .patch_parameter(
-                &definition.default_state().unwrap(),
-                hex_devices::utility::parameter::DC_REMOVE,
-                ParameterValue::Bool(true),
+        let mut static_bytes = None;
+        for automated in [false, true] {
+            let (project, mut bank) = crate::audio_preparation::tests::fixture(2);
+            bank.reservation.handle_obligations = 32;
+            let original = bank.sources.as_ptr();
+            let original_capacity = bank.sources.capacity();
+            let mut snapshot = project.snapshot();
+            snapshot.tracks[0].gain = 0.5;
+            snapshot.tracks[0].balance = -0.25;
+            let definition = &hex_devices::utility::UTILITY_DEFINITION;
+            let state = definition
+                .patch_parameter(
+                    &definition.default_state().unwrap(),
+                    hex_devices::utility::parameter::DC_REMOVE,
+                    ParameterValue::Bool(true),
+                )
+                .unwrap()
+                .with_input_gain_millidb(-6000)
+                .unwrap()
+                .with_output_gain_millidb(3000)
+                .unwrap();
+            snapshot.tracks[0]
+                .devices
+                .push(hex_project::DeviceSnapshot {
+                    automation: if automated {
+                        vec![hex_project::DeviceAutomation {
+                            parameter: hex_devices::utility::parameter::GAIN,
+                            points: vec![
+                                hex_project::AutomationPoint {
+                                    beat: hex_project::BeatTime::ZERO,
+                                    value: hex_project::AutomationValue::new(0.005).unwrap(),
+                                    outgoing: hex_project::AutomationInterpolation::Linear,
+                                },
+                                hex_project::AutomationPoint {
+                                    beat: hex_project::BeatTime::from_raw(1 << 26),
+                                    value: hex_project::AutomationValue::new(0.015).unwrap(),
+                                    outgoing: hex_project::AutomationInterpolation::Step,
+                                },
+                            ],
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    comparison: None,
+                    id: snapshot.next_id,
+                    bypassed: false,
+                    state,
+                });
+            snapshot.next_id += 1;
+            let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+            let mut media = std::collections::BTreeMap::new();
+            let (asset, source) = &bank.sources[0];
+            let SourceKind::Resident(audio) = &source.kind else {
+                panic!("resident fixture")
+            };
+            media.insert(*asset, audio.clone());
+            let reference = crate::PreparedRevision::prepare(
+                &project,
+                &media,
+                std::sync::Arc::new(hex_devices::SineTable::new()),
+                None,
             )
-            .unwrap()
-            .with_input_gain_millidb(-6000)
-            .unwrap()
-            .with_output_gain_millidb(3000)
             .unwrap();
-        snapshot.tracks[0]
-            .devices
-            .push(hex_project::DeviceSnapshot {
-                automation: Vec::new(),
-                comparison: None,
-                id: snapshot.next_id,
-                bypassed: false,
-                state,
-            });
-        snapshot.next_id += 1;
-        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
-        let mut media = std::collections::BTreeMap::new();
-        let (asset, source) = &bank.sources[0];
-        let SourceKind::Resident(audio) = &source.kind else {
-            panic!("resident fixture")
-        };
-        media.insert(*asset, audio.clone());
-        let reference = crate::PreparedRevision::prepare(
-            &project,
-            &media,
-            std::sync::Arc::new(hex_devices::SineTable::new()),
-            None,
-        )
-        .unwrap();
-        let mut reference = crate::SessionPlayback::new(std::sync::Arc::new(reference)).unwrap();
-        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
-        let token = custody
-            .begin_input_on_control(
-                AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision(),
+            let mut reference =
+                crate::SessionPlayback::new(std::sync::Arc::new(reference)).unwrap();
+            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+            let token = custody
+                .begin_input_on_control(
+                    AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision(),
+                )
+                .unwrap_or_else(|refusal| panic!("Utility root preflight: {:?}", refusal.reason));
+            let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+                crate::AudioStorageLedgerReservation {
+                    data_rows: 1024,
+                    handle_rows: 256,
+                    root_rows: 8,
+                    max_retained_bytes: usize::MAX,
+                    max_construction_peak_bytes: usize::MAX,
+                },
             )
-            .unwrap_or_else(|refusal| panic!("Utility root preflight: {:?}", refusal.reason));
-        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
-            crate::AudioStorageLedgerReservation {
-                data_rows: 1024,
-                handle_rows: 256,
-                root_rows: 8,
-                max_retained_bytes: usize::MAX,
-                max_construction_peak_bytes: usize::MAX,
-            },
-        )
-        .unwrap();
-        ledger
-            .borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)
             .unwrap();
-        let summary = ledger.summary().unwrap();
-        assert_eq!(summary.unknown_storage, 0);
-        assert!(summary.require_complete().is_err());
-        drop(ledger);
-        let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
-            .ok()
-            .unwrap();
-        owner
-            .test_apply_action(crate::PlaybackAction::Transport(
-                crate::PlaybackCommand::Play,
-            ))
-            .unwrap();
-        reference
-            .apply(crate::SessionPlaybackCommand::Play)
-            .unwrap();
-        let mut actual = [[0.0; 2]; 256];
-        let mut expected = actual;
-        owner.test_render(&mut actual).unwrap();
-        reference.render(&mut expected).unwrap();
-        assert_eq!(actual, expected);
-        assert!(actual[16..].iter().any(|f| f[0] != 0.0));
-        owner.dispose_on_control().unwrap();
-        let inputs = owner.recover_inputs_on_control().unwrap();
-        assert_eq!(inputs.sources.as_ptr(), original);
-        assert_eq!(inputs.sources.capacity(), original_capacity);
+            ledger
+                .borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)
+                .unwrap();
+            let summary = ledger.summary().unwrap();
+            assert_eq!(summary.unknown_storage, 0);
+            if automated {
+                let program_bytes =
+                    crate::device_automation::quote(&project.tracks()[0].devices()[0]).unwrap();
+                assert!(
+                    summary.data_bytes >= static_bytes.unwrap() + program_bytes,
+                    "closed program backing is charged in physical inventory"
+                );
+            } else {
+                static_bytes = Some(summary.data_bytes);
+            }
+            assert!(summary.require_complete().is_err());
+            drop(ledger);
+            let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
+                .ok()
+                .unwrap();
+            owner
+                .test_apply_action(crate::PlaybackAction::Transport(
+                    crate::PlaybackCommand::Play,
+                ))
+                .unwrap();
+            reference
+                .apply(crate::SessionPlaybackCommand::Play)
+                .unwrap();
+            let mut actual = [[0.0; 2]; 256];
+            let mut expected = actual;
+            owner.test_render(&mut actual).unwrap();
+            reference.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual[16..].iter().any(|f| f[0] != 0.0));
+            owner.dispose_on_control().unwrap();
+            let inputs = owner.recover_inputs_on_control().unwrap();
+            assert_eq!(inputs.sources.as_ptr(), original);
+            assert_eq!(inputs.sources.capacity(), original_capacity);
+        }
     }
 }
 
