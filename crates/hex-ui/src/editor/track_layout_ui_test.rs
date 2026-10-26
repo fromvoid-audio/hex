@@ -894,3 +894,114 @@ mod capture_tests;
 
 #[path = "main_track_size_ui_tests.rs"]
 mod main_size_tests;
+
+#[gpui::test]
+fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 12);
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll
+            .scroll_to_item(6, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let resize = bounds(&mut visual, "track-height-resize", tracks[6]).center();
+    drag(&mut visual, resize, point(resize.x, resize.y + px(40.0)));
+    let before = editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(tracks[7]);
+        view.track_selection.replace(&tracks[6..8]);
+        view.time_selection = Some(super::time_selection::TimeSelection {
+            anchor_track: tracks[6],
+            end_track: tracks[7],
+            anchor_frame: 48_000,
+            end_frame: 96_000,
+        });
+        view.viewport = Some(super::Viewport {
+            start: 24_000,
+            length: 192_000,
+        });
+        view.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: 2,
+            offset_in_item: px(7.0),
+        });
+        cx.notify();
+        (
+            view.track_body_height(tracks[6]),
+            view.track_body_height(tracks[7]),
+            view.main_track_height(),
+            view.viewport,
+            view.state.as_ref().unwrap().project.snapshot(),
+        )
+    });
+    visual.run_until_parked();
+    let scroll = editor.read_with(&visual, |view, _| {
+        view.track_scroll.list.logical_scroll_top()
+    });
+    visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let available = view.arrangement_bounds.unwrap().height;
+        let fitted = view.track_height(tracks[6]) + view.track_height(tracks[7]);
+        assert!(
+            (fitted - available).abs() <= 2.0,
+            "selected rows fill the vertical viewport: {fitted} != {available}"
+        );
+        assert_eq!(view.main_track_height(), before.2);
+        assert_eq!(
+            view.viewport,
+            Some(super::Viewport {
+                start: 48_000,
+                length: 48_000
+            })
+        );
+        assert_eq!(view.selected_track_ids(), tracks[6..8]);
+    });
+    let first = bounds(&mut visual, "arrangement-track-header", tracks[6]);
+    let last = bounds(&mut visual, "arrangement-track-header", tracks[7]);
+    let area = editor.read_with(&visual, |view, _| view.arrangement_bounds.unwrap());
+    assert!((f32::from(first.top()) - area.top).abs() <= 2.0);
+    assert!(f32::from(last.bottom()) <= area.top + area.height + 2.0);
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    visual.simulate_resize(size(px(1200.0), px(680.0)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.track_body_height(tracks[6]), before.0);
+        assert_eq!(view.track_body_height(tracks[7]), before.1);
+        assert_eq!(view.main_track_height(), before.2);
+        assert_eq!(view.viewport, before.3);
+        let restored = view.track_scroll.list.logical_scroll_top();
+        assert_eq!(
+            (restored.item_ix, restored.offset_in_item),
+            (scroll.item_ix, scroll.offset_in_item)
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.4);
+        assert!(view.last_enqueued_edit.is_none());
+    }); // Vertical fitting remains available when time already fits exactly.
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = Some(super::Viewport {
+            start: 48_000,
+            length: 48_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            (view.track_height(tracks[6]) + view.track_height(tracks[7])
+                - view.arrangement_bounds.unwrap().height)
+                .abs()
+                <= 2.0
+        );
+    });
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.track_body_height(tracks[6]), before.0);
+        assert_eq!(view.track_body_height(tracks[7]), before.1);
+    });
+}
