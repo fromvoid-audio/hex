@@ -4,7 +4,9 @@ use crate::native_parameter_input::{AbortReason, Receipt, Target};
 use hex_devices::utility::{UTILITY_DEFINITION, parameter};
 use hex_engine::{Audio, PreparedRevision, SineTable, playback::Playback};
 use hex_lattice::NativeTransientValue;
-use hex_lattice_contract::{DeviceAutomationTarget, NativeDeviceMetadata, ParameterValue};
+use hex_lattice_contract::{
+    DeviceAutomationTarget, HostGain, NativeDeviceMetadata, ParameterValue,
+};
 use hex_project::{Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::atomic::Ordering::Acquire};
 fn counted<T>(action: impl FnOnce() -> T) -> T {
@@ -62,6 +64,19 @@ fn fixture_with_setup(
     limiter: bool,
     setup: impl FnOnce(&mut prepared::Callback),
 ) -> (prepared::Control, prepared::Callback, Target) {
+    fixture_with_target(
+        limiter,
+        DeviceAutomationTarget::Parameter(parameter::GAIN),
+        false,
+        setup,
+    )
+}
+fn fixture_with_target(
+    limiter: bool,
+    input: DeviceAutomationTarget,
+    bypassed: bool,
+    setup: impl FnOnce(&mut prepared::Callback),
+) -> (prepared::Control, prepared::Callback, Target) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -86,6 +101,14 @@ fn fixture_with_setup(
     else {
         panic!("device")
     };
+    if bypassed {
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+    }
     if limiter {
         let definition = &hex_devices::limiter::DEFINITION;
         let state = definition
@@ -109,7 +132,7 @@ fn fixture_with_setup(
             Arc::new(SineTable::new()),
             None,
             device,
-            DeviceAutomationTarget::Parameter(parameter::GAIN),
+            input,
         )
         .unwrap(),
     );
@@ -686,6 +709,108 @@ fn native_begin_release_refuses_delayed_output_profile_before_engine_application
         control.native_parameter_input.try_receipt().is_none(),
         "delayed worker output cannot confirm native Set or Clear"
     );
+    assert!(control.native_parameter_input.target().is_none());
+    assert!(control.status.publication_reserve_for_test());
+    control.status.publication_clear_for_test();
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
+fn bypassed_host_trims_abort_live_requests_without_holding_publication() {
+    for target in [
+        DeviceAutomationTarget::HostInputGain,
+        DeviceAutomationTarget::HostOutputGain,
+    ] {
+        let (mut control, mut callback, binding) = fixture_with_target(false, target, true, |_| {});
+        let gain = HostGain::from_db(-6.0).unwrap();
+        let value = match target {
+            DeviceAutomationTarget::HostInputGain => NativeTransientValue::HostInputGain(gain),
+            DeviceAutomationTarget::HostOutputGain => NativeTransientValue::HostOutputGain(gain),
+            _ => panic!("host target fixture"),
+        };
+        control
+            .native_parameter_input
+            .begin(binding, value)
+            .unwrap();
+        control.native_parameter_input.release().unwrap();
+        let mut source = [[0.0; 2]; 16];
+        let rendered = render(&mut callback, &mut source);
+        assert!(rendered.is_ok());
+        assert_eq!(
+            source,
+            [[0.25, -0.5]; 16],
+            "host trim bypass preserves ordinary PCM"
+        );
+        assert!(write(&mut callback, &mut source, &rendered, 2));
+        assert!(!control.status.publication_reserve_for_test());
+        assert!(
+            matches!(control.native_parameter_input.try_receipt(), Some(Receipt::Superseded { target: actual, sequence: 1 }) if actual == binding)
+        );
+        assert!(
+            matches!(control.native_parameter_input.try_receipt(), Some(Receipt::Aborted { target: actual, reason: AbortReason::TargetUnavailable }) if actual == binding)
+        );
+        assert!(control.native_parameter_input.try_receipt().is_none());
+        assert!(control.native_parameter_input.target().is_none());
+        assert!(
+            control.status.publication_reserve_for_test(),
+            "the undeliverable target cannot trap publication admission"
+        );
+        control.status.publication_clear_for_test();
+        shutdown(&mut control, &mut callback);
+    }
+}
+
+#[test]
+fn bypassed_provider_gain_still_applies_and_finishes_clear_without_changing_dry_pcm() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut control, mut callback, binding) = fixture_with_target(false, target, true, |_| {});
+    let value = value(0.5);
+    control
+        .native_parameter_input
+        .begin(binding, value)
+        .unwrap();
+    let mut source = [[0.0; 2]; 1];
+    let rendered = render(&mut callback, &mut source);
+    assert!(rendered.is_ok());
+    assert_eq!(
+        source,
+        [[0.25, -0.5]],
+        "bypassed provider advances only its internal controls/history"
+    );
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(write(&mut callback, &mut source, &rendered, 2));
+    let Some(Receipt::Applied {
+        target: actual,
+        sequence: 1,
+        application,
+    }) = control.native_parameter_input.try_receipt()
+    else {
+        panic!("applied provider input under bypass")
+    };
+    assert_eq!(actual, binding);
+    assert_eq!(
+        application.operation,
+        hex_lattice::NativeTransientOperation::Set(value)
+    );
+    control.native_parameter_input.release().unwrap();
+    let rendered = render(&mut callback, &mut source);
+    assert!(rendered.is_ok());
+    assert_eq!(source, [[0.25, -0.5]]);
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(write(&mut callback, &mut source, &rendered, 2));
+    let Some(Receipt::Finished {
+        target: actual,
+        application,
+    }) = control.native_parameter_input.try_receipt()
+    else {
+        panic!("delivered provider clear under bypass")
+    };
+    assert_eq!(actual, binding);
+    assert_eq!(
+        application.operation,
+        hex_lattice::NativeTransientOperation::Clear(target)
+    );
+    assert!(control.native_parameter_input.try_receipt().is_none());
     assert!(control.native_parameter_input.target().is_none());
     assert!(control.status.publication_reserve_for_test());
     control.status.publication_clear_for_test();

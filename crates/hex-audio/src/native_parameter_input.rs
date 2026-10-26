@@ -26,6 +26,8 @@ pub struct Target {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AbortReason {
     SourceChanged,
+    /// The source still matches, but its current runtime refuses this target.
+    TargetUnavailable,
     TransportChanged,
     OutputFailed,
     UnsupportedOutput,

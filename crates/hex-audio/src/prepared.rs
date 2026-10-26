@@ -4064,7 +4064,7 @@ impl Callback {
                     .is_err()
                 {
                     self.native_parameter_input
-                        .abort(AbortReason::SourceChanged);
+                        .abort(AbortReason::TargetUnavailable);
                     active.playback.invalidate_native_parameter_input();
                 }
             } else {

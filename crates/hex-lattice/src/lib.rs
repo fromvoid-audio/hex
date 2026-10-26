@@ -1704,6 +1704,8 @@ impl NativeRuntimeChain {
 
     /// Validate an inline request against the exact prepared current target.
     /// A missing or frozen instance returns false without mutating the chain.
+    /// Host trims cannot be applied while bypassed; provider controls retain
+    /// their existing internal-history advancement under bypass.
     pub fn validate_transient_input(
         &self,
         input: NativeTransientInput,
@@ -1720,6 +1722,9 @@ impl NativeRuntimeChain {
             || entry.automation.input_target() != Some(input.operation.target())
         {
             return Err(DeviceContractError::InvalidDescriptor);
+        }
+        if entry.bypassed && input.operation.target().is_host() {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
         }
         if let Some(value) = input.operation.value() {
             entry.automation.validate_input(value)?;
