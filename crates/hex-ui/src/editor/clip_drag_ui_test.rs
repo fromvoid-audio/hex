@@ -105,6 +105,9 @@ pub(super) fn editor_window(
             });
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
+                // Geometry fixtures use a fixed frame span, independent of the
+                // application's default trailing navigation allowance.
+                view.viewport = Some(super::viewport::Viewport::fit(TIMELINE_FRAMES));
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
@@ -1033,6 +1036,10 @@ pub(super) fn upper_rail_owned_fixture(
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
                 view.receive(event);
+                // Rail/detail geometry uses an explicit fixture time span.
+                view.viewport = Some(super::viewport::Viewport::fit(
+                    view.state.as_ref().unwrap().timeline_frames,
+                ));
                 view.focus.focus(window);
                 cx.notify();
             });

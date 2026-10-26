@@ -305,6 +305,13 @@ repeat handle. **escape** cancels a held edit; one undo restores a completed dra
 clips and sections keep their actual timeline width when zoomed out. zoom in
 to resize very short clips when their edge handles no longer fit.
 
+shortening or deleting end material keeps your current arrange position and zoom.
+when you pan or zoom afterward, obsolete empty tail outside the new view retires;
+scrolling cannot return to that retired space. arrange keeps at least eight
+seconds of normal space beyond content. **command+0** fits the normal navigation
+extent; **z** fits the selection or content, and **x** explicitly restores the
+prior fitted view, including its former visible trailing space.
+
 ## audio event fades
 
 the audio event editor marks the clip's playback start with a fixed vertical
