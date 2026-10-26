@@ -2,12 +2,403 @@
 //! Session owns no device or page endpoints and never interprets their tokens.
 use super::*;
 use std::time::Duration;
+mod file_sources;
+pub(super) mod native_sampler;
+pub use file_sources::{
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
+    ResidentFileSeekRequest, ResidentFileSet,
+};
+pub use native_sampler::{
+    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
+};
+
+/// Synchronous read-only identities in the exact candidate project. Native
+/// state validation stays in the borrowed compiler; consumers receive neither
+/// project editing access nor a registry or native owner.
+pub struct ResidentEffectPreparation<'a> {
+    pub(in crate::service) project: &'a Project,
+    pub(in crate::service) context: hex_engine::AudioSourceContext,
+    pub(in crate::service) restoring_plugin_state: bool,
+    pub(in crate::service) preparing_edit: bool,
+}
+impl<'a> ResidentEffectPreparation<'a> {
+    pub fn context(&self) -> hex_engine::AudioSourceContext {
+        self.context
+    }
+    /// Only the canonical Editor's prepared transition enables native source
+    /// changes. Preview, seek and document-restoration queries cannot do so.
+    pub fn preparing_edit(&self) -> bool {
+        self.preparing_edit
+    }
+    /// Only the unchanged canonical fresh-output continuation sets this bit.
+    /// Ordinary edits and transient audition requests cannot consume its sources.
+    pub fn restoring_plugin_state(&self) -> bool {
+        self.restoring_plugin_state
+    }
+    pub fn visit_plugin_effects(
+        &self,
+        mut visit: impl FnMut(
+            hex_engine::ProcessorChainOwner,
+            u64,
+            &'a NativeDeviceState,
+        ) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut chain = |owner, devices: &'a [hex_project::Device]| {
+            for device in devices.iter().filter(|d| {
+                d.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+            }) {
+                visit(owner, device.id().value(), device.state())?;
+            }
+            Ok(())
+        };
+        for track in self.project.tracks() {
+            chain(
+                hex_engine::ProcessorChainOwner::Track(track.id().value()),
+                track.devices(),
+            )?;
+        }
+        for bus in self.project.return_tracks() {
+            chain(
+                hex_engine::ProcessorChainOwner::Return(bus.id().value()),
+                bus.devices(),
+            )?;
+        }
+        chain(
+            hex_engine::ProcessorChainOwner::Main,
+            self.project.main_devices(),
+        )
+    }
+}
+
+/// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
+/// nor a requested freshness fence grants source custody or acknowledges callback application.
+#[derive(Clone, Copy, Debug)]
+pub struct ResidentPublicationMetadata {
+    pub context: hex_engine::AudioSourceContext,
+    pub device_preview: Option<DevicePreviewIdentity>,
+    pub tuning_preview: Option<TuningPreviewIdentity>,
+    pub seek_request: Option<u64>,
+    pub stopped_restore: bool,
+    pub computer_keyboard_request: Option<u64>,
+    pub gain_recording_track: Option<hex_project::TrackId>,
+    pub requires_preroll: bool,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ResidentFreshRuntimeFence {
+    pub output_identity: u64,
+    pub active_audio_revision: u64,
+    pub route_generation: u64,
+    pub admitted_command_ticket: u64,
+}
+/// Nonowning scalar witness for the actual installed graph's audition loop.
+/// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.
+/// `source_context == None` describes a cold output at audio revision zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentRuntimeLoop {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub source_context: Option<hex_engine::AudioSourceContext>,
+    pub section_loop: Option<hex_project::LoopRegion>,
+}
+/// One callback-observed source and transport witness under the arrangement gate.
+#[derive(Clone, Copy, Debug)]
+pub struct ArrangementEditPosition {
+    pub frame: u64,
+    pub playing: bool,
+    pub section_loop: Option<hex_project::LoopRegion>,
+}
+impl ArrangementEditPosition {
+    /// Validate control-side scalar observations. This grants no fence or resource custody.
+    pub fn from_frames(
+        frame: u64,
+        playing: bool,
+        section_loop: Option<(u64, u64)>,
+    ) -> Result<Self, String> {
+        let section_loop = section_loop
+            .map(|(start, end)| {
+                hex_project::LoopRegion::new(start, end, true).map_err(|e| e.to_string())
+            })
+            .transpose()?;
+        Ok(Self {
+            frame,
+            playing,
+            section_loop,
+        })
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub enum ResidentPublicationPolicy {
+    /// Offline inheritance or an output without a transient audition loop.
+    InheritRuntime,
+    /// Preserve this exact applied graph's loop through ordinary inheritance.
+    /// The native owner revalidates it before admission/enqueue; it grants no custody.
+    InheritRuntimeAt(ResidentRuntimeLoop),
+    /// The sink owns the shared arrangement gate through exact callback installation.
+    /// A playing witness inherits the actual boundary runtime; a stopped witness
+    /// installs its prepared musical cursor.
+    ArrangementEdit,
+    /// Existing explicit fresh installation used after priority Stop restoration.
+    InstallFreshRuntime,
+    /// Only the same-context fresh-output plugin continuation may replace its
+    /// admitted unpublished graph after actual native/endpoint readiness.
+    RestorePluginState,
+    /// New/Open only: admit one exact pending owner before canonical generation replacement.
+    /// Acceptance is OfflineRetained; existing teardown/open then queues it on the fresh output.
+    /// This never converts ordinary queue pressure into offline acceptance.
+    ReplaceDocument,
+    FreshIfUnchanged(ResidentFreshRuntimeFence),
+    SectionWhenReady {
+        fence: ResidentFreshRuntimeFence,
+        quantization: hex_engine::LaunchQuantization,
+    },
+}
+/// Successful worker acceptance is either an actual queue submission or explicit offline custody.
+/// Only the callback's exact output/revision observation establishes application.
+#[derive(Clone, Copy, Debug)]
+pub enum ResidentPublicationAcceptance {
+    Submitted {
+        output_identity: u64,
+        audio_revision: u64,
+    },
+    OfflineRetained,
+}
+pub struct ResidentPublicationRefusal {
+    pub playback: Playback,
+    pub error: String,
+}
+impl std::fmt::Debug for ResidentPublicationRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResidentPublicationRefusal")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
 
 /// A single worker-owned desktop adapter. Initialization and every method run
 /// on the existing Session worker, including while the UI event queue is full.
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Capture every active hosted instance required by this exact canonical
+    /// save input. The existing worker retains request order while the adapter
+    /// drains each admitted native token to its matching terminal, including
+    /// failure/cancellation. No stop, canonical edit or source owner transfer.
+    /// An output without native hosting has no runtime states to capture and
+    /// preserves the project's opaque unavailable state. Native hosts must
+    /// override this method; failed capture must never fall back to empty data.
+    fn capture_plugin_states_for_save(
+        &mut self,
+        _input: PluginStateSaveInput<'_>,
+    ) -> Result<Vec<PluginStateCapture>, String> {
+        Ok(Vec::new())
+    }
+    /// Current ordered worker request's read-only shutdown/document-intent
+    /// cancellation. Hosts may poll it during bounded native preparation; it
+    /// never authorizes an edit or changes ordinary FIFO completion order.
+    fn begin_request(&mut self, _cancellation: RequestCancellation) {}
+    /// Exact prepared canonical transition terminal, including compilation or
+    /// publication refusal. Native custody remains with the sink's Root.
+    fn finish_resident_effect_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: bool,
+    ) {
+    }
+
+    /// A fresh-output owner has restored the unchanged canonical plugin state
+    /// through its actual native/endpoint ACKs. The worker may now recompile
+    /// that exact context; this scalar transfers no source or graph custody.
+    fn plugin_state_restore_ready(&self) -> Option<hex_engine::AudioSourceContext> {
+        None
+    }
+    /// Exact same-context recompilation terminal. Before acceptance, the sink
+    /// retains its admitted unpublished document graph and original resources.
+    fn finish_plugin_state_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: bool,
+    ) {
+    }
+    /// Renew stopped native sources through their original output owner. None
+    /// keeps the ordinary restore path; Some(false) retains the operation until
+    /// its exact callback returns and fresh endpoint ACKs, Some(true) requests
+    /// recompilation of the unchanged canonical project before publication.
+    fn prepare_stopped_playback_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<Option<bool>, String> {
+        Ok(None)
+    }
+    fn stopped_playback_restore_ready(&self) -> bool {
+        false
+    }
+    /// Refusal before publication releases only the matching held operation.
+    /// Accepted publication retains its gate until actual callback installation.
+    fn cancel_stopped_playback_restore(&mut self) {}
+    /// Start/poll this exact explicit source request on the canonical worker.
+    /// The implementation retains actual native preparation under its Root;
+    /// Session receives captured state only after real native and endpoint ACKs.
+    fn prepare_plugin_effect(
+        &mut self,
+        _input: PluginEffectPreparation<'_>,
+    ) -> Result<PluginEffectPreparationState, String> {
+        Err("vst3 hosting unavailable for this output".into())
+    }
+    fn plugin_effect_ready(&self) -> bool {
+        false
+    }
+    /// Match the exact request control; never cancel an unrelated later source.
+    /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
+    /// acceptance transfers display/request custody, never the native source's lifetime.
+    fn finish_plugin_effect(&mut self, _control: &Arc<PluginEffectControl>, _accepted: bool) {}
+    /// Borrow the actual host's effect facts for one synchronous registered
+    /// compiler invocation on the canonical worker. None means no host facts
+    /// were supplied, so builtin-only preparation remains unchanged. The
+    /// callback must run at most once and must not publish or call back into
+    /// the sink: native source custody/Work can remain borrowed throughout it.
+    /// A returned revision is compilation only, never native admission or ACK.
+    fn prepare_resident_effects(
+        &mut self,
+        _input: ResidentEffectPreparation<'_>,
+        _prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        Ok(None)
+    }
+    /// Ordinary source-planning defaults, independent of the document mode.
+    /// A host opts in only with bounded file preparation/publication consumers.
+    fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
+        None
+    }
+    /// Supply compiler facts for this captured precommit source set. This may
+    /// reserve a catalog generation but grants no source/page custody. Actual
+    /// catalog verification and endpoint delivery precede final publication.
+    fn prepare_resident_file_metadata(
+        &mut self,
+        input: ResidentFileInput<'_>,
+    ) -> Result<Option<ResidentFileMetadata>, String> {
+        if input.files.is_empty() {
+            Ok(None)
+        } else {
+            Err("ordinary file-backed playback is unavailable for this output".into())
+        }
+    }
+    /// Optional stateless offline renderer. Query only on the Session worker;
+    /// the returned function runs on the existing export worker with an exact
+    /// canonical snapshot. It must use independent bounded pages/verification,
+    /// never borrow native output/catalog/readiness. Optional ordinary compiler
+    /// resources remain borrowed from the admitted job; private constructor
+    /// source custody is not composed with page rendering.
+    fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
+        None
+    }
+
+    /// Prepare ordinary file-backed history on the existing seek worker, using
+    /// independent bounded offline pages and the exact captured compiler scope.
+    /// This stateless function grants no native submission/readiness authority.
+    fn resident_file_seek_preparer(&self) -> Option<ResidentFileSeekPreparer> {
+        None
+    }
+    /// Conservative listed peak for the independent offline page owner, quoted
+    /// before starting a worker/pool. Opaque allocator/thread/OS costs remain
+    /// separate bounded obligations, not a process-memory receipt.
+    fn resident_file_seek_storage_bytes(
+        &self,
+        _prepared: &PreparedRevision,
+        _sources: &ResidentFileSet,
+    ) -> Result<usize, String> {
+        Err("file-backed seek preparation is unavailable".into())
+    }
+
+    /// Output ownership policy, independent of device presence or availability. A native consumer
+    /// opts in only after routing every resident graph through this worker-private boundary.
+    /// This capability survives document mode changes: protocol dispatch must also require
+    /// Resident mode, while cross-mode admission still borrows actual resident/retired owners.
+    fn resident_publication_enabled(&self) -> bool {
+        false
+    }
+    /// Actual output/source/revision-bound loop, never the saved loop marker.
+    /// None means no active ordinary output; offline edits remain available.
+    /// A witness may become stale during preparation and must be revalidated by
+    /// `publish_resident` before admitting `InheritRuntimeAt`.
+    fn resident_runtime_loop(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<Option<ResidentRuntimeLoop>, String> {
+        Ok(None)
+    }
+    /// Synchronously borrow actual active/retiring/unpublished owners for every precommit check.
+    /// No borrow may survive this worker call; each actual root is selected once per union.
+    fn resident_admission(
+        &self,
+    ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
+        [hex_engine::native_device_resources::DeviceResourceAdmission::default(); 3]
+    }
+    /// Final fallible prepared-transition operation. An active output must refuse queue/resource
+    /// pressure unchanged; explicit unavailable/opening state may accept one admitted latest owner
+    /// privately with no submitted/applied revision. Cancellation checks precede this call.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Exact graph/resources/observation custody and unchanged refusal remain explicit.
+    fn publish_resident(
+        &mut self,
+        playback: Playback,
+        _resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        _observation: Arc<hex_engine::PreparedPlaybackObservation>,
+        _metadata: ResidentPublicationMetadata,
+        _policy: ResidentPublicationPolicy,
+        _metadata_limit: usize,
+        _admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        Err(ResidentPublicationRefusal {
+            playback,
+            error: "ordinary worker publication is unavailable".into(),
+        })
+    }
+    /// Same ordinary resource publisher with captured file facts and borrowed
+    /// cancellation. Hosts without file consumers keep the resident-only path;
+    /// metadata alone cannot authorize a streamed graph or offline recovery.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+    fn publish_resident_with_files(
+        &mut self,
+        playback: Playback,
+        resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        observation: Arc<hex_engine::PreparedPlaybackObservation>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        metadata_limit: usize,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+        _files: Option<ResidentFilePublication<'_>>,
+    ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        if playback.contains_streamed_sources() {
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "ordinary file-backed publication is unavailable for this output".into(),
+            });
+        }
+        self.publish_resident(
+            playback,
+            resources,
+            observation,
+            metadata,
+            policy,
+            metadata_limit,
+            admit,
+        )
+    }
+    /// Retry an already admitted offline candidate only while the canonical worker lends the
+    /// current source/export/control union. Pending custody is not released by cancellation/ACK.
+    fn poll_resident_pending(
+        &mut self,
+        _admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) {
+    }
     /// Negotiate the initial device rate on the lifecycle lane. An error leaves
     /// editing available at the explicit offline rate of 48000 Hz. Observe the
     /// shutdown flag while awaiting that lane; never wait for a UI response.
@@ -16,6 +407,63 @@ pub trait WorkerAudioSink: Send {
     /// On generation replacement relinquish the previous publication/output
     /// first. Replacement opening must be polled, not awaited in this method.
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
+    /// One coalesced verified gain overlay/terminal, constructed by the worker
+    /// from its actual canonical source and validated gesture. Metadata only;
+    /// acceptance is not callback application or new source admission.
+    fn verified_track_gain_source(&mut self, _source: Arc<VerifiedTrackGainSource>) {}
+    /// Synchronous private canonical/original PCM input; no borrow may survive.
+    fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
+    /// A bounded stopped Arrangement handshake, shared by structural edits and
+    /// in-place bounce/history. The historical method name transfers no custody.
+    fn begin_section_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _allow_playing: bool,
+    ) -> Result<(), String> {
+        Err("native arrangement edits are unavailable".into())
+    }
+    /// Callback-observed transport. None means the command prefix is pending.
+    fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
+        None
+    }
+    /// Precommit cancellation only. Accepted publication retains its gate.
+    fn cancel_section_edit(&mut self) {}
+    fn begin_sampler_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        Err("sampler edit requires native audio".into())
+    }
+    /// None while awaiting the bounded callback fence; never wait here.
+    fn sampler_edit_ready(&mut self) -> Option<Result<(), String>> {
+        None
+    }
+    fn prepare_sampler_edit(&mut self, _input: NativeSamplerInput<'_>) -> Result<(), String> {
+        Err("sampler edit preparation is unavailable".into())
+    }
+    fn commit_sampler_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        Err("sampler edit publication is unavailable".into())
+    }
+    fn cancel_sampler_edit(&mut self) {}
+    /// Scalar activation only; implementations must verify the actual installed
+    /// native CURRENT before accepting this exact output/context/track/device.
+    fn prepare_sampler_keyboard(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _output: u64,
+        _epoch: u64,
+        _track: u64,
+        _device: u64,
+    ) -> Result<(), String> {
+        Err("sampler keyboard is unavailable".into())
+    }
+    /// Hold remains charged through actual native teardown, never a UI ACK.
+    fn native_sampler_hold(&self) -> NativeSamplerReservationHold {
+        NativeSamplerReservationHold::default()
+    }
     /// Advance bounded preparation/return work; no UI polling is required.
     fn poll(&mut self);
     /// Start a correlated reopen on the existing lifecycle lane. Implementations
@@ -34,9 +482,31 @@ pub(super) struct WorkerEvents {
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
+    // Last delivered actor observation, not another editable gesture model.
+    // It proves ownership when a terminal (including a retired refusal) arrives.
+    last_verified_gain: Option<(crate::device_gesture::GestureKey, u64)>,
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    pub(super) fn begin_request(
+        &mut self,
+        document_intent: &Arc<std::sync::atomic::AtomicU64>,
+        expected_intent: u64,
+    ) {
+        if let Some(audio) = self.audio.as_mut() {
+            audio.begin_request(RequestCancellation::new(
+                Arc::clone(&self.shutdown),
+                Arc::clone(document_intent),
+                expected_intent,
+            ));
+        }
+    }
+    pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.ordinary_source_reservation())
+    }
+
     pub(super) fn new(
         sender: SyncSender<Event>,
         shutdown: Arc<AtomicBool>,
@@ -47,6 +517,7 @@ impl WorkerEvents {
             shutdown,
             audio,
             last_context: None,
+            last_verified_gain: None,
             startup_error: None,
         }
     }
@@ -63,6 +534,49 @@ impl WorkerEvents {
             return Err("unsupported negotiated audio rate".into());
         }
         Ok(rate)
+    }
+    pub(super) fn prepare_sampler_keyboard(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        output: u64,
+        epoch: u64,
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+    ) -> Result<(), String> {
+        self.audio
+            .as_mut()
+            .ok_or("sampler keyboard requires native audio")?
+            .prepare_sampler_keyboard(context, output, epoch, track.value(), device.value())
+    }
+    pub(super) fn canonical_source_changed(&mut self, source: &Arc<CanonicalAudioSourceSnapshot>) {
+        if self.last_context != Some(source.context()) {
+            if let Some(audio) = self.audio.as_mut() {
+                audio.canonical_changed(Arc::clone(source));
+            }
+            self.last_context = Some(source.context());
+        }
+    }
+    pub(super) fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.streamed_exporter())
+    }
+    pub(super) fn resident_publication_enabled(&self) -> bool {
+        self.audio
+            .as_ref()
+            .is_some_and(|audio| audio.resident_publication_enabled())
+    }
+    pub(super) fn resident_audio(&mut self) -> Option<&mut (dyn WorkerAudioSink + 'static)> {
+        self.audio
+            .as_mut()
+            .filter(|audio| audio.resident_publication_enabled())
+            .map(Box::as_mut)
+    }
+    pub(super) fn native_audio_requested(&self) -> bool {
+        self.audio.is_some()
+    }
+    pub(super) fn sampler_edit_audio(&mut self) -> Option<&mut (dyn WorkerAudioSink + 'static)> {
+        self.audio.as_deref_mut()
     }
     pub(super) fn startup_failed(&mut self, error: String) {
         self.startup_error = Some(format!("audio unavailable: {error}"));
@@ -85,20 +599,53 @@ impl WorkerEvents {
             audio.poll();
         }
     }
-    pub(super) fn send(&mut self, mut event: Event) -> bool {
+    pub(super) fn send_with_control_poll(
+        &mut self,
+        mut event: Event,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
+    ) -> bool {
         if let Some(source) = &event.state.canonical_audio_source {
-            if self.last_context != Some(source.context()) {
+            self.canonical_source_changed(source);
+        }
+        match VerifiedTrackGainSource::capture(&event, self.last_verified_gain) {
+            Ok(Some(source)) => {
                 if let Some(audio) = self.audio.as_mut() {
-                    audio.canonical_changed(Arc::clone(source));
+                    audio.verified_track_gain_source(Arc::new(source));
                 }
-                self.last_context = Some(source.context());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                event.error = Some(match event.error.take() {
+                    Some(previous) => format!("{previous}; {error}"),
+                    None => error.to_string(),
+                })
             }
         }
+        self.last_verified_gain = event
+            .active_device_gesture
+            .filter(|active| {
+                matches!(
+                    active.target,
+                    crate::device_gesture::GestureTarget::TrackGain { .. }
+                ) && event
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .is_some_and(|source| {
+                        source.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                    })
+            })
+            .map(|active| (active.key, active.sequence));
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 return false;
             }
             self.poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
             match self.sender.try_send(event) {
                 Ok(()) => return true,
                 Err(TrySendError::Disconnected(_)) => return false,
@@ -109,17 +656,102 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    pub(super) fn next_request(&mut self, requests: &Receiver<Request>) -> Option<Request> {
-        if self.audio.is_none() {
-            return requests.recv().ok();
+    #[allow(clippy::too_many_arguments)] // Existing FIFO/control wakeups plus accepted source-intent cancellation.
+    pub(super) fn next_request_with_control_poll(
+        &mut self,
+        requests: &Receiver<QueuedRequest>,
+        document_intent: &Arc<std::sync::atomic::AtomicU64>,
+        bounded: bool,
+        plugin_effect: Option<&PluginEffectInsertion>,
+        stopped_restore: Option<hex_engine::AudioSourceContext>,
+        context: hex_engine::AudioSourceContext,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
+    ) -> Option<QueuedRequest> {
+        control_poll(
+            self.audio
+                .as_mut()
+                .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+        );
+        if self.audio.is_none() && !bounded {
+            let result = requests.recv().ok();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
+            return result;
         }
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
             self.poll();
-            match requests.recv_timeout(Duration::from_millis(5)) {
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
+            // Preserve queued New/Open/edit ordering before a callback-ready
+            // continuation. No worker wait can strand project replacement.
+            match requests.try_recv() {
                 Ok(request) => return Some(request),
+                Err(mpsc::TryRecvError::Disconnected) => return None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if self
+                .audio
+                .as_mut()
+                .is_some_and(|a| a.sampler_edit_ready().is_some())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueSamplerEdit,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_state_restore_ready().is_some())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginStateRestore,
+                    document_intent,
+                ));
+            }
+            if plugin_effect.is_some_and(|insertion| {
+                insertion.context != context
+                    || insertion.control.is_cancelled()
+                    || self
+                        .audio
+                        .as_ref()
+                        .is_some_and(|audio| audio.plugin_effect_ready())
+            }) {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEffect,
+                    document_intent,
+                ));
+            }
+            if stopped_restore.is_some_and(|captured| {
+                captured != context
+                    || self
+                        .audio
+                        .as_ref()
+                        .is_some_and(|audio| audio.stopped_playback_restore_ready())
+            }) {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueStoppedPlaybackRestore,
+                    document_intent,
+                ));
+            }
+            match requests.recv_timeout(Duration::from_millis(5)) {
+                Ok(request) => {
+                    control_poll(
+                        self.audio
+                            .as_mut()
+                            .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                    );
+                    return Some(request);
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }

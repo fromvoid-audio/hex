@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -28,6 +29,106 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_copied_host_transport_probe_runs_at_its_owning_package(self):
+        inventory = [{"name": "hex-plugin-host", "features": {"allocation-probe": [], "test-support": []}}]
+        selected = ci.boundary_steps({
+            "affected_packages": ["hex-plugin-host"], "cargo_inventory": inventory,
+            "paths": ["crates/hex-plugin-host/src/transport.rs"],
+            "boundary": {"kind": "packages", "lint_packages": ["hex-plugin-host"],
+                         "test_packages": ["hex-plugin-host"], "tests": []},
+        })
+        probes = [s for s in selected if s.step_id == "audio-allocation-probe"]
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0].argv, ("cargo", "test", "-p", "hex-plugin-host",
+                                         "--features", "allocation-probe", "--locked"))
+        self.assertTrue(any(s.argv[:4] == ("cargo", "clippy", "-p", "hex-plugin-host")
+                            and "allocation-probe" in s.argv for s in selected))
+        self.assertFalse(any(s.step_id.startswith("feature-") and "allocation-probe" in s.argv
+                             for s in selected), "the real owning probe runs once")
+
+    def test_edit_target_cli_requires_edit_plan_and_exclusive_selection(self):
+        for arguments in (["--lib"], ["--profile", "full", "--lib"],
+                          ["--quick", "--test", "roundtrip"], ["--lib", "--test", "roundtrip"]):
+            with self.subTest(arguments=arguments), patch.object(ci, "LocalCiRunner") as runner:
+                with self.assertRaises(SystemExit) as error:
+                    ci.main(arguments)
+                self.assertEqual(error.exception.code, 2)
+                runner.assert_not_called()
+
+    def test_edit_target_validation_and_required_features(self):
+        inventory = [{"name": "fixture", "features": {"default": ["enabled"], "enabled": [], "extra": []},
+                      "targets": [{"name": "fixture", "kind": ["lib"]},
+                                  {"name": "roundtrip", "kind": ["test"], "required-features": ["enabled"]},
+                                  {"name": "optional", "kind": ["test"], "required-features": ["extra"]}]}]
+        def select(**kwargs):
+            return ci.edit_selection(inventory, **{"package": "fixture", "test_filter": "case", **kwargs})
+        self.assertNotIn("target", select())
+        self.assertEqual(select(lib=True)["target"], {"kind": "lib", "name": "fixture"})
+        self.assertEqual(select(test="roundtrip")["target"]["name"], "roundtrip")
+        self.assertEqual(select(test="optional", features="extra")["target"]["name"], "optional")
+        for options in ({"package": "unknown"}, {"test_filter": " "}, {"features": "unknown"},
+                        {"test": "missing"}, {"test": "optional"}, {"test": ""},
+                        {"lib": True, "test": "roundtrip"}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                select(**options)
+        with self.assertRaises(ValueError):
+            ci.edit_selection(inventory * 2, package="fixture", test_filter="case", lib=True)
+        inventory[0]["targets"].append({"name": "other", "kind": ["lib"]})
+        with self.assertRaises(ValueError):
+            select(lib=True)
+
+    def test_edit_target_runs_only_owner_and_rejects_zero_matches_or_regression(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            (root / "Cargo.toml").write_text('[package]\nname="edit-target-fixture"\nversion="0.1.0"\nedition="2021"\n')
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            source = root / "src/lib.rs"
+            source.write_text('#[test] fn library_case() { assert_eq!(2 + 2, 4); }\n')
+            (root / "tests/roundtrip.rs").write_text('#[test] fn integration_case() {}\n')
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
+            def command(*argv):
+                return subprocess.check_output(argv, cwd=root, env=env).decode().strip()
+            command("git", "init", "-q")
+            command("git", "config", "user.name", "target fixture")
+            command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline")
+            command("cargo", "fmt", "--all")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "fixture")
+            metadata = json.loads(command("cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"))
+            inventory = plan.cargo_inventory(metadata, root)
+            def run(name, *, test_filter="case", **target):
+                edit = ci.edit_selection(inventory, package="edit-target-fixture", test_filter=test_filter, **target)
+                selected = {"scope": "full", "qualifies_merge": False, "edit": edit}
+                runner = ci.LocalCiRunner(root, mode="edit", plan=selected, env=env, run_id=name, min_free_bytes=0)
+                code = runner.run()
+                log = (runner.output_dir / "01-edit-tests.log").read_text()
+                return code, log, runner.summary
+            code, log, summary = run("package")
+            self.assertEqual(code, 0)
+            self.assertIn("test library_case ... ok", log)
+            self.assertIn("test integration_case ... ok", log)
+            code, log, summary = run("library", lib=True)
+            self.assertEqual(code, 0)
+            self.assertEqual(summary["status"], "partial")
+            self.assertIn("test library_case ... ok", log)
+            self.assertNotIn("integration_case", log)
+            self.assertNotIn("tests/roundtrip.rs", log)
+            code, log, summary = run("integration", test="roundtrip")
+            self.assertEqual(code, 0)
+            self.assertIn("test integration_case ... ok", log)
+            self.assertNotIn("library_case", log)
+            code, log, summary = run("no-match", lib=True, test_filter="absent_case")
+            self.assertEqual(code, 1)
+            self.assertIn("no passing tests", summary["steps"][0]["error"])
+            self.assertTrue(all(s["status"] == "not_run" for s in summary["steps"][1:]))
+            source.write_text('#[test] fn library_case() { assert_eq!(2 + 2, 5); }\n')
+            code, log, summary = run("real-regression", lib=True)
+            self.assertEqual(code, 1)
+            self.assertIn("library_case ... FAILED", log)
+
     def test_current_review_future_timestamp_content_change_is_unproven(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -327,18 +428,26 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(affected, ["hex-desktop", "hex-ui", "hex-widgets"])
         self.assertEqual(plan.classify(["launch", "docs/a.md"], inventory)[0], "tooling")
         self.assertEqual(plan.classify(["docs/a.md"], inventory)[0], "metadata")
+        inventory[0]["features"] = {"new-configuration": []}
+        self.assertEqual(plan.classify(["crates/hex-widgets/src/a.rs"], inventory)[0], "rust")
+        inventory[0]["features"] = {}
         inventory.append(dict(name="hex-engine", manifest="crates/hex-engine/Cargo.toml",
                               dependencies=[{"name": "hex-ui", "kind": "dev"}]))
-        self.assertEqual(plan.classify(["crates/hex-ui/src/a.rs"], inventory)[0], "full")
+        self.assertEqual(plan.classify(["crates/hex-ui/src/a.rs"], inventory)[0], "rust")
 
     def test_high_risk_unknown_and_mixed_cannot_be_scoped_away(self):
         inventory = self.inventory()
-        for name in ("Cargo.lock", "crates/hex-ui/Cargo.toml", "crates/hex-ui/build.rs",
+        for name in ("Cargo.lock",
                      "third_party/gpui/src/a.rs", "crates/hex-engine/src/a.rs",
-                     "rust-toolchain.toml", "scripts/ci_plan.py", "AGENTS.md", "unknown.rs"):
+                     "rust-toolchain.toml", "unknown.rs"):
             with self.subTest(name=name):
                 self.assertEqual(plan.classify([name], inventory)[0], "full")
-        self.assertEqual(plan.classify(["launch", "crates/hex-ui/src/a.rs"], inventory)[0], "full")
+        self.assertEqual(plan.classify(["launch", "crates/hex-ui/src/a.rs"], inventory)[0], "rust")
+        for name in ("crates/hex-ui/Cargo.toml", "crates/hex-ui/build.rs"):
+            self.assertEqual(plan.classify([name], inventory)[0], "rust")
+        for path in ("scripts/ci_plan.py", "scripts/ci_target_storage.py"):
+            self.assertEqual(plan.classify([path], inventory)[0], "tooling")
+        self.assertEqual(plan.classify(["AGENTS.md"], inventory)[0], "metadata")
 
     def test_immutable_rename_deletion_untracked_and_prose_digest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -368,6 +477,49 @@ class ScopeTests(unittest.TestCase):
             git("commit", "-qm", "delete")
             self.assertIn("docs/renamed.md", plan.changed_paths(root, "HEAD^", "HEAD"))
 
+    def test_cheap_guards_precede_self_tests_once_in_every_qualifying_scope(self):
+        for scope in ("full", "tooling", "ui"):
+            with self.subTest(scope=scope):
+                steps = ci.planned_steps({"scope": scope})
+                self.assertEqual(steps[:len(ci.QUICK_STEPS)], ci.QUICK_STEPS)
+                ids = [s.step_id for s in steps]
+                self.assertEqual(ids[len(ci.QUICK_STEPS)], "runner-tests")
+                self.assertEqual(len(ids), len(set(ids)))
+
+    def test_real_architecture_failure_stops_before_self_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "src").mkdir()
+            (root / "scripts").mkdir()
+            (root / "src/lib.rs").write_text("")
+            (root / "Cargo.toml").write_text(
+                '[package]\nname="unregistered-boundary"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "scripts/check-architecture.py").write_bytes(
+                (SCRIPTS / "check-architecture.py").read_bytes())
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            for command in (("git", "init", "-q"), ("git", "config", "user.name", "guard fixture"),
+                            ("git", "config", "user.email", "fixture@invalid"),
+                            ("cargo", "generate-lockfile", "--offline"),
+                            ("git", "add", "."), ("git", "commit", "-qm", "fixture")):
+                subprocess.check_call(command, cwd=root, stdout=subprocess.DEVNULL)
+            marker = "open('artifacts/self-tests-started', 'w').close(); print('Ran 1 test in 0.001s\\nOK')"
+            steps = tuple(ci.Step(s.step_id,
+                                  (sys.executable, "-c", "pass") if s.step_id == "changelog" else
+                                  (sys.executable, "-c", marker)
+                                  if s.step_id == "runner-tests" else s.argv,
+                                  s.uses_cargo_target, s.requires_tests)
+                          for s in ci.planned_steps({"scope": "tooling"}))
+            runner = ci.LocalCiRunner(root, steps=steps, mode="custom", min_free_bytes=0,
+                                      env={**os.environ, "CARGO_TARGET_DIR": str(root / "target")})
+            self.assertEqual(runner.run(), 1)
+            self.assertFalse((root / "artifacts/self-tests-started").exists())
+            self.assertEqual([(s["step_id"], s["status"]) for s in runner.summary["steps"]],
+                             [("changelog", "passed"), ("architecture", "failed")]
+                             + [(s.step_id, "not_run") for s in steps[2:]])
+            failed = runner.summary["steps"][1]
+            self.assertIn("register a purpose and dependency policy", (root / failed["log"]).read_text())
+            self.assertFalse(runner.summary.get("qualifies_merge", False))
+
     def test_profiles_preserve_default_and_feature_configurations(self):
         selected = ci.planned_steps({"scope": "ui"})
         argv = [s.argv for s in selected]
@@ -375,10 +527,173 @@ class ScopeTests(unittest.TestCase):
         self.assertTrue(any("ui-test-support" in a for a in argv))
         self.assertTrue(any("layout_review" in a for a in argv))
         self.assertTrue(any(a[:2] == ("cargo", "clippy") and "--features" not in a for a in argv))
-        self.assertTrue(ci.planned_steps({"scope": "tooling"})[0].uses_cargo_target)
+        self.assertTrue(next(s for s in ci.planned_steps({"scope": "tooling"})
+                             if s.step_id == "runner-tests").uses_cargo_target)
         full = ci.planned_steps({"scope": "full"})
         self.assertEqual([s.argv for s in full], [s.argv for s in ci.FULL_STEPS])
 
+    def test_runtime_contract_consumers_and_required_configurations(self):
+        root = SCRIPTS.parent
+        metadata = json.loads(subprocess.check_output(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=root))
+        live_inventory = plan.cargo_inventory(metadata, root)
+        path = "crates/hex-devices/src/compressor.rs"
+        # The copied/native client no longer depends on musical audio rendering.
+        # Changing a compressor must not select the independent client. Adding
+        # an unreviewed reverse consumer still broadens to package coverage.
+        _, live_affected, _ = plan.classify([path], live_inventory)
+        self.assertNotIn("hex-plugin-host", live_affected)
+        live_boundary = plan.boundary_selection(root, [path], live_inventory, live_affected)
+        self.assertEqual(live_boundary["kind"], "compressor")
+        reversed_inventory = [{**p, "dependencies": p["dependencies"] + [{"name": "hex-audio"}]}
+                              if p["name"] == "hex-plugin-host" else p for p in live_inventory]
+        _, reversed_affected, _ = plan.classify([path], reversed_inventory)
+        self.assertIn("hex-plugin-host", reversed_affected)
+        reversed_boundary = plan.boundary_selection(root, [path], reversed_inventory, reversed_affected)
+        self.assertEqual(reversed_boundary["kind"], "packages")
+        self.assertIn("hex-plugin-host", reversed_boundary["test_packages"])
+        inventory = live_inventory
+        scope, affected, _ = plan.classify([path], inventory)
+        self.assertEqual(scope, "rust")
+        self.assertIn("hex-storage", affected)  # opaque state, no Cargo edge
+        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        self.assertEqual(boundary["kind"], "compressor")
+        resolved = {"scope": scope, "affected_packages": affected,
+                    "boundary": boundary, "cargo_inventory": inventory}
+        steps = ci.planned_steps(resolved)
+        self.assertEqual(steps[:len(ci.QUICK_STEPS)], ci.QUICK_STEPS)
+        self.assertEqual(steps[len(ci.QUICK_STEPS)].step_id, "runner-tests")
+        commands = [s.argv for s in steps]
+        self.assertTrue(all(s.requires_tests for s in steps if s.argv[:2] == ("cargo", "test")))
+        self.assertTrue(any("device_chain" in a for a in commands))
+        self.assertTrue(any("allocation_probe_calibration" in a for a in commands))
+        self.assertTrue(any("hex-storage" in a and "compressor" in a for a in commands))
+        self.assertTrue(any("allocation-probe" in a and "compressor" in a for a in commands))
+        self.assertTrue(any("ui-test-support" in a and "compressor" in a for a in commands))
+        self.assertFalse(any("--workspace" in a for a in commands))
+        self.assertFalse(any("operator" in a for a in commands))
+        self.assertIn("hex-midi", boundary["excluded_packages"])
+        with tempfile.TemporaryDirectory() as directory:
+            fixture_root = Path(directory)
+            for name in (path, "crates/hex-devices/src/compressor/tests.rs"):
+                source = fixture_root / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text("// unchanged fixture source\n")
+            (fixture_root / path).write_text("#[macro_export] macro_rules! external { () => {}; }\n")
+            widened = plan.boundary_selection(fixture_root,
+                ["crates/hex-devices/src/compressor/tests.rs"], inventory, affected)
+            self.assertEqual(widened["kind"], "packages")
+        self.assertEqual(plan.boundary_selection(root, [path], inventory, [*affected, "new-consumer"])["kind"], "packages")
+        new_feature = [{**p, "features": {"new-configuration": []}} if p["name"] == "hex-devices" else p
+                       for p in inventory]
+        self.assertEqual(plan.boundary_selection(root, [path], new_feature, affected)["kind"], "packages")
+        with self.assertRaisesRegex(ValueError, "runtime consumers missing"):
+            plan.boundary_selection(root, [path], [p for p in inventory if p["name"] != "hex-storage"], affected)
+        for change in ("crates/hex-devices/src/lib.rs", "crates/hex-lattice-contract/src/lib.rs",
+                       "crates/hex-devices/Cargo.toml", "crates/hex-devices/build.rs"):
+            with self.subTest(change=change):
+                _, consumers, _ = plan.classify([change], inventory)
+                wider = plan.boundary_selection(root, [change], inventory, consumers)
+                self.assertEqual(wider["kind"], "packages")
+                selected = ci.planned_steps({**resolved, "affected_packages": consumers, "boundary": wider})
+                self.assertTrue(any(s.step_id == "affected-tests" for s in selected))
+                self.assertTrue(any(s.step_id == "audio-allocation-probe" for s in selected))
+        for broken in ({**boundary, "lint_packages": []},
+                       {**boundary, "lint_packages": ["missing"]},
+                       {**boundary, "tests": []},
+                       {**boundary, "tests": [{"package": "hex-engine", "test": "missing", "filter": ""}]}):
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                ci.planned_steps({**resolved, "boundary": broken})
+
+    def test_real_cargo_negative_controls_and_matched_selection_timing(self):
+        """Run real selected binaries: affected failures fail; excluded failure stays excluded.
+
+        A tiny generated workspace keeps this independent of native frameworks.
+        Its timings characterize selection overhead only, not production savings.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/owner", "crates/consumer", "crates/unrelated"]\nresolver = "2"\n')
+            sources = {
+                "owner": 'include!(concat!(env!("OUT_DIR"), "/value.rs"));\n#[macro_export] macro_rules! value { () => { $crate::VALUE }; }\n#[test] fn owner_behavior() { assert_eq!(VALUE, 7); }\n',
+                "consumer": '#[test] fn real_contract() { assert_eq!(owner::value!(), 7); }\n#[cfg(feature="checked")] #[test] fn feature_contract() { assert_eq!(owner::value!(), 7); }\n',
+                "unrelated": '#[test] fn unrelated_behavior() { assert_eq!(2 + 2, 4); }\n',
+            }
+            build = 'fn main() { std::fs::write(std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("value.rs"), "pub const VALUE: u32 = 7;").unwrap(); }\n'
+            for name, source in sources.items():
+                folder = root / "crates" / name
+                (folder / "src").mkdir(parents=True)
+                manifest = f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n'
+                if name == "consumer":
+                    manifest += '[dependencies]\nowner = { path = "../owner" }\n[features]\nchecked = []\n'
+                (folder / "Cargo.toml").write_text(manifest)
+                (folder / "src/lib.rs").write_text(source)
+            (root / "crates/owner/build.rs").write_text(build)
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target"), "CARGO_NET_OFFLINE": "true"}
+            metadata = json.loads(subprocess.check_output(
+                ["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=root, env=env))
+            subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=root, env=env, check=True)
+            inventory = plan.cargo_inventory(metadata, root)
+
+            def selection(path):
+                scope, affected, _ = plan.classify([path], inventory)
+                if scope == "full":
+                    return next(s.argv for s in ci.FULL_STEPS if s.step_id == "workspace-tests")
+                boundary = plan.boundary_selection(root, [path], inventory, affected)
+                steps = ci.planned_steps({"scope": scope, "affected_packages": affected,
+                                          "boundary": boundary, "cargo_inventory": inventory})
+                return next(s.argv for s in steps if s.step_id == "affected-tests")
+
+            def run(argv, passed=True):
+                started = time.monotonic()
+                result = subprocess.run(argv, cwd=root, env=env, text=True, capture_output=True)
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode == 0, passed, result.stdout + result.stderr)
+                return {"seconds": elapsed, "timing_estimates": ci.log_timing_estimates(
+                    result.stdout + result.stderr, elapsed)}
+
+            selected = selection("crates/owner/src/lib.rs")
+            self.assertNotIn("unrelated", selected)
+            baseline = next(s.argv for s in ci.FULL_STEPS if s.step_id == "workspace-tests")
+            warmup = [run(baseline), run(selected)]
+            pairs = []
+            for index in range(3):
+                order = [("before", baseline), ("after", selected)]
+                if index % 2:
+                    order.reverse()
+                pairs.append({label: run(argv) for label, argv in order})
+            print("boundary selection matched fixture timing: " + json.dumps({
+                "workload": "three tiny Rust crates; owner build script/exported macro; real consumer; unrelated crate",
+                "cache": "same warm temporary target, offline, no dependencies; sequential alternating pairs",
+                "before_argv": baseline, "after_argv": selected, "warmup": warmup, "pairs": pairs,
+                "qualification": "fixture command/coverage timing only; not production merge wall savings"}, sort_keys=True))
+            # Public contract/build output and macro expansion must reach the real consumer.
+            for path, content in (("crates/owner/build.rs", build.replace("= 7;", "= 8;")),
+                                  ("crates/consumer/src/lib.rs", sources["consumer"].replace(", 7)", ", 8)")),
+                                  ("crates/owner/src/lib.rs", sources["owner"].replace(", 7)", ", 8)"))):
+                original = (root / path).read_text()
+                (root / path).write_text(content)
+                run(selection(path), passed=False)
+                (root / path).write_text(original)
+            # Relevant feature-only regression must fail its selected configuration.
+            feature_path = root / "crates/consumer/src/lib.rs"
+            feature_path.write_text(sources["consumer"].replace(
+                'fn feature_contract() { assert_eq!(owner::value!(), 7); }',
+                'fn feature_contract() { assert_eq!(owner::value!(), 8); }'))
+            _, affected, _ = plan.classify(["crates/consumer/src/lib.rs"], inventory)
+            feature_steps = ci.planned_steps({"scope": "rust", "affected_packages": affected,
+                "boundary": plan.boundary_selection(root, ["crates/consumer/src/lib.rs"], inventory, affected),
+                "cargo_inventory": inventory})
+            run(next(s.argv for s in feature_steps if s.step_id == "feature-test-consumer-0"), passed=False)
+            feature_path.write_text(sources["consumer"])
+            # Real unrelated failure is omitted by a justified owner boundary;
+            # unknown input conservatively selects workspace coverage and detects it.
+            (root / "crates/unrelated/src/lib.rs").write_text(sources["unrelated"].replace(", 4)", ", 5)"))
+            run(selected)
+            run(selection("unknown.input"), passed=False)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_prose_continuation_requires_complete_original_runtime_certificate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -407,6 +722,7 @@ class ScopeTests(unittest.TestCase):
             tree = {"commit": previous, "dirty": False, "dirty_files": [], "content_sha256": "fixture"}
             evidence = {"schema_version": 2, "mode": "full", "status": "passed", "exit_code": 0,
                         "commit": previous, "dirty": False, "stale": False,
+                        "native_acceptance_opt_in": False,
                         "start_tree": tree, "end_tree": tree, "runtime_inputs": plan.runtime_inputs(root),
                         "target_cache": {"dependency_inputs": {"version": 1, "sha256": "a" * 64, "packages": []}},
                         "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
@@ -422,6 +738,48 @@ class ScopeTests(unittest.TestCase):
             reused = ci.reusable_plan(root, resolved, report)
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
             self.assertEqual(reused["reuse"]["source"], previous)
+            self.assertIs(reused["reuse"]["native_acceptance_opt_in"], False)
+            original_report = report.read_bytes()
+            original_plan = json.dumps(resolved, sort_keys=True)
+            # Full reports without a plan and scoped reports must both carry an
+            # explicit false observation. Missing historical state is unknown.
+            for old_plan in (None, {"scope": "tooling", "qualifies_merge": True}):
+                candidate = {**evidence, "plan": old_plan,
+                             "mode": "full" if old_plan is None else "merge",
+                             "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                                        "test_results": {"rust_passed_by_binary": [1]}}
+                                       for s in ci.planned_steps(old_plan or {"scope": "full"})]}
+                for flag in ("missing", True, None, 0, 1, "false", [], {}):
+                    rejected = {**candidate, "native_acceptance_opt_in": flag}
+                    if flag == "missing":
+                        rejected.pop("native_acceptance_opt_in")
+                    raw = json.dumps(rejected).encode()
+                    report.write_bytes(raw)
+                    with self.subTest(scope=old_plan, flag=flag), self.assertRaisesRegex(ValueError, "native/external"):
+                        ci.reusable_plan(root, resolved, report)
+                    self.assertEqual(report.read_bytes(), raw)
+                    self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
+                report.write_text(json.dumps(candidate))
+                self.assertIs(ci.reusable_plan(root, resolved, report)["reuse"]["native_acceptance_opt_in"], False)
+            report.write_bytes(original_report)
+            for key in ("HEX_VST3_SDK_DIR", "HEX_VST3_FUTURE_FIXTURE", "HEX_TEST_SIGNING_IDENTITY"):
+                with self.subTest(current_input=key), self.assertRaisesRegex(ValueError, "native/external"):
+                    plan.reuse_checks(root, resolved, report, env={key: "explicit-input"})
+                self.assertEqual(report.read_bytes(), original_report)
+                self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
+            # A path string and repository tree can stay identical while an
+            # external plugin changes. Native evidence remains non-reusable.
+            with tempfile.TemporaryDirectory() as external:
+                plugin = Path(external) / "fixture.plugin"
+                report.write_text(json.dumps({**evidence, "native_acceptance_opt_in": True}))
+                native_report = report.read_bytes()
+                for content in (b"original plugin", b"replacement at the same path"):
+                    plugin.write_bytes(content)
+                    with self.assertRaisesRegex(ValueError, "native/external"):
+                        plan.reuse_checks(root, resolved, report, env={})
+                    self.assertEqual(report.read_bytes(), native_report)
+                self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
+            report.write_bytes(original_report)
             (root / "linked-runtime.rs").symlink_to(root / "runtime.rs")
             with self.assertRaisesRegex(ValueError, "symlink"):
                 plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)
@@ -602,6 +960,17 @@ class CacheIdentityTests(unittest.TestCase):
             self.assertNotEqual(old, key())
             old = key()
             env["RUSTFLAGS"] = "--cfg changed"
+            self.assertNotEqual(old, key())
+            # Target storage policy participates in the guarded CI inputs too.
+            (root / "scripts").mkdir()
+            helper = root / "scripts/ci_target_storage.py"
+            old = key()
+            helper.write_text("original storage guard")
+            self.assertNotEqual(old, key())
+            old = key()
+            stamp = helper.stat()
+            helper.write_text("modified storage guard")
+            os.utime(helper, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             self.assertNotEqual(old, key())
 
     def test_member_and_intermediate_absent_configs_change_guarded_witness(self):

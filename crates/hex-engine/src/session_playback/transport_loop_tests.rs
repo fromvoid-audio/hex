@@ -3,6 +3,111 @@ use super::*;
 
 const Q: u64 = 1_u64 << 32;
 
+#[test]
+fn post_loop_session_launch_admits_the_faster_canonical_tempo() {
+    let mut snapshot = session_only_project(&project(1.0, 0, Q)).snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
+    snapshot.tempo_points.push(TempoPoint::new(
+        BeatTime::from_quarters(2).unwrap(),
+        Tempo::new(240_000_000).unwrap(),
+    ));
+    let looped = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+    snapshot.loop_region = None;
+    let linear = legacy_project_from_snapshot(snapshot).unwrap();
+    let prepare = |p: &Project| {
+        Arc::new(
+            PreparedRevision::prepare(p, &BTreeMap::new(), Arc::new(crate::SineTable::new()), None)
+                .unwrap(),
+        )
+    };
+    let mut output = [[0.0; 2]; 513];
+    let mut expected = [[0.0; 2]; 513];
+    for (source, buffer) in [(&looped, &mut output), (&linear, &mut expected)] {
+        let revision = prepare(source);
+        let clip = revision.session().midi_clips()[0].id;
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.apply(SessionPlaybackCommand::Seek(72_000)).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(buffer).unwrap();
+    }
+    assert_eq!(output, expected);
+    assert!(output.iter().any(|frame| frame[0] != 0.0));
+}
+
+#[test]
+fn interactive_cursor_after_loop_keeps_absolute_history_and_forward_pcm() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let linear = transport_loop_project(true);
+            let mut snapshot = linear.snapshot();
+            let region = LoopRegion::new(48_000, 96_000, true).unwrap();
+            snapshot.loop_region = Some(region);
+            let looped = legacy_project_from_snapshot(snapshot).unwrap();
+            let revision = prepare_mutable(&looped);
+            for target in [96_000, 100_003, 144_123] {
+                for start_playing in [false, true] {
+                    let mut actual =
+                        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                            Arc::clone(&revision),
+                            target,
+                            target,
+                            start_playing,
+                            &std::sync::atomic::AtomicBool::new(false),
+                        )
+                        .unwrap();
+                    let mut oracle =
+                        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                            prepare_mutable(&linear),
+                            target,
+                            target,
+                            start_playing,
+                            &std::sync::atomic::AtomicBool::new(false),
+                        )
+                        .unwrap();
+                    assert_eq!(actual.arrangement_frame(), target);
+                    assert_eq!(actual.performance_frame(), target);
+                    assert_eq!(
+                        actual.prepared_revision().arrangement().loop_region(),
+                        Some(region)
+                    );
+                    if !start_playing {
+                        actual.apply(SessionPlaybackCommand::Play).unwrap();
+                        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+                    }
+                    let mut output = [[0.0; 2]; 513];
+                    let mut expected = [[0.0; 2]; 513];
+                    for chunk in output.chunks_mut(17) {
+                        actual.render(chunk).unwrap();
+                    }
+                    oracle.render(&mut expected).unwrap();
+                    assert_eq!(output, expected, "target {target}");
+                    assert!(output.iter().any(|frame| frame[0] != 0.0));
+                    let mut replacement = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+                    replacement.try_inherit_state_from(&mut actual).unwrap();
+                    let mut continued = [[0.0; 2]; 257];
+                    let mut expected = [[0.0; 2]; 257];
+                    replacement.render(&mut continued).unwrap();
+                    oracle.render(&mut expected).unwrap();
+                    assert_eq!(continued, expected, "post-loop handoff at {target}");
+                    actual = replacement;
+                    actual.apply(SessionPlaybackCommand::Stop).unwrap();
+                    assert_eq!(actual.arrangement_frame(), 0);
+                    assert_eq!(actual.loop_region(), Some(region));
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 fn transport_loop_project(expanded: bool) -> Project {
     let mut snapshot = project(1.0, 0, 5 * Q).snapshot();
     let note_id = snapshot.next_id;
@@ -54,6 +159,108 @@ fn transport_loop_project(expanded: bool) -> Project {
             Some(LoopRegion::new(2 * 24_000, 4 * 24_000, true).expect("valid transport loop"));
     }
     legacy_project_from_snapshot(snapshot).expect("valid transport-loop fixture")
+}
+
+#[test]
+fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope() {
+    let mut snapshot = transport_loop_project(false).snapshot();
+    let mut contributor = snapshot.tracks[0].clone();
+    contributor.id = snapshot.next_id;
+    snapshot.next_id += 1;
+    let note_count = 11_u64;
+    let first_note_id = snapshot.next_id;
+    match &mut snapshot.tracks[0].content {
+        TrackContentSnapshot::Hybrid { midi_clips, .. }
+        | TrackContentSnapshot::Instrument(midi_clips) => {
+            let clip = midi_clips.first_mut().expect("receiver clip");
+            clip.notes = (0..note_count)
+                .map(|index| MidiNoteSnapshot {
+                    id: first_note_id + index,
+                    start_raw: 2 * Q,
+                    duration_raw: Q,
+                    pitch: 36 + (index % 48) as u8,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .collect();
+        }
+        TrackContentSnapshot::Audio(_) => panic!("MIDI source track"),
+    };
+    let second_clip_id = first_note_id + note_count;
+    let second_note_id = second_clip_id + 1;
+    match &mut contributor.content {
+        TrackContentSnapshot::Hybrid { midi_clips, .. }
+        | TrackContentSnapshot::Instrument(midi_clips) => {
+            let clip = midi_clips.first_mut().expect("contributor clip");
+            clip.id = second_clip_id;
+            clip.notes = (0..note_count)
+                .map(|index| MidiNoteSnapshot {
+                    id: second_note_id + index,
+                    start_raw: 2 * Q,
+                    duration_raw: Q,
+                    pitch: 36 + (index % 48) as u8,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .collect();
+        }
+        TrackContentSnapshot::Audio(_) => panic!("MIDI source track"),
+    }
+    snapshot.next_id = second_note_id + note_count;
+    snapshot.loop_region = Some(LoopRegion::new(48_000, 48_128, true).expect("short loop"));
+    snapshot.tracks.push(contributor);
+    let project = Project::from_snapshot(snapshot).expect("shared source loop project");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback"),
+            levels: [0.2, 0.4],
+            release_frames: 256,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry =
+        hex_lattice::NativeInstrumentRegistry::new(&definitions).expect("instrument registry");
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &project,
+            &BTreeMap::new(),
+            Arc::new(crate::SineTable::new()),
+            None,
+            &registry,
+        )
+        .expect("statically admitted shared source"),
+    );
+
+    let region = revision.arrangement().loop_region().expect("fixture loop");
+    let receiver = revision.arrangement().tracks()[0]
+        .canonical_track_id()
+        .expect("receiver id");
+    let factory = revision
+        .session()
+        .mutable_instrument_factory(receiver)
+        .expect("receiver runtime factory");
+    for track in revision.arrangement().tracks() {
+        assert_eq!(
+            super::transport_loop_admission::admit_track(
+                track,
+                region,
+                factory.max_release_tail_frames(),
+                factory.max_events_per_block(),
+                factory.max_active_occurrences(),
+            ),
+            Ok(44),
+            "each contributor stays below the 64 voice limit"
+        );
+    }
+
+    // Each authored track peaks at 11 voices, so static source admission is
+    // valid at 22. At the first seam, the initial 11 releases overlap three
+    // repeated 11-note tails (44 per contributor); the combined 88 must be
+    // charged to one runtime even though either track is individually below 64.
+    assert_eq!(
+        SessionPlayback::new(revision).err(),
+        Some(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
 }
 
 fn render_transport_project(project: &Project, frames: usize, partitions: &[usize]) -> Vec<Frame> {
@@ -264,6 +471,57 @@ fn mutable_source_and_transport_loops_match_authored_linear_occurrences_across_w
 }
 
 #[test]
+fn finite_bounce_preserves_mutable_source_phase_and_ignores_transport_wrapping() {
+    for offset in [0, Q / 4, 5 * Q / 4] {
+        let mut snapshot = arrangement_loop_project().snapshot();
+        let (TrackContentSnapshot::Hybrid { midi_clips, .. }
+        | TrackContentSnapshot::Instrument(midi_clips)) = &mut snapshot.tracks[0].content
+        else {
+            panic!("fixture midi");
+        };
+        midi_clips[0].playback_offset_raw = offset;
+        snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
+        let looped = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+        snapshot.loop_region = None;
+        let reference = legacy_project_from_snapshot(snapshot).unwrap();
+        let mut bounce =
+            SessionPlayback::new_finite_arrangement_bounce(prepare_mutable(&looped), None, 120_000)
+                .unwrap();
+        let mut reference = SessionPlayback::new(prepare_mutable(&reference)).unwrap();
+        assert!(bounce.is_linear_arrangement_export());
+        bounce.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut rendered = 0;
+        for count in [1, 137, 511].into_iter().cycle() {
+            let count = count.min(120_000 - rendered);
+            let mut actual = vec![[0.0; 2]; count];
+            let mut expected = vec![[0.0; 2]; count];
+            bounce.render(&mut actual).unwrap();
+            reference.render(&mut expected).unwrap();
+            assert_eq!(
+                actual, expected,
+                "finite source phase offset={offset} at {rendered}"
+            );
+            rendered += count;
+            if rendered == 120_000 {
+                break;
+            }
+        }
+        assert_eq!(bounce.arrangement_loop_pass, 0);
+        for frames in [0, MAX_FINITE_BOUNCE_FRAMES + 1, u64::MAX] {
+            assert!(
+                SessionPlayback::new_finite_arrangement_bounce(
+                    prepare_mutable(&looped),
+                    None,
+                    frames,
+                )
+                .is_err()
+            );
+        }
+    }
+}
+
+#[test]
 fn mutable_transport_loops_admit_while_linear_export_still_refuses_source_loops() {
     let mut snapshot = arrangement_loop_project().snapshot();
     snapshot.loop_region = Some(LoopRegion::new(0, 48_000, true).expect("valid transport loop"));
@@ -376,7 +634,7 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
             id: 100 + index,
             start_raw: 0,
             duration_raw: 2 * Q,
-            pitch: 48 + (index % 12) as u8,
+            pitch: 36 + index as u8,
             channel: 0,
             velocity: 100,
         })
@@ -421,6 +679,8 @@ fn mutable_transport_admission_respects_lower_device_event_and_voice_limits() {
     };
     let mut duplicate = midi_clips[0].notes[0].clone();
     duplicate.id = duplicate_id;
+    // Same simultaneous event/voice pressure on a distinct valid pitch.
+    duplicate.pitch += 1;
     midi_clips[0].notes.push(duplicate);
     let project = legacy_project_from_snapshot(snapshot).expect("valid duplicated loop notes");
     let revision = prepare_mutable(&project);
@@ -545,7 +805,7 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
             id: first_note_id + 128 + index,
             start_raw: beat_raw_for_frames(450),
             duration_raw: beat_raw_for_frames(550),
-            pitch: 36 + (index % 48) as u8,
+            pitch: 36 + index as u8,
             channel: 0,
             velocity: 100,
         }))

@@ -1,5 +1,6 @@
 //! Original delayed processors enter through the normal registry/compiler seam.
 use super::*;
+use crate::routed_midi_fixture;
 use crate::{
     Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable,
 };
@@ -14,8 +15,15 @@ use hex_lattice_contract::{
 use hex_project::{Command, Created, Editor};
 use std::any::Any;
 
+#[path = "tests/limiter_latency.rs"]
+mod limiter_latency;
+
 #[path = "tests/eq_automation.rs"]
 mod eq_automation;
+#[path = "tests/shared_legacy.rs"]
+mod shared_legacy;
+#[path = "tests/shared_sources.rs"]
+mod shared_sources;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.compensation.delay");
 pub(crate) struct Definition;
@@ -320,11 +328,13 @@ fn gain_uses_delayed_content_frame_and_loop_history_survives_wrap() {
             track: f.tracks[0],
             points: vec![
                 hex_project::GainPoint {
+                    incoming_gain: None,
                     beat: hex_project::BeatTime::ZERO,
                     gain: 0.5,
                     outgoing: hex_project::GainInterpolation::Step,
                 },
                 hex_project::GainPoint {
+                    incoming_gain: None,
                     beat,
                     gain: 1.0,
                     outgoing: hex_project::GainInterpolation::Step,
@@ -389,6 +399,8 @@ fn unknown_latency_and_cumulative_overflow_refuse_actual_preparation() {
     assert!(prepare(&fixture(&[&[40000, 40000]], 8)).is_err());
 }
 
+thread_local! { static CONTEXT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! { static INSTRUMENT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 struct InstrumentDefinition;
 const INSTRUMENT: DeviceTypeId = DeviceTypeId::from_static("test.compensation.generator");
 impl NativeDeviceMetadata for InstrumentDefinition {
@@ -440,12 +452,20 @@ impl hex_lattice::NativeInstrumentDefinition for InstrumentDefinition {
         _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
         self.migrate_state(state)?;
+        INSTRUMENT_PREPARATIONS.with(|count| count.set(count.get() + 1));
         Ok(Box::new(Instrument))
     }
 }
 impl hex_lattice::PreparedNativeInstrument for Instrument {
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(5)
+    }
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedSharedAnalyticContext>>, DeviceContractError>
+    {
+        CONTEXT_PREPARATIONS.with(|count| count.set(count.get() + 1));
+        Ok(Some(Box::new(Instrument)))
     }
     fn prepare_note(
         &self,
@@ -459,6 +479,27 @@ impl hex_lattice::PreparedNativeInstrument for Instrument {
         ))
     }
 }
+impl hex_lattice::PreparedSharedAnalyticContext for Instrument {
+    fn declared_context_bytes(&self) -> usize {
+        1
+    }
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedSharedAnalyticNote, DeviceContractError> {
+        Ok(hex_lattice::PreparedSharedAnalyticNote::new([0; 8], 5))
+    }
+    fn sample(
+        &self,
+        _: &hex_lattice::PreparedSharedAnalyticNote,
+        age: u64,
+        _: u64,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Frame {
+        if age == 5 { [0.25, -0.5] } else { [0.0; 2] }
+    }
+}
 #[test]
 fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     let mut f = fixture(&[&[3]], 32);
@@ -467,6 +508,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     snapshot.next_id += 3;
     let owner = &mut snapshot.tracks[0];
     owner.instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: next,
         bypassed: false,
@@ -480,6 +522,11 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     owner.content = hex_project::TrackContentSnapshot::Hybrid {
         audio_clips,
         midi_clips: vec![hex_project::MidiClipSnapshot {
+            content_view: None,
+            active: true,
+            playback_offset_raw: 0,
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id: next + 1,
@@ -500,7 +547,12 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
             }],
         }],
     };
-    f.editor = Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
+    f.editor = Editor::new(
+        hex_project::Project::from_legacy_snapshot(snapshot).unwrap(),
+        8,
+    )
+    .unwrap();
     let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
     let effects = NativeDeviceRegistry::new(&effects).unwrap();
     let instruments: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&InstrumentDefinition];
@@ -860,6 +912,7 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(unknown.performance_frame_at_offset(0), None);
     assert_eq!(unknown.transport_is_running(), None);
     let source = TransportStamp {
+        tempo_micro_bpm: Some(123_000_000),
         performance_frame: 900,
         transport_is_running: true,
         arrangement_frame: 12,
@@ -868,6 +921,9 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         arrangement_beat_raw: Some(1 << 32),
     };
     let clock = OriginClock(Some(source));
+    assert_eq!(clock.tempo_micro_bpm_at_offset(0), Some(123_000_000));
+    assert_eq!(clock.tempo_micro_bpm_at_offset(1), None);
+    assert_eq!(unknown.tempo_micro_bpm_at_offset(0), None);
     assert_eq!(clock.performance_frame_at_offset(0), Some(900));
     assert_eq!(clock.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(clock.loop_pass_at_offset(0), Some(7));

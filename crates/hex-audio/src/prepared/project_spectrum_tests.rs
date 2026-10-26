@@ -51,7 +51,7 @@ fn actual_callback_project_and_eq_capture_preserve_pcm_and_final_context_validat
         // This fixture has one unity-fader track and an unsent Return. The
         // actual direct stem therefore equals Main, independently of EQ input.
         assert_eq!(project.staged(ProjectSignal::Track(1)).unwrap(), actual);
-        assert_eq!(callback.spectrum_stage.frames, actual);
+        assert_eq!(callback.spectrum_stages.get(0).unwrap().frames, actual);
         let (node, project) = callback.finish_analysis_block(now, true);
         assert_eq!(node, Some(CaptureOutcome::Queued { sequence: 0 }));
         assert_eq!(project, Some(CaptureOutcome::Queued { sequence: 0 }));

@@ -1,5 +1,6 @@
 //! GPUI production-event regressions for project replacement and publication policy.
 use super::*;
+use crate::editor::viewport::Viewport;
 use gpui::TestAppContext;
 use hex_engine::{PreparedRevision, SineTable};
 use hex_project::{Command, Editor, Project};
@@ -18,6 +19,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
             comparison_audio: None,
             project,
             waveforms: Default::default(),
+            source_overviews: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(Default::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -31,13 +33,21 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         playback: Some(Playback::try_from_prepared_with_session(prepared).expect("playback")),
         status: None,
         error: None,
+        recovery_failure: None,
         request_complete: true,
+        sampler_load_complete: None,
+        sampler_edit_complete: None,
+        plugin_effect_complete: Vec::new(),
         computer_keyboard_complete: None,
+        midi_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
+        bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        document_format_upgrade_required: false,
+        save_confirmation_required: false,
         open_complete: replaced,
         project_replaced: replaced,
         stopped_playback_restore_complete: false,
@@ -64,6 +74,7 @@ fn open_response(mut event: Event, path: Option<std::path::PathBuf>, failed: boo
         comparison_audio: None,
         project: Arc::clone(&previous.project),
         waveforms: Default::default(),
+        source_overviews: Default::default(),
         audio_clip_waveforms: std::collections::BTreeMap::new(),
         midi_preview: Arc::new(Default::default()),
         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -215,8 +226,9 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
             assert!(!view.spectrum_target_is_visible_and_current(target));
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
 
-            view.device_panel.spectrum_result =
-                Some(hex_audio::spectrum_worker::PublishedSpectra {
+            view.device_panel.spectrum_results.insert(
+                target.token,
+                hex_audio::spectrum_worker::PublishedSpectra {
                     input: None,
                     output: hex_audio::spectrum_worker::PublishedSpectrum {
                         stamp: hex_audio::spectrum_worker::SpectrumStamp {
@@ -232,11 +244,12 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
                         captured_at: std::time::Instant::now(),
                         processed_at: std::time::Instant::now(),
                     },
-                });
+                },
+            );
             // A backend replacement starts without a selected target. Tick's
             // retirement path clears cached data even before a new frame arrives.
             assert!(view.retire_stale_spectrum_target());
-            assert!(view.device_panel.spectrum_result.is_none());
+            assert!(view.device_panel.spectrum_results.is_empty());
             cx.notify();
         })
         .expect("spectrum target context");
@@ -440,6 +453,8 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             receive_worker_event(view);
             assert_eq!(view.viewport, None, "the initial project remains auto-fit");
             let initial_horizon = view.state.as_ref().expect("initial state").timeline_frames;
+            let initial_view = view.visible_viewport(initial_horizon);
+            assert_eq!(initial_view, Viewport::fit(14 * 48_000));
 
             view.service
                 .submit(Request::Edit(Command::AddTrack {
@@ -473,23 +488,20 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             receive_worker_event(view);
             let grown_horizon = view.state.as_ref().unwrap().timeline_frames;
             assert!(grown_horizon > initial_horizon);
-            assert_eq!(view.viewport, Some(Viewport::fit(initial_horizon)));
-            assert_eq!(
-                view.visible_viewport(grown_horizon),
-                Viewport::fit(initial_horizon)
-            );
+            assert_eq!(view.viewport, Some(initial_view));
+            assert_eq!(view.visible_viewport(grown_horizon), initial_view);
 
             view.service
                 .submit(Request::Edit(Command::Gain { track, gain: 0.5 }))
                 .expect("same-horizon edit");
             receive_worker_event(view);
-            assert_eq!(view.viewport, Some(Viewport::fit(initial_horizon)));
+            assert_eq!(view.viewport, Some(initial_view));
 
             view.fit_timeline();
             assert_eq!(view.viewport, None);
             assert_eq!(
                 view.visible_viewport(grown_horizon),
-                Viewport::fit(grown_horizon)
+                Viewport::fit(grown_horizon + 6 * 48_000)
             );
             view.zoom_timeline(true);
             let explicit_zoom = view.viewport.expect("explicit zoom");
@@ -529,7 +541,7 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             let replacement_horizon = view.state.as_ref().unwrap().timeline_frames;
             assert_eq!(
                 view.visible_viewport(replacement_horizon),
-                Viewport::fit(replacement_horizon)
+                Viewport::fit(replacement_horizon + 6 * 48_000)
             );
         })
         .expect("run viewport growth assertions");

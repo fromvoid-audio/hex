@@ -119,6 +119,8 @@ fn requested_ring_bytes<T>(capacity: usize) -> Result<usize, CompensationError> 
 /// Beat preserves exact Q32.32 quarter-note ticks; no project or runtime owner is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportStamp {
+    /// Local source tempo; stays aligned with the same delayed content stamp.
+    pub tempo_micro_bpm: Option<u32>,
     /// Exact source performance-frame identity, independent of loop position.
     pub performance_frame: u64,
     /// Actual host transport state when this source frame entered the graph.
@@ -145,6 +147,39 @@ pub struct CompensationRuntime {
 }
 
 impl CompensationRuntime {
+    pub(crate) fn visit_owned_candidate_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        let Self {
+            plan,
+            edges,
+            stamps,
+            storage_bytes: _,
+            transaction_active,
+        } = self;
+        if *transaction_active {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        let count = || -> Result<usize, CompensationError> {
+            let mut bytes = add_bytes(plan.storage_bytes()?, vector_bytes(edges)?)?;
+            bytes = add_bytes(bytes, stamps.storage_bytes()?)?;
+            for edge in edges {
+                bytes = add_bytes(bytes, edge.owned_data_bytes()?)?;
+            }
+            Ok(bytes)
+        };
+        let bytes = count().map_err(|_| crate::AudioStorageError::Overflow)?;
+        // All DATA belongs to this private constructor: immutable plan Vecs,
+        // edge rows, each concrete ring pair and the one transport stamp pair.
+        // No owning handle or borrowed device/provider is present.
+        ledger.bytes(
+            Owner::exclusive(self),
+            Location("compensation-owned-data", 0),
+            bytes,
+        )
+    }
     /// Fallible control-only construction. Budgets charge actual Vec capacities,
     /// including the edge table and immutable plan, rather than requested lengths.
     pub fn new(plan: LatencyPlan, limits: CompensationLimits) -> Result<Self, CompensationError> {

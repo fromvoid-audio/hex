@@ -14,14 +14,14 @@ pub(in crate::editor) fn view(
     width: f32,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
+    if view.automation_view.enabled {
+        return None;
+    }
     view.gain_lane.plot_width = width;
     let track_id = view.gain_lane.track?;
     let track = state.project.track(track_id)?;
     let point = view.gain_point();
-    let selected = view.gain_lane.selected;
     let draft = view.gain_lane.draft;
-    let generation = view.project_generation;
-    let revision = state.revision;
     let local_numeric = [&view.gain_lane.gain].into_iter().flatten().any(|binding| {
         binding.entity.read(cx).is_editing() || binding.entity.read(cx).is_interacting()
     });
@@ -82,6 +82,7 @@ pub(in crate::editor) fn view(
                                 return;
                             };
                             let point = GainPoint {
+                                incoming_gain: None,
                                 beat,
                                 gain,
                                 outgoing: GainInterpolation::Linear,
@@ -213,16 +214,115 @@ pub(in crate::editor) fn view(
         },
         track.gain() * 100.0
     );
+    let plot = plot(view, state, track_id, viewport, width, false, cx)?;
+    let details_tooltip = details.clone();
+    let details = div()
+        .id("gain-point-readout")
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::super::waveform::ClipTooltip {
+                kind: crate::tooltips::Kind::Identification,
+                name: details_tooltip.clone(),
+            })
+            .into()
+        })
+        .w(px(view.track_header_width()))
+        .flex_shrink_0()
+        .text_xs()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(div().h(px(18.0)).truncate().child(theme::text(details)))
+        .child(div().h(px(18.0)).truncate().child(theme::text(format!(
+                "cursor frame {} · prepared {}",
+                view.cursor_position(),
+                preview_gain(state, track_id, view.cursor_position())
+                    .map(|gain| format!("{:.2}%", gain * 100.0))
+                    .unwrap_or_else(|| "unavailable".into())
+            ))));
+    let unavailable = state
+        .gain_preview
+        .as_ref()
+        .err()
+        .map(|reason| format!("preview unavailable · {}", reason.0));
+    Some(
+        div()
+            .id("gain-lane")
+            .debug_selector(|| "gain-lane".into())
+            .h(px(96.0))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .border_t_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+            .child(
+                div()
+                    .h(px(18.0))
+                    .text_xs()
+                    .truncate()
+                    .child(theme::text(title)),
+            )
+            .child(controls)
+            .child(div().h(px(36.0)).flex().child(plot).child(details))
+            .child(
+                div()
+                    .h(px(18.0))
+                    .text_xs()
+                    .truncate()
+                    .child(theme::text(unavailable.unwrap_or(label))),
+            ),
+    )
+}
+
+/// Same prepared curve and draft/command owner as the detail editor. Only visible
+/// authored points are cloned; offscreen track rows are not mounted.
+#[allow(clippy::too_many_arguments)]
+fn plot(
+    view: &mut EditorView,
+    state: &ViewState,
+    track_id: TrackId,
+    viewport: Viewport,
+    width: f32,
+    inline: bool,
+    cx: &mut Context<EditorView>,
+) -> Option<gpui::Stateful<Div>> {
+    let track = state.project.track(track_id)?;
+    let owned = view.gain_lane.track == Some(track_id);
+    let selected = owned.then_some(view.gain_lane.selected).flatten();
+    let draft = view.gain_lane.display_draft(track_id);
+    let generation = view.project_generation;
+    let revision = state.revision;
     let preview = state.gain_preview.clone();
     let grid =
         super::super::musical_time::grid_lines(&state.project, viewport, width, view.snap_grid);
     let static_gain = track.gain();
-    let points = track.gain_envelope().to_vec();
-    let project = state.project.clone();
+    let points = track.gain_envelope();
+    let first = points.partition_point(|p| {
+        state
+            .project
+            .tempo_map()
+            .beat_to_frame(p.beat)
+            .is_ok_and(|f| f < viewport.start)
+    });
+    let last = points.partition_point(|p| {
+        state
+            .project
+            .tempo_map()
+            .beat_to_frame(p.beat)
+            .is_ok_and(|f| f <= viewport.end().unwrap_or(viewport.start))
+    });
+    let points = points[first..last].to_vec();
     let entity = cx.entity();
     let plot = div()
-        .id("gain-lane-plot")
-        .debug_selector(|| "gain-lane-plot".into())
+        .id(("gain-plot", track_id.value()))
+        .debug_selector(move || {
+            if inline {
+                format!("arrangement-automation-plot-{}", track_id.value())
+            } else {
+                "gain-lane-plot".into()
+            }
+        })
         .relative()
         .flex_1()
         .min_w_0()
@@ -291,33 +391,6 @@ pub(in crate::editor) fn view(
                                 .paint_path(path, rgb(theme::color(theme::PaletteRole::Secondary)));
                         }
                     }
-                    for p in points.iter().chain(draft.iter().map(|draft| &draft.point)) {
-                        if let Ok(frame) = project.tempo_map().beat_to_frame(p.beat)
-                            && let Some(x) = viewport.fraction(frame)
-                        {
-                            let mut path = PathBuilder::stroke(px(if Some(p.beat) == selected {
-                                3.0
-                            } else {
-                                2.0
-                            }));
-                            let x = rect[0] + x * rect[2];
-                            let y = rect[1] + rect[3] * (1.0 - p.gain / 2.0);
-                            path.move_to(gpui_point(px(x - 2.0), px(y)));
-                            path.line_to(gpui_point(px(x + 2.0), px(y)));
-                            if let Ok(path) = path.build() {
-                                window.paint_path(
-                                    path,
-                                    rgb(theme::color(
-                                        if draft.is_some_and(|draft| draft.point.beat == p.beat) {
-                                            theme::PaletteRole::Primary
-                                        } else {
-                                            theme::PaletteRole::Text
-                                        },
-                                    )),
-                                );
-                            }
-                        }
-                    }
                     let down = entity.clone();
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.capture()
@@ -332,7 +405,10 @@ pub(in crate::editor) fn view(
                                     .state
                                     .as_ref()
                                     .is_none_or(|state| state.revision != revision)
-                                || view.gain_lane.track != Some(track_id)
+                                || (!inline && view.gain_lane.track != Some(track_id))
+                                || (inline
+                                    && (!view.automation_view.enabled
+                                        || !view.arrangement_view_change_available(cx)))
                             {
                                 return false;
                             }
@@ -342,6 +418,19 @@ pub(in crate::editor) fn view(
                             let Some(state) = view.state.clone() else {
                                 return false;
                             };
+                            if inline {
+                                let changed = view.gain_lane.track != Some(track_id);
+                                // The foreground lane owns its target; choosing a curve
+                                // must not change the retained background clip selection.
+                                view.focus.focus(window);
+                                view.gain_lane.track = Some(track_id);
+                                view.gain_lane.plot_width = rect[2];
+                                if changed {
+                                    view.gain_lane.selected = None;
+                                    view.gain_lane.gain = None;
+                                    view.gain_lane.error = None;
+                                }
+                            }
                             view.start_gain_pointer(
                                 &state,
                                 viewport,
@@ -361,6 +450,9 @@ pub(in crate::editor) fn view(
                             return;
                         }
                         if moved.update(cx, |view, _| {
+                            if view.gain_lane.draft.is_none_or(|d| d.track != track_id) {
+                                return false;
+                            }
                             view.move_gain_pointer(
                                 [f32::from(event.position.x), f32::from(event.position.y)],
                                 event.modifiers.platform,
@@ -376,11 +468,9 @@ pub(in crate::editor) fn view(
                             return;
                         }
                         if up.update(cx, |view, _| {
-                            if view
-                                .gain_lane
-                                .draft
-                                .is_none_or(|draft| draft.pointer.is_none())
-                            {
+                            if view.gain_lane.draft.is_none_or(|draft| {
+                                draft.pointer.is_none() || draft.track != track_id
+                            }) {
                                 return false;
                             }
                             view.move_gain_pointer(
@@ -399,61 +489,84 @@ pub(in crate::editor) fn view(
             .absolute()
             .inset_0(),
         );
-    let details_tooltip = details.clone();
-    let details = div()
-        .id("gain-point-readout")
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::super::waveform::ClipTooltip {
-                name: details_tooltip.clone(),
-            })
+    let markers = points
+        .iter()
+        .filter(|p| draft.is_none_or(|d| d.from != Some(p.beat)))
+        .chain(draft.iter().map(|draft| &draft.point))
+        .filter_map(|p| {
+            let frame = state.project.tempo_map().beat_to_frame(p.beat).ok()?;
+            let x = viewport.fraction(frame)?;
+            let beat = p.beat.raw();
+            Some(
+                div()
+                    .absolute()
+                    .left(gpui::relative(x))
+                    .top(gpui::relative(1.0 - p.gain / 2.0))
+                    .ml(px(-3.0))
+                    .mt(px(-3.0))
+                    .size(px(6.0))
+                    .debug_selector(move || format!("gain-point-{}-{beat}", track_id.value()))
+                    .border_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Surface)))
+                    .bg(rgb(theme::color(
+                        if draft.is_some_and(|d| d.point.beat == p.beat) {
+                            theme::PaletteRole::Primary
+                        } else if Some(p.beat) == selected {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Text
+                        },
+                    ))),
+            )
+        });
+    Some(plot.children(markers))
+}
+
+pub(in crate::editor) fn inline(
+    view: &mut EditorView,
+    state: &ViewState,
+    track: TrackId,
+    viewport: Viewport,
+    width: f32,
+    cx: &mut Context<EditorView>,
+) -> Option<gpui::Stateful<Div>> {
+    let source = state.project.track(track)?;
+    let label = if let Err(reason) = &state.gain_preview {
+        format!("gain · preview unavailable · {}", reason.0)
+    } else if view.gain_lane.track == Some(track) {
+        view.gain_lane.error.clone().unwrap_or_else(|| {
+            if view.gain_lane.pending.is_some() {
+                "gain · applying"
+            } else if view.gain_lane.draft.is_some() {
+                "gain · draft · not applied"
+            } else if !source.gain_lane().spans().is_empty() {
+                "gain · recorded touch · read-only"
+            } else {
+                "gain"
+            }
             .into()
         })
-        .w(px(view.track_header_width()))
-        .flex_shrink_0()
-        .text_xs()
-        .overflow_hidden()
-        .flex()
-        .flex_col()
-        .child(div().h(px(18.0)).truncate().child(theme::text(details)))
-        .child(div().h(px(18.0)).truncate().child(theme::text(format!(
-                "cursor frame {} · prepared {}",
-                view.cursor_position(),
-                preview_gain(state, track_id, view.cursor_position())
-                    .map(|gain| format!("{:.2}%", gain * 100.0))
-                    .unwrap_or_else(|| "unavailable".into())
-            ))));
-    let unavailable = state
-        .gain_preview
-        .as_ref()
-        .err()
-        .map(|reason| format!("preview unavailable · {}", reason.0));
+    } else if !source.gain_lane().spans().is_empty() {
+        "gain · recorded touch · read-only".into()
+    } else {
+        "gain".into()
+    };
     Some(
-        div()
-            .id("gain-lane")
-            .debug_selector(|| "gain-lane".into())
-            .h(px(96.0))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .border_t_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        plot(view, state, track, viewport, width, true, cx)?
+            .absolute()
+            .inset_0()
+            .block_mouse_except_scroll()
+            .cursor(gpui::CursorStyle::Crosshair)
             .child(
                 div()
-                    .h(px(18.0))
-                    .text_xs()
+                    .absolute()
+                    .top_0()
+                    .left(px(3.0))
+                    .right_0()
+                    .text_size(px(9.0))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .truncate()
-                    .child(theme::text(title)),
-            )
-            .child(controls)
-            .child(div().h(px(36.0)).flex().child(plot).child(details))
-            .child(
-                div()
-                    .h(px(18.0))
-                    .text_xs()
-                    .truncate()
-                    .child(theme::text(unavailable.unwrap_or(label))),
+                    .child(theme::text(label)),
             ),
     )
 }

@@ -1,8 +1,10 @@
-//! Passive time-chunk fragment rendering using cached waveform and note summaries.
+//! Passive time-chunk fragments retain their timeline bounds and clip shell.
+//! A supplied compact title replaces body construction; normal rows use cached
+//! waveform/note summaries. Inputs remain prepared display data, never edits.
 use super::tracks::clip_grid_layer;
 use super::viewport::Viewport;
 use crate::theme;
-use gpui::{Div, div, prelude::*, px, relative, rgb};
+use gpui::{AnyElement, Div, div, prelude::*, px, relative, rgb};
 use hex_project::Clip;
 
 pub(super) fn move_exclusions(
@@ -98,6 +100,7 @@ pub(super) fn clip_intersection(clip: &Clip, interval: (u64, u64)) -> Option<(u6
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn passive_audio_fragment(
+    lane_width: f32,
     fill: u32,
     clip: &Clip,
     waveform: Option<&std::sync::Arc<hex_session::CachedWaveform>>,
@@ -106,6 +109,7 @@ pub(super) fn passive_audio_fragment(
     grid: &[super::musical_time::GridLine],
     cache: std::rc::Rc<std::cell::RefCell<super::waveform_geometry::WaveformGeometryCache>>,
     selector: String,
+    compact_header: Option<AnyElement>,
 ) -> Option<Div> {
     let end = clip.start().checked_add(clip.duration())?;
     let start = clip.start().max(viewport.start);
@@ -115,19 +119,18 @@ pub(super) fn passive_audio_fragment(
     }
     let left = (start - viewport.start) as f64 / viewport.length as f64;
     let width = (stop - start) as f64 / viewport.length as f64;
-    let mut content = div()
-        .debug_selector(move || selector.clone())
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(relative(left as f32))
-        .w(relative(width as f32))
-        .min_w(px(3.0))
-        .overflow_hidden()
-        .border_1()
-        .border_color(rgb(0x000000))
-        .bg(rgb(fill))
-        .children([clip_grid_layer(grid, start, stop)]);
+    let mut content = hex_widgets::rectangle_surface(
+        left as f32,
+        width as f32,
+        super::trim::rendered_clip_width(lane_width, width),
+    )
+    .debug_selector(move || selector.clone())
+    .border_color(rgb(0x000000))
+    .bg(rgb(fill));
+    if let Some(header) = compact_header {
+        return Some(content.child(header));
+    }
+    content = content.children(clip_grid_layer(grid, start, stop));
     if let Some(waveform) = waveform {
         content = content.child(super::waveform::waveform_view_cached(
             waveform, clip, start, stop, cache,
@@ -150,6 +153,7 @@ pub(super) fn passive_audio_fragment(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn passive_midi_fragment(
+    lane_width: f32,
     fill: u32,
     clip_id: hex_project::ClipId,
     samples: &[hex_engine::MidiPreviewSample],
@@ -160,6 +164,7 @@ pub(super) fn passive_midi_fragment(
     grid: &[super::musical_time::GridLine],
     selector: String,
     shape_budget: usize,
+    compact_header: Option<AnyElement>,
 ) -> (Option<Div>, usize) {
     let visible_start = timeline_interval.0.max(viewport.start);
     let visible_end = timeline_interval.1.min(viewport_end);
@@ -168,19 +173,18 @@ pub(super) fn passive_midi_fragment(
     }
     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-    let mut content = div()
-        .debug_selector(move || format!("{selector}-{}", clip_id.value()))
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(relative(left as f32))
-        .w(relative(width as f32))
-        .min_w(px(4.0))
-        .overflow_hidden()
-        .bg(rgb(fill))
-        .border_1()
-        .border_color(rgb(0x000000))
-        .children([clip_grid_layer(grid, visible_start, visible_end)]);
+    let mut content = hex_widgets::rectangle_surface(
+        left as f32,
+        width as f32,
+        super::trim::rendered_clip_width(lane_width, width),
+    )
+    .debug_selector(move || format!("{selector}-{}", clip_id.value()))
+    .bg(rgb(fill))
+    .border_color(rgb(0x000000));
+    if let Some(header) = compact_header {
+        return (Some(content.child(header)), 0);
+    }
+    content = content.children(clip_grid_layer(grid, visible_start, visible_end));
     let mut shown = 0;
     for sample in samples
         .iter()

@@ -389,3 +389,78 @@ fn main_removal_retains_old_tail_and_applies_future_source_mix_once() {
 
 #[path = "compensation_tests/monitor_clock.rs"]
 mod monitor_clock;
+
+#[path = "compensation_tests/cue.rs"]
+mod cue;
+
+#[test]
+fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission() {
+    let mut f = fixture(&[&[], &[]], 128);
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    f.editor
+        .execute(hex_project::Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Track(f.tracks[0]),
+            destination: f.tracks[1],
+            gain: 0.5,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert!(candidate.compensation.is_some());
+    let before = (
+        old.capture_epoch,
+        candidate.capture_epoch,
+        old.performance_frame,
+        candidate.performance_frame,
+        candidate.candidate_admission_open,
+    );
+    let mut pages = Vec::new();
+    let window = candidate
+        .preview_stream_handoff_with_scope(
+            &mut old,
+            64,
+            None,
+            &mut |extent| {
+                pages.push(extent);
+                Ok(())
+            },
+            true,
+        )
+        .unwrap();
+    assert_eq!(window.frames, 0);
+    assert!(pages.is_empty());
+    assert_eq!(
+        (
+            old.capture_epoch,
+            candidate.capture_epoch,
+            old.performance_frame,
+            candidate.performance_frame,
+            candidate.candidate_admission_open
+        ),
+        before
+    );
+    let running = candidate
+        .preview_stream_handoff_with_scope(&mut old, 64, Some(true), &mut |_| Ok(()), true)
+        .unwrap();
+    assert_eq!(running.frames, 1);
+    assert_eq!(
+        (
+            old.capture_epoch,
+            candidate.capture_epoch,
+            old.performance_frame,
+            candidate.performance_frame,
+            candidate.candidate_admission_open
+        ),
+        before
+    );
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let mut oracle = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut candidate, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut actual = [[0.0; 2]; 64];
+    let mut expected = actual;
+    candidate.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}

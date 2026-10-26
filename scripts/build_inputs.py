@@ -27,6 +27,7 @@ def semantic_environment_key(name: str) -> bool:
     return (name.startswith(("CARGO_", "RUST", "CC", "CXX", "AR", "LD", "PKG_CONFIG"))
             or name in {"PATH", "HOST", "TARGET", "SDKROOT", "DEVELOPER_DIR", "MACOSX_DEPLOYMENT_TARGET"}
             or name in NATIVE_CONTROLS
+            or name in {"HEX_RELEASE_LABEL", "HEX_RELEASE_CHANGELOG"}
             or any(native == key or native.startswith(key + "_") for key in NATIVE_INPUTS))
 
 
@@ -95,6 +96,10 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
     if compiler_only:
         return digest.hexdigest()
     field(json.dumps({k: v for k, v in env.items() if semantic_environment_key(k)}, sort_keys=True))
+    if env.get("HEX_RELEASE_CHANGELOG"):
+        # External frozen release notes are build inputs, even with unchanged
+        # path/mtime. Full CI and guarded optimized delivery must agree on bytes.
+        observe(Path(env["HEX_RELEASE_CHANGELOG"]))
     members = set(metadata["workspace_members"])
     workspace_roots = {Path(p["manifest_path"]).parent.resolve() for p in metadata["packages"] if p["id"] in members}
     declared_paths = {Path(d["path"]).resolve() for p in metadata["packages"] for d in p.get("dependencies", []) if d.get("path")}
@@ -111,7 +116,8 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
             observe(manifest.parent / "build.rs")
             observe(manifest.parent / "build_support")
     for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml",
-                 "scripts/local-ci.py", "scripts/build_inputs.py", "scripts/ci_plan.py"):
+                 "scripts/local-ci.py", "scripts/build_inputs.py", "scripts/ci_plan.py",
+                 "scripts/ci_target_storage.py"):
         observe(root / name)
     config_dirs = {p / ".cargo" for p in root.resolve().parents} | {root / ".cargo"}
     # Build observers run with a member crate as cwd. Include every observed

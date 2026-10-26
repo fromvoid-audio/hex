@@ -1,6 +1,10 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 #![cfg(feature = "allocation-probe")]
 
+#[path = "callback_allocations/cursor_loop.rs"]
+mod cursor_loop;
+#[path = "callback_allocations/finite_bounce.rs"]
+mod finite_bounce;
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
 #[path = "callback_allocations/project_tuning.rs"]
@@ -780,10 +784,35 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
 
-    editor.execute(Command::ReplaceDeviceState {
-        device: instrument,
+    let original_source = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.source_id())
+        .ok_or("source missing")?;
+    // A provider without typed state retarget cannot replace its active kernel
+    // in place. Explicit device replacement creates a distinct retained source
+    // and exercises the finite historical-tail ownership transfer instead.
+    editor.execute(Command::RemoveInstrument { track })?;
+    editor.execute(Command::InsertInstrument {
+        track,
         state: hex_lattice_contract::NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![2])?,
     })?;
+    assert_ne!(
+        editor
+            .project()
+            .track(track)
+            .and_then(|track| track.source_id()),
+        Some(original_source)
+    );
+    assert_eq!(
+        editor
+            .project()
+            .native_source(original_source)
+            .ok_or("retained source missing")?
+            .instrument()
+            .id(),
+        instrument
+    );
     let second = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &media,
@@ -798,9 +827,9 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
 
-    // At 120 bpm the one-quarter note ends after 24,000 performance frames.
-    // Continue through the gate and declared release tail after suppressing
-    // the exact candidate occurrence during the changed-configuration handoff.
+    // The old source's scoped NoteOff drains its declared finite tail. The
+    // replacement must not replay the pre-cut authored occurrence. Continue
+    // beyond its original one-quarter gate too, checking terminal cleanup.
     for _ in 0..190 {
         measured_block(&mut callback, &mut output);
     }
@@ -1198,7 +1227,7 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
     editor.execute(Command::PlaceClip {
         track,
         asset,
-        start: 0,
+        start: BLOCK as u64,
         duration: BLOCK as u64,
         source_offset: 0,
         source_length: BLOCK as u64,
@@ -1207,7 +1236,7 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
     let midi_clip = match editor.execute(Command::PlaceMidiClip {
         track,
         start: BeatTime::ZERO,
-        length: BeatTime::from_quarters(4)?,
+        length: editor.project().tempo_map().frame_to_beat(BLOCK as u64)?,
     })? {
         Created::Clip(clip) => clip,
         _ => return Err("expected arrangement midi clip".into()),
@@ -1215,7 +1244,7 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
     editor.execute(Command::AddMidiNote {
         clip: midi_clip,
         start: BeatTime::ZERO,
-        duration: BeatTime::from_quarters(4)?,
+        duration: editor.project().tempo_map().frame_to_beat(BLOCK as u64)?,
         pitch: 64,
         channel: 0,
         velocity: 100,
@@ -1297,8 +1326,10 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
     let mut audio_renderer = Renderer::new(audio_revision.arrangement());
     audio_renderer.play();
     audio_renderer.render(&mut audio_oracle)?;
+    audio_renderer.render(&mut audio_oracle)?;
     let mut midi_renderer = Renderer::new(midi_revision.arrangement());
     midi_renderer.play();
+    midi_renderer.render(&mut midi_oracle)?;
     midi_renderer.render(&mut midi_oracle)?;
     assert!(
         audio_oracle
@@ -1330,6 +1361,7 @@ fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
         .command(PlaybackCommand::Play)
         .map_err(|_| "Play command admission failed")?;
     let mut actual = [[0.0; 2]; BLOCK];
+    measured_block(&mut callback, &mut actual);
     measured_block(&mut callback, &mut actual);
     compare_output(&actual, &expected);
     control.request_shutdown();

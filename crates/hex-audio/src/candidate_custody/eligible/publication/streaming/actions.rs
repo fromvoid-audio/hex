@@ -11,7 +11,7 @@ pub(super) enum ActionResolution {
     Ready(Option<(u64, PlaybackActionRejection)>),
     Pending,
 }
-impl Active {
+impl ActiveView<'_> {
     pub(crate) fn has_stream_action(&self) -> bool {
         self.state
             .streaming

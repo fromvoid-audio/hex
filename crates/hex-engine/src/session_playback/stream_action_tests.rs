@@ -12,6 +12,7 @@ fn action_revision(looped: bool) -> Arc<PreparedRevision> {
     snapshot.assets[0].playback_frames = 8192;
     snapshot.assets[0].conversion_version = hex_project::SINC_CONVERSION_V1;
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        active: true,
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
         edit: None,
@@ -397,4 +398,22 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
     actual.commit_stream_action(paused).unwrap();
     assert_eq!(actual.position(), 5000);
     assert!(!actual.playing());
+}
+
+#[test]
+fn prepared_action_cannot_follow_a_new_runtime_reusing_the_same_box_and_revision() {
+    let revision = action_revision(false);
+    let mut runtime = Box::new(SessionPlayback::new(Arc::clone(&revision)).unwrap());
+    let address = std::ptr::from_ref(&*runtime).addr();
+    let prepared = runtime
+        .prepare_stream_action_in_scope(
+            PlaybackAction::Transport(PlaybackCommand::PlayFrom(0)),
+            true,
+        )
+        .unwrap();
+    // Same physical storage, graph Arc, clocks and routes; this is nevertheless
+    // a new actual runtime, so a plan from the old instance must be refused.
+    *runtime = SessionPlayback::new(revision).unwrap();
+    assert_eq!(std::ptr::from_ref(&*runtime).addr(), address);
+    assert!(runtime.validate_stream_action(&prepared).is_err());
 }

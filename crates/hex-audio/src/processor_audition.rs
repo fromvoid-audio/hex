@@ -402,6 +402,13 @@ fn decode_intent(intent: u64) -> (u64, ClearMode) {
     (intent >> 2, mode)
 }
 
+/// Fresh fixed channel payload quote; opaque allocator/OS costs are excluded.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<TargetCommand>(TARGET_COMMAND_CAPACITY)?
+        .checked_add(3 * std::mem::size_of::<AtomicU64>())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

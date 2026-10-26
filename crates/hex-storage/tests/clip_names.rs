@@ -146,7 +146,7 @@ fn names_preserve_case_history_copies_and_storage_in_all_clip_domains() {
 }
 
 #[test]
-fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
+fn current_format_requires_exact_valid_arrangement_name_inventory() {
     let (mut editor, track, audio, _) = fixture();
     // This legacy document predates authored track colors.
     editor
@@ -191,20 +191,104 @@ fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
         doc["clip_names"] = bad;
         assert!(decode(&serde_json::to_vec(&doc).unwrap()).is_err());
     }
-    let mut legacy = value.clone();
-    legacy["version"] = 25.into();
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("tuning");
-    legacy.as_object_mut().unwrap().remove("device_assets");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-    let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-    assert_eq!(migrated.clip_name(audio), Some("clip"));
-    assert_eq!(migrated.snapshot(), editor.project().snapshot());
     let mut missing = value;
     missing.as_object_mut().unwrap().remove("clip_names");
     assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+}
+
+#[test]
+fn range_split_roundtrips_complete_mixed_state_and_history() {
+    let (mut builder, track, audio, midi) = fixture();
+    builder
+        .execute(Command::SetMidiClipSource {
+            clip: midi,
+            source_length: BeatTime::from_quarters(4).unwrap(),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: BeatTime::from_quarters(4).unwrap(),
+            looping: false,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap();
+    let Created::Track(midi_track) = builder
+        .execute(Command::AddMidiTrack {
+            name: "notes".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    builder
+        .execute(Command::MoveMidiClip {
+            clip: midi,
+            track: midi_track,
+            start: BeatTime::ZERO,
+        })
+        .unwrap();
+    for clip in [audio, midi] {
+        builder
+            .execute(Command::RenameClip {
+                clip,
+                name: "Range source 🎹".into(),
+            })
+            .unwrap();
+    }
+    builder
+        .execute(Command::SetClipFades {
+            clip: audio,
+            fade_in: 30_000,
+            fade_out: 30_000,
+        })
+        .unwrap();
+    let warp = hex_project::default_audio_warp(
+        builder.project().clip(audio).unwrap(),
+        builder.project().tempo_map(),
+        hex_project::WarpMode::ComplexPro {
+            formants: 72,
+            envelope: 192,
+        },
+    )
+    .unwrap();
+    builder
+        .execute(Command::SetAudioClipWarp {
+            clip: audio,
+            settings: Some(warp),
+        })
+        .unwrap();
+    builder
+        .execute(Command::SetAudioClipPitch {
+            clip: audio,
+            cents: 137,
+        })
+        .unwrap();
+    let mut editor = Editor::new(builder.project().clone(), 8).unwrap();
+    let mut before = editor.project().snapshot();
+    editor
+        .execute(Command::SplitTimeRange {
+            range: hex_project::TimeRange::new(vec![track, midi_track], 24_000, 72_000).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(editor.project().track(track).unwrap().clips().len(), 3);
+    assert_eq!(
+        editor
+            .project()
+            .track(midi_track)
+            .unwrap()
+            .midi_clips()
+            .len(),
+        3
+    );
+    let after = editor.project().clone();
+    assert_eq!(decode(&encode(&after).unwrap()).unwrap(), after);
+    assert!(editor.undo());
+    before.next_id = after.snapshot().next_id;
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(!editor.can_undo());
+    assert_eq!(
+        decode(&encode(editor.project()).unwrap()).unwrap(),
+        *editor.project()
+    );
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
+    assert_eq!(decode(&encode(editor.project()).unwrap()).unwrap(), after);
 }

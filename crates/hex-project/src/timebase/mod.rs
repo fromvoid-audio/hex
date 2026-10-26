@@ -1,3 +1,5 @@
+mod input_grid;
+pub use input_grid::{InputQuantization, MusicalGridSegment, ResolvedInputGrid};
 mod meter;
 mod pulses;
 mod tempo;

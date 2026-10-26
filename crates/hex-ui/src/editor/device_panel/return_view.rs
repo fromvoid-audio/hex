@@ -56,7 +56,8 @@ pub(super) fn render(
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
-        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
+        GestureTarget::DeviceParameterSnapshot { device }
+        | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. }
         | GestureTarget::TrackGain { .. }
         | GestureTarget::TrackBalance { .. }
@@ -92,9 +93,10 @@ pub(super) fn render(
             .find(|device| device.id() == id)
             .map(|device| device.state().type_id())
     });
+    // The shared retirement helper owns both legacy and current EQ graphs.
     let alive_eq8: HashSet<_> = devices
         .iter()
-        .filter(|device| device.state().type_id().as_str() == Ok("hex.eq8"))
+        .filter(|device| matches!(device.state().type_id().as_str(), Ok("hex.eq8" | "hex.eq")))
         .map(hex_project::Device::id)
         .collect();
     retire_removed_eq8_graphs(view, cx, &alive_eq8);
@@ -110,21 +112,6 @@ pub(super) fn render(
     view.device_panel
         .eq8_graph_gestures
         .retain(|device, _| alive_eq8.contains(device));
-    if let Some(audio) = view.audio.as_mut()
-        && let Some(target) = audio.control.spectrum_desired()
-        && target.identity.owner == owner.processor()
-        && !devices.iter().any(|device| {
-            device.id().value() == target.identity.device_id
-                && device.state().type_id() == target.identity.device_type
-                && matches!(
-                    target.identity.device_type.as_str(),
-                    Ok("hex.eq8" | "hex.eq")
-                )
-        })
-    {
-        let _ = audio.control.spectrum_clear();
-        view.device_panel.spectrum_result = None;
-    }
     if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.audition_desired()
         && target.identity.owner == owner.processor()
@@ -183,6 +170,7 @@ pub(super) fn render(
         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
         .tooltip(|_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: "add native effect".into(),
             })
             .into()
@@ -241,7 +229,7 @@ pub(super) fn render_return_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
+    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
     if device_view.is_ok() {
         actions = actions
@@ -277,13 +265,39 @@ pub(super) fn render_return_effect(
         })),
     );
     let rendered = match &device_view {
+        _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
+            let body = vst3_status_body(view, device);
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text("vst3"),
+                ),
+                theme::device_frame_style(selected),
+                leading,
+                actions,
+                body,
+            )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
+            .into_any_element()
+        }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.limiter") {
+                super::limiter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
                 super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.reverb") {
+                super::reverb_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.delay") {
+                super::delay_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
+                super::overdrive_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
@@ -340,6 +354,7 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
             .into_any_element()
         }
         Err(error) => {
@@ -364,6 +379,7 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
             .into_any_element()
         }
     };
@@ -379,9 +395,13 @@ pub(super) fn render_return_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
+        Ok("hex.limiter") => super::limiter_panel::FRAME_WIDTH,
         Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
+        Ok("hex.reverb") => super::reverb_panel::FRAME_WIDTH,
+        Ok("hex.delay") => super::delay_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
+        Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
@@ -414,12 +434,17 @@ fn render_return_add_menu(
         .debug_selector(|| "device-add-menu".into())
         .absolute()
         .top(px(DEVICE_PANEL_HEADER_HEIGHT))
+        .left(px(4.0))
         .right(px(4.0))
-        .h(px(23.0))
+        .max_h(px(crate::device_composition::BODY_HEIGHT))
+        .overflow_y_scroll()
+        .occlude()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(3.0))
         .px(px(4.0))
+        .py(px(2.0))
         .bg(rgb(theme::color(theme::PaletteRole::Raised)));
     match effects {
         Ok(entries) if !entries.is_empty() => {
@@ -436,6 +461,8 @@ fn render_return_add_menu(
                         .id(ElementId::Name(id.clone().into()))
                         .debug_selector(move || id.clone())
                         .h(px(18.0))
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
                         .px(px(5.0))
                         .flex()
                         .items_center()

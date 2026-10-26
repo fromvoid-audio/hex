@@ -43,6 +43,7 @@ fn values(frequency: f32, gain: f32) -> DeviceParameterSnapshot {
 }
 fn ack(request: GestureRequest) -> GestureAck {
     GestureAck {
+        preview_retained: false,
         key: request.key(),
         phase: request.phase(),
         sequence: request.sequence(),

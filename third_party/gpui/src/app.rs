@@ -1382,6 +1382,7 @@ impl App {
             cx.window_update_stack.pop();
 
             if window.removed {
+                window.cancel_pointer_capture(cx);
                 cx.window_handles.remove(&id);
                 cx.windows.remove(id);
 

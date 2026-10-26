@@ -18,7 +18,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
@@ -31,12 +31,32 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            Instant::now() < until,
+            "worker pending at deadline: {:?}",
+            editor.read_with(&*visual, |v, _| (
+                v.worker_requests_pending,
+                v.pending_requests.len(),
+                v.state.as_ref().map(|s| s.revision),
+                v.error.clone()
+            ))
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
+) -> (
+    super::super::external_audio_drop_ui_test::BatchFiles,
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    ClipId,
+) {
+    fixture_at_rate(cx, 48_000)
+}
+fn fixture_at_rate(
+    cx: &mut TestAppContext,
+    sample_rate: u32,
 ) -> (
     super::super::external_audio_drop_ui_test::BatchFiles,
     gpui::AnyWindowHandle,
@@ -45,10 +65,10 @@ fn fixture(
 ) {
     cx.update(super::super::bind_editor_keys);
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
-    let wav = files.wav("resize-release.wav", 48_000, 96_000);
+    let wav = files.wav("resize-release.wav", sample_rate, sample_rate * 2);
     let directory = wav.parent().unwrap();
     std::fs::create_dir(directory.join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let service = Service::new(sample_rate, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let event = next(&service);
@@ -58,7 +78,7 @@ fn fixture(
         .submit(Request::Edit(Command::MoveClip {
             clip,
             track,
-            start: 96_000,
+            start: u64::from(sample_rate) * 2,
         }))
         .unwrap();
     let event = next(&service);
@@ -1415,7 +1435,7 @@ fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enable
                     super::snapped_midi_edge_beat(drag, p, f32::from(released.x), lane, viewport)
                         .unwrap();
                 let expected = drag.clip.preview_edge_trim(drag.edge, beat).unwrap();
-                assert_ne!(Some(expected), *drag.preview.borrow());
+                assert_ne!(Some(expected.into()), *drag.preview.borrow());
                 (None, Some(expected))
             } else {
                 let drag = v.active_trim_drag.as_ref().expect("real audio capture");
@@ -1515,7 +1535,10 @@ fn resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane(cx: &mut Test
 fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, cancel: Option<u8>) {
     for other_selected in [false, true] {
         for edge in [TrimEdge::Left, TrimEdge::Right] {
-            let (_files, handle, editor, audio) = fixture(cx);
+            // Lane paint, selection and receipt custody use identical seconds
+            // and pixel geometry at 8kHz; keep real preparation off the long
+            // 48kHz DSP workload covered by the other release tests.
+            let (_files, handle, editor, audio) = fixture_at_rate(cx, 8_000);
             let mut visual = VisualTestContext::from_window(handle, cx);
             visual.update(|window, _| window.activate_window());
             let clip = if midi {
@@ -1574,10 +1597,28 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 )
             });
             editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
-            let lane = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
-            let baseline = visual
-                .rendered_border(lane)
-                .expect("actual normal lane border");
+            let lane: &'static str =
+                Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+            let divider: &'static str =
+                Box::leak(format!("lane-right-divider-{}", track.value()).into_boxed_str());
+            let lane_paint = |visual: &mut VisualTestContext| {
+                assert!(
+                    visual.rendered_border(lane).is_none(),
+                    "lane must not regain a layout-consuming or resize-feedback border"
+                );
+                let bounds = visual.debug_bounds(divider).expect("paint-only divider");
+                let lane_bounds = visual.debug_bounds(lane).unwrap();
+                assert_eq!(bounds.size.width, px(1.0));
+                assert_eq!(bounds.right(), lane_bounds.right());
+                assert_eq!(bounds.size.height, lane_bounds.size.height);
+                (
+                    visual
+                        .rendered_background(divider)
+                        .expect("actual divider paint"),
+                    bounds,
+                )
+            };
+            let baseline = lane_paint(&mut visual);
             let down = visual
                 .debug_bounds(Box::leak(
                     format!(
@@ -1609,19 +1650,24 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
             let target = point(down.x + px(42.0 * direction), down.y);
             visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
             visual.run_until_parked();
-            let painted = visual
-                .rendered_border(lane)
-                .expect("actual held lane border");
+            let outline = Box::leak(
+                format!("track-selection-outline-{}", clicked_track.value()).into_boxed_str(),
+            );
+            assert!(
+                visual.debug_bounds(outline).is_none(),
+                "held resizing keeps selection styling local to clips"
+            );
+            let painted = lane_paint(&mut visual);
             eprintln!(
                 "RESIZE_LANE_SCENE midi={midi} shift={stretch} edge={edge:?} before={baseline:?} held={painted:?}"
             );
             assert_eq!(
                 painted.0, baseline.0,
-                "resize must not replace whole-lane border color"
+                "resize must not replace the divider color"
             );
             assert_eq!(
                 painted.1, baseline.1,
-                "resize must not add whole-lane border widths"
+                "resize must not change divider geometry"
             );
             let preview = if midi {
                 "midi-trim-live-preview"
@@ -1663,7 +1709,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
             for outside in [browser, point(target.x, foreign_lane.center().y), target] {
                 visual.simulate_mouse_move(outside, MouseButton::Left, modifiers);
                 visual.run_until_parked();
-                let source_lane = visual.rendered_border(lane).unwrap();
+                let source_lane = lane_paint(&mut visual);
                 assert_eq!(source_lane.0, baseline.0);
                 assert_eq!(source_lane.1, baseline.1);
                 assert!(
@@ -1706,7 +1752,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                     assert!(v.last_enqueued_edit.is_none());
                     assert_eq!((v.selected_track, v.selected_clip), selection);
                 });
-                let terminal_lane = visual.rendered_border(lane).unwrap();
+                let terminal_lane = lane_paint(&mut visual);
                 assert_eq!(terminal_lane.0, baseline.0);
                 assert_eq!(terminal_lane.1, baseline.1);
                 assert!(!visual.update(|_, cx| cx.has_active_drag()));
@@ -1740,7 +1786,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 }
                 p.snapshot()
             });
-            assert_eq!(visual.rendered_border(lane).unwrap().0, baseline.0);
+            assert_eq!(lane_paint(&mut visual), baseline);
             assert!(visual.debug_bounds(preview).is_none());
             visual.simulate_keystrokes("cmd-z");
             pump(&editor, &mut visual);
@@ -1754,4 +1800,171 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
             });
         }
     }
+}
+
+#[gpui::test]
+fn focus_cancel_removes_midi_resize_completed_paint_without_another_input(cx: &mut TestAppContext) {
+    check_focus_cancel_paint(cx, true, false, false);
+}
+
+#[gpui::test]
+fn focus_cancel_removes_audio_normal_shift_warp_and_midi_shift_paint(cx: &mut TestAppContext) {
+    for (midi, stretch, warp) in [
+        (false, false, false),
+        (false, true, false),
+        (false, false, true),
+        (false, true, true),
+        (true, true, false),
+    ] {
+        check_focus_cancel_paint(cx, midi, stretch, warp);
+    }
+}
+
+fn check_focus_cancel_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, warp: bool) {
+    let (_files, handle, editor, audio) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    let clip = if midi {
+        review_midi_clip(&editor, &mut visual)
+    } else {
+        audio
+    };
+    if warp {
+        let settings = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            hex_project::default_audio_warp(
+                p.clip(clip).unwrap(),
+                p.tempo_map(),
+                hex_project::WarpMode::Beats {
+                    preserve: hex_project::BeatsPreserve::Transients,
+                    tail: hex_project::BeatsTail::Forward,
+                    decay: 100,
+                },
+            )
+            .unwrap()
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings)
+            })))
+        });
+        pump(&editor, &mut visual);
+    }
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddTrack {
+            name: "focus probe other".into()
+        })))
+    });
+    pump(&editor, &mut visual);
+    let track = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|t| {
+                t.midi_clips().iter().any(|c| c.id() == clip)
+                    || t.clips().iter().any(|c| c.id() == clip)
+            })
+            .unwrap()
+            .id()
+    });
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("track-name-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = visual
+        .debug_bounds(Box::leak(
+            format!(
+                "{}clip-trim-left-{}",
+                if midi { "midi-" } else { "" },
+                clip.value()
+            )
+            .into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let modifiers = Modifiers {
+        shift: stretch,
+        ..Default::default()
+    };
+    visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        modifiers,
+    );
+    visual.run_until_parked();
+    let target = point(down.x + px(42.0), down.y);
+    visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+    let preview = if midi {
+        "midi-trim-live-preview"
+    } else {
+        "trim-live-preview"
+    };
+    let observe = |stage: &str, visual: &mut VisualTestContext| {
+        let state = visual.update(|window, cx| {
+            editor.read_with(cx, |v, _| {
+                (
+                    v.active_midi_trim_drag.is_some() || v.active_trim_drag.is_some(),
+                    v.pending_trim.is_some(),
+                    v.focus.is_focused(window),
+                    window.is_window_active(),
+                    cx.has_active_drag(),
+                )
+            })
+        });
+        let border = visual.rendered_border(preview);
+        let fill = visual.rendered_background(preview);
+        eprintln!(
+            "FOCUS_CANCEL_PHASE {stage} logical_pending_rootfocus_windowactive_gpuidrag={state:?} bounds={:?} border={border:?} fill={fill:?}",
+            visual.debug_bounds(preview)
+        );
+        (state, border, fill)
+    };
+    let held = observe("held", &mut visual);
+    assert!(held.0.0 && held.0.2 && held.0.3 && held.0.4);
+    assert!(held.1.is_some() && held.2.is_some());
+    visual.update(|window, cx| editor.read(cx).browser.search.read(cx).focus(window));
+    visual.run_until_parked();
+    let after_focus = observe("after-mounted-search-focus-before-release", &mut visual);
+    assert!(
+        !after_focus.0.0
+            && !after_focus.0.1
+            && !after_focus.0.2
+            && after_focus.0.3
+            && !after_focus.0.4
+    );
+    assert!(
+        after_focus.1.is_none() && after_focus.2.is_none(),
+        "focus terminal repaints before any release input"
+    );
+    visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
+    pump(&editor, &mut visual);
+    let after_release = observe("after-actual-release", &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(
+            v.active_trim_drag.is_none()
+                && v.active_midi_trim_drag.is_none()
+                && v.pending_trim.is_none()
+        );
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty() && v.last_enqueued_edit.is_none());
+    });
+    assert!(!after_release.0.4);
+    assert!(
+        after_release.1.is_none() && after_release.2.is_none(),
+        "actual completed preview paint must retire after focus cancellation, without another input or forced refresh"
+    );
 }

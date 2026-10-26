@@ -1,38 +1,55 @@
 //! Arrangement-only layout state; resizing never edits the project or audio.
+//! Header overview has a separate transient height map: temporary resizing never
+//! overwrites normal custom heights. Stable track IDs survive topology changes;
+//! project replacement clears both layouts. Plain H belongs to this workspace
+//! only while the computer MIDI keyboard is disabled. Held sizing uses the shared
+//! Window pointer lease; its local snapshot owns complete cancellation rollback.
 use super::{
     EditorView,
     tracks::{TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT},
 };
 use gpui::{
-    Context, Div, ListState, MouseButton, MouseMoveEvent, MouseUpEvent, Window, canvas, div,
-    prelude::*, px,
+    Context, Div, KeyDownEvent, ListState, Modifiers, MouseButton, MouseMoveEvent, MouseUpEvent,
+    Window, canvas, div, prelude::*, px,
 };
 use hex_project::TrackId;
 use std::collections::BTreeMap;
 
-// Reuse the browser/workspace split's existing room budget. The default
-// header and its complete controls still fit at the minimum size.
+// Reuse the browser/workspace split's room budget. Default-height controls
+// still fit at the minimum header width; shorter rows render only their title.
 const MAX_HEADER_WIDTH: f32 = super::browser::DEFAULT_WIDTH;
 const MIN_LANE_WIDTH: f32 = super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH;
+// Name line + separate 3px resize gutter, bottom border and centering room.
+pub(super) const HEADER_ONLY_HEIGHT: f32 = super::track_header::NAME_HEIGHT + 5.0;
 
 #[derive(Default)]
 pub(super) struct TrackLayout {
     width: Option<f32>,
     pub(super) available_width: Option<f32>,
     heights: BTreeMap<TrackId, f32>,
+    overview: Option<BTreeMap<TrackId, f32>>,
     drag: Option<ResizeDrag>,
     generation: u64,
     tracks: Vec<TrackId>,
     revision: Option<u64>,
+    focus_ranges: std::rc::Rc<[(u64, u64)]>,
 }
-#[derive(Clone, Copy)]
+impl TrackLayout {
+    fn active_heights(&self) -> &BTreeMap<TrackId, f32> {
+        self.overview.as_ref().unwrap_or(&self.heights)
+    }
+    fn active_heights_mut(&mut self) -> &mut BTreeMap<TrackId, f32> {
+        self.overview.as_mut().unwrap_or(&mut self.heights)
+    }
+}
 struct ResizeDrag {
     track: Option<TrackId>,
     pointer: f32,
     original: f32,
     generation: u64,
     revision: u64,
-    previous: Option<f32>,
+    previous_width: Option<f32>,
+    previous_heights: Option<BTreeMap<TrackId, f32>>,
     maximum: f32,
 }
 
@@ -81,7 +98,103 @@ impl TrackScroll {
         self.list.scroll_to(top);
     }
 }
+/// A single canonical row move is a one-position rotation of the changed span.
+/// Return the old source index and final insertion index, not an original gap.
+fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
+    if old.len() != new.len() {
+        return None;
+    }
+    let first = old.iter().zip(new).position(|(a, b)| a != b)?;
+    let last = old.iter().zip(new).rposition(|(a, b)| a != b)?;
+    if old[first] == new[last] && old[first + 1..=last] == new[first..last] {
+        Some((first, last))
+    } else if old[last] == new[first] && old[first..last] == new[first + 1..=last] {
+        Some((last, first))
+    } else {
+        None
+    }
+}
+
 impl EditorView {
+    /// Arrangement-only A/H/Q after child input; modifiers, text and capture retain ownership.
+    pub(super) fn arrangement_view_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !matches!(event.keystroke.key.as_str(), "a" | "h" | "q")
+            || event.keystroke.modifiers != Modifiers::default()
+            || event.is_held
+            || self.computer_keyboard.enabled
+            || !(self.focus.is_focused(window)
+                || self.track_header_focused(window)
+                || self.section_focus_toggle_focused(window, cx))
+            || !self.arrangement_view_change_available(cx)
+        {
+            return false;
+        }
+        if event.keystroke.key == "a" {
+            return self.toggle_automation_view(cx);
+        }
+        if event.keystroke.key == "q" {
+            self.toggle_arrangement_focus();
+            cx.notify();
+            return true;
+        }
+        if self.track_layout.overview.take().is_none() {
+            self.track_layout.overview = Some(BTreeMap::new());
+        }
+        self.track_scroll.remeasure();
+        cx.notify();
+        true
+    }
+    pub(super) fn arrangement_view_change_available(&self, cx: &Context<Self>) -> bool {
+        !(self.mode != super::EditorMode::Arrangement
+            || !self.drag_available()
+            || self.edit_pending()
+            || self.track_name.is_editing()
+            || self.sections.naming()
+            || self.sections.held()
+            || self.section_install_pending()
+            || self.tuning.open
+            || self.theme_settings.open
+            || self.changelog.is_open()
+            || self.controller_input_is_open()
+            || self.context_menu.is_some()
+            || (self.clip_view_open
+                && self.device_panel_active
+                && self.device_panel.add_menu_is_open(self.state.as_deref()))
+            || self.send_menu_track.is_some()
+            || self.project_tempo_editing(cx)
+            || self.gain_numeric_editing(cx)
+            || self.track_gain_controls.has_pending_draft(cx)
+            || self.gain_lane.pointer_is_active()
+            || self.clip_numeric_editing(cx)
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || self.export_dialog_open
+            || self.save_dialog_open
+            || self.preset_dialog_open
+            || self.arrangement_pan.is_some()
+            || self.pointer_down.is_some()
+            || self.project_spectrum.resize_is_active()
+            || self.clip_detail_resize.is_active()
+            || self.device_panel.navigation.is_active()
+            || self.clip_paint_gesture.is_some()
+            || self.active_clip_drag.is_some()
+            || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.loop_rail_gesture.is_some()
+            || self.scrub_active()
+            || cx.has_active_drag()
+            || self.state.is_none())
+    }
     fn maximum_header_width(&self) -> f32 {
         self.track_layout
             .available_width
@@ -100,14 +213,24 @@ impl EditorView {
     }
     pub(super) fn track_height(&self, track: TrackId) -> f32 {
         self.track_layout
-            .heights
+            .active_heights()
             .get(&track)
             .copied()
-            .unwrap_or(TRACK_ROW_HEIGHT)
+            .unwrap_or(if self.track_layout.overview.is_some() {
+                HEADER_ONLY_HEIGHT
+            } else {
+                TRACK_ROW_HEIGHT
+            })
     }
+    /// Visibility can change with active-track selection without a project edit.
+    pub(super) fn invalidate_arrangement_track_layout(&mut self) {
+        self.track_layout.revision = None;
+    }
+
     pub(super) fn sync_track_layout(&mut self, tracks: &[hex_project::Track]) {
         if self.track_layout.generation != self.project_generation {
             self.track_layout.heights.clear();
+            self.track_layout.overview = None;
             self.track_layout.drag = None;
             self.track_layout.generation = self.project_generation;
             self.track_layout.tracks.clear();
@@ -115,27 +238,57 @@ impl EditorView {
             self.track_layout.revision = None;
         }
         let revision = self.state.as_ref().map(|state| state.revision);
-        if self.track_layout.revision == revision {
+        let focus_ranges = self.arrangement_focus_ranges();
+        if self.track_layout.revision == revision && self.track_layout.focus_ranges == focus_ranges
+        {
             return;
         }
         self.track_layout.revision = revision;
-        let ids = tracks.iter().map(|t| t.id()).collect::<Vec<_>>();
+        self.track_layout.focus_ranges = focus_ranges;
+        let ids = tracks
+            .iter()
+            .filter(|t| self.arrangement_track_visible(t.id()))
+            .map(|t| t.id())
+            .collect::<Vec<_>>();
         if self.track_layout.tracks != ids {
             if let Some(drag) = self.track_layout.drag.take() {
                 self.restore_track_resize(drag);
             }
-            self.track_layout.heights.retain(|id, _| ids.contains(id));
+            self.track_layout
+                .heights
+                .retain(|id, _| tracks.iter().any(|t| t.id() == *id));
+            if let Some(heights) = self.track_layout.overview.as_mut() {
+                heights.retain(|id, _| tracks.iter().any(|t| t.id() == *id));
+            }
             let mut top = self.track_scroll.list.logical_scroll_top();
             let anchor = self.track_layout.tracks.get(top.item_ix).copied();
             top.item_ix = anchor
                 .and_then(|id| ids.iter().position(|item| *item == id))
                 .unwrap_or(top.item_ix.min(ids.len().saturating_sub(1)));
-            // Re-measure the bounded (<=256) row set only on a structural edit.
-            // Ordinary frames and width drags render visible rows; height drags
-            // invalidate only the captured row, retaining the logical scroll.
-            self.track_scroll.list.reset(ids.len());
+            if let Some((from, to)) = single_row_move(&self.track_layout.tracks, &ids) {
+                // Cached sizes belong to stable TrackIds. Preserve every
+                // unchanged row; only the inserted moved row loses its size.
+                // GPUI still scans bounded metadata, but constructs elements
+                // only for unmeasured/visible rows instead of all100+ tracks.
+                self.track_scroll.list.splice(from..from + 1, 0);
+                self.track_scroll.list.splice(to..to, 1);
+                let _ = self.track_scroll.list.clone().measure_all();
+            } else {
+                // Adds/removals or other structural changes keep the existing
+                // full measurement path. Width/height invalidations remain
+                // owned by their existing layout paths.
+                self.track_scroll.list.reset(ids.len());
+            }
             self.track_scroll.list.scroll_to(top);
             self.track_layout.tracks = ids;
+        }
+        if let Some((id, offset)) = self.arrangement_focus.pending_restore.take()
+            && let Some(item_ix) = self.track_layout.tracks.iter().position(|t| *t == id)
+        {
+            self.track_scroll.list.scroll_to(gpui::ListOffset {
+                item_ix,
+                offset_in_item: offset,
+            });
         }
     }
     fn invalidate_track_size(&self, track: Option<TrackId>) {
@@ -144,6 +297,77 @@ impl EditorView {
                 self.track_scroll.invalidate(index..index + 1, 1);
             }
         }
+    }
+    fn capture_track_resize(
+        &self,
+        track: Option<TrackId>,
+        revision: u64,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> bool {
+        let generation = self.project_generation;
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            if track.is_some() {
+                gpui::CursorStyle::ResizeRow
+            } else {
+                gpui::CursorStyle::ResizeColumn
+            },
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<MouseUpEvent>()
+                    .filter(|e| e.button == MouseButton::Left);
+                let Some(position) = moved
+                    .map(|e| e.position)
+                    .or_else(|| released.map(|e| e.position))
+                else {
+                    return;
+                };
+                let _ = owner.update(cx, |view, cx| {
+                    if !view.track_layout.drag.as_ref().is_some_and(|d| {
+                        d.track == track && d.generation == generation && d.revision == revision
+                    }) {
+                        return;
+                    }
+                    view.reconcile_track_resize(window, cx);
+                    if view.track_layout.drag.is_none() {
+                        return;
+                    }
+                    if !f32::from(position.x).is_finite() || !f32::from(position.y).is_finite() {
+                        view.cancel_track_resize(cx);
+                        return;
+                    }
+                    let all_tracks = moved
+                        .map(|e| e.modifiers.alt)
+                        .or_else(|| released.map(|e| e.modifiers.alt))
+                        .unwrap_or(false);
+                    view.update_track_resize(
+                        f32::from(position.x),
+                        f32::from(position.y),
+                        all_tracks,
+                        cx,
+                    );
+                    if released.is_some() {
+                        view.track_layout.drag = None;
+                        cx.notify();
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.track_layout.drag.as_ref().is_some_and(|d| {
+                        d.track == track && d.generation == generation && d.revision == revision
+                    }) {
+                        view.cancel_track_resize(cx);
+                    }
+                });
+            },
+            cx,
+        )
     }
     fn begin_track_resize(
         &mut self,
@@ -157,6 +381,8 @@ impl EditorView {
             || !self.drag_available()
             || self.track_resize_active()
             || self.edit_pending()
+            || self.track_gain_controls.has_pending_draft(cx)
+            || self.gain_numeric_editing(cx)
             || self.context_menu.is_some()
             || self.arrangement_pan.is_some()
             || self.time_selection_gesture.is_some()
@@ -178,9 +404,6 @@ impl EditorView {
             return;
         }
         let revision = state.revision;
-        let previous = track.map_or(self.track_layout.width, |id| {
-            self.track_layout.heights.get(&id).copied()
-        });
         let maximum = if track.is_some() {
             self.arrangement_bounds
                 .map_or(TRACK_ROW_HEIGHT, |body| body.height.max(TRACK_ROW_HEIGHT))
@@ -188,19 +411,25 @@ impl EditorView {
             self.maximum_header_width()
         };
         let original = track.map_or_else(|| self.track_header_width(), |id| self.track_height(id));
+        if !self.capture_track_resize(track, revision, window, cx) {
+            return;
+        }
         self.track_layout.drag = Some(ResizeDrag {
             track,
             pointer,
             original,
             generation: self.project_generation,
             revision,
-            previous,
+            previous_width: self.track_layout.width,
+            // A modifier may change during capture: retain every custom height
+            // once so all live updates have one complete cancellation owner.
+            previous_heights: track.map(|_| self.track_layout.active_heights().clone()),
             maximum,
         });
         self.focus.focus(window);
         cx.notify();
     }
-    fn track_resize_current(&self, drag: ResizeDrag) -> bool {
+    fn track_resize_current(&self, drag: &ResizeDrag) -> bool {
         self.mode == super::EditorMode::Arrangement
             && drag.generation == self.project_generation
             && self.state.as_ref().is_some_and(|state| {
@@ -214,13 +443,14 @@ impl EditorView {
         if self
             .track_layout
             .drag
+            .as_ref()
             .is_some_and(|drag| !self.track_resize_current(drag) || !self.focus.is_focused(window))
         {
             self.cancel_track_resize(cx);
         }
     }
-    fn update_track_resize(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
-        let Some(drag) = self.track_layout.drag else {
+    fn update_track_resize(&mut self, x: f32, y: f32, all_tracks: bool, cx: &mut Context<Self>) {
+        let Some(drag) = self.track_layout.drag.as_ref() else {
             return;
         };
         if !self.track_resize_current(drag) {
@@ -231,13 +461,32 @@ impl EditorView {
         if !pointer.is_finite() {
             return;
         }
-        if let Some(track) = drag.track {
+        let target = drag.track;
+        if let Some(track) = target {
             let height =
-                (drag.original + pointer - drag.pointer).clamp(TRACK_ROW_HEIGHT, drag.maximum);
-            if height == self.track_height(track) {
-                return;
+                (drag.original + pointer - drag.pointer).clamp(HEADER_ONLY_HEIGHT, drag.maximum);
+            if all_tracks {
+                if self
+                    .track_layout
+                    .tracks
+                    .iter()
+                    .all(|id| self.track_height(*id) == height)
+                {
+                    return;
+                }
+                let layout = &mut self.track_layout;
+                let heights = layout.overview.as_mut().unwrap_or(&mut layout.heights);
+                for id in &layout.tracks {
+                    heights.insert(*id, height);
+                }
+                self.track_scroll.remeasure();
+            } else {
+                if height == self.track_height(track) {
+                    return;
+                }
+                self.track_layout.active_heights_mut().insert(track, height);
+                self.invalidate_track_size(Some(track));
             }
-            self.track_layout.heights.insert(track, height);
         } else {
             let width = drag.original - (pointer - drag.pointer);
             let width = width.clamp(TRACK_HEADER_WIDTH, drag.maximum);
@@ -246,23 +495,18 @@ impl EditorView {
             }
             self.track_layout.width = Some(width);
         }
-        self.invalidate_track_size(drag.track);
         cx.notify();
     }
     fn restore_track_resize(&mut self, drag: ResizeDrag) {
         if drag.generation != self.project_generation {
             return;
         }
-        if let Some(track) = drag.track {
-            if let Some(previous) = drag.previous {
-                self.track_layout.heights.insert(track, previous);
-            } else {
-                self.track_layout.heights.remove(&track);
-            }
+        if let Some(previous) = drag.previous_heights {
+            *self.track_layout.active_heights_mut() = previous;
+            self.track_scroll.remeasure();
         } else {
-            self.track_layout.width = drag.previous;
+            self.track_layout.width = drag.previous_width;
         }
-        self.invalidate_track_size(drag.track);
     }
     pub(super) fn cancel_track_resize(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(drag) = self.track_layout.drag.take() else {
@@ -332,47 +576,21 @@ impl EditorView {
         let entity = cx.entity();
         canvas(
             |_, _, _| (),
-            move |_, _, window, _| {
-                let moved = entity.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                    if !phase.capture() {
-                        return;
-                    }
-                    moved.update(cx, |view, cx| {
-                        if view.track_layout.drag.is_none() {
-                            return;
-                        }
-                        if event.pressed_button != Some(MouseButton::Left) {
-                            view.cancel_track_resize(cx);
+            move |_, _, window, cx| {
+                let view = entity.read(cx);
+                if let Some(drag) = view.track_layout.drag.as_ref()
+                    && view.track_resize_current(drag)
+                    && view.focus.is_focused(window)
+                {
+                    window.renew_pointer_capture(
+                        entity.entity_id(),
+                        if drag.track.is_some() {
+                            gpui::CursorStyle::ResizeRow
                         } else {
-                            view.update_track_resize(
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                                cx,
-                            );
-                        }
-                        cx.stop_propagation();
-                    });
-                });
-                let released = entity.clone();
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                    if !phase.capture() || event.button != MouseButton::Left {
-                        return;
-                    }
-                    released.update(cx, |view, cx| {
-                        if view.track_layout.drag.is_none() {
-                            return;
-                        }
-                        view.update_track_resize(
-                            f32::from(event.position.x),
-                            f32::from(event.position.y),
-                            cx,
-                        );
-                        view.track_layout.drag = None;
-                        cx.notify();
-                        cx.stop_propagation();
-                    });
-                });
+                            gpui::CursorStyle::ResizeColumn
+                        },
+                    );
+                }
             },
         )
         .absolute()

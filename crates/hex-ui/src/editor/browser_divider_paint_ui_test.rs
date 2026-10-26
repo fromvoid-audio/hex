@@ -34,6 +34,7 @@ fn with_environment(
                     Service::new(48_000, 32, 8_000_000).unwrap(),
                     Err("offline divider test".into()),
                     Default::default(),
+                    None,
                     crate::editor::test_environment::Inputs {
                         existing_environment: Some(Arc::clone(&environment)),
                         home: Some(environment.home.clone()),

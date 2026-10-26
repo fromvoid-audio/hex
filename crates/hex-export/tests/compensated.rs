@@ -98,6 +98,19 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir(&directory).unwrap();
+    let refused_bounce = directory.join("latency-bounce.wav");
+    let refusal = hex_export::render_arrangement_bounce_new(
+        &refused_bounce,
+        Arc::clone(&prepared),
+        None,
+        0,
+        17,
+        false,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap_err();
+    assert!(refusal.to_string().contains("zero-latency"));
+    assert!(!refused_bounce.exists());
     let legacy = directory.join("legacy.wav");
     let shared = directory.join("prepared.wav");
     let a = hex_export::render_new(&legacy, &compiled, 0, default_end).unwrap();

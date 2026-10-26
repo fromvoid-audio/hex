@@ -89,7 +89,7 @@ impl EditorView {
         state: &ViewState,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let (_, clip_id, _, duration, ..) = self.selected_clip_data()?;
+        let (_, clip_id, _, duration, ..) = self.detail_audio_clip_data()?;
         let clip = state.project.clip(clip_id)?;
         let fade = clip.retained_fade();
         let retained = clip.audio_edit().is_some();
@@ -142,6 +142,7 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .tooltip(move |_, cx| {
                         cx.new(|_| ClipTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             name: format!(
                                 "{}fade in · {fade_in_ms} ms · {} reference frames",
                                 if retained { "retained " } else { "" },
@@ -184,6 +185,7 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .tooltip(move |_, cx| {
                         cx.new(|_| ClipTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             name: format!(
                                 "{}fade out · {fade_out_ms} ms · {} reference frames",
                                 if retained { "retained " } else { "" },
@@ -209,7 +211,7 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .debug_selector(||"retained-fade-disclosure".into())
                     .tooltip(|_, cx| {
-                        cx.new(|_| ClipTooltip {
+                        cx.new(|_| ClipTooltip { kind: crate::tooltips::Kind::control("retained fades"),
                             name: "retained fades show authored reference-frame durations; the curve follows its frozen musical projection; editing reanchors and clamps both fades to this clip".into(),
                         })
                         .into()
@@ -230,7 +232,7 @@ impl EditorView {
             self.report_fade_edit_blocked();
             return;
         }
-        let Some((_, clip_id, _, duration, ..)) = self.selected_clip_data() else {
+        let Some((_, clip_id, _, duration, ..)) = self.detail_audio_clip_data() else {
             return;
         };
         let Some(state) = self.state.as_ref() else {
@@ -278,7 +280,8 @@ impl EditorView {
                     local.out_end_offset(),
                     local.in_curve(),
                     local.out_curve(),
-                )
+                )?
+                .with_curve_positions(local.in_position(), local.out_position())
             }) else {
                 return;
             };
@@ -307,7 +310,7 @@ impl EditorView {
             self.report_fade_edit_blocked();
             return;
         }
-        let Some((_, clip_id, _, duration, ..)) = self.selected_clip_data() else {
+        let Some((_, clip_id, _, duration, ..)) = self.detail_audio_clip_data() else {
             return;
         };
         let Some(state) = self.state.as_ref() else {

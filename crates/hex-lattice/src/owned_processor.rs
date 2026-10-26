@@ -68,6 +68,11 @@ pub trait OwnedProcessorRuntime: Any + Send {
     fn commit_block(&mut self);
     fn rollback_block(&mut self);
     fn reset(&mut self);
+    /// One-way notification after validated ownership moves into a residual
+    /// output bank. A provider may release a freeze/sustain so removal cannot
+    /// leave an endlessly sounding effect. It must preserve existing history,
+    /// remain allocation-free and never change persisted authoring state.
+    fn begin_output_tail(&mut self) {}
     fn committed_is_quiescent(&self) -> bool;
     fn speculative_is_quiescent(&self) -> bool;
     /// Explicit live-copy authorization. False preserves the old applied graph;
@@ -76,6 +81,18 @@ pub trait OwnedProcessorRuntime: Any + Send {
         false
     }
     fn inherit_from(&mut self, _previous: &dyn OwnedProcessorRuntime) {}
+    /// Commit-phase alternative when the host exclusively owns a retiring
+    /// donor. It follows the same preflight as inherit_from. Providers may swap
+    /// preallocated histories instead of copying them; the donor must not be
+    /// rendered afterward. All allocations stay owned by these two objects and
+    /// retire through the existing host path. No method may free storage here.
+    fn transfer_history_from(&mut self, previous: &mut dyn OwnedProcessorRuntime) {
+        self.inherit_from(previous);
+    }
+    /// Optional private mutable downcast for a provider's ownership transfer.
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
     fn can_retarget_parameters_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
         false
     }
@@ -87,6 +104,11 @@ pub trait OwnedProcessorRuntime: Any + Send {
         None
     }
     fn as_any(&self) -> &dyn Any;
+    /// Drain committed provider telemetry only; never expose speculative work.
+    /// This callback-side operation is bounded, allocation-free and infallible.
+    fn take_dynamics_meter(&mut self) -> Option<crate::DynamicsMeter> {
+        None
+    }
 }
 
 /// Exactly one prepared processing capability. Legacy byte declarations remain
@@ -95,37 +117,43 @@ pub trait OwnedProcessorRuntime: Any + Send {
 pub enum PreparedProcessorFactory {
     Legacy(Arc<dyn PreparedNativeProcessor>),
     Owned(Arc<dyn PreparedOwnedProcessorRuntime>),
+    /// Borrowed staged graph capability; never an owned rollbackable DSP facade.
+    Foreign(crate::PreparedForeignProcessor),
 }
 impl PreparedProcessorFactory {
     pub fn runtime_version(&self) -> u32 {
         match self {
             Self::Legacy(v) => v.runtime_version(),
             Self::Owned(v) => v.runtime_version(),
+            Self::Foreign(_) => 1,
         }
     }
     pub fn declared_pair_bytes(&self) -> Option<usize> {
         match self {
             Self::Legacy(v) => v.declared_runtime_bytes().checked_mul(2),
             Self::Owned(v) => Some(v.declared_pair_bytes()),
+            Self::Foreign(_) => Some(0), // scalar declaration is already inline; host charges actual endpoints
         }
     }
     pub fn output_tail(&self) -> OutputTail {
         match self {
             Self::Legacy(v) => v.output_tail(),
             Self::Owned(v) => v.output_tail(),
+            Self::Foreign(value) => value.output_tail(),
         }
     }
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
         match self {
             Self::Legacy(v) => v.algorithmic_latency_frames(),
             Self::Owned(v) => v.algorithmic_latency_frames(),
+            Self::Foreign(v) => Some(v.total_latency_frames()),
         }
     }
     /// Control-side legacy preview capability, when actually supported.
     pub fn frequency_response_at_hz(&self, hz: f32) -> Option<[f32; 2]> {
         match self {
             Self::Legacy(v) => v.frequency_response_at_hz(hz),
-            Self::Owned(_) => None,
+            Self::Owned(_) | Self::Foreign(_) => None,
         }
     }
 }
@@ -146,7 +174,7 @@ pub struct PreparedRuntimeInstance {
 }
 impl PreparedRuntimeInstance {
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
-        if self.bypassed {
+        if self.bypassed && !matches!(self.definition, Some(PreparedProcessorFactory::Foreign(_))) {
             Some(0)
         } else {
             self.definition.as_ref().map_or(
@@ -181,7 +209,7 @@ impl PreparedProcessorFactory {
     pub fn legacy(&self) -> Option<&Arc<dyn PreparedNativeProcessor>> {
         match self {
             Self::Legacy(value) => Some(value),
-            Self::Owned(_) => None,
+            Self::Owned(_) | Self::Foreign(_) => None,
         }
     }
     pub fn is_owned(&self) -> bool {

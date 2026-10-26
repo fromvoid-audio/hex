@@ -39,6 +39,8 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
         next += 3;
         let arrangement_notes = notes(&mut next, index, 0);
         tracks.push(TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -51,6 +53,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: Vec::new(),
             instrument: Some(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument,
                 bypassed: false,
@@ -58,6 +61,11 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
+                active: true,
+                playback_offset_raw: 0,
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip,
@@ -79,10 +87,14 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
                 track,
                 scene: 1,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    active: true,
+                    playback_offset_raw: 0,
+                    volume: hex_project::MidiClipVolume::default(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: clip,
                     name: format!("session {index:03}"),
                     source: MidiSourceSnapshot {
+                        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                         source_length_raw: 4 << 32,
                         source_start_raw: 0,
                         loop_start_raw: 0,
@@ -94,7 +106,9 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             });
         }
     }
-    let project = Project::from_snapshot(Snapshot {
+    let project = Project::from_legacy_snapshot(Snapshot {
+        native_sources: Vec::new(),
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -156,6 +170,11 @@ pub fn finite_oracle(
                 return Err("oracle source is not midi".into());
             };
             track.content = TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
+                active: true,
+                playback_offset_raw: 0,
+                one_shot_boundary: clip.source.one_shot_boundary,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip.id,
