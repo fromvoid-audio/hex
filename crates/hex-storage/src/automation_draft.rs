@@ -391,6 +391,7 @@ pub struct DraftReader {
     progress: DraftProgress,
     outcome: DraftOutcome,
     records_start: u64,
+    header_chain: [u8; 32],
 }
 
 impl DraftReader {
@@ -476,6 +477,7 @@ impl DraftReader {
             progress: DraftProgress::default(),
             outcome: DraftOutcome::Interrupted,
             records_start: total,
+            header_chain: chain,
         };
         let mut previous = None;
         loop {
@@ -580,17 +582,50 @@ impl DraftReader {
                 .checked_mul(RECORD_BYTES as u64)
                 .and_then(|n| self.records_start.checked_add(n))
                 .ok_or(StorageError::Invalid("automation draft ordinal overflow"))?;
-            self.file.seek(SeekFrom::Start(offset))?;
-            for slot in &mut output[..count] {
+            if count == 0 {
+                return Ok(0);
+            }
+            let mut chain = self.header_chain;
+            let mut previous = None;
+            if first_ordinal != 0 {
+                let predecessor =
+                    offset
+                        .checked_sub(RECORD_BYTES as u64)
+                        .ok_or(StorageError::Invalid(
+                            "automation draft predecessor overflow",
+                        ))?;
+                self.file.seek(SeekFrom::Start(predecessor))?;
                 let mut record = [0; RECORD_BYTES];
                 self.file.read_exact(&mut record)?;
                 let Record::Event(event) = decode_record(&record)? else {
                     return Err(StorageError::Invalid("automation draft prefix changed"));
                 };
+                validate_event(None, event)?;
+                chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
+                previous = Some(event);
+            }
+            self.file.seek(SeekFrom::Start(offset))?;
+            for slot in &mut output[..count] {
+                let mut record = [0; RECORD_BYTES];
+                self.file.read_exact(&mut record)?;
+                if !valid_hash(&record, chain) {
+                    return Err(StorageError::Invalid(
+                        "automation draft page integrity changed; preserve original file",
+                    ));
+                }
+                let Record::Event(event) = decode_record(&record)? else {
+                    return Err(StorageError::Invalid("automation draft prefix changed"));
+                };
+                validate_event(previous, event)?;
+                chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
+                previous = Some(event);
                 *slot = Some(event);
             }
             Ok(count)
         })();
+        if result.is_err() {
+            output.fill(None);
+        }
         result.map_err(|source| self.error(source))
     }
     fn error(&self, source: StorageError) -> DraftError {
