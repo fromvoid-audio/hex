@@ -1,7 +1,8 @@
 //! Arrangement-only layout state; resizing never edits the project or audio.
 //! Header overview has a separate transient height map: temporary resizing never
 //! overwrites normal custom heights. Option-wheel changes only the hovered row
-//! through the same height map and limits; nested controls and held input retain ownership. Main shares the row-height and rollback map;
+//! through the same height map and limits; nested controls and held input retain
+//! ownership. Main shares the row-height and rollback map;
 //! its top resize edge preserves the pinned bottom. Stable track IDs survive topology changes;
 //! project replacement clears both layouts. Plain H belongs to this workspace
 //! only while the computer MIDI keyboard is disabled. Held sizing uses the shared

@@ -62,6 +62,21 @@ fn option_wheel_targets_hovered_header_and_lane_without_editing_or_zooming(
     assert_eq!(header.size.height, px(56.));
     let lane = bounds(&mut visual, "arrangement-lane", tracks[1]);
     assert_eq!(header.top(), lane.top());
+    // Natural-scroll inversion is undone exactly once for physical sizing.
+    visual.simulate_event(ScrollWheelEvent {
+        position: lane.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-16.))),
+        modifiers: option(),
+        direction_inverted_from_device: true,
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        bounds(&mut visual, "arrangement-track-header", tracks[1])
+            .size
+            .height,
+        px(60.)
+    );
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.selected_track, Some(tracks[0]));
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original.0);
