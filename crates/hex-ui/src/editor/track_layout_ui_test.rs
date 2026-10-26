@@ -52,6 +52,38 @@ fn bounds(visual: &mut VisualTestContext, prefix: &str, track: TrackId) -> Bound
         .unwrap_or_else(|| panic!("missing {prefix}"))
 }
 
+#[gpui::test]
+fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 2);
+    visual.update(|_, cx| {
+        editor.update(cx, |view, cx| {
+            view.track_meters.set_test_level(tracks[0], 0.5);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let header = bounds(&mut visual, "arrangement-track-header", tracks[0]);
+    let meter = bounds(&mut visual, "track-output-meter", tracks[0]);
+    let first_fill = visual
+        .debug_bounds(Box::leak(
+            format!("track-output-meter-{}-fill", tracks[0].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let other_fill = visual
+        .debug_bounds(Box::leak(
+            format!("track-output-meter-{}-fill", tracks[1].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    assert!(meter.left() >= header.left() && meter.right() <= header.right());
+    assert!(meter.top() >= header.top() && meter.bottom() <= header.bottom());
+    assert!(first_fill.size.height > other_fill.size.height);
+    let handle = bounds(&mut visual, "track-width-resize", tracks[0]).center();
+    drag(&mut visual, handle, point(handle.x - px(64.0), handle.y));
+    let header = bounds(&mut visual, "arrangement-track-header", tracks[0]);
+    let meter = bounds(&mut visual, "track-output-meter", tracks[0]);
+    assert!(meter.left() >= header.left() && meter.right() <= header.right());
+}
+
 fn drag(visual: &mut VisualTestContext, from: gpui::Point<Pixels>, to: gpui::Point<Pixels>) {
     visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
