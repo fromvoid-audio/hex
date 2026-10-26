@@ -181,6 +181,11 @@ playback graph. verified streaming mode is unavailable for this control. a secti
 past the bounded arrangement preroll range, or a source that exceeds existing
 runtime storage or midi density limits, is refused while current playback continues.
 
+hold **2** to force time selection over arrange clips, audio events, piano-roll
+notes or velocity bars, even with midi draw mode enabled. release **2** to return
+to ordinary editing. a range already being dragged continues until mouse release.
+text and numeric fields keep normal number entry.
+
 a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
