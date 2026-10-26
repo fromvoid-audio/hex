@@ -1354,7 +1354,7 @@ impl EditorView {
                 .child(
                     div()
                         .id(("track-header-mixer", track_id.value()))
-                        .w(px(122.0))
+                        .w(px(114.0))
                         .flex_shrink_0()
                         .flex()
                         .flex_col()
@@ -1505,7 +1505,19 @@ impl EditorView {
                 cx.notify();
             }),
         )
-        .child(header_content)
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .children([header_content.flex_1().min_w_0()])
+                .children([super::track_meters::render(
+                    track_id,
+                    self.track_meters.level(track_id),
+                    self.track_body_height(track_id),
+                )]),
+        )
         .children(self.track_resize_handles(track_id, cx))
         .relative()
         .child(

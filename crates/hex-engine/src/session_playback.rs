@@ -451,6 +451,7 @@ pub struct SessionPlayback {
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
+    meter_cells: Vec<meter_capture::Cell>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
     mutable_onsets: MutableOnsetBuffer,
@@ -837,6 +838,7 @@ impl SessionPlayback {
             return_chains,
             main_chain,
             return_scratch: _,
+            meter_cells: _,
             return_effect_tails,
             mutable_instruments,
             mutable_onsets: _,
@@ -1710,6 +1712,24 @@ impl SessionPlayback {
             .try_reserve_exact(return_buses.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
         let mut return_scratch = Vec::new();
+        let mut meter_cells = Vec::new();
+        let meter_count = arrangement_tracks
+            .len()
+            .checked_add(return_buses.len())
+            .ok_or(SessionPlaybackError::Allocation)?;
+        meter_cells
+            .try_reserve_exact(meter_count)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        for track in arrangement_tracks {
+            let id = track
+                .canonical_track_id()
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            meter_cells.push(meter_capture::Cell::new(OutputCaptureId::Track(id)));
+        }
+        for bus in return_buses {
+            meter_cells.push(meter_capture::Cell::new(OutputCaptureId::Return(bus.id)));
+        }
+        meter_capture::sort(&mut meter_cells);
         return_scratch
             .try_reserve_exact(return_buses.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
@@ -1822,6 +1842,7 @@ impl SessionPlayback {
                 route_scratch: route_scratch.capacity(),
                 current_route_cut_scratch: current_route_cut_scratch.capacity(),
                 return_scratch: return_scratch.capacity(),
+                meter_cells: meter_cells.capacity(),
                 mutable_events: mutable_events.capacity(),
                 tail_mixes: tail_mixes.capacity(),
                 tail_suffix_starts: tail_suffix_starts.capacity(),
@@ -1871,6 +1892,7 @@ impl SessionPlayback {
             return_chains,
             main_chain,
             return_scratch,
+            meter_cells,
             return_effect_tails,
             mutable_instruments,
             mutable_onsets: MutableOnsetBuffer::default(),
@@ -2297,6 +2319,7 @@ pub(super) fn base_timing_for(
 }
 
 mod capture;
+mod meter_capture;
 mod release_location;
 use release_location::ReleaseLocation;
 /// These tables never grow, shrink, swap ownership or allocate in handoff or

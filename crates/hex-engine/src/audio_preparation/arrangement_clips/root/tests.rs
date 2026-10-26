@@ -147,7 +147,7 @@ fn actual_resident_and_streamed_root_matches_legacy_pcm_and_preserves_context_ha
         assert_eq!(report.root.installed_returns, 2);
         assert!(report.root.track_container_bytes >= mem::size_of::<Track>());
         assert_eq!(report.tracks.independent_handle_obligations, 2);
-        assert_eq!(report.returns.independent_handle_obligations, 2);
+        assert_eq!(report.returns.independent_handle_obligations, 4);
         assert_eq!(
             custody
                 .capacity_report()

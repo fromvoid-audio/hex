@@ -851,6 +851,7 @@ pub(crate) struct ReturnBus {
     pub muted: bool,
     pub matrix: Option<hex_lattice::StereoMatrix>,
     pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    pub output_meter: std::sync::Arc<hex_lattice::DeviceMeter>,
 }
 
 /// Resolve playback audibility without changing authored activation/mute state.

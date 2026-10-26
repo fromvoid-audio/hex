@@ -838,6 +838,7 @@ fn compile_project_inner<'a>(
             muted: return_track.muted(),
             matrix: effect_plan.fused,
             device_chain: std::sync::Arc::from(effect_plan.device_chain),
+            output_meter: Default::default(),
         });
     }
     let main_plan = compile_effect_devices(
