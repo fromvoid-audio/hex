@@ -1,6 +1,9 @@
 //! Compact velocity-lane view. The pure model owns geometry/preview validation;
 //! this adapter captures GPUI input and submits one canonical batch on release.
 //! Accepted velocity values remain with midi_pending_drag until its exact reply.
+#[path = "midi_velocity_pointer.rs"]
+mod pointer;
+
 use super::{
     EditorView,
     midi_group_drag::{GroupNote, capture_selected_notes},
@@ -12,7 +15,7 @@ use gpui::{
     Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
-use hex_project::{Command, NoteId};
+use hex_project::NoteId;
 use std::sync::Arc;
 
 pub(super) struct State {
@@ -339,6 +342,11 @@ impl EditorView {
                         if !captured.bounds.is_valid() {
                             return;
                         }
+                        entity.read(cx).renew_velocity_pointer(
+                            captured,
+                            entity.entity_id(),
+                            window,
+                        );
                         entity.read(cx).renew_midi_time_selection_capture(
                             captured.bounds,
                             key.clip,
@@ -600,7 +608,14 @@ impl EditorView {
                                             )
                                         }) {
                                             Ok(gesture) => {
-                                                view.midi_velocity.gesture = Some(gesture)
+                                                if view.capture_velocity_pointer(
+                                                    context,
+                                                    f32::from(event.position.y),
+                                                    window,
+                                                    cx,
+                                                ) {
+                                                    view.midi_velocity.gesture = Some(gesture);
+                                                }
                                             }
                                             Err(error) => view.error = Some(error.into()),
                                         }
@@ -690,22 +705,7 @@ impl EditorView {
                                         cx.notify();
                                     }
                                     cx.stop_propagation();
-                                    return;
                                 }
-                                let Some(mut gesture) = view.midi_velocity.gesture.take() else {
-                                    return;
-                                };
-                                let current = view
-                                    .velocity_context(captured.bounds)
-                                    .filter(|_| !view.edit_pending());
-                                if let Some(current) = current {
-                                    match gesture.update(current, f32::from(event.position.y)) {
-                                        Ok(_) => view.midi_velocity.gesture = Some(gesture),
-                                        Err(error) => view.error = Some(error.into()),
-                                    }
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
                             });
                         });
                         let release = entity.clone();
@@ -749,32 +749,7 @@ impl EditorView {
                                 if view.midi_velocity.resize.take().is_some() {
                                     cx.stop_propagation();
                                     cx.notify();
-                                    return;
                                 }
-                                let Some(mut gesture) = view.midi_velocity.gesture.take() else {
-                                    return;
-                                };
-                                if let Some(current) = view
-                                    .velocity_context(captured.bounds)
-                                    .filter(|_| !view.edit_pending())
-                                {
-                                    match gesture
-                                        .update(current, f32::from(event.position.y))
-                                        .and_then(|_| gesture.updates(current))
-                                    {
-                                        Ok(Some(notes)) => {
-                                            view.submit_midi_drag_preview(
-                                                clip,
-                                                super::midi_pending_drag::Frozen::Velocity(gesture),
-                                                Command::UpdateMidiNotes { clip, notes },
-                                            );
-                                        }
-                                        Ok(None) => {}
-                                        Err(error) => view.error = Some(error.into()),
-                                    }
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
                             });
                         });
                     },
