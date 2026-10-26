@@ -326,7 +326,7 @@ impl NativeEffectReference<'_> {
     pub(crate) fn identity(&self) -> ProcessorInstanceIdentity {
         self.configuration().identity
     }
-    fn configuration(&self) -> &Configuration {
+    pub(super) fn configuration(&self) -> &Configuration {
         match self {
             Self::Unsplit(effect) => &effect.callback.configuration,
             Self::Loaned(control) => &control.configuration,

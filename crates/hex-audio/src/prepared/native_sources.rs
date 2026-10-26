@@ -623,6 +623,28 @@ impl PublicationControl {
     pub fn native_source_prepared_state(&self, binding: Binding) -> Option<NativeDeviceState> {
         self.candidate_root.native_source_prepared_state(binding)
     }
+    /// Compare the exact constructed source's registered accepted configuration,
+    /// or its original envelope before any accepted capture. Pending approval
+    /// refuses; it is never treated as canonical. This query neither captures
+    /// current DSP nor authorizes compilation, source reuse or a canonical edit.
+    /// Stop may revoke processing while this baseline remains queryable; actual
+    /// quiescence/resume and graph admission retain their existing contracts.
+    pub fn native_source_matches_accepted_state_on_control(
+        &self,
+        binding: Binding,
+        state: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native accepted state output is closing");
+        }
+        let matches = self
+            .candidate_root
+            .matches_native_accepted_state(binding, state)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native accepted state output is closing");
+        }
+        Ok(matches)
+    }
     /// Copy bounded original source metadata on control. This borrows the exact
     /// constructed worker owner even while its endpoint is loaned; no native
     /// resource, state capture or permission is returned. New preparation still

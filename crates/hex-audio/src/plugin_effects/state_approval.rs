@@ -56,6 +56,17 @@ impl NativeEffect {
     }
 }
 impl Configuration {
+    /// Registered canonical baseline only, never pending candidate bytes or
+    /// proof that the plugin's evolving DSP still equals an earlier capture.
+    fn matches_accepted_state(&self, state: &NativeDeviceState) -> Result<bool, &'static str> {
+        if self.pending_state.is_some() {
+            return Err("native state approval is pending");
+        }
+        Ok(match self.accepted_state.as_ref() {
+            Some(accepted) => accepted.proof.matches_state(state),
+            None => self.state.processing_eq(state),
+        })
+    }
     pub(super) fn approval_count(&self) -> usize {
         usize::from(self.accepted_state.is_some()) + usize::from(self.pending_state.is_some())
     }
@@ -81,6 +92,15 @@ impl Configuration {
                 }),
                 None => state.processing_eq(&self.state),
             }
+    }
+}
+
+impl NativeEffectReference<'_> {
+    pub(crate) fn matches_accepted_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        self.configuration().matches_accepted_state(state)
     }
 }
 

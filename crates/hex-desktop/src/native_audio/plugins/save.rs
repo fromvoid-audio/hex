@@ -91,9 +91,12 @@ impl Plugins {
             .and_then(|output| output.publication.control())
             .ok_or("vst3 save output is unavailable")?;
         for entry in &wanted {
-            if !edits::original_state(control, entry.binding, Some(cancellation))?
-                .processing_eq(&entry.expected)
-            {
+            if !edits::matches_accepted_state(
+                control,
+                entry.binding,
+                &entry.expected,
+                Some(cancellation),
+            )? {
                 return Err("vst3 save source differs from canonical device".into());
             }
         }

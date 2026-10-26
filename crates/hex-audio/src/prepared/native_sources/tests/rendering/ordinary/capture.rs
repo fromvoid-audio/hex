@@ -46,6 +46,7 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
             .unwrap();
         let canonical = f.editor.project().clone();
         let initial = f.control.native_source_prepared_state(f.binding).unwrap();
+        accepted_state_matches(&f, &initial, true);
         let root = f.control.native_candidate_root();
         let playback = compile(&f, true);
         publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
@@ -173,8 +174,9 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
         );
         assert_eq!(
             f.control.native_source_prepared_state(f.binding),
-            Some(initial)
+            Some(initial.clone())
         );
+        accepted_state_matches(&f, snapshot.state(), false);
         assert_eq!(
             f.control.native_source_endpoint_status(f.binding),
             Some((true, true))
@@ -212,6 +214,14 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                 .stage_native_source_state_snapshot_on_control(f.binding, &snapshot)
         })
         .unwrap();
+        assert_eq!(
+            snapshot_action(|| f
+                .control
+                .native_source_matches_accepted_state_on_control(f.binding, snapshot.state())
+                .map(|_| ())),
+            Err("native state approval is pending"),
+            "pending bytes are not an accepted save or unchanged-edit baseline"
+        );
         assert!(
             snapshot_action(|| f
                 .control
@@ -255,6 +265,8 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                 .finalize_native_source_state_snapshot_on_control(f.binding, &snapshot, true)
         })
         .unwrap();
+        accepted_state_matches(&f, snapshot.state(), true);
+        accepted_state_matches(&f, &initial, false);
         assert!(
             snapshot_action(|| f
                 .control
@@ -307,6 +319,7 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                 .finalize_native_source_state_snapshot_on_control(f.binding, &later, false)
         })
         .unwrap();
+        accepted_state_matches(&f, snapshot.state(), true);
         assert!(
             snapshot_action(|| f
                 .control
@@ -395,8 +408,17 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                     Some((false, false))
                 );
             }
+            accepted_state_matches(&f, snapshot.state(), true);
             let previous = f.binding;
             renew_cohort(&mut f);
+            accepted_state_matches(&f, snapshot.state(), true);
+            accepted_state_matches(&f, &initial, false);
+            assert!(
+                f.control
+                    .native_source_matches_accepted_state_on_control(previous, snapshot.state())
+                    .is_err(),
+                "matching bytes cannot make a prior source binding current"
+            );
             assert_eq!(
                 (f.binding.root, f.binding.instance),
                 (previous.root, previous.instance)
@@ -455,6 +477,14 @@ fn snapshot_action(mut run: impl FnMut() -> Result<(), &'static str>) -> Result<
             result => return result,
         }
     }
+}
+fn accepted_state_matches(f: &OrdinaryFixture, state: &NativeDeviceState, expected: bool) {
+    snapshot_action(|| {
+        f.control
+            .native_source_matches_accepted_state_on_control(f.binding, state)
+            .map(|matches| assert_eq!(matches, expected))
+    })
+    .unwrap();
 }
 fn compile_captured_project(
     control: &Control,

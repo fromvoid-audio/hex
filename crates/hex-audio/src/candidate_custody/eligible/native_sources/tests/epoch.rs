@@ -417,12 +417,57 @@ fn actual_root_stopped_parameters_require_original_return_and_keep_failure_or_re
     root.complete_native_source(next, presentation()).unwrap();
     assert!(root.native_source_prepared_state(next).is_some());
     root.start_native_effect(next).unwrap();
+    // The fresh worker can capture the original stopped flush without any
+    // invented PCM process call. This gives stopped controls the same actual
+    // capture/permission path as playing controls after the real resume ACK.
+    let request = root.begin_live_native_capture(next).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let snapshot = loop {
+        match root.poll_live_native_snapshot(next, &request).unwrap() {
+            crate::plugin_worker::NativeWorkerStateSnapshotProgress::Captured(snapshot) => {
+                break snapshot;
+            }
+            crate::plugin_worker::NativeWorkerStateSnapshotProgress::Pending => {}
+            other => panic!("resumed stopped-parameter snapshot: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        &hex_plugin_state::decode(snapshot.state())
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    assert!(
+        !root
+            .matches_native_accepted_state(next, snapshot.state())
+            .unwrap()
+    );
+    root.stage_live_native_snapshot(next, &snapshot).unwrap();
+    assert_eq!(
+        root.matches_native_accepted_state(next, snapshot.state()),
+        Err("native state approval is pending")
+    );
+    root.finalize_live_native_snapshot(next, &snapshot, true)
+        .unwrap();
+    assert!(
+        root.matches_native_accepted_state(next, snapshot.state())
+            .unwrap()
+    );
+    assert!(
+        !root
+            .matches_native_accepted_state(next, &confirmed)
+            .unwrap()
+    );
     assert!(root.retire_native_source(next));
     dispose(&root, next);
     let returned = root.recover_native_source(next).unwrap();
     assert!(returned.error.is_none() && returned.cleanup_error.is_none());
     assert!(
-        matches!(returned.disposal,PreparationDisposal::Reaped(retired) if retired.status.success())
+        matches!(returned.disposal,PreparationDisposal::Reaped(retired)
+            if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks == 0))
     );
 }
 

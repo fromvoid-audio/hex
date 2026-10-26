@@ -88,6 +88,21 @@ impl Custody {
         }
         Ok(result)
     }
+    pub(in crate::candidate_custody) fn matches_native_accepted_state(
+        &self,
+        binding: Binding,
+        state: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => {
+                NativeEffectReference::Unsplit(owner).matches_accepted_state(state)
+            }
+            Owner::Loaned(owner) => {
+                NativeEffectReference::Loaned(owner).matches_accepted_state(state)
+            }
+            _ => Err("native accepted state owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn native_parameter_edits(
         &self,
         binding: Binding,
@@ -364,6 +379,19 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    pub(crate) fn matches_native_accepted_state(
+        &self,
+        binding: Binding,
+        state: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        self.require_native_source_control_open()?;
+        let matches = self
+            .0
+            .eligible
+            .matches_native_accepted_state(binding, state)?;
+        self.require_native_source_control_open()?;
+        Ok(matches)
+    }
     pub(crate) fn native_source_parameter_edits(
         &self,
         binding: Binding,

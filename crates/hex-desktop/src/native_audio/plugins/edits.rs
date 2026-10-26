@@ -100,7 +100,7 @@ impl Plugins {
                 // own source instead of introducing a current/tail alias.
                 continue;
             }
-            if original_state(control, source.binding, cancellation)?.processing_eq(state) {
+            if matches_accepted_state(control, source.binding, state, cancellation)? {
                 return Ok(Some(source.binding));
             }
         }
@@ -268,6 +268,20 @@ pub(super) fn poll_control(control: &mut PublicationControl) {
     // Existing control-worker polling cadence. This is not a paint delay,
     // native ACK, timeout-based acceptance or an audio callback wait.
     std::thread::sleep(std::time::Duration::from_millis(5));
+}
+pub(super) fn matches_accepted_state(
+    control: &mut PublicationControl,
+    binding: Binding,
+    state: &NativeDeviceState,
+    cancellation: Option<&RequestCancellation>,
+) -> Result<bool, String> {
+    loop {
+        check_cancel(cancellation)?;
+        match control.native_source_matches_accepted_state_on_control(binding, state) {
+            Err("native preparation is busy") => poll_control(control),
+            result => return result.map_err(str::to_owned),
+        }
+    }
 }
 pub(super) fn original_state(
     control: &mut PublicationControl,
