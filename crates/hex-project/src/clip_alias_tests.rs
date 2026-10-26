@@ -591,6 +591,34 @@ fn unrelated_edits_retain_effective_source_identity_for_every_alias() {
     ));
 }
 
+#[test]
+fn explicit_snapshot_projection_keeps_surviving_alias_content_and_drops_unused_sources() {
+    let (mut editor, _, original) = midi();
+    let alias = duplicate(&mut editor, original);
+    let before = editor.project().snapshot();
+    let mut projected = before.clone();
+    let crate::TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut projected.tracks[0].content
+    else {
+        panic!("hybrid")
+    };
+    midi_clips.retain(|clip| clip.id == alias.value());
+    projected.retain_clip_aliases_after_projection();
+    assert_eq!(projected.aliases.members.len(), 1);
+    assert_eq!(projected.aliases.sources, before.aliases.sources);
+    let loaded = Project::from_snapshot(projected).unwrap();
+    assert_eq!(
+        loaded.midi_clip(alias).unwrap().notes(),
+        editor.project().midi_clip(original).unwrap().notes()
+    );
+    assert_eq!(loaded.clip_alias(alias), editor.project().clip_alias(alias));
+    let mut empty = loaded.snapshot();
+    empty.tracks.clear();
+    empty.retain_clip_aliases_after_projection();
+    assert!(empty.aliases.members.is_empty() && empty.aliases.sources.is_empty());
+    assert!(Project::from_snapshot(empty).is_ok());
+    assert_eq!(editor.project().snapshot(), before);
+}
+
 /// Control-side metadata/history workload; no audio rendering or native deadlines.
 #[test]
 #[ignore = "release-only control metadata measurement"]
