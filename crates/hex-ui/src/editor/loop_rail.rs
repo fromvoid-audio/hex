@@ -15,6 +15,8 @@ pub(super) struct PendingLoop {
     generation: u64,
     region: LoopRegion,
     remaining: Option<usize>,
+    // Selection intent for automatic focus after a successful section-loop ACK.
+    focus_intent: Option<u64>,
 }
 
 const RAIL_HEIGHT: f32 = 18.0;
@@ -44,6 +46,7 @@ pub(super) struct LoopRailGesture {
     moved: bool,
     click_disqualified: bool,
     toggle_on_click: bool,
+    select_extent_on_click: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +72,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
             || self.save_dialog_open
@@ -113,6 +117,7 @@ impl EditorView {
                 moved: false,
                 click_disqualified: false,
                 toggle_on_click: modifiers.platform,
+                select_extent_on_click: super::time_selection::is_extent_selection_click(modifiers),
             });
             return true;
         }
@@ -141,6 +146,7 @@ impl EditorView {
             moved: false,
             click_disqualified: false,
             toggle_on_click: false,
+            select_extent_on_click: false,
         });
         true
     }
@@ -277,6 +283,17 @@ impl EditorView {
         {
             return true;
         }
+        if !gesture.click_disqualified && gesture.select_extent_on_click {
+            if let Some(region) = gesture.loop_region {
+                self.select_project_time_range(
+                    region.start(),
+                    region.end(),
+                    gesture.generation,
+                    gesture.revision,
+                );
+            }
+            return true;
+        }
         if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
             let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
             return true;
@@ -363,8 +380,8 @@ pub(super) fn view(
                 .min_w_0()
                 .cursor(view.loop_rail_cursor)
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip {
-                        description: "drag empty rail to set loop · drag bar to move · shift steps loop length · cmd-click toggles · cmd-drag is free".into(),
+                    cx.new(|_| super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("loop range"),
+                        description: "drag empty rail to set loop · drag bar to move · shift-click selects range · shift-drag steps loop length · cmd-click toggles · cmd-drag is free".into(),
                     })
                     .into()
                 })
@@ -390,7 +407,7 @@ pub(super) fn view(
                                     let started = down_entity.update(cx, |view, cx| {
                                         if view.track_name.is_editing() || view.clip_name_edit.is_some()
                                             || view.project_tempo_editing(cx) || view.gain_numeric_editing(cx)
-                                            || view.sample_bpm_editing(cx) { return false; }
+                                            || view.clip_numeric_editing(cx) { return false; }
                                         let started = view.begin_loop_rail_gesture(
                                             bounds,
                                             event.position,
@@ -665,7 +682,8 @@ fn stepped_start(region: LoopRegion, delta: i128) -> Option<u64> {
 /// Frame endpoints retain quantized musical intervals, not authored beat IDs.
 /// Accept exactly one binary Q32.32 duration whose canonical forward rounding can
 /// place its two beat endpoints at these stored frames (no pixel/epsilon test).
-fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
+/// Arrangement time-selection markers share this same read-only predicate.
+pub(super) fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
     let map = project.tempo_map();
     let interval = |frame: u64| -> Option<(u128, u128)> {
         let first = map.beat_lower_bound_for_frame(frame).ok()?;

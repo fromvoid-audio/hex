@@ -19,7 +19,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
@@ -36,8 +36,20 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
+) -> (
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    ClipId,
+    ClipId,
+    Arc<super::test_environment::Environment>,
+) {
+    fixture_with_bounce_media(cx, false)
+}
+pub(super) fn fixture_with_bounce_media(
+    cx: &mut TestAppContext,
+    bounce: bool,
 ) -> (
     gpui::AnyWindowHandle,
     Entity<EditorView>,
@@ -68,7 +80,17 @@ fn fixture(
         bytes.extend_from_slice(&8192_i16.to_le_bytes());
     }
     std::fs::write(&wav, bytes).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let service = if bounce {
+        Service::with_recovery(
+            48_000,
+            32,
+            8_000_000,
+            directory.join("recovery/untitled.hex-journal"),
+        )
+    } else {
+        Service::new(48_000, 32, 8_000_000)
+    }
+    .unwrap();
     next(&service);
     service.submit(Request::Import(wav)).unwrap();
     let event = next(&service);
@@ -118,7 +140,7 @@ fn fixture(
         .unwrap();
     (handle, editor, audio, midi, files)
 }
-fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
+pub(super) fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
     let bounds = visual.debug_bounds(selector).expect("rendered header");
     let modifiers = Modifiers {
@@ -130,16 +152,173 @@ fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
     visual.run_until_parked();
 }
 #[gpui::test]
-fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_history(
+fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &mut TestAppContext) {
+    for key in ["l", "w", "cmd-l"] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, audio, _, files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let region = |visual: &VisualTestContext| {
+            editor.read_with(visual, |v, _| {
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .loop_region()
+                    .map(|r| (r.start(), r.end(), r.enabled()))
+            })
+        };
+        let initial = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), None, "no range to invent: {key}");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().revision, initial)
+        });
+
+        click(&mut visual, audio, false);
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((0, 48_000, true)), "{key}");
+        let enabled =
+            editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes(key);
+        // The canonical ACK has not been installed: another key cannot queue
+        // a duplicate action or resolve against the old enabled state.
+        visual.simulate_keystrokes(key);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.worker_requests_pending, 1, "{key}");
+            assert!(v.pending_requests.is_empty());
+        });
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((0, 48_000, false)), "{key}");
+        let disabled =
+            editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let mut expected = enabled.clone();
+        expected.loop_region = disabled.loop_region;
+        assert_eq!(disabled, expected, "toggle preserves music: {key}");
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), enabled)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), disabled)
+        });
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((0, 48_000, true)), "{key}");
+
+        // A different selection kind with equal canonical bounds still toggles.
+        editor.update(&mut visual, |v, _| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            v.time_selection = Some(TimeSelection {
+                anchor_track: track,
+                end_track: track,
+                anchor_frame: 0,
+                end_frame: 48_000,
+            });
+            v.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track,
+                frame: 0,
+                generation: v.project_generation,
+                pulse_color: 0,
+                pulse_started: Instant::now(),
+            });
+        });
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((0, 48_000, false)), "{key}");
+        // One frame of difference enables a new range, even with a remembered
+        // disabled loop and visually indistinguishable rounded positions.
+        editor.update(&mut visual, |v, _| {
+            v.time_selection.as_mut().unwrap().anchor_frame = 1;
+            v.edit_cursor.as_mut().unwrap().frame = 1;
+            let range = v.normalized_time_selection().unwrap();
+            assert_eq!((range.start(), range.end()), (1, 48_000));
+        });
+        visual.simulate_keystrokes(key);
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                matches!(
+                    v.last_enqueued_edit,
+                    Some(Command::SetLoopRegion {
+                        start: 1,
+                        end: 48_000,
+                        enabled: true
+                    })
+                ),
+                "exact selection command: {:?}, selection: {:?}, error: {:?}",
+                v.last_enqueued_edit,
+                v.time_selection,
+                v.error
+            );
+        });
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((1, 48_000, true)), "{key}");
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                let track = v.selected_track.unwrap();
+                v.time_selection = None;
+                v.edit_cursor = None;
+                v.select_track(track, window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        for enabled in [false, true] {
+            visual.simulate_keystrokes(key);
+            pump(&editor, &mut visual);
+            assert_eq!(region(&visual), Some((1, 48_000, enabled)), "{key}");
+            editor.read_with(&visual, |v, _| {
+                assert!(
+                    v.selected_clip.is_none(),
+                    "loop ACK preserves empty selection: {key}"
+                )
+            });
+        }
+        let path = files.root().join("remembered-loop.hex");
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::SaveNew(path.clone())))
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(path))));
+        pump(&editor, &mut visual);
+        visual.update(|window, cx| editor.read(cx).focus.focus(window));
+        for enabled in [false, true] {
+            editor.read_with(&visual, |v, _| {
+                assert!(v.selected_track.is_none() && v.selected_clip.is_none());
+            });
+            visual.simulate_keystrokes(key);
+            pump(&editor, &mut visual);
+            assert_eq!(
+                region(&visual),
+                Some((1, 48_000, enabled)),
+                "saved range: {key}"
+            );
+            editor.read_with(&visual, |v, _| {
+                assert!(
+                    v.selected_track.is_none() && v.selected_clip.is_none(),
+                    "saved unselected context survives loop ACK: {key}"
+                );
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn loop_selection_keys_set_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_history(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    for (first, second, start, end) in [
-        (audio, None, 0, 48_000),
-        (midi, None, 72_000, 120_000),
-        (audio, Some(midi), 0, 120_000),
+    for (key, first, second, start, end) in [
+        ("l", audio, None, 0, 48_000),
+        ("w", midi, None, 72_000, 120_000),
+        ("w", audio, Some(midi), 0, 120_000),
     ] {
         click(&mut visual, first, false);
         if let Some(second) = second {
@@ -151,11 +330,11 @@ fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_his
                 v.selected_clip_ids(),
             )
         });
-        visual.simulate_keystrokes("l");
+        visual.simulate_keystrokes(key);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
-            let region = p.loop_region().expect("L creates selected loop");
+            let region = p.loop_region().expect("shortcut creates selected loop");
             assert_eq!(
                 (region.start(), region.end(), region.enabled()),
                 (start, end, true)
@@ -174,18 +353,8 @@ fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_his
             );
             snapshot
         });
-        visual.simulate_keystrokes("l");
-        pump(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| {
-            assert_eq!(
-                v.state.as_ref().unwrap().project.snapshot(),
-                after,
-                "reassert, never toggle"
-            )
-        });
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
-        // A redundant canonical edit is a no-op in history.
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
         });
@@ -255,32 +424,42 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
 }
 
 #[gpui::test]
-fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppContext) {
+fn w_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppContext) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    // No selection must not create a loop or toggle an existing one.
-    visual.simulate_keystrokes("l");
+    // No selection and no remembered range must not invent a loop.
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.state.as_ref().unwrap().project.loop_region().is_none())
     });
     click(&mut visual, audio, false);
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
     // Browser search owns its input and enclosing browser key context.
     visual
         .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
     });
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.simulate_keystrokes("cmd-shift-l");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(v.changelog.is_open()));
+    visual.simulate_keystrokes("w");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    visual.simulate_keystrokes("escape");
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -290,7 +469,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     visual.simulate_mouse_down(value.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(value.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -314,7 +493,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     visual.simulate_keystrokes("cmd-r");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -329,20 +508,20 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
         })
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.state.as_ref().unwrap().revision,
             revision,
-            "L remains a note"
+            "W remains a note"
         )
     });
     editor.update(&mut visual, |v, _| {
         v.computer_keyboard.enabled = false;
         v.worker_requests_pending = 1;
     });
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
     });
@@ -351,11 +530,17 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
         v.selected_clip = None;
         v.time_selection = None;
     });
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+        assert_eq!(v.state.as_ref().unwrap().revision, revision + 1);
+        let region = v.state.as_ref().unwrap().project.loop_region().unwrap();
+        assert_eq!(
+            (region.start(), region.end(), region.enabled()),
+            (0, 48_000, false)
+        );
     });
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
     editor.update(&mut visual, |v, _| {
         let mut history =
             hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 4)
@@ -365,7 +550,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
         };
         v.selected_clip = Some(stale);
     });
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision);
@@ -377,11 +562,11 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
         cx.notify();
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
-            !v.state
+            v.state
                 .as_ref()
                 .unwrap()
                 .project
@@ -476,15 +661,13 @@ fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
             assert_eq!(v.selected_clip_ids(), selection);
             p.snapshot()
         });
-        visual.simulate_keystrokes("cmd-l");
-        pump(&editor, &mut visual);
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot(),
                 before,
-                "reasserted Command-L adds no Undo"
+                "Command-L selection is one history edit"
             )
         });
         visual.simulate_keystrokes("cmd-shift-z");
@@ -542,7 +725,10 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
-            assert_eq!((r.start(), r.end(), r.enabled()), (12_000, 36_000, true));
+            assert_eq!(
+                (r.start(), r.end(), r.enabled()),
+                (12_000, 36_000, !project_scope)
+            );
             assert_eq!(v.time_selection.unwrap().anchor_frame, 36_000);
             assert_eq!(v.time_selection_project_scope, project_scope);
         });
@@ -594,10 +780,13 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.state.as_ref().unwrap().revision,
-            revision,
-            "empty selection no-op"
-        )
+            revision + 1,
+            "empty selection toggles the remembered loop"
+        );
+        let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
+        assert_eq!((r.start(), r.end(), r.enabled()), (12_000, 36_000, true));
     });
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
     click(&mut visual, audio, false);
     editor.update(&mut visual, |v, _| {
         v.worker_requests_pending = 1;
@@ -1079,4 +1268,249 @@ fn loop_review_ruler_scrub_keeps_held_and_released_targets_until_refusal(cx: &mu
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
         });
     }
+}
+
+// Section focus follows the terminal of a real input-driven loop request.
+fn section_loop_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    Entity<EditorView>,
+    VisualTestContext,
+    Vec<hex_project::SectionId>,
+    Arc<super::test_environment::Environment>,
+) {
+    let (handle, editor, _, _, files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    for (start, end) in [(1, 2), (4, 5), (6, 7)] {
+        editor.update(&mut visual, |v, _| {
+            let revision = v.state.as_ref().unwrap().revision;
+            assert!(v.enqueue(Request::EditArrangementSection {
+                project_generation: v.project_generation,
+                revision,
+                command: Command::AddArrangementSection {
+                    name: format!("section {start}"),
+                    color: hex_project::ElementColor::Cyan,
+                    start: BeatTime::from_quarters(start).unwrap(),
+                    end: BeatTime::from_quarters(end).unwrap(),
+                },
+            }));
+        });
+        pump(&editor, &mut visual);
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.section_autoplay = false;
+        v.computer_keyboard.enabled = false;
+        v.viewport = Some(super::viewport::Viewport {
+            start: 0,
+            length: 192_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let ids = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .arrangement_sections()
+            .iter()
+            .map(|s| s.id())
+            .collect()
+    });
+    (editor, visual, ids, files)
+}
+fn choose_loop_section(visual: &mut VisualTestContext, index: usize, additive: bool) {
+    let selector = Box::leak(format!("arrangement-section-header-{index}").into_boxed_str());
+    let at = visual.debug_bounds(selector).unwrap().center();
+    let modifiers = Modifiers {
+        shift: additive,
+        platform: additive,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
+    visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+}
+fn install_loop_terminal(
+    editor: &Entity<EditorView>,
+    visual: &mut VisualTestContext,
+    event: Event,
+) {
+    editor.update(&mut *visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+}
+#[gpui::test]
+fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_toggle(
+    cx: &mut TestAppContext,
+) {
+    let (editor, mut visual, ids, _files) = section_loop_fixture(cx);
+    let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    choose_loop_section(&mut visual, 1, false);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.sections.selected_ids(), &[ids[1]])
+    });
+    visual.simulate_keystrokes("l");
+    let own = editor.update(&mut visual, |v, _| next(&v.service));
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                !v.arrangement_focus.enabled,
+                "no optimistic focus before ACK"
+            )
+        });
+    }
+    install_loop_terminal(&editor, &mut visual, own);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.arrangement_focus.enabled);
+        assert_eq!(&*v.arrangement_focus_ranges(), &[(96_000, 120_000)]);
+    });
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            !v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .loop_region()
+                .unwrap()
+                .enabled()
+        );
+        assert!(v.arrangement_focus.enabled);
+    });
+    choose_loop_section(&mut visual, 2, false);
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(&*v.arrangement_focus_ranges(), &[(144_000, 168_000)]);
+        assert!(v.arrangement_focus.enabled);
+    });
+    visual.simulate_keystrokes("q");
+    editor.read_with(&visual, |v, _| assert!(!v.arrangement_focus.enabled));
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            !v.arrangement_focus.enabled,
+            "same-range toggle does not re-arm focus"
+        )
+    });
+    choose_loop_section(&mut visual, 0, false);
+    choose_loop_section(&mut visual, 2, true);
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.arrangement_focus.enabled);
+        assert_eq!(
+            &*v.arrangement_focus_ranges(),
+            &[(24_000, 48_000), (144_000, 168_000)]
+        );
+        let project = &v.state.as_ref().unwrap().project;
+        let region = project.loop_region().unwrap();
+        assert_eq!(
+            (region.start(), region.end(), region.enabled()),
+            (24_000, 168_000, true)
+        );
+        assert!(
+            !v.arrangement_track_visible(project.tracks()[1].id()),
+            "MIDI in the gap stays excluded"
+        );
+        assert_eq!(v.sections.selected_ids(), &[ids[0], ids[2]]);
+        assert_eq!(project.tracks(), original.tracks());
+        assert_eq!(
+            project.arrangement_sections(),
+            original.arrangement_sections()
+        );
+    });
+}
+#[gpui::test]
+fn section_loop_focus_ignores_changed_selection_and_refused_or_replaced_terminals(
+    cx: &mut TestAppContext,
+) {
+    for case in ["selection", "refusal", "replacement"] {
+        let cx = &mut cx.new_app();
+        let (editor, mut visual, _ids, _files) = section_loop_fixture(cx);
+        choose_loop_section(&mut visual, 1, false);
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+        visual.simulate_keystrokes("l");
+        let mut own = editor.update(&mut visual, |v, _| next(&v.service));
+        match case {
+            "selection" => {
+                let track = editor.read_with(&visual, |v, _| {
+                    v.state.as_ref().unwrap().project.tracks()[0].id()
+                });
+                // A later selection intent supersedes the admitted loop's view intent.
+                visual.update(|window, cx| {
+                    editor.update(cx, |v, cx| {
+                        v.select_track(track, window);
+                        cx.notify();
+                    })
+                });
+                visual.run_until_parked();
+                editor.read_with(&visual, |v, _| assert_eq!(v.selected_track, Some(track)));
+            }
+            // Protocol-negative injection at the receiving boundary; the positive
+            // case above uses the genuine Service response unchanged.
+            "refusal" => {
+                own.error = Some("refused test loop".into());
+                own.state = before;
+                own.playback = None;
+            }
+            "replacement" => {
+                own.project_replaced = true;
+            }
+            _ => unreachable!(),
+        }
+        install_loop_terminal(&editor, &mut visual, own);
+        editor.read_with(&visual, |v, _| {
+            assert!(!v.arrangement_focus.enabled, "{case}")
+        });
+    }
+}
+
+#[gpui::test]
+fn section_loop_focus_respects_held_foreground_automation_input(cx: &mut TestAppContext) {
+    let (editor, mut visual, ids, _files) = section_loop_fixture(cx);
+    choose_loop_section(&mut visual, 1, false);
+    visual.simulate_keystrokes("a");
+    visual.run_until_parked();
+    let track = editor.read_with(&visual, |v, _| {
+        assert!(v.automation_view.enabled);
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let selector =
+        Box::leak(format!("arrangement-automation-plot-{}", track.value()).into_boxed_str());
+    let plot = visual.debug_bounds(selector).unwrap();
+    let down = gpui::point(
+        plot.left() + plot.size.width * 0.25,
+        plot.top() + plot.size.height * 0.4,
+    );
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(v.gain_lane.pointer_is_active());
+        assert_eq!(v.sections.selected_ids(), &[ids[1]]);
+    });
+    visual.simulate_keystrokes("l cmd-l");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.worker_requests_pending, 0,
+            "held curve cannot submit a section loop/focus"
+        );
+        assert!(v.last_enqueued_edit.is_none());
+        assert!(!v.arrangement_focus.enabled);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
 }

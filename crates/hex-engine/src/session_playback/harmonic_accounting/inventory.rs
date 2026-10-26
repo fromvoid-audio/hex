@@ -96,6 +96,8 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         .unwrap();
     let mut snapshot = editor.project().snapshot();
     let template = snapshot.tracks.remove(0);
+    // Synthetic inventory below assigns every source/device identity afresh.
+    snapshot.native_sources.clear();
     let utility =
         crate::default_native_device_state(DeviceTypeId::from_static("hex.utility")).unwrap();
     let stateful = effect(shape.effect);
@@ -129,6 +131,11 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
             track.content = hex_project::TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
+                    content_view: None,
+                    active: true,
+                    playback_offset_raw: 0,
+                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                    volume: hex_project::MidiClipVolume::default(),
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: next,
@@ -190,7 +197,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
             });
     }
     snapshot.next_id = next;
-    let project = Project::from_snapshot(snapshot).unwrap();
+    let project = Project::from_legacy_snapshot(snapshot).unwrap();
     Arc::new(
         PreparedRevision::prepare(
             &project,

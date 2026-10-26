@@ -59,6 +59,8 @@ pub fn project_with_operators(
             });
         }
         track_snapshots.push(TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -78,6 +80,11 @@ pub fn project_with_operators(
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
+                active: true,
+                playback_offset_raw: 0,
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
@@ -94,7 +101,9 @@ pub fn project_with_operators(
         });
     }
 
-    let project = Project::from_snapshot(Snapshot {
+    let project = Project::from_legacy_snapshot(Snapshot {
+        native_sources: Vec::new(),
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),

@@ -1,8 +1,22 @@
-//! Validated stereo DSP primitives and the registered native processor seam.
+//! # Purpose
+//! Own validated native processor/instrument registries, borrowed resource contracts and bounded
+//! runtime-history transactions and explicit borrowed foreign processing.
+//!
+//! # Dependencies
+//! Uses hex-lattice-contract, hex-dsp and hex-tuning; providers supply original DSP through
+//! explicit preparation capabilities.
+//!
+//! # Does not own
+//! Does not own canonical edits, device I/O, host source leases or foreign-code containment. A
+//! resource view or declaration never grants host publication or lifetime authority.
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
+mod foreign_processor;
 mod meter;
 mod owned_processor;
+pub use foreign_processor::{
+    ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+};
 mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
@@ -10,7 +24,7 @@ use hex_lattice_contract::{
     NativeDeviceState,
 };
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
-pub use meter::DeviceMeter;
+pub use meter::{DeviceMeter, DynamicsMeter};
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
     PreparedRuntimeDevice, PreparedRuntimeInstance,
@@ -62,6 +76,19 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         })
     }
 
+    /// Control-side selection for one canonical chain/device. Instance-bound
+    /// providers must validate this identity against their already prepared
+    /// configuration and refuse missing instances. The identity alone grants
+    /// no source, endpoint, graph publication or retirement custody.
+    fn prepare_instance_runtime_factory(
+        &self,
+        _identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+    ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        self.prepare_runtime_factory(state, context)
+    }
+
     /// Prepare an optional stateful processor using the active sample rate.
     /// Memoryless definitions keep the default `None` implementation.
     fn prepare_processor(
@@ -74,6 +101,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 }
 
 mod instrument;
+mod instrument_gain;
 mod instrument_pair;
 mod instrument_runtime;
 pub use instrument::{
@@ -81,6 +109,9 @@ pub use instrument::{
     NativeInstrumentDefinition, NativeInstrumentRegistry, PreparedAnalyticNote,
     PreparedNativeInstrument, PreparedSharedAnalyticContext, PreparedSharedAnalyticNote,
     PreparedStorageDeclaration, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+};
+pub use instrument_gain::{
+    INSTRUMENT_GAIN_UNITY, MAX_INSTRUMENT_OCCURRENCE_GAIN, NativeInstrumentOccurrenceGain,
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
@@ -232,6 +263,11 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     fn transient_audition_requested_selection(&self) -> Option<ProcessorAuditionSelection> {
         None
     }
+    /// Drain bounded provider telemetry after the enclosing render commits.
+    /// Must not allocate, block, retain resources or change audible history.
+    fn take_dynamics_meter(&mut self) -> Option<DynamicsMeter> {
+        None
+    }
 }
 
 /// Device-neutral selector for a transient processor audition.
@@ -260,10 +296,16 @@ pub trait NativeProcessorAudition: Send {
 pub const MAX_STATEFUL_PROCESSORS: usize = 256;
 /// Maximum control-declared storage for one effect runtime twin. Mutable
 /// instrument limits are supplied separately by the engine's aggregate policy.
-pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 65_536;
+pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 262_144;
+/// Maximum TOTAL owned transaction storage (both histories and all capacities).
+/// Owned providers synchronize written intervals, unlike full-copy legacy twins.
+/// Sixteen seconds of stereo history at 192 kHz fits below this 64-MiB limit.
+/// Production large providers transfer banks on a retiring-donor handoff.
+pub const MAX_OWNED_PROCESSOR_PAIR_BYTES: usize = 64 * 1024 * 1024;
 /// Aggregate declared bytes in one runtime bank, counting one twin per instance.
-/// The actual paired runtime storage doubles this bound (2 MiB).
-pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 1_048_576;
+/// The actual paired runtime storage doubles this bound (128 MiB). Engine candidate
+/// and retained-owner budgets still account the entire declared allocation.
+pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 64 * 1024 * 1024;
 
 /// Borrowed signal boundary around an entire native effect entry.
 /// Input precedes host input trim; Output follows effect, routing and output trim.
@@ -289,6 +331,28 @@ impl ProcessorChainOwner {
             Self::Track(id) | Self::Return(id) => id != 0,
             Self::Main => true,
         }
+    }
+}
+
+/// Validated canonical effect placement for control-side preparation. Distinct
+/// devices with equal type/state still have distinct preparation identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessorInstanceIdentity {
+    owner: ProcessorChainOwner,
+    device_id: u64,
+}
+impl ProcessorInstanceIdentity {
+    pub fn new(owner: ProcessorChainOwner, device_id: u64) -> Result<Self, DeviceContractError> {
+        if !owner.is_valid() || device_id == 0 {
+            return Err(DeviceContractError::InvalidId);
+        }
+        Ok(Self { owner, device_id })
+    }
+    pub fn owner(self) -> ProcessorChainOwner {
+        self.owner
+    }
+    pub fn device_id(self) -> u64 {
+        self.device_id
     }
 }
 
@@ -370,6 +434,11 @@ struct OffsetClock<'a> {
 }
 
 impl NativeInstrumentClock for OffsetClock<'_> {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        self.clock
+            .tempo_micro_bpm_at_offset(self.offset.checked_add(offset)?)
+    }
+
     fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock
             .arrangement_beat_at_offset(self.offset.checked_add(offset)?)
@@ -468,6 +537,14 @@ impl NativeRuntimeEntryStorage<'_> {
     pub fn is_owned_transaction(&self) -> bool {
         matches!(self.entry.runtime, RuntimeOwnership::Owned(_))
     }
+    /// Borrow only actual scalar foreign facts. This transfers no endpoint or
+    /// source custody and cannot classify another runtime family as foreign.
+    pub fn foreign_processor(&self) -> Option<PreparedForeignProcessor> {
+        match &self.entry.runtime {
+            RuntimeOwnership::Foreign(value) => Some(value.prepared),
+            _ => None,
+        }
+    }
     pub fn primary_payload_bytes(&self) -> Option<usize> {
         self.entry
             .runtime
@@ -479,6 +556,16 @@ impl NativeRuntimeEntryStorage<'_> {
             .runtime
             .legacy()
             .map(|(_, v)| std::mem::size_of_val(v))
+    }
+    /// Read-only typed borrow of both actual legacy runtime owners. This never
+    /// adopts a declaration/provider, clones history, or establishes native
+    /// source custody; closed constructors retain that independent obligation.
+    pub fn runtime_pair<T: NativeProcessorRuntime>(&self) -> Option<(&T, &T)> {
+        let (primary, scratch) = self.entry.runtime.legacy()?;
+        Some((
+            primary.as_any().downcast_ref::<T>()?,
+            scratch.as_any().downcast_ref::<T>()?,
+        ))
     }
     pub fn runtime_types_are<T: NativeProcessorRuntime>(&self) -> bool {
         self.entry
@@ -515,6 +602,19 @@ impl NativeRuntimeEntryStorage<'_> {
 }
 
 impl NativeRuntimeChain {
+    /// Bounded scalar observation of the actual retained foreign entries.
+    /// May be used by their audio owner without allocation or ownership moves;
+    /// it does not permit concurrent access or establish native source custody.
+    pub fn foreign_bindings(
+        &self,
+    ) -> impl Iterator<Item = Option<hex_lattice_contract::ForeignProcessorBinding>> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match &entry.runtime {
+                RuntimeOwnership::Foreign(value) => Some(value.prepared.binding()),
+                _ => None,
+            })
+    }
     /// Control-side inventory or bounded scalar test observation only. This
     /// does not authorize concurrent access to an active runtime.
     pub fn storage_view(&self) -> NativeRuntimeStorage<'_> {
@@ -565,7 +665,12 @@ impl NativeRuntimeChain {
                     let pair = factory
                         .declared_pair_bytes()
                         .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
-                    if factory.runtime_version() == 0 || pair > MAX_PROCESSOR_RUNTIME_BYTES * 2 {
+                    let limit = if factory.is_owned() {
+                        MAX_OWNED_PROCESSOR_PAIR_BYTES
+                    } else {
+                        MAX_PROCESSOR_RUNTIME_BYTES * 2
+                    };
+                    if factory.runtime_version() == 0 || pair > limit {
                         return Err(DeviceContractError::RuntimeBudgetExceeded);
                     }
                     stateful_count = stateful_count
@@ -587,6 +692,17 @@ impl NativeRuntimeChain {
                 } else {
                     (0, OutputTail::Finite { max_tail_frames: 0 }, Some(0))
                 };
+            if matches!(
+                instance.definition,
+                Some(PreparedProcessorFactory::Foreign(_))
+            ) && (instance
+                .configuration
+                .as_ref()
+                .is_none_or(|state| state.as_ref().type_id() != instance.device_type)
+                || !instance.matrix.is_identity())
+            {
+                return Err(DeviceContractError::ForeignProcessingUnavailable);
+            }
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             entries.push(RuntimeEntry {
                 meter: instance.meter,
@@ -638,11 +754,13 @@ impl NativeRuntimeChain {
             .entries
             .get(index)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Ok(if entry.bypassed {
-            Some(0)
-        } else {
-            entry.algorithmic_latency_frames
-        })
+        Ok(
+            if entry.bypassed && !matches!(entry.runtime, RuntimeOwnership::Foreign(_)) {
+                Some(0)
+            } else {
+                entry.algorithmic_latency_frames
+            },
+        )
     }
 
     /// Account the chain's owned control/audio runtime storage, excluding
@@ -846,7 +964,15 @@ impl NativeRuntimeChain {
                     && left.device_type == right.device_type
                     && left.runtime_version == right.runtime_version
                     && left.sample_rate == right.sample_rate
-                    && left.bypassed == right.bypassed
+                    && left.runtime.foreign_configuration_matches(&right.runtime)
+                    // Foreign bypass is the host's aligned wet/dry selection:
+                    // the same source still processes, at the same latency.
+                    // This compares graph views only. The host must separately
+                    // retain/admit the actual endpoint and its dry history.
+                    && (left.bypassed == right.bypassed
+                        || matches!((&left.runtime, &right.runtime),
+                            (RuntimeOwnership::Foreign(left), RuntimeOwnership::Foreign(right))
+                                if left.prepared == right.prepared))
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
                         (Some(left), Some(right)) => {
@@ -882,6 +1008,9 @@ impl NativeRuntimeChain {
                     && candidate.device_type == old.device_type
                     && candidate.runtime_version == old.runtime_version
                     && candidate.sample_rate == old.sample_rate
+                    && candidate
+                        .runtime
+                        .foreign_configuration_matches(&old.runtime)
                     && candidate.bypassed == old.bypassed
                     && candidate.matrix == old.matrix;
                 if !stable_processing_identity {
@@ -924,6 +1053,18 @@ impl NativeRuntimeChain {
         })?;
         Some(OutputTail::Finite {
             max_tail_frames: finite_frames,
+        })
+    }
+
+    /// A foreign endpoint without a finite source/host drain bound cannot be
+    /// admitted into a finite retained-tail transition. Invalid ranges refuse
+    /// conservatively. Built-in unbounded runtimes retain their existing policy.
+    pub fn range_has_unbounded_foreign_tail(&self, range: std::ops::Range<usize>) -> bool {
+        self.entries.get(range).is_none_or(|entries| {
+            entries.iter().any(|entry| {
+                matches!(&entry.runtime, RuntimeOwnership::Foreign(value)
+                if value.prepared.output_tail() == OutputTail::Unbounded)
+            })
         })
     }
 
@@ -988,6 +1129,29 @@ impl NativeRuntimeChain {
         previous: &Self,
         excluded_old_range: std::ops::Range<usize>,
     ) -> bool {
+        self.can_inherit_preflight(previous, excluded_old_range, false)
+    }
+
+    /// Preflight a completed foreign suffix without retaining its old endpoint.
+    /// The range is only a hint: each excluded entry must be an actual foreign
+    /// runtime whose committed provider observation is quiescent. Speculative
+    /// silence, owned DSP and incompatible nonforeign histories remain subject
+    /// to the ordinary inheritance checks. This grants no host resource return
+    /// or native source/admission authority.
+    pub fn can_inherit_with_completed_foreign_range(
+        &self,
+        previous: &Self,
+        completed_old_range: std::ops::Range<usize>,
+    ) -> bool {
+        self.can_inherit_preflight(previous, completed_old_range, true)
+    }
+
+    fn can_inherit_preflight(
+        &self,
+        previous: &Self,
+        excluded_old_range: std::ops::Range<usize>,
+        completed_foreign_only: bool,
+    ) -> bool {
         if excluded_old_range.start > excluded_old_range.end
             || excluded_old_range.end > previous.entries.len()
         {
@@ -1002,7 +1166,11 @@ impl NativeRuntimeChain {
             }) else {
                 return true;
             };
-            excluded_old_range.contains(&index) || entry.runtime.can_inherit_from(&old.runtime)
+            (excluded_old_range.contains(&index)
+                && (!completed_foreign_only
+                    || (matches!(&old.runtime, RuntimeOwnership::Foreign(_))
+                        && old.runtime.committed_is_quiescent())))
+                || entry.runtime.can_inherit_from(&old.runtime)
         })
     }
     fn same_runtime_identity(a: &RuntimeEntry, b: &RuntimeEntry) -> bool {
@@ -1051,6 +1219,51 @@ impl NativeRuntimeChain {
         }
     }
 
+    /// Commit-phase history transfer from an exclusively borrowed retiring
+    /// chain, after the same identity/history preflight as ordinary inheritance.
+    /// Owned providers may exchange their preallocated banks in constant time;
+    /// legacy and foreign entries retain their existing copy laws. Neither
+    /// chain nor any resource is destroyed; the host still retires the donor.
+    pub fn transfer_history_from(&mut self, previous: &mut Self) {
+        self.transfer_history_excluding_unchecked(previous, 0..0);
+    }
+
+    /// Transfer only histories not retained by the donor's old output suffix.
+    pub fn transfer_history_excluding_old_range(
+        &mut self,
+        previous: &mut Self,
+        excluded: std::ops::Range<usize>,
+    ) -> Result<(), DeviceContractError> {
+        if excluded.start > excluded.end || excluded.end > previous.entries.len() {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        self.transfer_history_excluding_unchecked(previous, excluded);
+        Ok(())
+    }
+    fn transfer_history_excluding_unchecked(
+        &mut self,
+        previous: &mut Self,
+        excluded: std::ops::Range<usize>,
+    ) {
+        for entry in &mut self.entries {
+            if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
+                Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
+            }) && !excluded.contains(&index)
+            {
+                entry.runtime.transfer_history_from(&mut old.runtime);
+            }
+        }
+    }
+
+    /// Enter a residual-output owner after complete admission preflight. Owned
+    /// sustain/freeze providers can release their held input-independent cycle;
+    /// history and all storage stay with this chain until control retirement.
+    pub fn begin_output_tail(&mut self) {
+        for entry in &mut self.entries {
+            entry.runtime.begin_output_tail();
+        }
+    }
+
     /// Start a transactional block by copying committed histories into twins.
     pub fn begin_block(&mut self) {
         for entry in &mut self.entries {
@@ -1059,8 +1272,8 @@ impl NativeRuntimeChain {
     }
 
     /// Process the summed track signal through all registered stateful entries.
-    pub fn process_block(&mut self, frames: &mut [StereoFrame]) {
-        Self::process_entries(&mut self.entries, frames, None);
+    pub fn process_block(&mut self, frames: &mut [StereoFrame]) -> Result<(), DeviceContractError> {
+        Self::process_entries(&mut self.entries, frames, None)
     }
 
     /// Process the full chain while observing each entry's output in order.
@@ -1072,8 +1285,8 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         frame_offset: usize,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
-    ) {
-        Self::process_entries_observed(&mut self.entries, frames, frame_offset, None, observer);
+    ) -> Result<(), DeviceContractError> {
+        Self::process_entries_observed(&mut self.entries, frames, frame_offset, None, observer)
     }
 
     /// Process a control-prevalidated effect segment without ending the
@@ -1100,7 +1313,7 @@ impl NativeRuntimeChain {
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries(entries, frames, clock);
+        Self::process_entries(entries, frames, clock)?;
         Ok(())
     }
 
@@ -1131,7 +1344,7 @@ impl NativeRuntimeChain {
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries_observed(entries, frames, frame_offset, clock, observer);
+        Self::process_entries_observed(entries, frames, frame_offset, clock, observer)?;
         Ok(())
     }
 
@@ -1149,8 +1362,8 @@ impl NativeRuntimeChain {
             usize,
             &[StereoFrame],
         ),
-    ) {
-        Self::process_entries_tapped(&mut self.entries, frames, frame_offset, None, observer);
+    ) -> Result<(), DeviceContractError> {
+        Self::process_entries_tapped(&mut self.entries, frames, frame_offset, None, observer)
     }
 
     /// Process a prepared range with input/output taps and no content clock.
@@ -1192,8 +1405,79 @@ impl NativeRuntimeChain {
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries_tapped(entries, frames, frame_offset, clock, observer);
+        Self::process_entries_tapped(entries, frames, frame_offset, clock, observer)?;
         Ok(())
+    }
+
+    /// Process a segment without observation through the same borrowed path.
+    pub fn process_range_with_foreign(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
+    ) -> Result<(), DeviceContractError> {
+        self.process_range_tapped_with_foreign(
+            range,
+            frames,
+            frame_offset,
+            clock,
+            foreign,
+            &mut |_, _, _, _, _, _| {},
+        )
+    }
+
+    /// Stage a graph segment through the host's actual borrowed endpoints.
+    /// Successful processing still grants no dispatch: final host-format
+    /// acceptance remains exclusively with the audio owner. On error all
+    /// foreign work for this callback is revoked; owned DSP can then roll back.
+    pub fn process_range_tapped_with_foreign(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        let result = (|| {
+            let entries = self
+                .entries
+                .get_mut(range)
+                .ok_or(DeviceContractError::InvalidDescriptor)?;
+            for entry in entries {
+                observer(
+                    entry.owner,
+                    entry.device_id,
+                    entry.device_type,
+                    NodeSignalPhase::Input,
+                    frame_offset,
+                    frames,
+                );
+                Self::process_entry_with_foreign(entry, frames, frame_offset, clock, foreign)?;
+                observer(
+                    entry.owner,
+                    entry.device_id,
+                    entry.device_type,
+                    NodeSignalPhase::Output,
+                    frame_offset,
+                    frames,
+                );
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            foreign.reject_callback();
+        }
+        result
     }
 
     fn process_entries_tapped(
@@ -1209,7 +1493,7 @@ impl NativeRuntimeChain {
             usize,
             &[StereoFrame],
         ),
-    ) {
+    ) -> Result<(), DeviceContractError> {
         for entry in entries {
             observer(
                 entry.owner,
@@ -1219,7 +1503,7 @@ impl NativeRuntimeChain {
                 frame_offset,
                 frames,
             );
-            Self::process_entry(entry, frames, clock);
+            Self::process_entry(entry, frames, clock)?;
             observer(
                 entry.owner,
                 entry.device_id,
@@ -1229,16 +1513,18 @@ impl NativeRuntimeChain {
                 frames,
             );
         }
+        Ok(())
     }
 
     fn process_entries(
         entries: &mut [RuntimeEntry],
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
-    ) {
+    ) -> Result<(), DeviceContractError> {
         for entry in entries {
-            Self::process_entry(entry, frames, clock);
+            Self::process_entry(entry, frames, clock)?;
         }
+        Ok(())
     }
 
     fn process_entries_observed(
@@ -1247,9 +1533,9 @@ impl NativeRuntimeChain {
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
-    ) {
+    ) -> Result<(), DeviceContractError> {
         for entry in entries {
-            Self::process_entry(entry, frames, clock);
+            Self::process_entry(entry, frames, clock)?;
             observer(
                 entry.owner,
                 entry.device_id,
@@ -1258,26 +1544,66 @@ impl NativeRuntimeChain {
                 frames,
             );
         }
+        Ok(())
     }
 
     fn process_entry(
         entry: &mut RuntimeEntry,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
-    ) {
-        if !entry.bypassed && entry.input_gain != 1.0 {
+    ) -> Result<(), DeviceContractError> {
+        Self::process_entry_with_foreign(entry, frames, 0, clock, &mut RefuseForeign)
+    }
+
+    fn process_entry_with_foreign(
+        entry: &mut RuntimeEntry,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
+    ) -> Result<(), DeviceContractError> {
+        let is_foreign = matches!(entry.runtime, RuntimeOwnership::Foreign(_));
+        if !entry.bypassed && !is_foreign && entry.input_gain != 1.0 {
             for frame in frames.iter_mut() {
                 frame[0] *= entry.input_gain;
                 frame[1] *= entry.input_gain;
             }
         }
         if entry.metering {
-            entry.meter.observe_input(frames);
+            if is_foreign {
+                entry
+                    .meter
+                    .observe_input_with_gain(frames, entry.input_gain);
+            } else {
+                entry.meter.observe_input(frames);
+            }
         }
-        if entry.bypassed {
+        if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
+            let configuration = entry
+                .configuration
+                .as_deref()
+                .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
+            let node = ForeignProcessorNode {
+                owner: entry.owner,
+                device_id: entry.device_id,
+                device_type: entry.device_type,
+                sample_rate: entry.sample_rate,
+                configuration,
+                prepared: runtime.prepared,
+                bypassed: entry.bypassed,
+                input_gain: entry.input_gain,
+            };
+            // A failed stage supplies no new observation. Invalidate scratch
+            // first so an earlier quiet state cannot mask renewed input.
+            runtime.scratch_drained = false;
+            foreign.process_segment(node, frame_offset, frames, clock)?;
+            runtime.scratch_drained =
+                matches!(runtime.prepared.output_tail(), OutputTail::Finite { .. })
+                    && foreign.committed_tail_is_drained(node);
+        } else if entry.bypassed {
             if entry.runtime.is_stateful() {
                 if entry.matrix.is_identity() {
-                    entry.runtime.process_bypassed_with_clock(frames, clock);
+                    entry.runtime.process_bypassed_with_clock(frames, clock)?;
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
                         let audible = *frame;
@@ -1293,14 +1619,14 @@ impl NativeRuntimeChain {
                             shifted
                                 .as_ref()
                                 .map(|clock| clock as &dyn NativeInstrumentClock),
-                        );
+                        )?;
                         *frame = audible;
                     }
                 }
             }
         } else {
             entry.matrix.apply_block(frames);
-            entry.runtime.process_with_clock(frames, clock);
+            entry.runtime.process_with_clock(frames, clock)?;
         }
         if !entry.bypassed && entry.output_gain != 1.0 {
             for frame in frames.iter_mut() {
@@ -1311,12 +1637,17 @@ impl NativeRuntimeChain {
         if entry.metering {
             entry.meter.observe_output(frames);
         }
+        Ok(())
     }
 
     /// Commit histories after all render chunks and source reads succeeded.
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
             entry.runtime.commit();
+            let reading = entry.runtime.take_dynamics_meter();
+            if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
+                entry.meter.observe_dynamics(reading);
+            }
         }
     }
     /// Restore every speculative effect after a later host render stage refuses.
@@ -1518,6 +1849,25 @@ impl<'a> NativeDeviceRegistry<'a> {
         state: &NativeDeviceState,
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        self.prepare_runtime_device_for(None, state, context)
+    }
+    /// Prepare an actual canonical instance; codec and resource validation are
+    /// identical to class-only preparation. Instance-bound factories can
+    /// select their exact control-prepared facts without a type/state cache.
+    pub fn prepare_runtime_instance(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+    ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        self.prepare_runtime_device_for(Some(identity), state, context)
+    }
+    fn prepare_runtime_device_for(
+        &self,
+        identity: Option<ProcessorInstanceIdentity>,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+    ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
         state.require_asset_free_processing()?;
         context.validate_for(state)?;
         let definition = self
@@ -1531,7 +1881,12 @@ impl<'a> NativeDeviceRegistry<'a> {
         )?;
         Ok(PreparedRuntimeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
-            processor: definition.prepare_runtime_factory(&current, context)?,
+            processor: match identity {
+                Some(identity) => {
+                    definition.prepare_instance_runtime_factory(identity, &current, context)?
+                }
+                None => definition.prepare_runtime_factory(&current, context)?,
+            },
         })
     }
     fn validate_current(
@@ -1564,6 +1919,155 @@ mod compensation_tests;
 mod tests {
     use super::*;
     use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
+
+    const DYNAMICS_METER_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.dynamics-meter");
+
+    struct DynamicsMeterPrepared;
+    struct DynamicsMeterRuntime {
+        pending: DynamicsMeter,
+    }
+
+    impl PreparedNativeProcessor for DynamicsMeterPrepared {
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<DynamicsMeterRuntime>()
+        }
+
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            Box::new(DynamicsMeterRuntime {
+                pending: DynamicsMeter::default(),
+            })
+        }
+    }
+
+    impl NativeProcessorRuntime for DynamicsMeterRuntime {
+        fn process_block(
+            &mut self,
+            frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+            self.pending = DynamicsMeter {
+                reduction_db: [
+                    frames
+                        .iter()
+                        .map(|frame| frame[0].abs())
+                        .fold(0.0, f32::max),
+                    frames
+                        .iter()
+                        .map(|frame| frame[1].abs())
+                        .fold(0.0, f32::max),
+                ],
+                clipped: frames.iter().any(|frame| frame[0].abs() > 1.0),
+            };
+        }
+
+        fn reset(&mut self) {
+            self.pending = DynamicsMeter::default();
+        }
+
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+
+        fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+            if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+                self.pending = previous.pending;
+            }
+        }
+
+        fn as_any(&self) -> &dyn StdAny {
+            self
+        }
+
+        fn take_dynamics_meter(&mut self) -> Option<DynamicsMeter> {
+            Some(std::mem::take(&mut self.pending))
+        }
+    }
+
+    fn dynamics_meter_chain(bypassed: bool) -> NativeRuntimeChain {
+        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(3),
+            device_id: 9,
+            device_type: DYNAMICS_METER_TYPE,
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 48_000,
+            configuration: None,
+            definition: Some(std::sync::Arc::new(DynamicsMeterPrepared)),
+        }])
+        .expect("prepared dynamics meter runtime")
+    }
+
+    #[test]
+    fn dynamics_meter_publishes_only_the_committed_active_runtime_reading() {
+        let mut chain = dynamics_meter_chain(false);
+        chain.set_metering(true);
+
+        chain.begin_block();
+        let mut speculative = [[2.5, 4.0]];
+        chain.process_block(&mut speculative).unwrap();
+        chain.rollback_block();
+        assert_eq!(
+            chain.entries[0].meter.take_dynamics(),
+            DynamicsMeter::default()
+        );
+        // Existing I/O meters accumulate one maximum across both channels for
+        // each side, independently of committed provider dynamics readings.
+        assert_eq!(chain.entries[0].meter.take_peaks(), [4.0, 4.0]);
+
+        chain.begin_block();
+        let mut committed = [[0.25, 0.75]];
+        chain.process_block(&mut committed).unwrap();
+        chain.commit_block();
+
+        assert_eq!(
+            chain.entries[0].meter.take_dynamics(),
+            DynamicsMeter {
+                reduction_db: [0.25, 0.75],
+                clipped: false,
+            }
+        );
+        assert_eq!(chain.entries[0].meter.take_peaks(), [0.75, 0.75]);
+    }
+
+    #[test]
+    fn dynamics_meter_drains_readings_while_metering_is_disabled_or_device_bypassed() {
+        let mut disabled = dynamics_meter_chain(false);
+        disabled.begin_block();
+        let mut frames = [[2.0, 3.0]];
+        disabled.process_block(&mut frames).unwrap();
+        disabled.commit_block();
+        assert_eq!(
+            disabled.entries[0].meter.take_dynamics(),
+            DynamicsMeter::default()
+        );
+
+        disabled.set_metering(true);
+        disabled.begin_block();
+        let mut quiet = [[0.0, 0.0]];
+        disabled.process_block(&mut quiet).unwrap();
+        disabled.commit_block();
+        assert_eq!(
+            disabled.entries[0].meter.take_dynamics(),
+            DynamicsMeter::default()
+        );
+
+        let mut bypassed = dynamics_meter_chain(true);
+        bypassed.set_metering(true);
+        bypassed.begin_block();
+        let mut bypassed_frames = [[2.0, 3.0]];
+        bypassed.process_block(&mut bypassed_frames).unwrap();
+        bypassed.commit_block();
+        assert_eq!(
+            bypassed.entries[0].meter.take_dynamics(),
+            DynamicsMeter::default()
+        );
+        assert_eq!(bypassed.entries[0].meter.take_peaks(), [3.0, 3.0]);
+    }
 
     const SNAPSHOT_PATCH_PARAMETER: ParameterId = ParameterId::from_static(1);
     const SNAPSHOT_PATCH_DESCRIPTORS: &[ParameterDescriptor] = &[ParameterDescriptor {
@@ -2451,16 +2955,16 @@ mod tests {
         .unwrap();
         let mut committed = [[1.0, 1.0]];
         chain.begin_block();
-        chain.process_block(&mut committed);
+        chain.process_block(&mut committed).unwrap();
         chain.commit_block();
 
         chain.begin_block();
         let mut failed_block = [[2.0, 2.0]];
-        chain.process_block(&mut failed_block);
+        chain.process_block(&mut failed_block).unwrap();
         // No commit models a source/render failure after this processor ran.
         chain.begin_block();
         let mut retry = [[2.0, 2.0]];
-        chain.process_block(&mut retry);
+        chain.process_block(&mut retry).unwrap();
         chain.commit_block();
         assert_eq!(retry, [[3.0, 3.0]]);
 
@@ -2493,7 +2997,7 @@ mod tests {
         successor.inherit_from(&chain);
         successor.begin_block();
         let mut inherited = [[1.0, 1.0]];
-        successor.process_block(&mut inherited);
+        successor.process_block(&mut inherited).unwrap();
         assert_eq!(inherited, [[4.0, 4.0]]);
 
         let prepared = registry
@@ -2525,7 +3029,7 @@ mod tests {
         incompatible_rate.inherit_from(&chain);
         incompatible_rate.begin_block();
         let mut reset_history = [[1.0, 1.0]];
-        incompatible_rate.process_block(&mut reset_history);
+        incompatible_rate.process_block(&mut reset_history).unwrap();
         assert_eq!(reset_history, [[1.0, 1.0]]);
     }
 
@@ -2561,7 +3065,7 @@ mod tests {
         let mut previous = NativeRuntimeChain::new(vec![instance(9), instance(10)]).unwrap();
         previous.begin_block();
         let mut old_signal = [[1.0, 1.0]];
-        previous.process_block(&mut old_signal);
+        previous.process_block(&mut old_signal).unwrap();
         previous.commit_block();
         assert_eq!(old_signal, [[1.0, 1.0]]);
 
@@ -2575,7 +3079,7 @@ mod tests {
             .unwrap();
         candidate.begin_block();
         let mut fresh_audio = [[0.0, 0.0]];
-        candidate.process_block(&mut fresh_audio);
+        candidate.process_block(&mut fresh_audio).unwrap();
         // The new suffix starts fresh (device 10 contributes zero); device 9
         // retains its prefix history and contributes one.
         assert_eq!(fresh_audio, [[1.0, 1.0]]);
@@ -2731,12 +3235,14 @@ mod tests {
         bypassed.begin_block();
         // Different chunking must not change the state advanced while bypassed.
         bypassed.process_range(0..1, &mut dry[..1]).unwrap();
-        bypassed.process_block(&mut dry[1..]);
+        bypassed.process_block(&mut dry[1..]).unwrap();
         bypassed.commit_block();
 
         active_reference.begin_block();
         let mut audible_reference = warmup;
-        active_reference.process_block(&mut audible_reference);
+        active_reference
+            .process_block(&mut audible_reference)
+            .unwrap();
         active_reference.commit_block();
 
         for (actual, original) in dry.iter().zip(warmup) {
@@ -2757,10 +3263,12 @@ mod tests {
         bypassed
             .process_range(0..1, &mut resumed_bypassed[..1])
             .unwrap();
-        bypassed.process_block(&mut resumed_bypassed[1..]);
+        bypassed.process_block(&mut resumed_bypassed[1..]).unwrap();
         bypassed.commit_block();
         active_reference.begin_block();
-        active_reference.process_block(&mut resumed_reference);
+        active_reference
+            .process_block(&mut resumed_reference)
+            .unwrap();
         active_reference.commit_block();
 
         assert_eq!(resumed_bypassed, resumed_reference);

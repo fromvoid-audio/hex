@@ -146,7 +146,7 @@ fn names_preserve_case_history_copies_and_storage_in_all_clip_domains() {
 }
 
 #[test]
-fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
+fn current_format_requires_exact_valid_arrangement_name_inventory() {
     let (mut editor, track, audio, _) = fixture();
     // This legacy document predates authored track colors.
     editor
@@ -191,19 +191,6 @@ fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
         doc["clip_names"] = bad;
         assert!(decode(&serde_json::to_vec(&doc).unwrap()).is_err());
     }
-    let mut legacy = value.clone();
-    legacy["version"] = 25.into();
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("tuning");
-    legacy.as_object_mut().unwrap().remove("device_assets");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-    let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-    assert_eq!(migrated.clip_name(audio), Some("clip"));
-    assert_eq!(migrated.snapshot(), editor.project().snapshot());
     let mut missing = value;
     missing.as_object_mut().unwrap().remove("clip_names");
     assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());

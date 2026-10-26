@@ -161,6 +161,37 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
                 state.audio_authoring_revision(source.context()),
                 Some(state.revision)
             );
+            let current = hex_engine::AudioSourceContext {
+                editor_revision: state.revision,
+                ..source.context()
+            };
+            assert_eq!(
+                state.audio_authoring_revision(current),
+                Some(state.revision)
+            );
+            assert_eq!(
+                state.audio_authoring_revision(hex_engine::AudioSourceContext {
+                    project_generation: current.project_generation + 1,
+                    ..current
+                }),
+                None
+            );
+            assert_eq!(
+                state.audio_authoring_revision(hex_engine::AudioSourceContext {
+                    editor_revision: source.context().editor_revision - 1,
+                    ..current
+                }),
+                None
+            );
+            for intermediate in source.context().editor_revision + 1..state.revision {
+                assert_eq!(
+                    state.audio_authoring_revision(hex_engine::AudioSourceContext {
+                        editor_revision: intermediate,
+                        ..current
+                    }),
+                    None
+                );
+            }
         }
         // An audible edit must break the equivalence and produce a new source.
         let audio = run(

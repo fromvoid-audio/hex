@@ -1,32 +1,39 @@
 //! Loop controls dispatch canonical edits; DSP and validation belong to the engine/model.
 use super::{EditorMode, EditorView};
-use gpui::Window;
+use gpui::{Context, Window};
 use hex_project::Command;
 use hex_session::service::Request;
 
 impl EditorView {
-    /// Existing Command-L action now owns the complete Arrangement selection.
-    pub(super) fn set_loop_from_clip(&mut self, window: &Window) {
+    /// Command-L applies the contextual action to the complete Arrangement selection.
+    pub(super) fn set_loop_from_clip(&mut self, window: &Window, cx: &Context<Self>) {
         if self.mode == EditorMode::Arrangement && self.loop_shortcut_context(window) {
-            self.set_selection_loop();
+            self.apply_selection_loop(cx);
         }
     }
 
-    /// Plain L remains a musical note while typing is enabled, and retains its
+    /// Plain L/W remain musical notes while typing is enabled and retain the
     /// existing Session toggle. Command-L is the explicit modified shortcut.
-    pub(super) fn loop_selection_key(&mut self, window: &Window) {
-        if self.computer_keyboard.enabled || !self.loop_shortcut_context(window) {
+    pub(super) fn loop_selection_key(&mut self, window: &Window, cx: &Context<Self>) {
+        if self.computer_keyboard.enabled || !self.loop_shortcut_clear() {
+            return;
+        }
+        if self.clip_loop_key(window) || !self.focus.is_focused(window) {
             return;
         }
         if self.mode != EditorMode::Arrangement {
             self.toggle_loop();
         } else {
-            self.set_selection_loop();
+            self.apply_selection_loop(cx);
         }
     }
 
     fn loop_shortcut_context(&self, window: &Window) -> bool {
-        self.focus.is_focused(window)
+        self.focus.is_focused(window) && self.loop_shortcut_clear()
+    }
+    fn loop_shortcut_clear(&self) -> bool {
+        !self.sections.naming()
+            && !self.changelog.is_open()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()
             && self.context_menu.is_none()
@@ -36,8 +43,12 @@ impl EditorView {
             && !self.export_dialog_open
     }
 
-    fn set_selection_loop(&mut self) {
+    fn apply_selection_loop(&mut self, cx: &Context<Self>) {
         if self.edit_pending()
+            // A section loop also changes visibility after its ACK. Share Q's
+            // capture/numeric/modal guards before admitting that view intent.
+            || (self.section_loop_bounds().ok().flatten().is_some()
+                && !self.arrangement_view_change_available(cx))
             || self.arrangement_pan.is_some()
             || self.scrub_active()
             || self.time_selection_gesture.is_some()
@@ -50,24 +61,43 @@ impl EditorView {
             || self.active_fade_drag.is_some()
             || self.track_resize_active()
             || self.loop_rail_gesture.is_some()
+            || self.sections.held()
+            || self.section_install_pending()
         {
             self.error = Some("finish the current edit before setting the loop".into());
             return;
         }
+        let existing = self.state.as_ref().and_then(|s| s.project.loop_region());
         match self.selection_loop_bounds() {
-            Ok(Some((start, end))) => {
-                self.enqueue(Request::Edit(Command::SetLoopRegion {
-                    start,
-                    end,
-                    enabled: true,
-                }));
+            Ok(Some((start, end)))
+                if existing.is_some_and(|r| (r.start(), r.end()) == (start, end)) =>
+            {
+                self.toggle_loop();
             }
+            Ok(Some((start, end))) => {
+                if self.section_loop_bounds() == Ok(Some((start, end))) {
+                    match hex_project::LoopRegion::new(start, end, true) {
+                        Ok(region) => self.submit_section_loop_preview(region),
+                        Err(error) => self.error = Some(error.0.into()),
+                    }
+                } else {
+                    self.enqueue(Request::Edit(Command::SetLoopRegion {
+                        start,
+                        end,
+                        enabled: true,
+                    }));
+                }
+            }
+            Ok(None) if existing.is_some() => self.toggle_loop(),
             Ok(None) => {}
             Err(error) => self.error = Some(error.into()),
         }
     }
 
     fn selection_loop_bounds(&self) -> Result<Option<(u64, u64)>, &'static str> {
+        if let Some(bounds) = self.section_loop_bounds()? {
+            return Ok(Some(bounds));
+        }
         // Match range-copy precedence. A stale non-empty rectangle must refuse,
         // rather than silently looping a different whole-clip selection.
         if self

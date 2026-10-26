@@ -143,6 +143,66 @@ fn eq_held_node_position_survives_real_preview_ack_and_repeated_completed_frames
     }
     let end = plot(&mut visual, device, 0.65, 0.67);
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    // Release capture separately from display custody. Advance the real keyed
+    // worker stream, but hold its exact Commit reply across completed frames.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let terminal = loop {
+        let terminal = editor.update(&mut visual, |view, cx| {
+            view.pump_device_gesture();
+            let terminal = if let Ok(event) = view.service.try_event() {
+                if event.gesture_ack.as_ref().is_some_and(|ack| {
+                    ack.phase == hex_session::device_gesture::GesturePhase::Commit
+                }) {
+                    Some(event)
+                } else {
+                    view.receive(event);
+                    None
+                }
+            } else {
+                None
+            };
+            cx.notify();
+            terminal
+        });
+        visual.run_until_parked();
+        graph.read_with(&visual, |graph, _| {
+            assert!(!graph.is_dragging());
+            let actual = graph.node_position(node.value()).unwrap();
+            assert!(
+                (actual[0] - 0.65).abs() < 0.0001 && (actual[1] - 0.67).abs() < 0.0001,
+                "released node reverted before its exact Commit: {actual:?}"
+            );
+        });
+        if let Some(terminal) = terminal {
+            break terminal;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert!(terminal.error.is_none());
+    for _ in 0..4 {
+        editor.update(&mut visual, |view, cx| {
+            assert_eq!(read(view, device), before);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        graph.read_with(&visual, |graph, _| {
+            let actual = graph.node_position(node.value()).unwrap();
+            assert!((actual[0] - 0.65).abs() < 0.0001 && (actual[1] - 0.67).abs() < 0.0001);
+        });
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    for _ in 0..4 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        graph.read_with(&visual, |graph, _| {
+            let actual = graph.node_position(node.value()).unwrap();
+            assert!((actual[0] - 0.65).abs() < 0.0001 && (actual[1] - 0.67).abs() < 0.0001);
+        });
+    }
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device) != before
     });
@@ -202,7 +262,7 @@ fn eq_held_node_space_key_routes_transport_without_retiring_pointer_or_edit(
     }
 }
 
-fn pump_output(
+pub(in crate::editor) fn pump_output(
     editor: &gpui::Entity<EditorView>,
     cx: &mut TestAppContext,
     output: &mut hex_audio::WorkerPreparedOutput,
@@ -228,7 +288,7 @@ fn pump_output(
     std::thread::yield_now();
 }
 
-fn attach_actual_output(
+pub(in crate::editor) fn attach_actual_output(
     editor: &gpui::Entity<EditorView>,
     cx: &mut TestAppContext,
     visual: &mut VisualTestContext,
@@ -269,7 +329,7 @@ fn attach_actual_output(
 }
 
 #[gpui::test]
-fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
+fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
     cx: &mut TestAppContext,
 ) {
     use std::sync::atomic::Ordering::Acquire;
@@ -350,6 +410,12 @@ fn eq_held_node_space_reaches_real_prepared_output_and_callback_without_release(
             view.device_gesture.snapshot().map(|snapshot| snapshot.key)
         });
         visual.simulate_keystrokes("space");
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.prepared_seek.is_none() && view.latched_seek_intent.is_none(),
+                "Space must start the applied preview without a prepared seek worker"
+            );
+        });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !backend.status().unwrap().playing.load(Acquire) {
             pump_output(&editor, cx, &mut output, &mut backend);
@@ -489,7 +555,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 &mut backend,
                 preview_is_applied,
             );
-            visual.simulate_keystrokes("space");
+            request_worker_seek(&editor, cx);
             let (request_id, identity) = editor.read_with(cx, |view, _| {
                 let pending = view.prepared_seek.as_ref().expect("actual seek admitted");
                 assert_eq!(pending.stage, SeekStage::Preparing);
@@ -597,11 +663,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                         before,
                         "preview source metadata must not become canonical"
                     );
-                    assert_eq!(
-                        read(view, device),
-                        before,
-                        "no held edit committed by Space"
-                    );
+                    assert_eq!(read(view, device), before, "no held edit committed by seek");
                 });
                 visual.simulate_keystrokes("space");
                 visual.simulate_keystrokes("escape");
@@ -714,7 +776,7 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
+    request_worker_seek(&editor, cx);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if editor.update(cx, |view, _| {
@@ -732,13 +794,14 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         let pending = view.pending_playback.as_ref().unwrap();
         let seek = view.prepared_seek.as_ref().unwrap();
         let id = seek.request_id;
-        let root = Arc::as_ptr(&seek.prepared_revision) as usize;
+        let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
         let identity = seek.device_preview_identity.unwrap();
         assert_eq!(pending.seek_request_id, Some(id));
         // Occupy the REAL forwarding cell, without polling its worker. A second
         // publication must return the exact seek Playback with actual Busy.
-        let blocker =
-            hex_engine::playback::Playback::from_prepared(Arc::clone(&seek.prepared_revision));
+        let blocker = hex_engine::playback::Playback::from_prepared(Arc::clone(
+            seek.prepared_revision.as_ref().unwrap(),
+        ));
         let token = view
             .audio
             .as_mut()
@@ -882,7 +945,7 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
+    request_worker_seek(&editor, cx);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !editor.update(cx, |view, _| {
         view.tick_prepared_arrangement_seek();
@@ -901,13 +964,13 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
         let playback = view.pending_playback.take().unwrap();
         assert_eq!(playback.seek_request_id, Some(seek.request_id));
         let id = seek.request_id;
-        let root = Arc::as_ptr(&seek.prepared_revision) as usize;
+        let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
         view.retired_seek_result = Some(hex_session::arrangement_seek::ArrangementSeekResult {
             request_id: id,
             mode: seek.mode,
             generation: seek.project_generation,
             revision: seek.project_revision,
-            prepared_revision: seek.prepared_revision,
+            prepared_revision: seek.prepared_revision.unwrap(),
             destination_frame: seek.destination_frame,
             work_budget_frames: seek.work_budget_frames,
             start_playing: seek.start_playing,
@@ -958,6 +1021,20 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
     });
     backend.close();
     drop(output);
+}
+
+// Space starts the applied runtime directly. These lifecycle races deliberately
+// request the existing guarded worker seek so candidate/publication custody is
+// still exercised independently of the immediate keyboard transport path.
+fn request_worker_seek(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
+    editor.update(cx, |view, _| {
+        view.request_prepared_seek(0, true);
+        assert!(
+            view.prepared_seek.is_some(),
+            "worker seek admission: {:?}",
+            view.error
+        );
+    });
 }
 
 // Advance the real preparation worker without pumping a callback or the
@@ -1012,7 +1089,7 @@ fn review_receive_preview(
 }
 
 #[gpui::test]
-fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppContext) {
+fn eq_review_overtaken_preview_preserves_held_seek_intent(cx: &mut TestAppContext) {
     let _guard = graph_layout_tests::status_fixture_guard();
     let (handle, editor, _environment, device) = held_node_window(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1029,7 +1106,7 @@ fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppConte
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
+    request_worker_seek(&editor, cx);
     review_wait_seek_candidate(&editor, cx);
     let second = plot(&mut visual, device, 0.68, 0.65);
     visual.simulate_mouse_move(second, Some(MouseButton::Left), Modifiers::default());
@@ -1049,7 +1126,7 @@ fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppConte
             view.latched_seek_intent
                 .as_ref()
                 .is_some_and(|i| i.start_playing),
-            "intermediate same-owner preview must not erase held Space"
+            "intermediate same-owner preview must not erase the held seek"
         );
     });
     pump_actual_until(
@@ -1083,7 +1160,7 @@ fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn eq_review_publication_retirement_preserves_newer_held_space_intent(cx: &mut TestAppContext) {
+fn eq_review_publication_retirement_preserves_newer_held_seek_intent(cx: &mut TestAppContext) {
     use crate::editor::arrangement_seek::SeekStage;
     let _guard = graph_layout_tests::status_fixture_guard();
     let (handle, editor, _environment, device) = held_node_window(cx);
@@ -1101,7 +1178,7 @@ fn eq_review_publication_retirement_preserves_newer_held_space_intent(cx: &mut T
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
+    request_worker_seek(&editor, cx);
     review_wait_seek_candidate(&editor, cx);
     editor.update(cx, |view, cx| {
         view.tick(cx);
@@ -1193,7 +1270,7 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
         &mut backend,
         preview_is_applied,
     );
-    visual.simulate_keystrokes("space");
+    request_worker_seek(&editor, cx);
     review_wait_seek_candidate(&editor, cx);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let revision = loop {
@@ -1291,4 +1368,133 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
     });
     backend.close();
     drop(output);
+}
+
+#[gpui::test]
+fn eq_created_node_retains_released_position_through_exact_worker_terminal(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let graph = graph(&editor, cx, device);
+    let before = editor.read_with(&visual, |view, _| read(view, device));
+    let id = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .next_identity()
+            .max(u64::from(before.next_node_id)) as u32
+    });
+    let start = plot(&mut visual, device, 0.8, 0.8);
+    let end = plot(&mut visual, device, 0.72, 0.75);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let held = graph.read_with(&visual, |graph, _| {
+        graph.node_position(id).expect("new held node")
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    // Advance the real keyed stream and hold only its exact Commit reply.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let terminal = loop {
+        let terminal = editor.update(&mut visual, |view, cx| {
+            view.pump_device_gesture();
+            let terminal = if let Ok(event) = view.service.try_event() {
+                if event.gesture_ack.as_ref().is_some_and(|ack| {
+                    ack.phase == hex_session::device_gesture::GesturePhase::Commit
+                }) {
+                    Some(event)
+                } else {
+                    view.receive(event);
+                    None
+                }
+            } else {
+                None
+            };
+            cx.notify();
+            terminal
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            graph.read_with(&visual, |graph, _| graph.node_position(id)),
+            Some(held)
+        );
+        if let Some(event) = terminal {
+            break event;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert!(terminal.gesture_ack.as_ref().unwrap().accepted);
+    for _ in 0..4 {
+        editor.update(&mut visual, |view, cx| {
+            assert_eq!(read(view, device), before);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            graph.read_with(&visual, |graph, _| graph.node_position(id)),
+            Some(held),
+            "released creation must not vanish before its exact keyed terminal"
+        );
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    for _ in 0..4 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(
+            graph.read_with(&visual, |graph, _| graph.node_position(id)),
+            Some(held)
+        );
+    }
+    let after = editor.read_with(&visual, |view, _| read(view, device));
+    assert_eq!(after.nodes.len(), before.nodes.len() + 1);
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == before
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == after
+    });
+}
+
+#[gpui::test]
+fn eq_new_node_reaches_worker_playback_preview_while_pointer_is_held(cx: &mut TestAppContext) {
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    let start = plot(&mut visual, device, 0.78, 0.8);
+    let end = plot(&mut visual, device, 0.66, 0.75);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.resident_device_preview
+            .as_ref()
+            .is_some_and(|preview| {
+                EqState::decode(preview.state.project.device(device).unwrap().state())
+                    .is_ok_and(|state| state.nodes.len() == 2)
+            })
+    });
+    for _ in 0..3 {
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(view.resident_device_preview.is_some());
+        });
+    }
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+    });
 }

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "observed_date": "2026-10-25",
+  "method": "read-only bundle metadata/hash; user-provided screenshot; official public manual; no reference app launch or audio measurement",
+  "reference": {
+    "version": "12.4.7 (2026-10-16_cf213561fb)",
+    "executable_sha256": "0f0df09d84ecb6cf2bef96958de68618c30d28ae77a401bd50ae5990a3e0da6c",
+    "architecture": "arm64"
+  },
+  "screenshot_sha256": "030b2118bbb4f33400223a4a6a781fa0958d8663522881fdfda4f5ee6e2f3e46",
+  "manual": "https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#delay",
+  "observations": [
+    "independent stereo sync/time; divisions count sixteenth notes; link retains independent offsets",
+    "free time range 1 ms to 5 s",
+    "freeze rejects new input; ping-pong alternates channels",
+    "switchable band-pass with frequency/width XY editing",
+    "repitch, fade and jump transitions",
+    "collapsed modulation amounts plus expanded LFO rate modes, waveform and morph",
+    "quality and equal-loudness options"
+  ],
+  "unknowns": [
+    "reference DSP coefficients, exact transition laws, modulation depths and acoustic identity are not measured",
+    "screenshot shows collapsed LFO; public manual defines expanded controls",
+    "parameter bounds not stated in the manual require explicit Hex laws and are not measured Live ranges"
+  ]
+}

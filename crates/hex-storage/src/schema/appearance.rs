@@ -220,7 +220,7 @@ impl DocumentV27 {
                 "appearance references missing track or clip",
             ));
         }
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }
 pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {

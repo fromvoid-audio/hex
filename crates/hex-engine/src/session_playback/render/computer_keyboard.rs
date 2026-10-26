@@ -2,11 +2,85 @@
 use super::*;
 
 impl SessionPlayback {
+    pub(super) fn render_stopped_main_tails(
+        &mut self,
+        output: &mut [Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        self.return_effect_tails.begin_block();
+        let clock = crate::effect_clock::ArrangementEffectClock::session(
+            self.revision.session().timing(),
+            self.arrangement_frame,
+            self.performance_frame,
+            self.arrangement_loop_pass,
+            false,
+        );
+        let step = if self.compensation.is_some() { 1 } else { 256 };
+        for (index, chunk) in output.chunks_mut(step).enumerate() {
+            self.return_effect_tails.render_main_chunk(
+                chunk,
+                self.compensation.as_ref(),
+                &clock,
+                index * step,
+                foreign,
+            )?;
+        }
+        self.return_effect_tails.commit_block();
+        self.revision.arrangement().master_mix().apply(output);
+        Ok(())
+    }
+    pub(crate) fn cancel_current_sampler_keyboard(&mut self) {
+        self.current_sampler_keyboard_revoked = self
+            .current_sampler_keyboard_revoked
+            .max(self.current_sampler_keyboard_epoch);
+        for keyboard in &mut self.current_sampler_keyboards {
+            keyboard.reset_current_activation();
+        }
+    }
+    pub(crate) fn apply_current_sampler_keyboard(
+        &mut self,
+        frame: Option<crate::computer_keyboard::CurrentSamplerKeyboardFrame>,
+    ) -> Result<(), crate::Invalid> {
+        let Some(frame) = frame else {
+            self.cancel_current_sampler_keyboard();
+            return Ok(());
+        };
+        if frame
+            .words
+            .iter()
+            .any(|word| !crate::computer_keyboard::valid_key_word(*word))
+        {
+            return Err(crate::Invalid("sampler keyboard words are invalid"));
+        }
+        if frame.epoch == 0
+            || frame.epoch <= self.current_sampler_keyboard_revoked
+            || frame.epoch < self.current_sampler_keyboard_epoch
+            || !self
+                .current_sampler_keyboards
+                .iter()
+                .any(|k| k.is_current_target(frame.track, frame.device))
+        {
+            return Err(crate::Invalid("sampler keyboard activation is stale"));
+        }
+        if frame.epoch != self.current_sampler_keyboard_epoch {
+            self.cancel_current_sampler_keyboard();
+            self.current_sampler_keyboard_epoch = frame.epoch;
+        }
+        let keyboard = self
+            .current_sampler_keyboards
+            .iter_mut()
+            .find(|k| k.is_current_target(frame.track, frame.device))
+            .ok_or(crate::Invalid("sampler keyboard target is unavailable"))?;
+        keyboard.set_current_words(frame.words)
+    }
+
     pub(super) fn render_keyboard_monitor(
         &mut self,
         output: &mut [Frame],
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         for chain in &mut self.device_chains {
             chain.begin_block();
@@ -15,6 +89,14 @@ impl SessionPlayback {
             chain.begin_block();
         }
         self.main_chain.begin_block();
+        // A state replacement can introduce a retained bus/Main suffix while
+        // transport is already stopped. Its real zero-input completion still
+        // owns the original endpoint; monitoring must drain that suffix too.
+        // An explicit Stop separately resets these tails in the command owner.
+        let drain_edit_tails = self.performance_frame == 0 && self.arrangement_frame == 0;
+        if drain_edit_tails {
+            self.return_effect_tails.begin_block();
+        }
         self.route_scratch.copy_from_slice(&self.routes);
         let step = if self.compensation.is_some() { 1 } else { 256 };
         for (chunk_index, chunk) in output.chunks_mut(step).enumerate() {
@@ -29,18 +111,47 @@ impl SessionPlayback {
                     offset,
                     observer,
                     capture,
+                    None,
+                    foreign,
                 )?;
+                if drain_edit_tails {
+                    self.return_effect_tails
+                        .render_chunk(chunk, offset, capture, foreign)?;
+                }
                 self.compensation
                     .as_ref()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
-                    .process_main(&mut self.main_chain, chunk, offset, observer)
+                    .process_main_with_foreign(
+                        &mut self.main_chain,
+                        chunk,
+                        offset,
+                        foreign,
+                        observer,
+                    )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                let tail_clock = crate::effect_clock::ArrangementEffectClock::session(
+                    self.revision.session().timing(),
+                    self.arrangement_frame,
+                    self.performance_frame,
+                    self.arrangement_loop_pass,
+                    false,
+                );
+                if drain_edit_tails {
+                    self.return_effect_tails.render_main_chunk(
+                        chunk,
+                        self.compensation.as_ref(),
+                        &tail_clock,
+                        offset,
+                        foreign,
+                    )?;
+                }
                 continue;
             }
             for frames in &mut self.return_scratch {
                 frames[..chunk.len()].fill([0.0; 2]);
             }
-            let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+            let timing =
+                timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
             for (index, track) in self.revision.arrangement().tracks().iter().enumerate() {
                 let mut frames = [[0.0; 2]; 256];
                 let frames = &mut frames[..chunk.len()];
@@ -55,6 +166,19 @@ impl SessionPlayback {
                     keyboard
                         .render(frames, Some(&clock))
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                }
+                for keyboard in self
+                    .current_sampler_keyboards
+                    .iter_mut()
+                    .filter(|k| Some(k.track()) == track.canonical_track_id())
+                {
+                    let source = sources.ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    let resources = source
+                        .resources(keyboard.track())
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                    keyboard
+                        .render_with_resources(frames, None, &resources)
+                        .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
                 }
                 track.apply_instrument_output_gain(frames);
                 let chain = &mut self.device_chains[index];
@@ -99,7 +223,18 @@ impl SessionPlayback {
                     capture.add(OutputCaptureId::Track(id), offset, frames)?;
                 }
             }
-            self.render_return_buses(chunk, offset, None, observer, capture)?;
+            self.render_return_buses(
+                chunk,
+                offset,
+                None,
+                observer,
+                capture,
+                &mut hex_lattice::RefuseForeign,
+            )?;
+            if drain_edit_tails {
+                self.return_effect_tails
+                    .render_chunk(chunk, offset, capture, foreign)?;
+            }
         }
         if self.compensation.is_none() {
             let main_clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -117,8 +252,22 @@ impl SessionPlayback {
                 observer,
             )
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            if drain_edit_tails {
+                for (index, chunk) in output.chunks_mut(256).enumerate() {
+                    self.return_effect_tails.render_main_chunk(
+                        chunk,
+                        None,
+                        &main_clock,
+                        index * 256,
+                        foreign,
+                    )?;
+                }
+            }
         }
         self.main_chain.commit_block();
+        if drain_edit_tails {
+            self.return_effect_tails.commit_block();
+        }
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {
             chain.commit_block();

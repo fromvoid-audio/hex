@@ -29,7 +29,9 @@ impl Entry {
     fn bounded(&self) -> bool {
         let path_fits = |path: &PathBuf| path.as_os_str().as_encoded_bytes().len() <= FIELD_BYTES;
         let key_fits = |key: &Option<BrowserItemKey>| match key {
-            Some(BrowserItemKey::File(path)) => path_fits(path),
+            Some(BrowserItemKey::File(path)) | Some(BrowserItemKey::Plugin(path, _)) => {
+                path_fits(path)
+            }
             _ => true,
         };
         self.location.query.len() <= FIELD_BYTES
@@ -114,13 +116,15 @@ impl History {
 
 impl EditorView {
     fn browser_history_entry(&self, cx: &App) -> Entry {
-        let count = self.browser_visible_entries(cx).len() + self.browser_visible_devices(cx).len();
+        let count = self.browser_visible_entries(cx).len()
+            + self.browser_visible_devices(cx).len()
+            + self.browser_visible_plugins(cx).len();
         let top = self.browser_history_top_index(count);
         Entry {
             location: Location {
                 section: self.browser.section.clone(),
                 directory: self.browser.directory.clone(),
-                query: self.browser.search.read(cx).content.clone(),
+                query: self.browser.search.read(cx).text().to_owned(),
             },
             position: Position {
                 selected: self.browser_selected_item(cx),
@@ -151,14 +155,14 @@ impl EditorView {
     // Synchronize before navigation as well as from the observer: a queued observer
     // must not turn a restored query into another edit or reset restored selection.
     pub(super) fn sync_browser_query(&mut self, cx: &mut Context<Self>) {
-        let query = &self.browser.search.read(cx).content;
-        if *query == self.browser.observed_query {
+        let query = self.browser.search.read(cx).text();
+        if query == self.browser.observed_query {
             return;
         }
         let location = Location {
             section: self.browser.section.clone(),
             directory: self.browser.directory.clone(),
-            query: query.clone(),
+            query: query.to_owned(),
         };
         let editing = self.browser.history.editing_query;
         if self.browser.history.entries.is_empty() {
@@ -195,7 +199,7 @@ impl EditorView {
             None
         };
         history.editing_query = retained && !collapsed;
-        self.browser.observed_query = self.browser.search.read(cx).content.clone();
+        self.browser.observed_query = self.browser.search.read(cx).text().to_owned();
         if !retained {
             self.browser.places_status = Some("browser history field limit reached".into());
         }
@@ -269,7 +273,7 @@ impl EditorView {
             .observed_query
             .clone_from(&entry.location.query);
         self.browser.search.update(cx, |input, cx| {
-            input.restore_query(&entry.location.query, cx);
+            input.set_text(&entry.location.query, cx);
         });
         self.apply_browser_source(entry.location.section.clone(), cx);
         if self.browser.directory != entry.location.directory {
@@ -281,38 +285,68 @@ impl EditorView {
         cx.notify();
     }
 
-    fn browser_item_at(&self, index: usize, cx: &App) -> Option<BrowserItemKey> {
+    pub(super) fn browser_item_at(&self, index: usize, cx: &App) -> Option<BrowserItemKey> {
         let files = self.browser_visible_entries(cx);
-        if let Some(entry) = files.get(index) {
-            Some(BrowserItemKey::File(entry.path.clone()))
-        } else {
-            self.browser_visible_devices(cx)
-                .get(index.checked_sub(files.len())?)
-                .map(|(class, entry)| BrowserItemKey::Device(*class, entry.type_id))
+        let devices = self.browser_visible_devices(cx);
+        let plugins = self.browser_visible_plugins(cx);
+        let rows = BrowserRows::new(
+            files.len(),
+            devices.len(),
+            plugins.len(),
+            self.browser_devices_first(cx),
+        );
+        if rows.files.contains(&index) {
+            return files
+                .get(index - rows.files.start)
+                .map(|entry| BrowserItemKey::File(entry.path.clone()));
         }
+        if rows.devices.contains(&index) {
+            return devices
+                .get(index - rows.devices.start)
+                .map(|(class, entry)| BrowserItemKey::Device(*class, entry.type_id));
+        }
+        plugins
+            .get(index.checked_sub(rows.plugins.start)?)
+            .map(|row| BrowserItemKey::Plugin(row.module.clone(), row.cid))
     }
 
-    fn browser_history_index(&self, key: &BrowserItemKey, cx: &App) -> Option<usize> {
+    pub(super) fn browser_history_index(&self, key: &BrowserItemKey, cx: &App) -> Option<usize> {
         let files = self.browser_visible_entries(cx);
+        let devices = self.browser_visible_devices(cx);
+        let plugins = self.browser_visible_plugins(cx);
+        let rows = BrowserRows::new(
+            files.len(),
+            devices.len(),
+            plugins.len(),
+            self.browser_devices_first(cx),
+        );
         match key {
-            BrowserItemKey::File(path) => files.iter().position(|entry| &entry.path == path),
-            BrowserItemKey::Device(class, id) => self
-                .browser_visible_devices(cx)
+            BrowserItemKey::File(path) => files
+                .iter()
+                .position(|entry| &entry.path == path)
+                .map(|i| rows.files.start + i),
+            BrowserItemKey::Device(class, id) => devices
                 .iter()
                 .position(|(candidate, entry)| candidate == class && entry.type_id == *id)
-                .map(|index| files.len() + index),
+                .map(|i| rows.devices.start + i),
+            BrowserItemKey::Plugin(path, id) => plugins
+                .iter()
+                .position(|row| &row.module == path && row.cid == *id)
+                .map(|i| rows.plugins.start + i),
         }
     }
 
     pub(super) fn restore_browser_history_position(&mut self, cx: &App) {
-        let query = &self.browser.search.read(cx).content;
+        let query = self.browser.search.read(cx).text();
         let indexed = samples::ResultsMode::for_query(query) == samples::ResultsMode::Indexed;
         let (listing, tree, catalog) = match self.browser.section {
             BrowserSection::Samples => (false, true, indexed),
             BrowserSection::All => (indexed, true, indexed),
             BrowserSection::Place(_) => (true, true, indexed),
             BrowserSection::Projects => (true, true, false),
-            BrowserSection::Instruments | BrowserSection::Collection(_) => (false, false, false),
+            BrowserSection::Instruments
+            | BrowserSection::Plugins
+            | BrowserSection::Collection(_) => (false, false, false),
         };
         if (listing && self.browser.loading)
             || (tree
@@ -331,7 +365,7 @@ impl EditorView {
         // have their own scan/tree/catalog generations and cannot change location.
         if entry.location.section != self.browser.section
             || entry.location.directory != self.browser.directory
-            || entry.location.query != self.browser.search.read(cx).content
+            || entry.location.query != self.browser.search.read(cx).text()
         {
             return;
         }

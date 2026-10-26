@@ -4,6 +4,9 @@
 //! authored occurrence proof and performance deadlines needed to pair source
 //! spans with checked event IDs across render partitions and graph handoffs.
 
+mod volume;
+pub(crate) use volume::{VolumeLookup, VolumeSlice};
+
 use crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 use crate::midi_template::MidiOccurrenceSuppression;
 use hex_lattice::{
@@ -31,13 +34,26 @@ const MAX_MUTABLE_TAIL_SECONDS: u64 = 600;
 pub(crate) fn max_mutable_tail_frames(sample_rate: u32) -> Option<u64> {
     u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)
 }
+pub(crate) fn runtime_limits(
+    sample_rate: u32,
+) -> Result<NativeInstrumentRuntimeLimits, crate::Invalid> {
+    Ok(NativeInstrumentRuntimeLimits {
+        max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
+        max_events_per_block: MAX_MUTABLE_EVENTS_PER_QUERY,
+        max_active_occurrences: MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+        max_tail_frames: max_mutable_tail_frames(sample_rate)
+            .ok_or(crate::Invalid("mutable instrument tail budget overflow"))?,
+    })
+}
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
-/// Combined declared DSP storage for committed/scratch pairs in one active
-/// graph or one retained-tail bank. Variable-size instrument requirements draw
-/// from this pool; the separate 64 KiB effect-twin limit is not an instrument cap.
-/// Host ledgers, checkpoints and retarget proofs have separate charged bounds.
+/// Per-instrument committed/scratch storage limit. Effect limits are separate;
+/// the combined graph/tail pool below charges all providers and owned buffers.
 pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
+/// Complete declared DSP pair pool, including owned time-effect rings. Host
+/// ledgers/checkpoints and the existing complete candidate cap remain independent.
+pub(crate) const MAX_GRAPH_RUNTIME_PAIR_BYTES: usize =
+    2 * hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES;
 /// Retarget proof storage is independent of effect runtime payload size.
 pub(crate) const MAX_INSTRUMENT_RETARGET_PROOF_BYTES: usize = 4_096;
 
@@ -128,6 +144,9 @@ pub(crate) struct MutableOccurrence {
     pub(crate) gate_end_frame: u64,
     pub(crate) quiet_deadline_frame: u64,
     pub(crate) note_off_sent: bool,
+    /// Fixed left-limit gain survives source/graph retirement without a curve owner.
+    pub(crate) gain_at_end_bits: u64,
+    pub(crate) gain_frozen: bool,
 }
 
 /// One source query's maximum admitted sounding intervals. This is shared by
@@ -208,6 +227,7 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
     primary: Vec<MutableOccurrence>,
@@ -224,6 +244,47 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn is_concrete_current_sampler(&self) -> bool {
+        self.resources.is_none()
+            && self.expression.is_none()
+            && self
+                .pair
+                .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+                .is_some()
+    }
+    pub(crate) fn visit_current_sampler_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            pair,
+            resources,
+            expression_identity: _,
+            expression,
+            primary,
+            scratch,
+            next_id: _,
+            next_id_scratch: _,
+        } = self;
+        if expression.is_some() || resources.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        let (first, second) = pair
+            .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?;
+        ledger.vec(primary)?;
+        ledger.vec(scratch)?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-primary", 0),
+            first,
+        )?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-scratch", 0),
+            second,
+        )
+    }
     /// Conservative checkpoint charge derived from the prepared declaration
     /// and both fixed occurrence-ledger buffers. Call before `new` so a store
     /// can reject count/aggregate overages before invoking the runtime factory.
@@ -287,6 +348,7 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            resources: None,
             expression_identity: None,
             expression: None,
             primary,
@@ -297,13 +359,17 @@ impl MutableInstrumentTrackRuntime {
     }
 
     pub(crate) fn supports_live_expression(&self) -> bool {
+        let resources = self.resources.as_ref().map_or(
+            &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+            crate::native_device_resources::PreparedDeviceResourceLease::resources,
+        );
         self.pair.max_events_per_block() >= MAX_MUTABLE_EVENTS_PER_QUERY
             && self
                 .pair
                 .preflight_event_batch(
                     &crate::live_expression::Snapshot::default().events(),
                     1,
-                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    resources,
                 )
                 .is_ok()
     }
@@ -423,7 +489,8 @@ impl MutableInstrumentTrackRuntime {
     /// owner. The canonical revision descriptor and route checks remain the
     /// caller's responsibility.
     pub(crate) fn can_inherit_from(&self, previous: &Self) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.resource_history_matches(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && self.pair.can_inherit_from(&previous.pair)
     }
@@ -435,7 +502,8 @@ impl MutableInstrumentTrackRuntime {
         &mut self,
         previous: &Self,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        if self.primary.capacity() < previous.primary.len()
+        if !self.resource_history_matches(previous)
+            || self.primary.capacity() < previous.primary.len()
             || self.scratch.capacity() < previous.primary.len()
             || !self.pair.can_inherit_from(&previous.pair)
         {
@@ -458,6 +526,14 @@ impl MutableInstrumentTrackRuntime {
         Ok(())
     }
 
+    /// Runtime history may carry only the same physical original-source bindings.
+    fn resource_history_matches(&self, previous: &Self) -> bool {
+        match (&self.resources, &previous.resources) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => current.compatible(previous),
+            _ => false,
+        }
+    }
     /// Read-only preflight for a prepared instrument-state retarget. The
     /// candidate inventory owns `proof` until control retires this graph.
     pub(crate) fn can_retarget_from(
@@ -465,7 +541,8 @@ impl MutableInstrumentTrackRuntime {
         previous: &Self,
         proof: &dyn hex_lattice::PreparedInstrumentHistoryRetarget,
     ) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.resource_history_matches(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && self.pair.can_retarget_from(&previous.pair, proof)
     }
@@ -532,6 +609,31 @@ impl MutableInstrumentTrackRuntime {
             .checked_add(self.pair.fixed_storage_pair_bytes()?)
     }
 
+    pub(crate) fn transition_proofs(&self, speculative: bool) -> &[MutableOccurrence] {
+        if speculative {
+            &self.scratch
+        } else {
+            &self.primary
+        }
+    }
+    pub(crate) fn transition_proof_capacity(&self) -> usize {
+        self.primary.capacity().min(self.scratch.capacity())
+    }
+    pub(crate) fn max_events_per_block(&self) -> usize {
+        self.pair.max_events_per_block()
+    }
+    pub(crate) fn cut_speculative_gate_deadlines_at(&mut self, performance_frame: u64) {
+        for occurrence in &mut self.scratch {
+            occurrence.gain_frozen = true;
+        }
+        let tail = self.max_release_tail_frames();
+        for occurrence in &mut self.scratch {
+            if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
+                occurrence.gate_end_frame = performance_frame;
+                occurrence.quiet_deadline_frame = performance_frame.saturating_add(tail);
+            }
+        }
+    }
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
     }
@@ -549,13 +651,30 @@ impl MutableInstrumentTrackRuntime {
     /// frame-zero NoteOff in its next segment; feedback and release state stay
     /// owned and are not reset.
     pub(crate) fn cut_gate_deadlines_at(&mut self, performance_frame: u64) {
+        for occurrence in &mut self.primary {
+            occurrence.gain_frozen = true;
+        }
+        self.reconcile_gate_deadlines_at(performance_frame, |_| Some(performance_frame));
+    }
+
+    /// Apply admitted per-occurrence gate cuts without resetting voices or
+    /// changing their dispatch identity. The existing event path emits the
+    /// NoteOff at the exact future offset, or zero at a publication cutoff.
+    pub(crate) fn reconcile_gate_deadlines_at(
+        &mut self,
+        performance_frame: u64,
+        mut cutoff: impl FnMut(MutableOccurrenceSignature) -> Option<u64>,
+    ) {
         let release_tail_frames = self.max_release_tail_frames();
         for occurrence in &mut self.primary {
             if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
-                occurrence.gate_end_frame = performance_frame;
-                occurrence.note_off_sent = false;
-                occurrence.quiet_deadline_frame =
-                    performance_frame.saturating_add(release_tail_frames);
+                if let Some(deadline) = cutoff(occurrence.signature)
+                    .map(|deadline| deadline.max(performance_frame))
+                    .filter(|deadline| *deadline < occurrence.gate_end_frame)
+                {
+                    occurrence.gate_end_frame = deadline;
+                    occurrence.quiet_deadline_frame = deadline.saturating_add(release_tail_frames);
+                }
             }
         }
     }
@@ -595,6 +714,59 @@ impl MutableInstrumentTrackRuntime {
         suppressions: &[MidiOccurrenceSuppression],
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_with_resources(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_segment_with_resources(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_inner(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            resources,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Same bounded segment with a borrowed volume lookup.
+    fn process_segment_inner(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+        volume: Option<&mut VolumeLookup<'_>>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
@@ -717,6 +889,8 @@ impl MutableInstrumentTrackRuntime {
                 gate_end_frame,
                 quiet_deadline_frame,
                 note_off_sent,
+                gain_at_end_bits: 1.0_f64.to_bits(),
+                gain_frozen: false,
             });
         }
 
@@ -735,9 +909,31 @@ impl MutableInstrumentTrackRuntime {
             };
             (offset, is_on, occurrence_id)
         });
-        self.pair
-            .process_block_with_clock(events, frames, clock, &hex_lattice::EMPTY_DEVICE_RESOURCES)
-            .map_err(map_runtime_error)
+        let gains = volume::gains_for_segment(
+            &self.pair,
+            &mut self.scratch,
+            events,
+            performance_start,
+            frames.len(),
+            volume,
+        )?;
+        let resources = self
+            .resources
+            .as_ref()
+            .map_or(resources, |lease| lease.resources());
+        match gains {
+            Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+                events,
+                frames,
+                clock,
+                gains.as_slice(),
+                resources,
+            ),
+            None => self
+                .pair
+                .process_block_with_clock(events, frames, clock, resources),
+        }
+        .map_err(map_runtime_error)
     }
 
     pub(crate) fn commit_block(&mut self) {
@@ -909,7 +1105,7 @@ fn has_mutable_suppression(
 }
 
 /// Checked complete active-pair budget. The already-prepared effect graph
-/// admits at most 256 stateful instances. Effects retain their separate 64 KiB
+/// admits at most 256 stateful instances. Effects retain their separate 256 KiB
 /// per-twin bound; variable-size instruments consume the same aggregate pool.
 pub(crate) fn validate_mutable_graph_budget(
     existing_count: usize,
@@ -924,7 +1120,7 @@ pub(crate) fn validate_mutable_graph_budget(
         .checked_add(pair_bytes)
         .ok_or(MutableInstrumentRuntimeError::Budget)?;
     if total_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-        || total_bytes > MAX_STATEFUL_RUNTIME_PAIR_BYTES
+        || total_bytes > MAX_GRAPH_RUNTIME_PAIR_BYTES
     {
         return Err(MutableInstrumentRuntimeError::Budget);
     }

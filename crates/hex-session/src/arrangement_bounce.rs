@@ -1,0 +1,425 @@
+//! Control-owned selected Arrangement bounce. Rendering and durable create-new
+//! media finish before one reserved project/media/history adoption. Originals
+//! remain untouched; failed/cancelled jobs remove only their own unpublished files.
+use super::*;
+use hex_project::{BounceFile, BounceTarget, BounceTrack, TrackContentSnapshot};
+use std::{
+    fs,
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+};
+mod console;
+static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn isolated(
+    project: &Project,
+    target: &BounceTarget,
+    item: &BounceTrack,
+) -> Result<Project, String> {
+    let mut snapshot = project.snapshot();
+    if target.is_audio_group() {
+        let selected: std::collections::BTreeSet<_> =
+            item.clips.iter().map(|id| id.value()).collect();
+        // Keep the group hierarchy valid, but remove every non-source signal.
+        // Grouping bakes clip processing only; track/source devices, mixer
+        // automation, sends, routing and activation remain live on adoption.
+        for track in &mut snapshot.tracks {
+            let audio = if track.id == item.track.value() {
+                track
+                    .audio_clips_mut()
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .filter(|c| selected.contains(&c.id))
+                    .cloned()
+                    .map(|mut c| {
+                        c.active = true;
+                        c
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            track.content = TrackContentSnapshot::Hybrid {
+                audio_clips: audio,
+                midi_clips: Vec::new(),
+            };
+            track.devices.clear();
+            track.instrument = None;
+            track.instrument_position = None;
+            track.gain = 1.0;
+            track.balance = 0.0;
+            track.muted = false;
+            track.soloed = false;
+            track.gain_envelope.clear();
+            track.gain_touch_spans.clear();
+            track.sends.clear();
+        }
+    } else {
+        snapshot
+            .tracks
+            .retain(|track| track.id == item.track.value());
+        let track = snapshot.tracks.first_mut().ok_or("bounce track changed")?;
+        if matches!(item.source, hex_project::BounceSource::Console { .. }) {
+            track.content = console::content(project, item, &mut snapshot.next_id)?;
+        } else if matches!(target, BounceTarget::Clips(_)) {
+            let selected = item
+                .clips
+                .iter()
+                .map(|id| id.value())
+                .collect::<std::collections::BTreeSet<_>>();
+            match &mut track.content {
+                TrackContentSnapshot::Hybrid {
+                    audio_clips,
+                    midi_clips,
+                } => {
+                    audio_clips.retain(|c| selected.contains(&c.id));
+                    midi_clips.retain(|c| selected.contains(&c.id));
+                }
+                _ => return Err("bounce requires a hybrid track".into()),
+            }
+        }
+        track.gain = 1.0;
+        track.balance = 0.0;
+        track.muted = false;
+        track.soloed = false;
+        track.gain_envelope.clear();
+        track.gain_touch_spans.clear();
+        track.sends.clear();
+    }
+    snapshot.session = Default::default();
+    snapshot.return_tracks.clear();
+    snapshot.main_devices.clear();
+    snapshot.audio_feeds.clear();
+    snapshot.midi_routes.clear();
+    snapshot.return_feeds.clear();
+    snapshot.loop_region = None;
+    snapshot.master_gain = 1.0;
+    Project::from_snapshot(snapshot).map_err(|e| e.to_string())
+}
+
+impl Session {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bounce_arrangement_using<R, T>(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        mut prepare: impl FnMut(&Session, &Project, u64) -> Result<R, String>,
+        mut render: impl FnMut(
+            &Path,
+            R,
+            &BounceTrack,
+            bool,
+            &hex_export::ExportControl,
+        ) -> Result<u64, String>,
+        commit: impl FnOnce(&mut Session, Vec<PreparedImport>, Vec<BounceFile>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.audio_mode != DocumentAudioMode::Resident {
+            return Err("arrangement bounce requires resident audio".into());
+        }
+        let plan = self
+            .project()
+            .plan_arrangement_bounce(&target, in_place)
+            .map_err(|e| e.to_string())?;
+        if self
+            .media
+            .len()
+            .checked_add(plan.len())
+            .is_none_or(|n| n > MAX_ASSETS)
+        {
+            return Err("bounce exceeds resident asset limit".into());
+        }
+        fs::create_dir_all(directory)
+            .map_err(|e| format!("could not create bounce folder: {e}"))?;
+        let directory = fs::canonicalize(directory).map_err(|e| e.to_string())?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let folder = directory.join(format!(
+            "arrangement-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT_JOB.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&folder).map_err(|e| format!("could not reserve bounce folder: {e}"))?;
+        let paths = (0..plan.len())
+            .map(|i| folder.join(format!("track-{i}.wav")))
+            .collect::<Vec<_>>();
+        let mut published = Vec::new();
+        let result = (|| {
+            let mut prepared = Vec::new();
+            let mut files = Vec::new();
+            for (item, path) in plan.iter().zip(&paths) {
+                if control.is_cancelled() || self.shutdown.load(Ordering::Acquire) {
+                    return Err("bounce cancelled".into());
+                }
+                let tails = target.includes_tails();
+                let maximum = (item.end - item.start)
+                    .checked_add(if tails {
+                        u64::from(self.project().sample_rate())
+                            .checked_mul(hex_export::MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS)
+                            .ok_or("bounce tail budget overflows")?
+                    } else {
+                        0
+                    })
+                    .filter(|n| *n <= hex_project::MAX_ARRANGEMENT_BOUNCE_FRAMES)
+                    .ok_or("bounce including tail allowance exceeds its frame budget")?;
+                let retained = prepared
+                    .iter()
+                    .map(|p: &PreparedImport| p.waveform.source_frames as u64)
+                    .sum::<u64>();
+                if self
+                    .resident_frames
+                    .checked_add(retained)
+                    .and_then(|n| n.checked_add(maximum))
+                    .and_then(|n| {
+                        self.native_assets
+                            .capacity_frames()
+                            .ok()
+                            .and_then(|a| a.checked_add(n))
+                    })
+                    .is_none_or(|n| n > self.max_resident_frames)
+                {
+                    return Err("bounce exceeds resident frame limit".into());
+                }
+                let source = isolated(self.project(), &target, item)?;
+                let revision = prepare(
+                    self,
+                    &source,
+                    maximum
+                        .checked_add(retained)
+                        .ok_or("bounce allowance overflows")?,
+                )?;
+                let frames = render(path, revision, item, tails, control)?;
+                published.push(path.clone());
+                let decoded = hex_media::decode_wav_file(
+                    path,
+                    hex_media::Limits::new(
+                        64 * 1024 * 1024 + 44,
+                        hex_project::MAX_ARRANGEMENT_BOUNCE_FRAMES as usize,
+                    ),
+                )
+                .map_err(|e| e.to_string())?;
+                prepared.push(PreparedImport::new(decoded).map_err(|e| e.to_string())?);
+                files.push(BounceFile {
+                    source: item.source,
+                    track: item.track,
+                    start: item.start,
+                    frames,
+                    path: path.clone(),
+                });
+            }
+            if control.is_cancelled() || self.shutdown.load(Ordering::Acquire) {
+                return Err("bounce cancelled".into());
+            }
+            commit(self, prepared, files)
+        })();
+        if result.is_err() {
+            for path in published {
+                let _ = fs::remove_file(path);
+            }
+            let _ = fs::remove_dir(folder);
+        }
+        result
+    }
+
+    /// Reserved complete media adoption. The caller's last preparation hook
+    /// rechecks cancellation and seals/enqueues only as its last fallible action.
+    pub(crate) fn adopt_arrangement_bounce_using<T>(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        files: Vec<BounceFile>,
+        prepared: Vec<PreparedImport>,
+        previous: Option<&hex_engine::PreparedRevision>,
+        prepare: impl FnOnce(import_batch::Preparation<'_>) -> Result<T, SessionError>,
+    ) -> Result<(Created, T), SessionError> {
+        if prepared.len() != files.len() || prepared.is_empty() {
+            return Err(SessionError::Invalid("bounce media count differs"));
+        }
+        self.media
+            .try_reserve(prepared.len())
+            .map_err(|_| SessionError::Allocation)?;
+        let mut residents = Vec::new();
+        residents
+            .try_reserve_exact(prepared.len())
+            .map_err(|_| SessionError::Allocation)?;
+        let mut total_frames = self.resident_frames;
+        let mut total_bins = self.resident_waveform_bins;
+        let mut total_bytes = self.resident_waveform_bytes;
+        for (member, file) in prepared.into_iter().zip(&files) {
+            if member.audio.sample_rate() != self.project().sample_rate()
+                || member.waveform.source_frames as u64 != file.frames
+                || member.path != file.path
+            {
+                return Err(SessionError::Invalid(
+                    "bounce decoded media differs from output",
+                ));
+            }
+            total_frames = total_frames
+                .checked_add(
+                    member.additional_pcm_frames(
+                        self.media
+                            .values()
+                            .chain(residents.iter())
+                            .flat_map(|r: &ResidentAsset| [&r.source_audio, &r.audio]),
+                    )?,
+                )
+                .filter(|n| {
+                    self.native_assets
+                        .capacity_frames()
+                        .ok()
+                        .and_then(|a| a.checked_add(*n))
+                        .is_some_and(|n| n <= self.max_resident_frames)
+                })
+                .ok_or(SessionError::Invalid("bounce resident frame limit reached"))?;
+            self.validate_native_legacy_budget(total_frames)?;
+            let bins = member.waveform.cached_bin_count();
+            total_bins = total_bins
+                .checked_add(bins)
+                .ok_or(SessionError::Invalid("bounce waveform count overflows"))?;
+            total_bytes = total_bytes
+                .checked_add(
+                    bins.checked_mul(mem::size_of::<[hex_media::waveform::Peak; 2]>())
+                        .ok_or(SessionError::Allocation)?,
+                )
+                .ok_or(SessionError::Allocation)?;
+            residents.push(ResidentAsset {
+                source_audio: member.source_audio,
+                audio: member.audio,
+                waveform: Arc::new(member.waveform),
+                frames: file.frames,
+            });
+        }
+        let mut media = self.media_bank();
+        let waveforms = std::cell::RefCell::new(self.audio_clip_waveforms()?);
+        let legacy = self
+            .media
+            .values()
+            .chain(residents.iter())
+            .flat_map(|r| [&r.source_audio, &r.audio])
+            .collect::<Vec<_>>();
+        let table = self.sine_table();
+        let native = &self.native_assets;
+        let transforms = &self.audio_transforms;
+        let limits = self.native_reservation;
+        let max_frames = self.max_resident_frames;
+        let shutdown = &self.shutdown;
+        let (created, (ids, artifact)) = self.editor.execute_prepared(
+            Command::CommitArrangementBounce {
+                target,
+                in_place,
+                files,
+            },
+            |candidate| {
+                let mut ids = candidate
+                    .assets()
+                    .filter(|a| !media.contains_key(&a.id()))
+                    .map(|a| a.id())
+                    .collect::<Vec<_>>();
+                ids.sort();
+                if ids.len() != residents.len() {
+                    return Err(SessionError::Invalid(
+                        "bounce candidate asset count differs",
+                    ));
+                }
+                for (id, r) in ids.iter().zip(&residents) {
+                    media.insert(*id, r.audio.clone());
+                }
+                let artifact = prepare(import_batch::Preparation {
+                    project: candidate,
+                    media: &media,
+                    native,
+                    table,
+                    transforms,
+                    waveforms: &waveforms,
+                    legacy: &legacy,
+                    limits,
+                    max_frames,
+                    shutdown,
+                    previous,
+                })?;
+                Ok::<_, SessionError>((ids, artifact))
+            },
+        )?;
+        *self.audio_clip_waveforms.get_mut() = waveforms.into_inner();
+        for (id, r) in ids.into_iter().zip(residents) {
+            self.media.insert(id, r);
+        }
+        self.resident_frames = total_frames;
+        self.resident_waveform_bins = total_bins;
+        self.resident_waveform_bytes = total_bytes;
+        Ok((created, artifact))
+    }
+}
+
+impl Session {
+    /// Headless control entry point; native workers use the same transaction
+    /// with their existing device-resource admission/publication hook.
+    pub fn bounce_arrangement(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        let captured = target.clone();
+        self.bounce_arrangement_using(
+            target,
+            in_place,
+            directory,
+            control,
+            |session, project, _| {
+                let waveforms = std::cell::RefCell::new(
+                    session.audio_clip_waveforms().map_err(|e| e.to_string())?,
+                );
+                crate::prepare_with_waveforms(
+                    project,
+                    &session.media_bank(),
+                    session.sine_table(),
+                    None,
+                    &session.audio_transforms,
+                    &waveforms,
+                )
+                .map(Arc::new)
+                .map_err(|e| e.to_string())
+            },
+            |path, revision, item, tails, control| {
+                hex_export::render_arrangement_bounce_new(
+                    path,
+                    revision,
+                    None,
+                    item.start,
+                    item.end - item.start,
+                    tails,
+                    control,
+                )
+                .map(|r| r.frames)
+                .map_err(|e| e.to_string())
+            },
+            |session, prepared, files| {
+                session
+                    .adopt_arrangement_bounce_using(
+                        captured,
+                        in_place,
+                        files,
+                        prepared,
+                        previous,
+                        |input| {
+                            crate::import_batch::prepare_asset_free(input, &mut || {
+                                control.seal_prepared_adoption().map_err(|_| {
+                                    SessionError::Invalid("bounce cancelled before adoption")
+                                })
+                            })
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests;

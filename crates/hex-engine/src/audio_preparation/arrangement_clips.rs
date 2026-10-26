@@ -1,5 +1,6 @@
 //! Private final Arrangement clip owners; not a Track/Project or publication.
 //! Every Box and paired destination exists before any source alias moves.
+pub(super) mod chains;
 #[cfg(test)]
 mod preview_tests;
 pub(super) mod returns;
@@ -83,6 +84,27 @@ pub(crate) struct ArrangementClips {
     #[cfg(test)]
     pub(super) probe: Option<DropProbe>,
 }
+pub(crate) fn sampler_compiler_quote(
+    project: &hex_project::Project,
+) -> Result<(usize, usize), AudioStorageError> {
+    project
+        .tracks()
+        .iter()
+        .filter(|t| t.instrument().is_some())
+        .try_fold((0usize, 0usize), |(retained, scratch), track| {
+            let (r, s) = tracks::sampler_compiler_quote(track)?;
+            Ok((
+                retained.checked_add(r).ok_or(AudioStorageError::Overflow)?,
+                scratch.max(s),
+            ))
+        })
+}
+pub(crate) fn sampler_workspace_bound(
+    notes: usize,
+    clips: usize,
+) -> Result<usize, AudioStorageError> {
+    tracks::sampler_workspace_bound(notes, clips)
+}
 impl ArrangementClips {
     pub(super) fn capacity(
         &self,
@@ -153,12 +175,17 @@ impl ArrangementClips {
             },
         })
     }
-    pub(super) fn reserve(
+    pub(super) fn reserve_with_effects(
         &mut self,
         slots: &[SourceSlot],
         inputs: &OwnedAudioInputs,
         project: &hex_project::Project,
         stages: Stages,
+        samplers: Option<(
+            &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+            &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        )>,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<(), AudioStorageError> {
         let Stages {
             assemble_tracks: tracks,
@@ -183,13 +210,17 @@ impl ArrangementClips {
                 .get(s.source)
                 .ok_or(AudioStorageError::SourceMismatch)?;
             if s.owner.is_some()
+                || s.prepared_origin.is_some()
                 || s.disposal != Disposal::Unstarted
                 || s.handle == 0
                 || s.end <= s.start
                 || s.source_length == 0
-                || s.source_offset
-                    .checked_add(s.source_length)
-                    .is_none_or(|n| u64::try_from(n).ok().is_none_or(|n| n > source.1.frames()))
+                || (!s.transformed
+                    && s.source_offset
+                        .checked_add(s.source_length)
+                        .is_none_or(|n| {
+                            u64::try_from(n).ok().is_none_or(|n| n > source.1.frames())
+                        }))
                 || (!s.looping && s.phase != 0)
                 || (s.looping && s.phase >= s.source_length as u64)
             {
@@ -252,16 +283,26 @@ impl ArrangementClips {
             }
         }
         if tracks {
-            self.tracks.reserve(project, &self.rows)?;
+            self.tracks
+                .reserve_with_effects(project, &self.rows, samplers, effects)?;
         }
         if returns {
-            self.returns.reserve(project)?;
+            self.returns.reserve_with_effects(project, effects)?;
         }
         if preview {
-            self.preview.reserve(project)?;
+            if samplers.is_some() {
+                self.preview
+                    .reserve_with_current_sampler(project, true, effects.is_some())?;
+            } else {
+                self.preview.reserve(project)?;
+            }
         }
         if root {
-            self.root.reserve(project)?;
+            if samplers.is_some() {
+                self.root.reserve_with_effects(project, true, effects)?;
+            } else {
+                self.root.reserve_with_effects(project, false, effects)?;
+            }
         }
         #[cfg(test)]
         if self.mismatch {
@@ -275,11 +316,29 @@ impl ArrangementClips {
         }
         Ok(())
     }
-    pub(super) fn main_carrier_bytes() -> Result<usize, AudioStorageError> {
-        root::ArrangementRootAssembly::main_carrier_bytes()
+    pub(super) fn compile_current_sampler_tracks(
+        &mut self,
+        project: &hex_project::Project,
+        metadata: &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+        contexts: &crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
+    ) -> Result<(), AudioStorageError> {
+        self.tracks
+            .compile_current_sampler_tracks(project, metadata, contexts)
     }
-    pub(super) fn reserve_main_carrier(&mut self) -> Result<(), AudioStorageError> {
-        self.root.reserve_main_carrier()
+    pub(super) fn main_quote(
+        &self,
+        project: &hex_project::Project,
+    ) -> Result<(usize, usize), AudioStorageError> {
+        self.root.main_quote(project)
+    }
+    pub(super) fn reserve_main_carrier(
+        &mut self,
+        project: &hex_project::Project,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+    ) -> Result<(), AudioStorageError> {
+        self.root.reserve_main_carrier(project, effects)
     }
     pub(super) fn construct(
         &mut self,
@@ -293,12 +352,10 @@ impl ArrangementClips {
             return Err(AudioStorageError::Capacity);
         }
         for (slot, (r, s)) in self.rows.iter().zip(slots.iter()).enumerate() {
-            let source = inputs
-                .sources
-                .get(s.source)
-                .ok_or(AudioStorageError::SourceMismatch)?;
+            let source = s.source_owner(inputs)?;
             let owner = s.owner.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
-            let required = matches!(&owner.kind, SourceKind::Streamed(_))
+            let required = s.gain != 1.0
+                || matches!(&owner.kind, SourceKind::Streamed(_))
                 || s.phase != 0
                 || !s.fade.is_neutral();
             if r.binding
@@ -318,14 +375,15 @@ impl ArrangementClips {
                 || r.metadata.is_some() != required
                 || r.metadata.as_ref().is_some_and(|m| {
                     m.streamed.is_some()
+                        || m.gain != s.gain
                         || m.source_phase != s.phase
                         || m.fade != (!s.fade.is_neutral()).then_some(s.fade)
                 })
                 || s.disposal != Disposal::Unstarted
                 || owner.handle != s.handle
-                || !crate::audio_input_storage::same(owner, &source.1)
+                || !crate::audio_input_storage::same(owner, source)
                 || crate::audio_input_storage::parts(owner)?
-                    != crate::audio_input_storage::parts(&source.1)?
+                    != crate::audio_input_storage::parts(source)?
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -337,6 +395,7 @@ impl ArrangementClips {
                 match kind {
                     SourceKind::Resident(audio) => {
                         r.clip = Some(Clip {
+                            active: s.active,
                             audio: Some(audio),
                             start: s.start,
                             end: s.end,
@@ -355,6 +414,7 @@ impl ArrangementClips {
                             target.streamed = r.stream.take();
                         }
                         r.clip = Some(Clip {
+                            active: s.active,
                             audio: None,
                             start: s.start,
                             end: s.end,
@@ -395,17 +455,19 @@ impl ArrangementClips {
     }
     pub(super) fn validate_root_sources(
         &self,
+        slots: &[SourceSlot],
         bank: &OwnedAudioInputs,
     ) -> Result<(), AudioStorageError> {
-        self.validate_root_sources_at(bank, None)
+        self.validate_root_sources_at(slots, bank, None)
     }
     pub(super) fn validate_root_sources_at(
         &self,
+        slots: &[SourceSlot],
         bank: &OwnedAudioInputs,
         external: Option<&crate::Project>,
     ) -> Result<(), AudioStorageError> {
         self.tracks
-            .validate_root_sources(self.root.view_at(external)?.tracks, bank)
+            .validate_root_sources(self.root.view_at(external)?.tracks, slots, bank)
     }
     pub(crate) fn can_transfer_revision(&self) -> bool {
         self.root.project().is_some() && self.preview.can_transfer_revision()
@@ -434,6 +496,12 @@ impl ArrangementClips {
         if preview.is_some() {
             self.preview.restore_revision(preview);
         }
+    }
+    pub(super) fn prepare_signal_graph(
+        &mut self,
+        canonical: &hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        self.root.prepare_signal_graph(canonical)
     }
     pub(super) fn construct_root(
         &mut self,
@@ -467,6 +535,8 @@ impl ArrangementClips {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
+        self.root.dispose_signal_on_control()?;
+        self.root.dispose_main_on_control()?;
         if self.preview.has_next() {
             self.preview.dispose_next()?;
             return Ok(());
@@ -496,6 +566,7 @@ impl ArrangementClips {
             self.staged = true;
             let r = &mut self.rows[self.cursor];
             if let Some(Clip {
+                active: _,
                 audio,
                 metadata,
                 start: _,

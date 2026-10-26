@@ -1,6 +1,4 @@
-# SESSION-ROUTING-001 — slot representation and per-track ownership
-
-Status: reference UI observed; documented behavior; runtime comparison pending
+# Live Session slot observations
 
 - Reference: installed Ableton Live 12 Suite, 12.4.6
   (2026-09-10_0de5c8fa9a), universal executable, initial arm64 target.
@@ -29,40 +27,3 @@ Status: reference UI observed; documented behavior; runtime comparison pending
 
 No playback transition was tested. UI capability evidence is not an audio
 behavior, launch-timing, empty-slot-default or release-tail acceptance result.
-
-## Documented behavior and implementation consequence
-
-The [Live 12 Session View manual](https://www.ableton.com/en/live-manual/12/session-view/#recording-sessions-into-the-arrangement)
-describes per-track exclusivity: a Session launch overrides that track's
-Arrangement; a clip stop silences the track, and Back to Arrangement explicitly
-restores it. Removing a slot's stop button prevents its scene from affecting
-that track. This supports distinct no-op and stop cells and mixed per-track
-Session/Arrangement playback. A global exclusive playback mode is insufficient.
-
-The [launching clips manual](https://www.ableton.com/en/live-manual/12/launching-clips/#clip-launch-quantization)
-describes None and Global clip quantization, plus Trigger, Gate, Toggle, Repeat
-and Legato behavior. These remain separate future requirements.
-
-## Remaining acceptance
-
-Create an isolated minimal original set before exercising launches. Retain a
-baseline and a single-variable stop-button variant; record current rate/block,
-quantization, armed/record settings, launch modes and source markers. Compare
-per-track continuation versus stop and Arrangement resume with transport and
-audio/event evidence. Define frame alignment/tolerance before capture. Test
-on-boundary launch, queued replacement/cancellation and stopped transport.
-
-Hex's stored independent Session ownership, prepared inventory and additive
-source mixing are source accepted; no canonical Session runtime/native comparison
-is claimed here.
-
-## Transport/clock follow-up — 8 October 2026
-
-A fresh read of the [official Session manual](https://www.ableton.com/en/live-manual/12/session-view/)
-documents that individual clip stops leave transport running, and two Control
-Bar Stop presses return song position to 1.1.1. Hex currently resets to frame zero
-on one `PlaybackCommand::Stop`; the exact first/second-press native behavior still
-needs an isolated fixture. Do not infer it from the retained template/user set.
-The manual passages reviewed do not establish Session phase across an active
-Arrangement loop or transport seeking. Track-source clocks must be explicit;
-Arrangement period copying cannot be reused blindly for launched sources.

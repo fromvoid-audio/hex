@@ -120,6 +120,12 @@ impl AppContext for TestAppContext {
 }
 
 impl TestAppContext {
+    /// Verify private draw-order queries against an independent linear scan.
+    /// Test support only; no native graphics or public scene API.
+    pub fn verify_draw_order_queries(&self) -> std::result::Result<(), String> {
+        crate::bounds_tree::verify_ordering()
+    }
+
     /// Verify private cached-scene replay against the retained legacy painter.
     /// Test support only; no window, native graphics or public scene API.
     pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
@@ -758,6 +764,29 @@ impl VisualTestContext {
                 .rev()
                 .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
                 .map(|quad| quad.background)
+        })
+    }
+
+    /// Filled quad fragments inside a debug element in the completed scene,
+    /// clipped to its bounds and each replay/content mask. Canvas primitives do
+    /// not have individual element selectors. This is scene geometry, not native
+    /// framebuffer readback; it draws no frame and injects no input.
+    pub fn rendered_filled_quads(
+        &mut self,
+        selector: &'static str,
+    ) -> Vec<(Bounds<crate::ScaledPixels>, crate::Background)> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.quads.iter().filter_map(|quad| {
+                let visible = quad.bounds.intersect(&scaled).intersect(&quad.content_mask.bounds);
+                (!quad.background.is_transparent()
+                    && visible.size.width > crate::ScaledPixels(0.0)
+                    && visible.size.height > crate::ScaledPixels(0.0))
+                    .then(|| (visible, quad.background.clone()))
+            }).collect()
         })
     }
 

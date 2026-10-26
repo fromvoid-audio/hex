@@ -38,6 +38,7 @@ pub(super) fn fixture(streamed: bool) -> (hex_project::Project, OwnedAudioInputs
     snapshot.tracks[0].balance = -0.25;
     snapshot.tracks[0].soloed = true;
     snapshot.tracks[0].gain_envelope = vec![hex_project::GainPoint {
+        incoming_gain: None,
         beat: hex_project::BeatTime::ZERO,
         gain: 0.5,
         outgoing: hex_project::GainInterpolation::Step,

@@ -199,7 +199,9 @@ pub(super) fn bind_keys(cx: &mut App) {
             "cmd-r",
             "h",
             "l",
+            "w",
             "0",
+            "a",
         ]
         .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_changelog"))),
     );
@@ -368,6 +370,7 @@ impl EditorView {
                         )
                         .tooltip(move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: details.clone(),
                             })
                             .into()

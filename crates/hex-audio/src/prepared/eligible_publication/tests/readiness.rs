@@ -626,7 +626,7 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
                 assert!(offset + frames.len() <= observed[index].len());
                 observed[index][offset..offset + frames.len()].fill(true);
             };
-            let outcome = active.render_streamed(
+            let outcome = active.stream_view().render_streamed(
                 &mut c.domain_pages,
                 false,
                 c.stream_prefix,

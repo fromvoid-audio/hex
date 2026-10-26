@@ -55,6 +55,9 @@ impl Clip {
         end: u64,
         mut visit: impl FnMut(&StreamedSourceMetadata, StreamedPageSpan<'_>) -> usize,
     ) {
+        if !self.active {
+            return;
+        }
         let Some(metadata) = self.metadata.as_deref() else {
             return;
         };

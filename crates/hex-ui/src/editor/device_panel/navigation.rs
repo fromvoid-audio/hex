@@ -164,6 +164,7 @@ pub(in crate::editor) fn bottom_bar(
         .cursor(gpui::CursorStyle::PointingHand)
         .tooltip(|_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control("device chain"),
                 description:
                     "device chain · middle-drag devices · drag focus frame or click to scroll"
                         .into(),
@@ -319,6 +320,7 @@ pub(in crate::editor) fn bottom_bar(
                 })))
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: if open {
                             "hide device panel"
                         } else {

@@ -1,4 +1,4 @@
-use crate::{MAX_DOCUMENT_BYTES, StorageError, decode, encode};
+use crate::{StorageError, decode, encode};
 use hex_project::Project;
 use std::{
     fs::{self, File, OpenOptions},
@@ -15,10 +15,10 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, StorageError> {
     decode(&read_document(path.as_ref())?)
 }
 
-/// Opaque bounded exact-byte content snapshot, shared cheaply between owners.
+/// Opaque exact-byte content snapshot, shared cheaply between owners.
 /// This is a content check, not a filesystem lock, identity or overwrite permit.
 #[derive(Clone)]
-pub struct FileToken(pub(super) Arc<[u8]>);
+pub struct FileToken(pub(super) Arc<[u8]>, bool);
 
 impl std::fmt::Debug for FileToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -29,6 +29,34 @@ impl std::fmt::Debug for FileToken {
 }
 
 impl FileToken {
+    /// True when saving would replace an older schema with the current format.
+    /// Tokens are constructed only after validated decoding or current encoding;
+    /// an unexpected header conservatively requires confirmation too.
+    pub fn requires_format_upgrade(&self) -> bool {
+        self.1
+    }
+
+    /// Control-side preflight for replacing a file an older reader could open.
+    /// The saved layout is unchanged, but crossing its former byte ceiling loses
+    /// reader compatibility just as a schema upgrade does. Already-large files
+    /// do not acquire a new compatibility loss on subsequent saves.
+    pub fn requires_save_confirmation(&self, project: &Project) -> Result<bool, StorageError> {
+        Ok(self.requires_format_upgrade()
+            || (self.0.len() <= crate::LEGACY_READER_DOCUMENT_BYTES
+                && encode(project)?.len() > crate::LEGACY_READER_DOCUMENT_BYTES))
+    }
+
+    pub(super) fn from_validated_bytes(bytes: Arc<[u8]>) -> Self {
+        #[derive(serde::Deserialize)]
+        struct Header {
+            version: u32,
+        }
+        let upgrade = serde_json::from_slice::<Header>(&bytes).map_or(true, |header| {
+            header.version != crate::CURRENT_SCHEMA_VERSION
+        });
+        Self(bytes, upgrade)
+    }
+
     /// Compare the current document with the captured bytes without modifying it.
     /// Byte-identical replacement is accepted. A later noncooperating write can
     /// still race any future publication; this method is not a compare-and-swap.
@@ -44,24 +72,36 @@ impl FileToken {
     }
 }
 
-/// Decode and capture the same single bounded read, preserving original bytes
-/// including formatting and legacy schema rather than re-encoding a migration.
+/// Decode and capture the same single read, preserving original saved-format
+/// bytes including whitespace rather than re-encoding the decoded project.
 pub fn load_with_token(path: impl AsRef<Path>) -> Result<(Project, FileToken), StorageError> {
     let bytes = read_document(path.as_ref())?;
     let project = decode(&bytes)?;
-    Ok((project, FileToken(bytes.into())))
+    Ok((project, FileToken::from_validated_bytes(bytes.into())))
 }
 
 pub(super) fn read_document(path: &Path) -> Result<Vec<u8>, StorageError> {
-    let file = File::open(path)?;
-    let mut bytes = Vec::new();
-    file.take(MAX_DOCUMENT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(StorageError::Invalid("project document exceeds byte limit"));
-    }
-    Ok(bytes)
+    read_bytes(File::open(path)?)
 }
+
+/// Grow owned I/O buffers fallibly without an arbitrary document-size ceiling.
+/// Read in chunks rather than trusting filesystem metadata or framed lengths.
+fn read_bytes(mut reader: impl Read) -> Result<Vec<u8>, StorageError> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let count = match reader.read(&mut chunk) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            return Ok(bytes);
+        }
+        bytes.try_reserve(count).map_err(std::io::Error::other)?;
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+}
+
 struct Temporary(PathBuf);
 impl Drop for Temporary {
     fn drop(&mut self) {
@@ -145,7 +185,7 @@ fn save_with_finish(
             source,
         }
     })?;
-    Ok(FileToken(Arc::from(bytes)))
+    Ok(FileToken::from_validated_bytes(Arc::from(bytes)))
 }
 
 fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
@@ -392,6 +432,69 @@ mod tests {
     }
 
     #[test]
+    fn reverb_track_and_return_identity_routing_and_settings_save_reopen() {
+        use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+        use hex_project::{Command, Created, Editor};
+        let dir = TestDir::new();
+        let path = dir.0.join("reverb.hex");
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "room".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "room return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        let payload = [2.1_f32, 73.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let state =
+            NativeDeviceState::new(DeviceTypeId::from_static("hex.reverb"), 1, payload).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.7,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        save_new(&path, editor.project()).unwrap();
+        assert_eq!(load(&path).unwrap(), *editor.project());
+    }
+
+    #[test]
     fn opaque_auto_pan_state_survives_project_save_and_load() {
         use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
         use hex_project::{Command, Created, DeviceSnapshot, Editor};
@@ -449,15 +552,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_token_checks_original_schema_bytes_instead_of_migrated_encoding() {
+    fn token_checks_original_current_bytes_instead_of_reencoded_formatting() {
         let dir = TestDir::new();
-        let path = dir.0.join("legacy.hex");
-        let legacy = br#"{"format":"hex-project","version":1,"sample_rate":48000,"next_id":1,"assets":[],"tracks":[]}"#;
-        fs::write(&path, legacy).expect("legacy fixture");
-        let (project, token) = load_with_token(&path).expect("migrated project and original token");
-        token.check_unchanged(&path).expect("legacy untouched");
-        assert_ne!(encode(&project).expect("current schema"), legacy);
-        fs::write(&path, encode(&project).expect("migration bytes")).expect("external migration");
+        let path = dir.0.join("formatted.hex");
+        let project = Project::new(48_000).unwrap();
+        let encoded = encode(&project).unwrap();
+        let formatted = serde_json::to_vec_pretty(
+            &serde_json::from_slice::<serde_json::Value>(&encoded).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(encoded, formatted);
+        fs::write(&path, &formatted).expect("formatted fixture");
+        let (loaded, token) = load_with_token(&path).expect("project and original token");
+        assert_eq!(loaded, project);
+        token.check_unchanged(&path).expect("original untouched");
+        fs::write(&path, &encoded).expect("external formatting change");
         assert!(matches!(
             token.check_unchanged(&path),
             Err(StorageError::Conflict { .. })
@@ -465,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn token_loading_and_comparison_refuse_invalid_or_oversized_documents() {
+    fn token_loading_refuses_invalid_documents_and_comparison_detects_large_external_changes() {
         let dir = TestDir::new();
         let path = dir.0.join("bounded.hex");
         fs::write(&path, b"invalid json").expect("invalid fixture");
@@ -473,14 +582,12 @@ mod tests {
         fs::remove_file(&path).expect("remove owned fixture");
         save_new(&path, &Project::new(48_000).expect("project")).expect("valid fixture");
         let (_, token) = load_with_token(&path).expect("token");
-        fs::write(&path, vec![b' '; MAX_DOCUMENT_BYTES + 1]).expect("oversized fixture");
-        assert!(matches!(
-            load_with_token(&path),
-            Err(StorageError::Invalid("project document exceeds byte limit"))
-        ));
+        fs::write(&path, vec![b' '; crate::LEGACY_READER_DOCUMENT_BYTES + 1])
+            .expect("oversized fixture");
+        assert!(load_with_token(&path).is_err());
         assert!(matches!(
             token.check_unchanged(&path),
-            Err(StorageError::Invalid("project document exceeds byte limit"))
+            Err(StorageError::Conflict { .. })
         ));
     }
 

@@ -1,7 +1,9 @@
 //! One complete checkpoint per slot; no backup history or implicit recovery.
-use crate::{FileToken, JournalChange, MAX_DOCUMENT_BYTES, StorageError, encode, replacement};
+use crate::{FileToken, JournalChange, StorageError, encode, replacement};
+mod restart;
 mod slot_lock;
 use hex_project::Project;
+pub use restart::{JournalRestartOutcome, JournalRestartToken, restart_journal};
 use slot_lock::{SlotLock, lock_slot};
 use std::{
     fs::{self, File},
@@ -11,7 +13,6 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"HEXJRNL\0";
 const LOCK_MAGIC: &[u8; 8] = b"HEXJLOC\0";
-const MAX_BYTES: usize = MAX_DOCUMENT_BYTES + 287;
 
 /// Journal beside a saved project. Untitled uses a caller-supplied application slot.
 pub fn journal_path(target: &Path) -> Result<PathBuf, StorageError> {
@@ -41,7 +42,7 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// Adopt only a recognized, bounded, valid journal. Unknown files are preserved.
+    /// Adopt only a recognized, valid journal. Unknown files are preserved.
     pub fn open(path: PathBuf) -> Result<Self, StorageError> {
         let bytes = read(&path)?;
         if let Some(bytes) = &bytes {
@@ -217,14 +218,7 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
             "journal must be a regular non-symbolic file",
         ));
     }
-    let mut bytes = Vec::new();
-    fs::File::open(path)?
-        .take(MAX_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_BYTES {
-        return Err(StorageError::Invalid("journal exceeds byte limit"));
-    }
-    Ok(Some(bytes))
+    Ok(Some(crate::files::read_document(path)?))
 }
 
 fn decode(path: &Path, bytes: &[u8]) -> Result<Project, StorageError> {
@@ -551,7 +545,7 @@ mod tests {
         for bytes in [
             b"unrelated data".to_vec(),
             valid[..valid.len() - 1].to_vec(),
-            vec![0; MAX_BYTES + 1],
+            vec![0; 32],
             wrong_binding,
             future,
         ] {

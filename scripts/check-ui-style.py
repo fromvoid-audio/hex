@@ -8,14 +8,20 @@ errors = []
 # Text children must be normalized centrally; other children are view elements.
 widgets = (
     'div(', 'Self::button(', 'Self::with_tooltip(', 'Self::ruler(', 'Self::empty_grid(',
-    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.clip_detail_view(',
+    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.controller_input_settings(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Query clear-slot composition contains a themed action and native input semantics.
+    'self.clear_search_slot(',
+    # Header drop wrapper preserves the existing themed row and only refines drag paint.
+    'self.device_drop_header(',
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
     'clip_waveform_body(', 'self.clip_name_preview_header(',
+    # Loop body wrappers contain native views; marker glyphs use theme::text.
+    'loop_handles::body(', 'loop_handles::audio_markers(', 'loop_handles::midi_markers(',
     'clip_fade_layer(', 'self.clip_name_drag_header(', 'clip_name_text(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
@@ -26,6 +32,9 @@ widgets = (
     'harmonics::tools(', 'restart)', 'oscillator_velocity)', 'quantize)',
     'row.child(', 'loop_cell)',
     'tools)', 'oscillator_fields)', 'link)', 'enabled)', 'hex_widgets::device_segment(',
+    'hex_widgets::action(',
+    # The shared splitter handle paints caller-resolved geometry/color only.
+    'self.project_spectrum_splitter_input(cx)',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
@@ -54,11 +63,13 @@ widgets = (
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
-    'self.browser_history_arrow(',
+    'self.browser_history_arrow(', 'self.browser_reveal_button(',
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
     'picker_label(', 'picker_heading(', 'picker_group_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.
-    'self.browser_audition_row(', 'mini_waveform(',
+    'self.browser_audition_row(',
+    # Shared sampler/browser waveform canvas contains no text.
+    'super::super::overview_waveform::render(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
     'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
     'super::super::waveform::waveform_summary_view(',
@@ -76,7 +87,7 @@ widgets = (
     'super::musical_audio_controls::warp_header(', 'sample_bpm::field(',
     'super::waveform::prepared_waveform_view_cached(',
     'super::waveform::timeline_waveform_view_cached(',
-    'source_adjust_button(', 'gain_adjust_button(',
+    'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(', 'session_audio_loop_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
     'status_slot(', 'super::waveform::waveform_view_cached(',
@@ -86,16 +97,17 @@ widgets = (
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
     'section_heading(', 'unavailable(',
-    'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'entity.clone())', 'control.entity.clone())',
+    'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'text_segment_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
     # Changelog body/group captions normalize text; the test paint probe has no label.
     'self.changelog_group(', 'self.changelog_paint_probe(', 'notes)',
+    'crate::tooltips::HelpToggle)',
     'lights)', 'crate::build_info::label()', 'crate::build_info::editor_label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     # Device preset header actions reuse themed compact action buttons.
-    'super::device_preset::actions(', 'super::device_panel::action_button(',
+    'super::device_preset::actions(', 'super::device_panel::action_button(', 'super::device_panel::segment_button(',
     'super::super::device_preset::actions(',
     # Shared A/B actions compose themed compact buttons, never raw text.
     'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
@@ -112,6 +124,12 @@ widgets = (
     # Saturator composition uses typed shared controls and a normalized plot;
     # its axis/error text is routed through theme::text at the panel boundary.
     'plot)', 'plot.id(', 'self.project_spectrum_panel(', 'self.project_spectrum_pointer_events(', 'chooser)', 'drive)', 'wet)',
+    # Delay composition children are typed Div/shared controls; captions are
+    # normalized through theme::text by control()/channel()/segment_button().
+    'row()', 'mode)', 'timing)', 'offset)', 'right)', 'freeze)', 'smoothing)',
+    'ping)', 'mix)', 'filter)', 'frequency)', 'width)', 'filter_row)',
+    'disclosure)', 'delay_mod)', 'filter_mod)', 'modulation)', 'rate)', 'wave)',
+    'morph)', 'quality)', 'loudness)', 'timings)', 'center)',
     # Compressor composition uses shared typed numeric controls and normalized plot.
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
@@ -122,13 +140,15 @@ widgets = (
     'gain_meters::render(', 'super::gain_meters::render(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    # Fit/back controls delegate labels to the existing themed waveform button.
+    'self.zoom_fit_button(', 'view.zoom_fit_button(',
     # Audio-event editor components keep their text at the themed boundary.
     'super::audio_event_editor::view(', 'waveform::button(',
     'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
     'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
     # Fade pointer capture is a typed canvas listener with no rendered text.
-    'self.fade_pointer_events(',
+    'self.fade_pointer_events(', 'self.clip_detail_pointer_events(',
     # Tuning components normalize labels at their theme::text boundary.
     'tuning_section(', 'self.tuning_control(', 'self.tuning_library_panel(', 'self.tuning_mts_controls(',
     'pitch)', 'palette)', 'plots::lattice(', 'tuning_name_input.clone())',
@@ -163,7 +183,35 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
             and suffix.startswith(('self.return_volume(', 'gain_control)'))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component:
+        # Clip-detail bindings return shared widgets; their labels pass through
+        # theme::text in the owning component, never raw .child text.
+        clip_detail_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/arrangement_audio_panel.rs'
+            and suffix.startswith(('controls::number(', 'controls::toggle('))
+        )
+        # Console column boundaries return typed, text-free drop surfaces.
+        console_column_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid.rs'
+            and suffix.startswith(('self.console_column_edge(',
+                                   'self.console_column_surface(', 'tail)'))
+        )
+        # Reverb's grouped panel passes bound controls and provider plot data;
+        # titles and numeric/toggle labels normalize through theme::text.
+        reverb_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/reverb_panel.rs'
+            and suffix.startswith(('row(', 'title(', 'graph(', 'graph_column)',
+                                   'contour)', 'early)', 'diffusion)', 'chorus)',
+                                   'top)', 'bottom)', 'smooth)', 'density)', 'freeze)', 'high)', 'low)'))
+        )
+        # Limiter slots are bound controls or a shared text-free meter widget.
+        # Every caption remains independently checked at theme::text.
+        limiter_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/limiter_panel.rs'
+            and suffix.startswith(('crate::device_composition::dense_rail(', 'hex_widgets::level_meter(', 'meters)', 'gain)', 'link)',
+                                   'maximize_control)', 'threshold)', 'display)', 'mode)',
+                                   'lookahead)', 'routing)', 'release)', 'auto)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not limiter_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

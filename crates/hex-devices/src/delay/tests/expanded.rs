@@ -1,0 +1,325 @@
+use super::*;
+use hex_lattice::NativeInstrumentClock;
+fn state(parameters: &[(hex_lattice_contract::ParameterId, ParameterValue)]) -> NativeDeviceState {
+    let mut state = DEFINITION.default_state().unwrap();
+    for (id, value) in parameters {
+        state = DEFINITION.patch_parameter(&state, *id, *value).unwrap();
+    }
+    state
+}
+fn owned(rate: u32, state: &NativeDeviceState) -> Box<dyn OwnedProcessorRuntime> {
+    let Some(PreparedProcessorFactory::Owned(factory)) = DEFINITION
+        .prepare_runtime_factory(
+            state,
+            &DevicePreparationContext {
+                sample_rate: rate,
+                tuning: &TuningTable::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("owned")
+    };
+    factory.create_runtime().unwrap()
+}
+fn free(time: f32, feedback: f32) -> NativeDeviceState {
+    state(&[
+        (LEFT_SYNC, ParameterValue::Bool(false)),
+        (TIME, ParameterValue::Float(time)),
+        (FEEDBACK, ParameterValue::Float(feedback)),
+        (DRY_WET, ParameterValue::Float(1.0)),
+        (FILTER, ParameterValue::Bool(false)),
+        (HIGH_QUALITY, ParameterValue::Bool(false)),
+        (SMOOTHING, ParameterValue::Choice(2)),
+    ])
+}
+struct Clock {
+    start: usize,
+    breakpoint: usize,
+    first: u32,
+    second: u32,
+}
+impl NativeInstrumentClock for Clock {
+    fn beat_at_offset(&self, _: usize) -> Option<u64> {
+        None
+    }
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        Some(if self.start + offset < self.breakpoint {
+            self.first
+        } else {
+            self.second
+        })
+    }
+}
+fn musical(
+    runtime: &mut dyn OwnedProcessorRuntime,
+    input: &[StereoFrame],
+    partitions: &[usize],
+    change: usize,
+    first: u32,
+    second: u32,
+) -> Vec<StereoFrame> {
+    let mut out = input.to_vec();
+    let mut start = 0;
+    for n in partitions.iter().cycle() {
+        if start == out.len() {
+            break;
+        }
+        let end = (start + n).min(out.len());
+        runtime.begin_block();
+        runtime.process_block_with_clock(
+            &mut out[start..end],
+            Some(&Clock {
+                start,
+                breakpoint: change,
+                first,
+                second,
+            }),
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        runtime.commit_block();
+        start = end;
+    }
+    out
+}
+#[test]
+fn exact_sync_offsets_channel_independence_and_tempo_boundary_are_partition_invariant() {
+    for rate in [8000, 48000, 192000] {
+        let s = state(&[
+            (FILTER, ParameterValue::Bool(false)),
+            (HIGH_QUALITY, ParameterValue::Bool(false)),
+            (FEEDBACK, ParameterValue::Float(0.0)),
+            (DRY_WET, ParameterValue::Float(1.0)),
+            (SMOOTHING, ParameterValue::Choice(2)),
+            (LINK, ParameterValue::Bool(false)),
+            (LEFT_OFFSET, ParameterValue::Float(20.0)),
+            (RIGHT_OFFSET, ParameterValue::Float(-20.0)),
+        ]);
+        let mut input = vec![[0.0; 2]; rate as usize];
+        input[0] = [1.0, -0.5];
+        let a = musical(
+            owned(rate, &s).as_mut(),
+            &input,
+            &[input.len()],
+            usize::MAX,
+            100_000_000,
+            100_000_000,
+        );
+        let b = musical(
+            owned(rate, &s).as_mut(),
+            &input,
+            &[1, 63, 257, 19],
+            usize::MAX,
+            100_000_000,
+            100_000_000,
+        );
+        assert_eq!(a, b);
+        // 3 sixteenths at 100 bpm = .45 s, independently offset by +/-20%.
+        for (lane, seconds) in [(0, 0.54_f64), (1, 0.36)] {
+            let tap = (f64::from(rate) * seconds).round() as usize;
+            assert!((a[tap][lane] - input[0][lane]).abs() < 2e-5);
+            assert_eq!(a[..tap - 1].iter().map(|f| f[lane].abs()).sum::<f32>(), 0.0);
+        }
+        let s = state(&[
+            (FILTER, ParameterValue::Bool(false)),
+            (FEEDBACK, ParameterValue::Float(0.0)),
+            (DRY_WET, ParameterValue::Float(1.0)),
+            (SMOOTHING, ParameterValue::Choice(2)),
+        ]);
+        let a = musical(
+            owned(rate, &s).as_mut(),
+            &input,
+            &[input.len()],
+            100,
+            120_000_000,
+            60_000_000,
+        );
+        let b = musical(
+            owned(rate, &s).as_mut(),
+            &input,
+            &[1, 63, 257],
+            100,
+            120_000_000,
+            60_000_000,
+        );
+        assert_eq!(a, b);
+        assert_eq!(a[rate as usize * 3 / 4], [1.0, -0.5]);
+    }
+}
+#[test]
+fn ping_pong_has_an_independent_left_then_right_timing_oracle() {
+    let s = DEFINITION
+        .patch_parameter(&free(10.0, 0.5), PING_PONG, ParameterValue::Bool(true))
+        .unwrap();
+    let mut input = vec![[0.0; 2]; 321];
+    input[0] = [1.0, 1.0];
+    let output = render(owned(8000, &s).as_mut(), &input, &[17]);
+    assert_eq!(output[80], [1.0, 0.0]);
+    assert_eq!(output[160], [0.0, 0.5]);
+    assert_eq!(output[240], [0.25, 0.0]);
+    assert_eq!(output[320], [0.0, 0.125]);
+}
+#[test]
+fn three_transition_laws_match_hand_computed_ramp_taps() {
+    let input: Vec<_> = (0..512).map(|i| [i as f32 / 10000.0, 0.0]).collect();
+    for mode in 0..3 {
+        let old_state = DEFINITION
+            .patch_parameter(&free(10.0, 0.0), SMOOTHING, ParameterValue::Choice(mode))
+            .unwrap();
+        let mut old = owned(8000, &old_state);
+        render(old.as_mut(), &input, &[17]);
+        let next = DEFINITION
+            .patch_parameter(&old_state, TIME, ParameterValue::Float(20.0))
+            .unwrap();
+        let mut runtime = owned(8000, &next);
+        runtime.transfer_history_from(old.as_mut());
+        assert!(old.committed_is_quiescent());
+        let continuation: Vec<_> = (512..532).map(|i| [i as f32 / 10000.0, 0.0]).collect();
+        let output = render(runtime.as_mut(), &continuation, &[3]);
+        let alpha = 1.0 - (-1.0_f64 / 80.0).exp();
+        let mut tap = 80.0;
+        for (n, frame) in output.iter().enumerate() {
+            let expected = match mode {
+                0 => {
+                    tap += alpha * (160.0 - tap);
+                    (512.0 + n as f64 - tap) / 10000.0
+                }
+                1 => {
+                    let blend = n as f64 / 400.0;
+                    ((512 + n) as f64 - 80.0 * (1.0 - blend) - 160.0 * blend) / 10000.0
+                }
+                _ => (512.0 + n as f64 - 160.0) / 10000.0,
+            };
+            assert!(
+                (f64::from(frame[0]) - expected).abs() < 2e-7,
+                "mode={mode} n={n}"
+            );
+        }
+    }
+}
+#[test]
+fn freeze_ignores_new_input_preserves_cycles_and_residual_ownership_releases_it() {
+    let s = free(10.0, 0.5);
+    let mut runtime = owned(8000, &s);
+    let mut input = [[0.0; 2]; 160];
+    input[0] = [1.0, -0.25];
+    render(runtime.as_mut(), &input, &[17]);
+    let frozen = DEFINITION
+        .patch_parameter(&s, FREEZE, ParameterValue::Bool(true))
+        .unwrap();
+    let mut next = owned(8000, &frozen);
+    next.transfer_history_from(runtime.as_mut());
+    let output = render(next.as_mut(), &[[1.0; 2]; 800], &[63]);
+    for (i, frame) in output.iter().enumerate() {
+        assert_eq!(*frame, if i % 80 == 0 { [0.5, -0.125] } else { [0.0; 2] });
+    }
+    next.begin_output_tail();
+    let release = render(next.as_mut(), &[[0.0; 2]; 240], &[17]);
+    assert_eq!(release[0], [0.5, -0.125]);
+    assert_eq!(release[80], [0.25, -0.0625]);
+    next.reset();
+    assert!(next.committed_is_quiescent());
+    assert_eq!(
+        render(next.as_mut(), &[[0.0; 2]; 500], &[19]),
+        [[0.0; 2]; 500]
+    );
+}
+#[test]
+fn filtered_impulse_matches_independent_bilinear_butterworth_magnitudes_and_xy_axes() {
+    let s = DEFINITION
+        .patch_parameter(&free(1.0, 0.0), FILTER, ParameterValue::Bool(true))
+        .unwrap();
+    let s = DEFINITION
+        .patch_parameter(&s, WIDTH, ParameterValue::Float(2.0))
+        .unwrap();
+    let mut input = vec![[0.0; 2]; 8192];
+    input[0][0] = 1.0;
+    let output = render(owned(48000, &s).as_mut(), &input, &[127]);
+    for hz in [100.0_f64, 300.0, 1000.0, 5000.0, 15000.0] {
+        let mut re = 0.0;
+        let mut im = 0.0;
+        for (i, frame) in output.iter().enumerate() {
+            let (sin, cos) = (std::f64::consts::TAU * hz * i as f64 / 48000.0).sin_cos();
+            re += f64::from(frame[0]) * cos;
+            im -= f64::from(frame[0]) * sin;
+            assert_eq!(frame[1], 0.0);
+        }
+        let ratio = |cutoff: f64| {
+            (std::f64::consts::PI * hz / 48000.0).tan()
+                / (std::f64::consts::PI * cutoff / 48000.0).tan()
+        };
+        let hp = ratio(500.0);
+        let lp = ratio(2000.0);
+        let expected = hp.powi(2) / (1.0 + hp.powi(4)).sqrt() / (1.0 + lp.powi(4)).sqrt();
+        assert!(((re * re + im * im).sqrt() - expected).abs() < 2e-5);
+    }
+    let preview = filter_preview(&s, 48000).unwrap();
+    let [freq, width] = filter_values(preview.position, 48000).unwrap();
+    assert!((freq - 1000.0).abs() < 0.001);
+    assert!((width - 2.0).abs() < 0.0001);
+}
+#[test]
+fn every_lfo_wave_and_rate_mode_modulates_audibly_without_partition_or_rng_drift() {
+    let input: Vec<_> = (0..5000)
+        .map(|i| {
+            let x = (i as f32 * 0.13).sin() * 0.1;
+            [x, -x * 0.5]
+        })
+        .collect();
+    let base = free(10.0, 0.4);
+    let baseline = render(owned(8000, &base).as_mut(), &input, &[127]);
+    for mode in 0..6 {
+        for wave in 0..7 {
+            let mut s = base.clone();
+            for (id, value) in [
+                (LFO_MODE, ParameterValue::Choice(mode)),
+                (LFO_WAVE, ParameterValue::Choice(wave)),
+                (LFO_RATE, ParameterValue::Float(5.0)),
+                (LFO_TIME, ParameterValue::Float(200.0)),
+                (LFO_DIVISION, ParameterValue::Choice(0)),
+                (LFO_MORPH, ParameterValue::Float(0.3)),
+                (LFO_DELAY, ParameterValue::Float(0.5)),
+                (LFO_FILTER, ParameterValue::Float(0.5)),
+                (FILTER, ParameterValue::Bool(true)),
+            ] {
+                s = DEFINITION.patch_parameter(&s, id, value).unwrap();
+            }
+            let a = musical(
+                owned(8000, &s).as_mut(),
+                &input,
+                &[5000],
+                usize::MAX,
+                123_000_000,
+                123_000_000,
+            );
+            let b = musical(
+                owned(8000, &s).as_mut(),
+                &input,
+                &[1, 63, 257],
+                usize::MAX,
+                123_000_000,
+                123_000_000,
+            );
+            assert_eq!(a, b, "mode={mode} wave={wave}");
+            assert_ne!(a, baseline);
+            assert!(a.iter().flatten().all(|v| v.is_finite()));
+        }
+    }
+}
+
+#[test]
+fn each_lfo_wave_has_an_effective_morph_control() {
+    for wave in 0..7 {
+        let mut low = super::super::lfo::Lfo::default();
+        let mut high = low;
+        let a: Vec<_> = (0..1000).map(|_| low.process(wave, 0.0, 0.003)).collect();
+        let b: Vec<_> = (0..1000).map(|_| high.process(wave, 1.0, 0.003)).collect();
+        assert_ne!(a, b, "wave {wave} morph must affect modulation");
+        assert!(
+            a.iter()
+                .chain(&b)
+                .all(|x| x.is_finite() && (-1.0..=1.0).contains(x))
+        );
+    }
+}

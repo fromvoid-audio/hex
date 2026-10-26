@@ -59,6 +59,7 @@ impl Import {
         channel: u8,
         velocity: u8,
         honor_suppression: bool,
+        gain_override: Option<f64>,
     ) -> Result<(), SessionPlaybackError> {
         if start >= cut
             || end <= cut
@@ -116,6 +117,22 @@ impl Import {
             .performance_frame
             .checked_add(end - cut)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let index = previous
+            .routes
+            .iter()
+            .position(|r| r.id == route.id)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        let (gain, gain_frozen) = match gain_override {
+            Some(gain) => (gain, true),
+            None => super::clip_gain::at_cut(
+                previous,
+                index,
+                route.owner,
+                clip,
+                previous.arrangement_frame,
+                previous.performance_frame,
+            )?,
+        };
         self.occurrences[self.len] = Some(MutableOccurrence {
             signature: MutableOccurrenceSignature::from_parts(
                 MutableOccurrenceKey::new(route.id, clip, note, iteration, loop_pass),
@@ -130,6 +147,8 @@ impl Import {
             gate_end_frame,
             quiet_deadline_frame,
             note_off_sent: gate <= cut,
+            gain_at_end_bits: gain.to_bits(),
+            gain_frozen,
         });
         self.len += 1;
         Ok(())
@@ -179,15 +198,11 @@ pub(super) fn at_cut(
                         return;
                     }
                     if previous.arrangement_loop_pass > 0
-                        && previous
-                            .revision
-                            .arrangement()
-                            .loop_region()
-                            .is_some_and(|region| {
-                                region.enabled()
-                                    && span.start < region.start()
-                                    && span.gate_end <= region.start()
-                            })
+                        && previous.loop_region().is_some_and(|region| {
+                            region.enabled()
+                                && span.start < region.start()
+                                && span.gate_end <= region.start()
+                        })
                     {
                         return;
                     }
@@ -210,6 +225,7 @@ pub(super) fn at_cut(
                             span.channel,
                             span.velocity,
                             true,
+                            None,
                         )
                         .err();
                 })
@@ -218,18 +234,19 @@ pub(super) fn at_cut(
                 return Err(error);
             }
         }
-        RouteOwner::Session { clip, launch } => {
-            let clip = previous
-                .revision
-                .session()
-                .midi_clip_for_track(clip, route.id)
-                .ok_or(SessionPlaybackError::UnknownClip)?;
+        RouteOwner::Session { clip, origin } => {
+            let clip = crate::session_inventory::EffectiveSessionMidi::new(
+                previous.revision.session(),
+                previous.midi_admission.as_ref(),
+            )
+            .midi_clip_for_track(clip, route.id)
+            .ok_or(SessionPlaybackError::UnknownClip)?;
             if clip.track != route.id {
                 return Err(SessionPlaybackError::ClipTrackMismatch);
             }
             let clock = timing_view_for(
                 previous.revision.session(),
-                previous.periodic_tempo,
+                previous.periodic_tempo(),
                 previous.anchor,
             );
             let frame = previous.performance_frame;
@@ -238,10 +255,10 @@ pub(super) fn at_cut(
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             if let Some(floor) = previous.historical_floor_for(index) {
                 clip.instrument_template()
-                    .query_after_onset(launch, &clock, frame, end, spans, floor)
+                    .query_after_onset_with_origin(origin, &clock, frame, end, spans, floor)
             } else {
                 clip.instrument_template()
-                    .query(launch, &clock, frame, end, spans)
+                    .query_with_origin(origin, &clock, frame, end, spans)
             }
             .map_err(SessionPlaybackError::Midi)?;
             for span in spans.spans() {
@@ -266,6 +283,7 @@ pub(super) fn at_cut(
                     span.channel,
                     span.velocity,
                     true,
+                    None,
                 )?;
             }
         }
@@ -304,6 +322,7 @@ pub(super) fn at_cut(
             c.channel,
             c.velocity,
             false,
+            Some(entry.clip_gain),
         )?;
     }
     Ok(out)

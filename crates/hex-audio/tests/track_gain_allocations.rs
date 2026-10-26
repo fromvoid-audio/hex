@@ -25,23 +25,34 @@ fn prepare(editor: &Editor) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
 #[test]
 fn held_track_gain_candidates_inherit_running_voice_and_allocate_nothing_in_callback()
 -> Result<(), Box<dyn Error>> {
-    gain_callback(false, false)
+    gain_callback(false, false, false)
 }
 
 #[test]
 fn mutable_held_track_gain_candidates_inherit_running_voice_without_callback_allocation()
 -> Result<(), Box<dyn Error>> {
-    gain_callback(true, false)
+    gain_callback(true, false, false)
 }
 
 #[test]
 fn launched_session_gain_candidates_keep_phase_and_routes_without_callback_allocation()
 -> Result<(), Box<dyn Error>> {
-    gain_callback(false, true)?;
-    gain_callback(true, true)
+    gain_callback(false, true, false)?;
+    gain_callback(true, true, false)
 }
 
-fn gain_callback(mutable: bool, session: bool) -> Result<(), Box<dyn Error>> {
+#[test]
+fn soloed_muted_tracks_remain_audible_across_gain_handoffs_without_callback_allocation()
+-> Result<(), Box<dyn Error>> {
+    for mutable in [false, true] {
+        for session in [false, true] {
+            gain_callback(mutable, session, true)?;
+        }
+    }
+    Ok(())
+}
+
+fn gain_callback(mutable: bool, session: bool, solo_muted: bool) -> Result<(), Box<dyn Error>> {
     let rate = 48_000;
     let mut editor = Editor::new(Project::new(rate)?, 16)?;
     let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
@@ -128,6 +139,14 @@ fn gain_callback(mutable: bool, session: bool) -> Result<(), Box<dyn Error>> {
             device: instrument,
             state,
         })?;
+    }
+    if solo_muted {
+        editor.execute(Command::Mute { track, muted: true })?;
+        editor.execute(Command::ToggleSolo {
+            track,
+            exclusive: true,
+        })?;
+        assert!(editor.project().track(track).ok_or("track")?.muted());
     }
     let revision = prepare(&editor)?;
     let mut oracle = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;

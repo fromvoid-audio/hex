@@ -1,8 +1,53 @@
-//! Gate highlights from the exact applied prepared graph and observed routes.
+//! Gate highlights from the exact applied schedule and observed routes.
 use super::*;
 use hex_audio::prepared::SessionRouteOwner;
 use hex_engine::SessionPlaybackOwner;
+use hex_project::TrackId;
 use std::sync::atomic::Ordering::Acquire;
+
+// Worker observations contain only compiled gate/timing data. Other editor backends retain
+// their existing prepared revision; neither source is reconstructed from sampled drawing data.
+enum ActivitySource<'a> {
+    Projected(&'a hex_engine::PreparedMidiActivity),
+    Prepared(&'a hex_engine::PreparedRevision),
+}
+impl ActivitySource<'_> {
+    fn route_track(&self, track: TrackId) -> Result<TrackId, hex_engine::Invalid> {
+        match self {
+            Self::Projected(activity) => activity.route_track(track),
+            Self::Prepared(prepared) => prepared.midi_activity_route_track(track),
+        }
+    }
+    fn session_midi_clip(&self, track: TrackId, clip_id: u64) -> Option<hex_project::ClipId> {
+        match self {
+            Self::Projected(activity) => activity.session_midi_clip(track, clip_id),
+            Self::Prepared(prepared) => prepared
+                .session()
+                .midi_clips()
+                .iter()
+                .find(|candidate| candidate.track == track && candidate.id.value() == clip_id)
+                .map(|candidate| candidate.id),
+        }
+    }
+    fn gate_keys(
+        &self,
+        track: TrackId,
+        owner: SessionPlaybackOwner,
+        origin: Option<hex_engine::SessionMidiOrigin>,
+        clock_anchor: Option<hex_engine::SessionClockAnchor>,
+        cursors: (u64, u64),
+        spans: &mut hex_engine::MidiSpanBuffer,
+    ) -> Result<[u64; 2], hex_engine::Invalid> {
+        match self {
+            Self::Projected(activity) => {
+                activity.gate_keys(track, owner, origin, clock_anchor, cursors, spans)
+            }
+            Self::Prepared(prepared) => {
+                prepared.midi_gate_keys(track, owner, origin, clock_anchor, cursors, spans)
+            }
+        }
+    }
+}
 
 impl EditorView {
     pub(in crate::editor) fn tick_tuning_midi_activity(&mut self) -> bool {
@@ -34,7 +79,10 @@ impl EditorView {
             {
                 return None;
             }
-            let prepared = audible.prepared_revision.as_ref()?;
+            let activity = match &audible.observation {
+                Some(observation) => ActivitySource::Projected(observation.activity()),
+                None => ActivitySource::Prepared(audible.prepared_revision.as_ref()?),
+            };
             let identity = audio.control.output_identity()?;
             self.session_routes.poll(identity, status);
             let snapshot = self.session_routes.matching_snapshot(
@@ -60,37 +108,33 @@ impl EditorView {
             let spans = self.tuning.midi_spans.as_mut()?;
             let mut keys = [0; 2];
             for track in audible.state.project.tracks() {
-                let route_track = prepared.midi_activity_route_track(track.id()).ok()?;
+                let route_track = activity.route_track(track.id()).ok()?;
                 let route =
                     self.session_routes
                         .entry_for_track(snapshot, true, route_track.value())?;
-                let owner =
-                    match route.owner {
-                        SessionRouteOwner::Arrangement => SessionPlaybackOwner::Arrangement,
-                        SessionRouteOwner::Silence => continue,
-                        SessionRouteOwner::Session { clip_id } => {
-                            // Audio Session cells carry no MIDI gates.
-                            let Some(clip) = prepared.session().midi_clips().iter().find(|clip| {
-                                clip.track == route_track && clip.id.value() == clip_id
-                            }) else {
-                                continue;
-                            };
-                            SessionPlaybackOwner::Session { clip: clip.id }
-                        }
-                    };
-                let activity = prepared
-                    .midi_gate_keys(
+                let owner = match route.owner {
+                    SessionRouteOwner::Arrangement => SessionPlaybackOwner::Arrangement,
+                    SessionRouteOwner::Silence => continue,
+                    SessionRouteOwner::Session { clip_id } => {
+                        // Audio Session cells carry no MIDI gates.
+                        let Some(clip) = activity.session_midi_clip(route_track, clip_id) else {
+                            continue;
+                        };
+                        SessionPlaybackOwner::Session { clip }
+                    }
+                };
+                let active_keys = activity
+                    .gate_keys(
                         track.id(),
                         owner,
-                        route
-                            .active_launch_beat_raw
-                            .map(hex_project::BeatTime::from_raw),
+                        route.active_origin,
+                        snapshot.clock_anchor,
                         (frame, performance),
                         spans,
                     )
                     .ok()?;
-                keys[0] |= activity[0];
-                keys[1] |= activity[1];
+                keys[0] |= active_keys[0];
+                keys[1] |= active_keys[1];
             }
             (status.applied_revision.load(Acquire) == audible.audio_revision).then_some(keys)
         })()

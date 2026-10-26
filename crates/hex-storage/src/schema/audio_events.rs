@@ -77,7 +77,27 @@ fn serialize_events<S: serde::Serializer>(
     }
     seq.end()
 }
+/// Historical event formats carry geometry only. Refuse newer envelope state
+/// instead of silently losing it through an explicit old writer.
+pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), StorageError> {
+    if project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .any(|clip| {
+            clip.audio_edit()
+                .and_then(|edit| edit.domain.events.as_ref())
+                .is_some_and(|events| events.events.iter().any(|event| event.fade.is_some()))
+        })
+    {
+        return Err(StorageError::Invalid(
+            "older schema cannot save audio event fades",
+        ));
+    }
+    Ok(())
+}
 pub(crate) fn encode(project: &Project) -> Result<Document<'_>, StorageError> {
+    require_legacy_compatible(project)?;
     let mut base = super::appearance::DocumentV27::from_project(project)?;
     base.version = 28;
     let audio_event_state = project
@@ -108,6 +128,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
 pub(crate) fn decode_legacy(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_version(bytes, 27)
 }
+pub(super) fn decode_historical(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+    if !(26..=28).contains(&version) {
+        return Err(StorageError::Invalid(
+            "invalid historical audio event version",
+        ));
+    }
+    decode_version(bytes, u64::from(version))
+}
 fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let _: UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
@@ -131,10 +159,11 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     }
     object.insert("version".into(), (version - 1).into());
     let bytes = serde_json::to_vec(&value)?;
-    let base = if version == 28 {
-        super::appearance::DocumentV27::decode(&bytes)?
-    } else {
-        super::clip_names::DocumentV26::decode(&bytes)?
+    let base = match version {
+        26 => super::musical_audio::DocumentV25::decode(&bytes)?,
+        27 => super::clip_names::DocumentV26::decode(&bytes)?,
+        28 => super::appearance::DocumentV27::decode(&bytes)?,
+        _ => return Err(StorageError::Invalid("invalid audio event version")),
     };
     let mut snapshot = base.snapshot();
     let mut by_clip = std::collections::BTreeMap::new();
@@ -157,15 +186,18 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                     "audio events require a retained processing root",
                 ))?;
                 let events = AudioEvents {
+                    sources: Vec::new(),
                     next_id,
                     events: state
                         .events
                         .into_iter()
                         .map(|e| AudioEvent {
+                            source: 0,
                             id: e.id,
                             start: e.start,
                             end: e.end,
                             source_start: e.source_start,
+                            fade: None,
                         })
                         .collect(),
                 };
@@ -183,7 +215,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     if !by_clip.is_empty() {
         return Err(StorageError::Invalid("audio event owner does not exist"));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 // Value's normal map decoder discards duplicate fields. Validate the original

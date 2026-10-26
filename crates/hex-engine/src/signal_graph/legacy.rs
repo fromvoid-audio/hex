@@ -9,6 +9,10 @@ impl RendererRuntime {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
+        let volume_clock = project.midi_volume_timing();
+        let volume_timing = volume_clock
+            .as_ref()
+            .map(|clock| clock as &dyn crate::prepared_tempo::MidiTempoBreaks);
         for chain in self
             .device_chains
             .iter_mut()
@@ -27,9 +31,6 @@ impl RendererRuntime {
                 let frame = start
                     .checked_add(offset as u64)
                     .ok_or(Invalid("render range overflow"))?;
-                let end = frame
-                    .checked_add(1)
-                    .ok_or(Invalid("render range overflow"))?;
                 let beat = project
                     .tempo_map
                     .as_ref()
@@ -39,6 +40,10 @@ impl RendererRuntime {
                 compensation
                     .delays
                     .push_transport_stamp(TransportStamp {
+                        tempo_micro_bpm: project
+                            .tempo_map
+                            .as_ref()
+                            .map(|map| map.tempo_at(beat).micro_bpm()),
                         performance_frame: frame,
                         transport_is_running: true,
                         arrangement_frame: frame,
@@ -58,12 +63,15 @@ impl RendererRuntime {
                             let track = &project.tracks[index];
                             let mut audio = [[0.0; 2]];
                             let mut generator = [[0.0; 2]];
-                            if let Some(pages) = pages.as_deref_mut() {
-                                track.render_audio_range_with_pages(frame, end, &mut audio, pages);
-                            } else {
-                                track.render_audio_range(frame, end, &mut audio);
-                            }
-                            track.render_instrument_range(frame, end, &mut generator, None);
+                            track.render_raw_audio(frame, &mut audio, pages.as_deref_mut())?;
+                            track.render_raw_instrument(
+                                frame,
+                                frame,
+                                &mut generator,
+                                &[],
+                                &[],
+                                volume_timing,
+                            )?;
                             let processed = compensation.process_track(
                                 index,
                                 track,

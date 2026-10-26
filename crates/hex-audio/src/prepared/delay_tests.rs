@@ -1,0 +1,331 @@
+//! Production registered delay through prepared callback publication; no OS audio.
+use super::*;
+use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+use hex_project::{BeatTime, Command, Created, Editor, Project};
+fn graph(project: &Project) -> Playback {
+    let revision = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            project,
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    Playback::try_from_prepared_with_session(revision).unwrap()
+}
+fn block(callback: &mut Callback, output: &mut [Frame]) {
+    let measured = allocation_counter::measure(|| {
+        callback.begin_block();
+        callback.render(output).unwrap();
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
+fn editor_with_delay() -> (Editor, hex_project::TrackId, hex_project::DeviceId) {
+    let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "delay".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 1,
+            velocity: 100,
+        })
+        .unwrap();
+    let d = &hex_devices::delay::DEFINITION;
+    let mut initial = d.default_state().unwrap();
+    for id in [hex_devices::delay::LEFT_SYNC, hex_devices::delay::FILTER] {
+        initial = d
+            .patch_parameter(&initial, id, ParameterValue::Bool(false))
+            .unwrap();
+    }
+    let state = d
+        .patch_parameter(
+            &initial,
+            hex_devices::delay::TIME,
+            ParameterValue::Float(10.0),
+        )
+        .unwrap();
+    let state = d
+        .patch_parameter(
+            &state,
+            hex_devices::delay::DRY_WET,
+            ParameterValue::Float(1.0),
+        )
+        .unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("delay")
+    };
+    (editor, track, device)
+}
+
+#[test]
+fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
+    let (mut editor, track, _) = editor_with_delay();
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let operator = &hex_devices::operator_state::OPERATOR_METADATA;
+    let state = operator
+        .patch_parameter(
+            &operator.default_state().unwrap(),
+            hex_devices::operator_state::parameter::feedback(1),
+            ParameterValue::Float(0.3),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState { device, state })
+        .unwrap();
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    let mut output = [[0.0; 2]; 127];
+    block(&mut callback, &mut output);
+    for destination in [0, 12_000, 12_000, 23_000, 48_000_000] {
+        control
+            .command(PlaybackCommand::PlayFrom(destination))
+            .unwrap();
+        // Includes actual command consumption, voice/effect reset, held-note
+        // chase and rendering, with all construction outside the probe.
+        block(&mut callback, &mut output);
+        assert_eq!(control.status.position.load(Acquire), destination + 127);
+        assert_eq!(output, [[0.0; 2]; 127], "old delay history must reset");
+        let mut audible = output.iter().flatten().any(|v| v.abs() > 1e-6);
+        for _ in 0..5 {
+            block(&mut callback, &mut output);
+            audible |= output.iter().flatten().any(|v| v.abs() > 1e-6);
+        }
+        assert_eq!(audible, destination < 24_000);
+        control.command(PlaybackCommand::Pause).unwrap();
+        block(&mut callback, &mut output);
+        assert_eq!(output, [[0.0; 2]; 127]);
+    }
+    control.stop();
+    block(&mut callback, &mut output);
+    assert_eq!(output, [[0.0; 2]; 127]);
+    control.request_shutdown();
+    block(&mut callback, &mut output);
+    control.reclaim();
+}
+#[test]
+fn delay_prepared_publication_parameter_handoff_tail_retirement_and_stop_allocate_nothing() {
+    let (mut editor, _, device) = editor_with_delay();
+    let d = &hex_devices::delay::DEFINITION;
+    let state = editor.project().device(device).unwrap().state().clone();
+    let (mut control, mut callback) = channel(48000).unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 127];
+    let mut audible = false;
+    for _ in 0..12 {
+        block(&mut callback, &mut output);
+        audible |= output.iter().flatten().any(|v| v.abs() > 1e-6);
+    }
+    assert!(audible);
+    let changed = d
+        .patch_parameter(
+            &state,
+            hex_devices::delay::TIME,
+            ParameterValue::Float(20.0),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: changed,
+        })
+        .unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    block(&mut callback, &mut output); // actual full-history handoff is measured too
+    assert!(output.iter().flatten().all(|v| v.is_finite()));
+    control.reclaim();
+    let frozen = d
+        .patch_parameter(
+            editor.project().device(device).unwrap().state(),
+            hex_devices::delay::FREEZE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: frozen,
+        })
+        .unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    block(&mut callback, &mut output);
+    control.reclaim();
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    for _ in 0..4 {
+        block(&mut callback, &mut output);
+    }
+    control.stop();
+    block(&mut callback, &mut output);
+    assert_eq!(output, [[0.0; 2]; 127]);
+    control.command(PlaybackCommand::Seek(0)).unwrap();
+    block(&mut callback, &mut output);
+    control.reclaim();
+    control.request_shutdown();
+    block(&mut callback, &mut output);
+    control.reclaim();
+}
+
+#[test]
+fn repeated_solo_toggles_with_live_delay_apply_without_retaining_mix_only_tails() {
+    for session in [false, true] {
+        solo_toggles(session);
+    }
+}
+fn solo_toggles(session: bool) {
+    let (mut editor, track, _) = editor_with_delay();
+    let launch = session.then(|| {
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let source = editor.project().track(track).unwrap().midi_clips()[0].id();
+        editor
+            .execute(Command::CopyArrangementMidiToSession { source, scene })
+            .unwrap();
+        scene
+    });
+    let Created::Track(solo_track) = editor
+        .execute(Command::AddTrack {
+            name: "solo".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let (mut control, mut callback) = channel(48000).unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    if let Some(scene) = launch {
+        control
+            .launch_and_play_with_ticket(hex_engine::SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            })
+            .unwrap();
+    } else {
+        control.command(PlaybackCommand::Play).unwrap();
+    }
+    let mut output = [[0.0; 2]; 127];
+    for _ in 0..12 {
+        block(&mut callback, &mut output);
+    }
+    assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+    for iteration in 0..130 {
+        editor
+            .execute(Command::ToggleSolo {
+                track: solo_track,
+                exclusive: true,
+            })
+            .unwrap();
+        let revision = control.publish(graph(editor.project())).unwrap();
+        block(&mut callback, &mut output);
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            revision,
+            "solo toggle {iteration} did not apply"
+        );
+        assert!(control.status.rejected_revision().is_none());
+        if iteration % 2 == 0 {
+            assert_eq!(
+                output, [[0.0; 2]; 127],
+                "solo must mute the existing delay output"
+            );
+        }
+        control.reclaim();
+    }
+    control.stop();
+    block(&mut callback, &mut output);
+    assert_eq!(output, [[0.0; 2]; 127]);
+    control.request_shutdown();
+    block(&mut callback, &mut output);
+    control.reclaim();
+}
+
+#[test]
+fn track_mix_edits_preserve_delay_history_under_new_gain_and_balance() {
+    let (mut editor, track, _) = editor_with_delay();
+    let (mut control, mut callback) = channel(48000).unwrap();
+    let (mut reference_control, mut reference) = channel(48000).unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    reference_control.publish(graph(editor.project())).unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    reference_control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 127];
+    let mut expected = output;
+    for _ in 0..12 {
+        block(&mut callback, &mut output);
+        block(&mut reference, &mut expected);
+    }
+    assert_eq!(output, expected);
+    for (gain, balance) in [(0.5, 0.0), (0.25, -1.0), (0.75, 1.0), (1.0, 0.0)] {
+        editor.execute(Command::Gain { track, gain }).unwrap();
+        editor.execute(Command::Balance { track, balance }).unwrap();
+        let revision = control.publish(graph(editor.project())).unwrap();
+        block(&mut callback, &mut output);
+        block(&mut reference, &mut expected);
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        let left = gain * if balance > 0.0 { 1.0 - balance } else { 1.0 };
+        let right = gain * if balance < 0.0 { 1.0 + balance } else { 1.0 };
+        for (actual, source) in output.iter().zip(&expected) {
+            assert_eq!(*actual, [source[0] * left, source[1] * right]);
+        }
+        control.reclaim();
+    }
+    for (control, callback) in [
+        (&mut control, &mut callback),
+        (&mut reference_control, &mut reference),
+    ] {
+        control.request_shutdown();
+        block(callback, &mut output);
+        control.reclaim();
+    }
+}

@@ -1,10 +1,23 @@
-//! Desktop composition only: create backend, open the GPUI shell, run lifecycle.
+//! # Purpose
+//! Compose the native editor, worker-owned audio backend and application lifecycle.
+//!
+//! # Dependencies
+//! Uses hex-ui/GPUI, hex-session, hex-audio, hex-engine, hex-stream, hex-media, hex-diagnostics,
+//! hex-midi and hex-mts at their existing boundaries. Injects hex-export
+//! with independently verified control-worker stream pages for offline output.
+//! Reads hex-plugin-catalog's copied source metadata at hex-preferences' existing
+//! application-support location; neither grants native source admission.
+//!
+//! # Does not own
+//! Does not implement project edits, codecs or musical DSP. Native source/publication adapters
+//! retain exact document and output identity; UI clients never acquire source owners.
 use gpui::{App, Application};
 use std::io::Write;
 
 mod audio_policy;
 mod native_audio;
 mod native_sources;
+mod streamed_export;
 mod time_selection_profile;
 
 fn main() {
@@ -29,7 +42,7 @@ fn main() {
     if let Ok(handle) = &log_handle {
         let _ = handle.record(&format!(
             "hex version={}; executable={:?}",
-            env!("CARGO_PKG_VERSION"),
+            option_env!("HEX_RELEASE_LABEL").unwrap_or(env!("CARGO_PKG_VERSION")),
             std::env::current_exe()
         ));
     }

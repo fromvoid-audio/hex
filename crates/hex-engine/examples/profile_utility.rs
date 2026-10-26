@@ -25,6 +25,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
     )?;
     let mut snapshot = Project::new(RATE)?.snapshot();
     snapshot.assets = vec![AssetSnapshot {
+        original_source: None,
         id: 1,
         path: "memory/utility-profile.wav".into(),
         source_sample_rate: RATE,
@@ -35,6 +36,8 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
     snapshot.tracks = (0..TRACKS)
         .map(|track| -> Result<TrackSnapshot, hex_project::Invalid> {
             Ok(TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
@@ -56,6 +59,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,

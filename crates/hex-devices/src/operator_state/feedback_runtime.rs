@@ -71,6 +71,12 @@ impl PreparedMutableInstrumentRuntime for OperatorFeedbackFactory {
         MAX_EVENTS
     }
 
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
     fn max_active_occurrences(&self) -> usize {
         MAX_VOICES
     }
@@ -316,7 +322,12 @@ impl OperatorFeedbackRuntime {
         }
     }
 
-    fn process_voice_sample(&mut self, frame: &mut StereoFrame) {
+    fn process_voice_sample(
+        &mut self,
+        frame: &mut StereoFrame,
+        offset: usize,
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+    ) {
         let active_ramp = self.retarget.as_ref();
         let shared_frame: Option<OperatorFeedbackRetargetFrame<'_>> =
             active_ramp.and_then(|ramp| {
@@ -351,6 +362,8 @@ impl OperatorFeedbackRuntime {
                     voice.process_frame(&self.configuration, self.sine_table)
                 };
                 if let Ok(sample) = sample {
+                    let sample =
+                        super::occurrence_gain::sample(sample, slot.occurrence_id, offset, gains);
                     frame[0] += sample;
                     frame[1] += sample;
                 }
@@ -466,6 +479,39 @@ impl OperatorFeedbackRuntime {
 }
 
 impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
+    fn active_occurrence_ids(
+        &self,
+        output: &mut [u64],
+    ) -> Result<usize, hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::active_ids(
+            self.voices
+                .iter()
+                .filter(|v| v.voice.is_some())
+                .map(|v| v.occurrence_id),
+            output,
+        )
+    }
+    fn preflight_occurrence_gains(
+        &self,
+        events: &[NativeInstrumentEvent],
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::preflight(
+            self.voices
+                .iter()
+                .filter(|v| v.voice.is_some())
+                .map(|v| v.occurrence_id),
+            events,
+            gains,
+        )
+    }
+
     fn preflight_events(
         &self,
         events: &[NativeInstrumentEvent],
@@ -577,6 +623,16 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
+        self.process_block_with_clock_and_occurrence_gains(events, frames, None, &[], _resources);
+    }
+    fn process_block_with_clock_and_occurrence_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         // The lattice pair calls this only after generic and device preflight.
         // The exact immutable configuration and events were validated there;
         // admitted note construction and sampling are allocation-free.
@@ -592,7 +648,7 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
                 self.apply_event(events[event_index]);
                 event_index += 1;
             }
-            self.process_voice_sample(frame);
+            self.process_voice_sample(frame, frame_index, gains);
         }
     }
 

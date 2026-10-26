@@ -1,18 +1,25 @@
-//! Non-destructive intervals within one retained audio processing root.
+//! Non-destructive intervals within an ordinary processing root or a frame-fixed
+//! container of independently retained complete roots.
 //! IDs are local to this sequence; callers scope references to clip/revision.
-use crate::{AudioClipEdit, Clip, ClipId, Invalid, Project};
+use crate::{AudioClipEdit, AudioEventFade, Clip, ClipId, Invalid, Project};
 use std::sync::Arc;
 
 pub const MAX_AUDIO_EVENTS: usize = 1_024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioEvent {
+    /// Zero reads an ordinary root; grouped events require a retained source ID.
+    /// Nonzero source coordinates read that root's finite output in frames.
+    pub source: u64,
     pub id: u64,
     /// Half-open positions in the retained root's clock.
     pub start: u64,
     pub end: u64,
-    /// Original root coordinate played at `start` (never a mutable PCM offset).
+    /// Original root coordinate played at `start`; for a retained source this
+    /// is its finite prepared output frame, never a mutable/media-file offset.
     pub source_start: u64,
+    /// Independent source-window envelope; absent is exact unity.
+    pub fade: Option<AudioEventFade>,
 }
 impl AudioEvent {
     pub fn length(self) -> u64 {
@@ -20,14 +27,31 @@ impl AudioEvent {
     }
 }
 
+/// Immutable full processing/source custody for one grouped event source.
+/// The captured tempo preserves the original warp/fade projection. Nested
+/// multi-root sources are refused; a group never recursively prepares groups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedAudioRoot {
+    pub id: u64,
+    pub clip: Clip,
+    pub tempo: Arc<crate::TempoMap>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioEvents {
+    pub sources: Vec<RetainedAudioRoot>,
     pub next_id: u64,
     pub events: Vec<AudioEvent>,
 }
 
-#[derive(Clone, Debug)]
+/// Inner edits of an Arrangement clip's retained processing root. Console
+/// source-window one-shots have no such root and refuse these edits explicitly.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AudioEventEdit {
+    SetFade {
+        event: u64,
+        fade: Option<AudioEventFade>,
+    },
     Split {
         at: u64,
     },
@@ -67,20 +91,111 @@ pub enum AudioEventEdit {
     },
 }
 impl AudioEvents {
+    /// Re-express frame events in Q32.32 beats using the retained root origin.
+    /// Both source endpoints must retain the destination span to within one
+    /// raw beat tick of independent rounding. Unequal tempo segments may need
+    /// a non-affine source program which this interval format cannot represent;
+    /// refuse those atomically rather than trim or reinterpret source content.
+    pub(crate) fn reproject_to_beats(
+        &self,
+        length: u64,
+        mut position: impl FnMut(u64) -> Result<u64, Invalid>,
+    ) -> Result<Self, Invalid> {
+        if !self.sources.is_empty() {
+            return Err(Invalid(
+                "grouped audio uses a fixed frame clock; musical reprojection is unsupported",
+            ));
+        }
+        if self.events.len() > MAX_AUDIO_EVENTS {
+            return Err(Invalid("audio event timing projection exceeds event limit"));
+        }
+        let mut events = Vec::new();
+        events
+            .try_reserve_exact(self.events.len())
+            .map_err(|_| Invalid("audio event timing projection allocation failed"))?;
+        for event in &self.events {
+            let mut projected = AudioEvent {
+                source: event.source,
+                id: event.id,
+                start: position(event.start)?,
+                end: position(event.end)?,
+                source_start: position(event.source_start)?,
+                fade: event
+                    .fade
+                    .map(|fade| fade.reproject(&mut position))
+                    .transpose()?,
+            };
+            let source_end = position(
+                event
+                    .source_start
+                    .checked_add(event.length())
+                    .ok_or(Invalid("audio event source interval overflow"))?,
+            )?;
+            let span = projected
+                .end
+                .checked_sub(projected.start)
+                .ok_or(Invalid("audio event timing projection is reversed"))?;
+            let projected_end = projected
+                .source_start
+                .checked_add(span)
+                .ok_or(Invalid("audio event source projection overflow"))?;
+            if projected_end.abs_diff(source_end) > 1 {
+                return Err(Invalid(
+                    "audio event timing crosses unequal tempo segments; set one global tempo before enabling warp",
+                ));
+            }
+            // One Q32.32 beat tick is smaller than a prepared sample at every
+            // supported rate/tempo. Normalize only an endpoint rounding overrun;
+            // the projected source start still resolves to its original frame.
+            if projected_end > length && projected_end - length == 1 {
+                projected.source_start = projected
+                    .source_start
+                    .checked_sub(1)
+                    .ok_or(Invalid("audio event source projection precedes its root"))?;
+            }
+            events.push(projected);
+        }
+        let projected = Self {
+            sources: Vec::new(),
+            next_id: self.next_id,
+            events,
+        };
+        projected.validate(length)?;
+        Ok(projected)
+    }
     pub fn identity(length: u64) -> Self {
         Self {
+            sources: Vec::new(),
             next_id: 2,
             events: vec![AudioEvent {
+                source: 0,
                 id: 1,
                 start: 0,
                 end: length,
                 source_start: 0,
+                fade: None,
             }],
         }
     }
     pub fn validate(&self, length: u64) -> Result<(), Invalid> {
-        if self.events.len() > MAX_AUDIO_EVENTS || self.next_id == 0 {
+        if self.events.len() > MAX_AUDIO_EVENTS
+            || self.sources.len() > MAX_AUDIO_EVENTS
+            || self.next_id == 0
+        {
             return Err(Invalid("audio event limit or identity is invalid"));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for source in &self.sources {
+            if source.id == 0
+                || !ids.insert(source.id)
+                || source
+                    .clip
+                    .audio_edit()
+                    .and_then(|edit| edit.domain.events.as_ref())
+                    .is_some_and(|events| !events.sources.is_empty())
+            {
+                return Err(Invalid("invalid or nested retained audio root"));
+            }
         }
         self.validate_geometry(length)
     }
@@ -100,15 +215,37 @@ impl AudioEvents {
                 || event
                     .source_start
                     .checked_add(event.length())
-                    .is_none_or(|end| end > length)
+                    .is_none_or(|end| end > self.source_length(event.source, length).unwrap_or(0))
             {
                 return Err(Invalid(
                     "audio events must have unique identities and bounded nonoverlapping intervals",
                 ));
             }
+            if let Some(fade) = event.fade {
+                fade.validate(
+                    self.source_length(event.source, length).unwrap_or(0),
+                    event.source_start,
+                    event.length(),
+                )?;
+            }
             previous_end = event.end;
         }
         Ok(())
+    }
+    pub(crate) fn source_length(&self, source: u64, own_length: u64) -> Option<u64> {
+        if source == 0 {
+            self.sources.is_empty().then_some(own_length)
+        } else {
+            // Canonical writers assign contiguous IDs. Preserve the validated
+            // arbitrary-ID reader contract through a bounded fallback.
+            source
+                .checked_sub(1)
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| self.sources.get(index))
+                .filter(|root| root.id == source)
+                .or_else(|| self.sources.iter().find(|root| root.id == source))
+                .map(|root| root.clip.duration())
+        }
     }
     fn id(&mut self) -> Result<u64, Invalid> {
         let id = self.next_id;
@@ -156,6 +293,27 @@ impl AudioEvents {
         self.validate_geometry(length)?;
         let mut next = self.clone();
         match operation {
+            AudioEventEdit::SetFade { event, fade } => {
+                let index = next
+                    .events
+                    .iter()
+                    .position(|e| e.id == event)
+                    .ok_or(Invalid("audio event no longer exists"))?;
+                let target = next
+                    .events
+                    .get(index)
+                    .ok_or(Invalid("audio event no longer exists"))?;
+                let source_length = next
+                    .source_length(target.source, length)
+                    .ok_or(Invalid("audio event source is missing"))?;
+                if let Some(fade) = fade {
+                    fade.validate(source_length, target.source_start, target.length())?;
+                }
+                next.events
+                    .get_mut(index)
+                    .ok_or(Invalid("audio event no longer exists"))?
+                    .fade = fade.filter(|fade| !fade.shape().is_neutral());
+            }
             AudioEventEdit::Split { at } => {
                 if let Some(index) = next.events.iter().position(|e| e.start < at && at < e.end) {
                     let event = next.events[index];
@@ -250,6 +408,10 @@ impl AudioEvents {
                     start,
                     end,
                     source_start,
+                    fade: original
+                        .fade
+                        .map(|fade| fade.reanchor(source_start, end - start))
+                        .transpose()?,
                     ..original
                 });
             }
@@ -307,7 +469,9 @@ impl AudioEvents {
                         || event
                             .source_start
                             .checked_add(event.length())
-                            .is_none_or(|end| end > length)
+                            .is_none_or(|end| {
+                                end > self.source_length(event.source, length).unwrap_or(0)
+                            })
                     {
                         return Err(Invalid("invalid audio event clipboard"));
                     }
@@ -386,7 +550,13 @@ pub(crate) fn apply(
     clip: ClipId,
     operation: AudioEventEdit,
 ) -> Result<(), Invalid> {
-    let original = project.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+    let original = project.clip(clip).ok_or_else(|| {
+        if project.session_audio_clip(clip).is_some() {
+            Invalid("audio event editing is unavailable for console source windows")
+        } else {
+            Invalid("clip no longer exists")
+        }
+    })?;
     let mut edit = original
         .audio_edit()
         .cloned()
@@ -500,6 +670,65 @@ mod tests {
             .is_err()
         );
         assert_eq!(identity.events[0].end, 100);
+    }
+    #[test]
+    fn console_source_windows_refuse_inner_edits_without_changing_project_or_history() {
+        use crate::{Command, Created, Editor};
+        let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "audio".into(),
+                path: "original.wav".into(),
+                sample_rate: 48000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let before_copy = editor.project().clone();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let before_cell = editor.project().clone();
+        let Created::SessionClip(console) = editor
+            .execute(Command::CopyArrangementAudioClipToSession {
+                source: clip,
+                scene,
+            })
+            .unwrap()
+        else {
+            panic!("cell")
+        };
+        let before = editor.project().clone();
+        assert_eq!(
+            editor.execute(Command::EditAudioEvents {
+                clip: console,
+                operation: AudioEventEdit::Delete { start: 10, end: 20 }
+            }),
+            Err(Invalid(
+                "audio event editing is unavailable for console source windows"
+            ))
+        );
+        assert_eq!(*editor.project(), before);
+        assert!(editor.undo());
+        let mut expected = before_cell.snapshot();
+        // Global IDs remain monotonic across undo; musical state is restored.
+        expected.next_id = editor.project().snapshot().next_id;
+        assert_eq!(
+            editor.project().snapshot(),
+            expected,
+            "refusal adds no history edge"
+        );
+        assert!(editor.undo());
+        let mut expected = before_copy.snapshot();
+        expected.next_id = editor.project().snapshot().next_id;
+        assert_eq!(editor.project().snapshot(), expected);
     }
     #[test]
     fn canonical_events_undo_and_outer_splits_keep_the_full_retained_sequence() {
@@ -631,13 +860,16 @@ mod range_tests {
     #[test]
     fn splitting_at_capacity_refuses_without_mutating_the_sequence() {
         let sequence = AudioEvents {
+            sources: Vec::new(),
             next_id: MAX_AUDIO_EVENTS as u64 + 1,
             events: (0..MAX_AUDIO_EVENTS as u64)
                 .map(|i| AudioEvent {
+                    source: 0,
                     id: i + 1,
                     start: i * 4,
                     end: i * 4 + 2,
                     source_start: i * 4,
+                    fade: None,
                 })
                 .collect(),
         };
@@ -672,13 +904,16 @@ mod cropped_capacity_regression {
         let mut project = editor.project().clone();
         let mut root = project.clip(clip).unwrap().audio_event_root();
         Arc::make_mut(&mut root.domain).events = Some(Arc::new(AudioEvents {
+            sources: Vec::new(),
             next_id: 1025,
             events: (0..1024)
                 .map(|i| AudioEvent {
+                    source: 0,
                     id: i + 1,
                     start: i * 4,
                     end: i * 4 + 4,
                     source_start: i * 4,
+                    fade: None,
                 })
                 .collect(),
         }));

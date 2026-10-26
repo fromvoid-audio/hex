@@ -1,5 +1,6 @@
 //! Original delayed processors enter through the normal registry/compiler seam.
 use super::*;
+use crate::routed_midi_fixture;
 use crate::{
     Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable,
 };
@@ -13,6 +14,9 @@ use hex_lattice_contract::{
 };
 use hex_project::{Command, Created, Editor};
 use std::any::Any;
+
+#[path = "tests/limiter_latency.rs"]
+mod limiter_latency;
 
 #[path = "tests/eq_automation.rs"]
 mod eq_automation;
@@ -320,11 +324,13 @@ fn gain_uses_delayed_content_frame_and_loop_history_survives_wrap() {
             track: f.tracks[0],
             points: vec![
                 hex_project::GainPoint {
+                    incoming_gain: None,
                     beat: hex_project::BeatTime::ZERO,
                     gain: 0.5,
                     outgoing: hex_project::GainInterpolation::Step,
                 },
                 hex_project::GainPoint {
+                    incoming_gain: None,
                     beat,
                     gain: 1.0,
                     outgoing: hex_project::GainInterpolation::Step,
@@ -480,6 +486,11 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     owner.content = hex_project::TrackContentSnapshot::Hybrid {
         audio_clips,
         midi_clips: vec![hex_project::MidiClipSnapshot {
+            content_view: None,
+            active: true,
+            playback_offset_raw: 0,
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id: next + 1,
@@ -500,7 +511,12 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
             }],
         }],
     };
-    f.editor = Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
+    f.editor = Editor::new(
+        hex_project::Project::from_legacy_snapshot(snapshot).unwrap(),
+        8,
+    )
+    .unwrap();
     let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
     let effects = NativeDeviceRegistry::new(&effects).unwrap();
     let instruments: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&InstrumentDefinition];
@@ -860,6 +876,7 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(unknown.performance_frame_at_offset(0), None);
     assert_eq!(unknown.transport_is_running(), None);
     let source = TransportStamp {
+        tempo_micro_bpm: Some(123_000_000),
         performance_frame: 900,
         transport_is_running: true,
         arrangement_frame: 12,
@@ -868,6 +885,9 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         arrangement_beat_raw: Some(1 << 32),
     };
     let clock = OriginClock(Some(source));
+    assert_eq!(clock.tempo_micro_bpm_at_offset(0), Some(123_000_000));
+    assert_eq!(clock.tempo_micro_bpm_at_offset(1), None);
+    assert_eq!(unknown.tempo_micro_bpm_at_offset(0), None);
     assert_eq!(clock.performance_frame_at_offset(0), Some(900));
     assert_eq!(clock.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(clock.loop_pass_at_offset(0), Some(7));

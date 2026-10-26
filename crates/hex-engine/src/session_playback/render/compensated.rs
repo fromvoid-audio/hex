@@ -1,24 +1,19 @@
-//! Shared compensated/typed-route path. One frame keeps content clocks exact;
-//! zero-latency projects without typed routes retain the original chunk kernel.
+//! Shared compensated/typed-route path. Upstream latency and typed audio routes
+//! use single-frame routing. Serial Main-only latency retains batched upstream
+//! rendering; its stamps, Main processors and retained tails still advance one
+//! sample at a time through the same compensation owner.
 use super::*;
 
 impl SessionPlayback {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn render_compensated_route_frame<P: MediaPages + ?Sized>(
+    /// Publish one transport origin immediately before processing its Main
+    /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
+    pub(super) fn push_compensated_stamp(
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
         loop_pass: u64,
-        output: &mut [Frame],
-        mut pages: Option<&mut P>,
-        frame_offset: usize,
-        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
-        capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
-        if output.len() != 1 {
-            return Err(SessionPlaybackError::DeviceRuntime);
-        }
-        let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let beat = timing
             .frame_to_beat(performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -27,6 +22,7 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::DeviceRuntime)?
             .delays
             .push_transport_stamp(crate::compensation::TransportStamp {
+                tempo_micro_bpm: timing.micro_bpm_at_frame(performance_frame).ok(),
                 performance_frame,
                 transport_is_running: self.playing,
                 arrangement_frame,
@@ -41,6 +37,29 @@ impl SessionPlayback {
                     .map(|beat| beat.raw()),
             })
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_compensated_route_frame<P: MediaPages + ?Sized>(
+        &mut self,
+        performance_frame: u64,
+        arrangement_frame: u64,
+        loop_pass: u64,
+        output: &mut [Frame],
+        mut pages: Option<&mut P>,
+        frame_offset: usize,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        if output.len() != 1 {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        self.push_compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
+        let region = self.active_loop_region();
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         for scratch in &mut self.return_scratch {
             scratch[0] = [0.0; 2];
         }
@@ -68,6 +87,10 @@ impl SessionPlayback {
                         render_route_source_chunk(
                             RouteSourceContext {
                                 revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
                                 route,
                                 historical_floor: self.historical_floor_for(index),
                                 suppressions: &self.suppression_scratch,
@@ -105,6 +128,10 @@ impl SessionPlayback {
                         render_route_source_chunk(
                             RouteSourceContext {
                                 revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
                                 route: effective_midi_route(
                                     &self.revision,
                                     &self.route_scratch,
@@ -128,6 +155,11 @@ impl SessionPlayback {
                         render_mutable_instrument_chunk(
                             MutableInstrumentChunkContext {
                                 revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
+                                sources,
                                 routes: &self.route_scratch,
                                 runtimes: &mut self.mutable_instruments,
                                 onsets: &mut self.mutable_onsets,
@@ -137,13 +169,12 @@ impl SessionPlayback {
                                 performance_frame,
                                 arrangement_frame,
                                 arrangement_loop_pass: loop_pass,
+                                chase_at_start: self.interactive_start_frame
+                                    == Some(performance_frame),
                                 loop_region: if self.linear_arrangement_export {
                                     None
                                 } else {
-                                    self.revision
-                                        .arrangement()
-                                        .loop_region()
-                                        .filter(|region| region.enabled())
+                                    region.filter(|region| region.enabled())
                                 },
                                 timing: &timing,
                             },
@@ -168,7 +199,7 @@ impl SessionPlayback {
                         .as_mut()
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
                     let processed = compensation
-                        .process_track(
+                        .process_track_with_foreign(
                             index,
                             track,
                             &mut self.device_chains[index],
@@ -176,6 +207,7 @@ impl SessionPlayback {
                             generator[0],
                             frame_offset,
                             self.device_metering,
+                            foreign,
                             observer,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -220,12 +252,13 @@ impl SessionPlayback {
                     let bus = &self.revision.arrangement().return_buses()[index];
                     let mut frame = self.return_scratch[index][0];
                     compensation
-                        .effects(
+                        .effects_with_foreign(
                             &compensation.graph.returns[index].devices,
                             &mut self.return_chains[index],
                             0,
                             &mut frame,
                             frame_offset,
+                            foreign,
                             observer,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -283,7 +316,7 @@ impl SessionPlayback {
         if self.playing {
             self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
             self.return_effect_tails
-                .render_chunk(output, frame_offset, capture)?;
+                .render_chunk(output, frame_offset, capture, foreign)?;
         }
         Ok(())
     }

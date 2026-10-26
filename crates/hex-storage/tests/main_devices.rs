@@ -53,7 +53,7 @@ fn current_main_inventory_roundtrips_order_banks_trims_and_stable_identity() {
     let project = authored();
     let bytes = encode(&project).unwrap();
     let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(document["version"], 33);
+    assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(document["main_devices"].as_array().unwrap().len(), 1);
     let reopened = decode(&bytes).unwrap();
     assert_eq!(reopened.snapshot(), project.snapshot());

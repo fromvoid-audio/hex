@@ -75,12 +75,16 @@ impl SessionAssembly {
     pub(crate) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         self.unpack_on_control()?;
         self.phase = AssemblyPhase::Cleaning;
-        if !self.unused_midi.is_empty()
-            || self.unused_midi.capacity() != 0
-            || !self.unused_mutable.is_empty()
-            || self.unused_mutable.capacity() != 0
-        {
-            return Err(AudioStorageError::UnknownStorage);
+        if self.dispose_current_sampler_midi()? {
+            return Ok(());
+        }
+        if !self.unused_mutable.is_empty() {
+            self.current_sampler_bytes(None)?;
+            // Only the fixed inline sampler factory constructed in this custody
+            // may reach this control-only teardown, never a callback drop.
+            drop(self.unused_mutable.pop());
+            self.sampler_factories.pop();
+            return Ok(());
         }
         if self.scene_cursor < self.scenes.len() {
             if self.name_pending {
@@ -143,6 +147,7 @@ impl SessionAssembly {
                 self.pairs[index].clip.take()
             };
             if let Some(PreparedSessionAudioClip {
+                active: _,
                 id: _,
                 track: _,
                 scene: _,
@@ -150,6 +155,7 @@ impl SessionAssembly {
                 asset: _,
                 source_start: _,
                 source_end: _,
+                loop_range: _,
                 gain: _,
                 source,
             }) = clip
@@ -222,6 +228,18 @@ impl SessionAssembly {
             return Err(AudioStorageError::Capacity);
         }
         // Only empty headers/scalar declaration rows; backing remains charged.
+        if !self.unused_midi.is_empty()
+            || !self.sampler_midi.is_empty()
+            || !self.sampler_factories.is_empty()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        drop(mem::take(&mut self.unused_midi));
+        drop(mem::take(&mut self.sampler_midi));
+        self.sampler_midi_scope = None;
+        self.sampler_context_address = None;
+        drop(mem::take(&mut self.unused_mutable));
+        drop(mem::take(&mut self.sampler_factories));
         self.scenes.clear();
         self.tracks.clear();
         self.cells.clear();

@@ -58,6 +58,7 @@ fn fixture(
     s.tracks[0].gain = 0.6;
     s.tracks[0].balance = 0.25;
     s.tracks[0].soloed = solo;
+    s.tracks[0].muted = solo;
     s.tracks[1].gain = 0.8;
     s.tracks[1].balance = -0.5;
     s.tracks[1].muted = !solo;
@@ -68,16 +69,19 @@ fn fixture(
     if automation {
         s.tracks[0].gain_envelope = vec![
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.5,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::from_raw(1),
                 gain: 0.75,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::from_quarters(2).unwrap(),
                 gain: 1.25,
                 outgoing: GainInterpolation::Step,
@@ -208,6 +212,13 @@ fn actual_tracks_match_legacy_source_pcm_mix_solo_mute_sends_and_absolute_automa
                 for (index, (row, want)) in a.rows.iter().zip(expected.tracks()).enumerate() {
                     let actual = row.track.as_ref().unwrap();
                     assert_eq!(actual.track_id, want.track_id);
+                    if index == 0 {
+                        assert!(!actual.mix.muted(), "solo must override authored mute");
+                        assert!(
+                            !actual.mix_at(0).muted(),
+                            "automation must preserve solo precedence"
+                        );
+                    }
                     assert_eq!(actual.mix, want.mix);
                     assert_eq!(actual.source_mix, want.source_mix);
                     assert_eq!(Arc::strong_count(&actual.instrument_meter), 1);

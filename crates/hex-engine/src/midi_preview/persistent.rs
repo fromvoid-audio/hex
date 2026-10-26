@@ -109,6 +109,16 @@ impl PreviewCustody {
         Ok(report)
     }
     pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
+        self.reserve_with_current_sampler(project, false, false)
+    }
+    /// The bounded native CURRENT class uses canonical UI note geometry. This
+    /// private empty analytic preview is not a second source or note renderer.
+    pub(crate) fn reserve_with_current_sampler(
+        &mut self,
+        project: &hex_project::Project,
+        sampler: bool,
+        effects: bool,
+    ) -> Result<(), Error> {
         if self.phase != Phase::Vacant
             || self.clips.is_some()
             || self.preview.is_some()
@@ -117,7 +127,13 @@ impl PreviewCustody {
         {
             return Err(Error::Capacity);
         }
-        if project.tracks().iter().any(|t| !t.midi_clips().is_empty()) {
+        if sampler {
+            if !crate::native_device_resources::current_sampler::validate_project_with_effects(
+                project, effects,
+            )? {
+                return Err(Error::UnsupportedGraph);
+            }
+        } else if project.tracks().iter().any(|t| !t.midi_clips().is_empty()) {
             return Err(Error::UnsupportedGraph);
         }
         if !crate::pcm_arc::native_layout_known() {

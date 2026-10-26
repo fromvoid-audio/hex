@@ -6,12 +6,13 @@ use crate::native_callback_owner::{Guard, Terminal, reserve};
 
 pub struct Client {
     endpoints: Guard<ClientEndpoints>,
+    worker_owned_publication: bool,
 }
 pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
 }
 pub(crate) struct ClientEndpoints {
-    output_identity: u64,
+    pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
@@ -19,6 +20,7 @@ pub(crate) struct ClientEndpoints {
     spectrum_target: spectrum_target::SpectrumTargetControl,
     processor_audition: processor_audition::ProcessorAuditionTargetControl,
     gain_recording: crate::gain_recording::Control,
+    midi_recording: crate::midi_recording::Control,
     pub(super) status: Arc<Status>,
     command_ticket: u64,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -39,13 +41,18 @@ impl Control {
             spectrum_target,
             processor_audition,
             gain_recording,
+            midi_recording,
             command_ticket,
             mut publication,
         } = self;
         publication.status.split_endpoints.store(true, Release);
         let output_identity = publication.candidate_root.root_id();
         let status = Arc::clone(&publication.status);
-        let resident_forwarding = resident_forwarding::ResidentForwarding::new();
+        let resident_forwarding = publication
+            .resident_forwarding
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
         publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
         let (endpoints, client) = reserve(ClientEndpoints {
             output_identity,
@@ -56,6 +63,7 @@ impl Control {
             spectrum_target,
             processor_audition,
             gain_recording,
+            midi_recording,
             status,
             command_ticket,
             #[cfg(all(test, feature = "allocation-probe"))]
@@ -63,7 +71,10 @@ impl Control {
         });
         let (endpoint, publication) = reserve(publication);
         (
-            Client { endpoints },
+            Client {
+                endpoints,
+                worker_owned_publication: false,
+            },
             WorkerControl { endpoint },
             EndpointTerminals {
                 client,
@@ -83,6 +94,20 @@ impl WorkerControl {
     /// Worker-side access only. The UI receives Client, never this endpoint.
     pub fn control(&mut self) -> Option<&mut PublicationControl> {
         self.endpoint.owner_mut()
+    }
+    /// Borrow active ordinary resource obligations without projecting the output, source owners
+    /// or publication endpoint into a consumer. Used synchronously on its owning worker only.
+    pub fn device_resource_admission_on_control(
+        &self,
+    ) -> Option<hex_engine::native_device_resources::DeviceResourceAdmission<'_>> {
+        self.endpoint
+            .owner_ref()?
+            .device_resource_admission_on_control()
+    }
+    pub fn unreturned_resident_graphs_on_control(&self) -> Option<usize> {
+        self.endpoint
+            .owner_ref()?
+            .unreturned_resident_graphs_on_control()
     }
     pub fn close(&mut self) {
         if let Some(control) = self.endpoint.owner_mut() {
@@ -112,8 +137,16 @@ impl Client {
 
     pub(crate) fn activate(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
-            endpoints.status.client_exposed.store(true, Release);
+            self.worker_owned_publication = endpoints
+                .resident_forwarding
+                .expose_client_on_control(&endpoints.status);
         }
+    }
+    /// Immutable publication policy captured under the existing exposure lock. Every graph on
+    /// this output belongs to its control worker; transport and shared input clients remain
+    /// ordinary. Reading this snapshot never locks or grants graph/resource ownership.
+    pub fn worker_owns_graph_publication(&self) -> bool {
+        self.worker_owned_publication
     }
     pub(crate) fn guard(&self) -> &Guard<ClientEndpoints> {
         &self.endpoints
@@ -134,10 +167,36 @@ impl Client {
     }
     pub fn close(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
+            endpoints.midi_recording.cancel();
             endpoints.status.closing.store(true, Release);
             endpoints.stop();
         }
         self.endpoints.close();
+    }
+    /// Exact scalar activation-clock correlation for retained UI input after output recovery.
+    pub fn computer_keyboard_input_matches_output(
+        &self,
+        input: &hex_engine::computer_keyboard::ComputerKeyboardInput,
+    ) -> bool {
+        self.endpoints
+            .owner_ref()
+            .is_some_and(|endpoints| input.bound_to_clock(&endpoints.status.keyboard_activation))
+    }
+    /// Control-only keyboard allocation. The returned input retains a scalar epoch clock,
+    /// never this client, Status, graph, resources or callback ownership.
+    pub fn new_computer_keyboard_input_on_control(
+        &self,
+    ) -> Result<hex_engine::computer_keyboard::ComputerKeyboardInput, hex_engine::Invalid> {
+        let endpoints = self
+            .endpoints
+            .owner_ref()
+            .ok_or(hex_engine::Invalid("audio output is closed"))?;
+        if endpoints.status.closing.load(Acquire) {
+            return Err(hex_engine::Invalid("audio output is closing"));
+        }
+        hex_engine::computer_keyboard::ComputerKeyboardInput::with_output_activation(Arc::clone(
+            &endpoints.status.keyboard_activation,
+        ))
     }
     pub fn stop(&self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
@@ -230,6 +289,36 @@ impl Client {
         if let Some(e) = self.endpoints.owner_mut() {
             e.sample_preview.reclaim();
         }
+    }
+    pub fn midi_target(&self) -> Option<crate::midi_recording::Target> {
+        self.endpoints
+            .owner_ref()
+            .and_then(|e| e.midi_recording.target())
+    }
+    pub fn midi_begin(
+        &mut self,
+        target: crate::midi_recording::Target,
+    ) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .midi_recording
+            .begin(target)
+    }
+    pub fn midi_finish(&self) {
+        if let Some(e) = self.endpoints.owner_ref() {
+            e.midi_recording.finish();
+        }
+    }
+    pub fn midi_cancel(&self) {
+        if let Some(e) = self.endpoints.owner_ref() {
+            e.midi_recording.cancel();
+        }
+    }
+    pub fn midi_receipt(&mut self) -> Option<crate::midi_recording::Receipt> {
+        self.endpoints
+            .owner_mut()
+            .and_then(|e| e.midi_recording.try_receipt())
     }
     pub fn gain_target(&self) -> Option<crate::gain_recording::Target> {
         self.endpoints
@@ -346,6 +435,33 @@ impl Client {
             .owner_ref()
             .and_then(|e| e.spectrum_target.desired())
     }
+    /// Current complete analyzer membership for this guarded output incarnation.
+    pub fn spectrum_desired_targets(&self) -> Option<&spectrum_target::SpectrumTargets> {
+        self.endpoints
+            .owner_ref()
+            .map(|e| e.spectrum_target.desired_targets())
+    }
+    pub fn spectrum_set_targets(
+        &mut self,
+        requests: &[spectrum_target::SpectrumTargetRequest],
+    ) -> Result<spectrum_target::TargetUpdate, spectrum_target::TargetError> {
+        self.endpoints
+            .owner_mut()
+            .ok_or(spectrum_target::TargetError::OutputClosed)?
+            .spectrum_target
+            .set_targets(requests)
+    }
+    /// Fresh independent pairs, filtered by this endpoint's exact desired tokens,
+    /// generation, rate and publication floors. The bounded cache lives on control.
+    pub fn spectrum_latest_pairs(&mut self) -> Vec<crate::spectrum_worker::PublishedSpectra> {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return Vec::new();
+        };
+        let Some(reader) = endpoints.spectrum_reader.as_mut() else {
+            return Vec::new();
+        };
+        reader.try_latest_pairs_at(Instant::now(), endpoints.spectrum_target.desired_targets())
+    }
     pub fn spectrum_select(
         &mut self,
         identity: PostNodeIdentity,
@@ -432,6 +548,9 @@ impl Drop for Client {
 }
 impl ClientEndpoints {
     fn stop(&self) {
+        self.midi_recording.finish();
+        self.status.keyboard_activation.revoke_reserved_prefix();
+        self.status.sampler_keyboard.revoke_all();
         self.status
             .pending_stop_marker
             .store(self.command_ticket.saturating_add(1), Release);
@@ -456,6 +575,10 @@ fn enqueue_action(
     audition: &mut processor_audition::ProcessorAuditionTargetControl,
     action: PlaybackAction,
 ) -> Result<u64, PlaybackAction> {
+    let sampler_edit_gate = status.sampler_edit.gate();
+    if sampler_edit_gate & 1 != 0 && !sampler_edit::is_stop(action) {
+        return Err(action);
+    }
     if status.closing.load(Acquire) || revision == 0 {
         return Err(action);
     }
@@ -466,10 +589,15 @@ fn enqueue_action(
         .push(QueuedCommand {
             ticket: next,
             action,
+            sampler_edit_gate,
         })
         .map_err(|PushError::Full(q)| q.action)?;
     *ticket = next;
     status.admitted_ticket.store(next, Release);
+    if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
+        status.sampler_keyboard.revoke_all();
+    }
+
     if action_invalidates_processor_audition(action) {
         let _ = audition.cancel_immediately();
     }
@@ -487,4 +615,18 @@ pub(super) fn legacy_enqueue(
         &mut control.processor_audition,
         action,
     )
+}
+
+pub(super) fn constructor_endpoint_storage_quote() -> Option<usize> {
+    std::mem::size_of::<ClientEndpoints>()
+        .checked_add(std::mem::size_of::<PublicationControl>())?
+        .checked_add(std::mem::size_of::<
+            std::sync::OnceLock<std::sync::Mutex<Box<ClientEndpoints>>>,
+        >())?
+        .checked_add(std::mem::size_of::<
+            std::sync::OnceLock<std::sync::Mutex<Box<PublicationControl>>>,
+        >())?
+        .checked_add(std::mem::size_of::<Client>())?
+        .checked_add(std::mem::size_of::<WorkerControl>())?
+        .checked_add(resident_forwarding::constructor_storage_quote())
 }

@@ -2,6 +2,8 @@ use super::*;
 #[cfg(feature = "allocation-probe")]
 mod actions;
 #[cfg(feature = "allocation-probe")]
+mod current_sampler;
+#[cfg(feature = "allocation-probe")]
 mod fanout;
 #[cfg(feature = "allocation-probe")]
 mod native_resources;
@@ -10,7 +12,9 @@ mod pages;
 #[cfg(feature = "allocation-probe")]
 mod readiness;
 #[cfg(feature = "allocation-probe")]
-mod stream_fixture;
+mod reverb;
+#[cfg(feature = "allocation-probe")]
+pub(in crate::prepared) mod stream_fixture;
 #[cfg(feature = "allocation-probe")]
 mod utility_fixture;
 use crate::prepared::candidate_tests::{anchored, candidate, finish, recover, serial};
@@ -630,3 +634,7 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
     drop(errors);
     finish(&mut retirement);
 }
+
+mod foreign_source;
+#[cfg(feature = "allocation-probe")]
+mod ordinary;
