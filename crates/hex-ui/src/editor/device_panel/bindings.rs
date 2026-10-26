@@ -337,7 +337,7 @@ pub(super) fn render_parameter(
             })
             .unwrap_or(false)
     });
-    match view.device_panel.controls.get(&key) {
+    let rendered = match view.device_panel.controls.get(&key) {
         Some(ParameterControl::Float { entity, .. }) => {
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
@@ -508,7 +508,34 @@ pub(super) fn render_parameter(
             div().w(px(width)).h(px(height)).child(entity.clone())
         }
         None => unsupported_parameter(descriptor.label),
-    }
+    };
+    let menu_binding = CapturedBinding {
+        generation,
+        owner: view.device_panel.owner,
+        key,
+        identity,
+        descriptor,
+    };
+    rendered.capture_any_mouse_down(cx.listener(
+        move |view, event: &gpui::MouseDownEvent, window, cx| {
+            if event.button == gpui::MouseButton::Right
+                && menu_binding.current(view, false)
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision)
+                && view.open_parameter_automation_menu(
+                    event.position,
+                    key.device,
+                    key.parameter,
+                    window,
+                    cx,
+                )
+            {
+                cx.stop_propagation();
+            }
+        },
+    ))
 }
 
 fn create_parameter_control(
@@ -630,6 +657,9 @@ fn create_parameter_control(
                     if !is_current(view) {
                         return;
                     }
+                    if event.phase == NumericEventPhase::Begin {
+                        view.remember_automation_parameter(key.device, key.parameter);
+                    }
                     let value = ParameterValue::Float(event.value as f32);
                     if let Err(error) = dispatch_bound_numeric_gesture(
                         view,
@@ -704,6 +734,7 @@ fn create_parameter_control(
                     }
                     return;
                 }
+                view.remember_automation_parameter(key.device, key.parameter);
                 let value = ParameterValue::Bool(event.checked);
                 view.device_panel.pending_values.insert(target, value);
                 if !view.enqueue_device_barrier(Request::SetDeviceParameter {
@@ -770,6 +801,7 @@ fn create_parameter_control(
                     if !finalize_controls(view, cx) {
                         return;
                     }
+                    view.remember_automation_parameter(key.device, key.parameter);
                     let value = ParameterValue::Choice(value);
                     view.device_panel.pending_values.insert(target, value);
                     if !view.enqueue_device_barrier(Request::SetDeviceParameter {

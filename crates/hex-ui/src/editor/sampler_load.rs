@@ -143,6 +143,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             position,
             icon_grid: None,
             selected: 0,
