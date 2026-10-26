@@ -251,6 +251,8 @@ pub fn rectangle_pointer<K: Copy + PartialEq>(
 
 /// Absolute pixel counterpart for a floating or cross-lane preview. It uses
 /// the same clipped rectangle composition as in-lane normalized displays.
+/// Preserve horizontal endpoints even below handle size; callers must not add
+/// layout borders wider than that interval.
 pub fn rectangle_surface_pixels(left: f32, top: f32, width: f32, height: f32) -> Div {
     let valid = left.is_finite()
         && top.is_finite()
@@ -263,7 +265,7 @@ pub fn rectangle_surface_pixels(left: f32, top: f32, width: f32, height: f32) ->
         .overflow_hidden()
         .left(px(if valid { left } else { 0.0 }))
         .top(px(if valid { top } else { 0.0 }))
-        .w(px(if valid { width.max(3.0) } else { 0.0 }))
+        .w(px(if valid { width } else { 0.0 }))
         .h(px(if valid { height.max(3.0) } else { 0.0 }))
         .when(!valid, |this| this.invisible())
 }

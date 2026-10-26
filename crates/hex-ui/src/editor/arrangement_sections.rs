@@ -1628,6 +1628,9 @@ impl EditorView {
             let colors = theme::section_colors(m.color, selected, false);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
+            let pixel_width = self.main_track_lane_bounds.map_or(0.0, |lane| {
+                lane.width * ((end - start) as f32 / viewport.length as f32)
+            });
             let mut element = hex_widgets::rectangle_surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
                 (end - start) as f32 / viewport.length as f32, 0.0,
@@ -1637,7 +1640,7 @@ impl EditorView {
                 .top_0()
                 .bottom_0()
                 .cursor(gpui::CursorStyle::Arrow)
-                .border_1()
+                .when(pixel_width >= 2.0, |surface| surface.border_1())
                 .border_color(rgb(border))
                 .bg(section_fill(colors.0))
                 .text_color(rgb(colors.1))

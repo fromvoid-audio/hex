@@ -43,7 +43,6 @@ fn geometry(
     boundary: Option<u64>,
     lane: LaneBounds,
     viewport: Viewport,
-    minimum: f32,
 ) -> Option<LoopControls> {
     if viewport.length == 0
         || !lane.left.is_finite()
@@ -62,7 +61,7 @@ fn geometry(
     }
     let left =
         lane.left + lane.width * ((a - viewport.start) as f64 / viewport.length as f64) as f32;
-    let width = rendered_clip_width(lane.width, (b - a) as f64 / viewport.length as f64, minimum);
+    let width = rendered_clip_width(lane.width, (b - a) as f64 / viewport.length as f64);
     if !left.is_finite() || !width.is_finite() {
         return None;
     }
@@ -137,7 +136,7 @@ pub(in crate::editor) fn audio_controls(
     .then(|| hex_project::AudioViewProjection::new(clip, project.tempo_map()).ok())
     .flatten()
     .and_then(|p| u64::try_from(p.logical_first_boundary()).ok());
-    geometry(clip.start(), end, boundary, lane, viewport, 3.0)
+    geometry(clip.start(), end, boundary, lane, viewport)
 }
 pub(in crate::editor) fn midi_controls(
     clip: &MidiClip,
@@ -159,7 +158,6 @@ pub(in crate::editor) fn midi_controls(
             .and_then(|b| tempo.beat_to_frame(b).ok()),
         lane,
         viewport,
-        4.0,
     )
 }
 
