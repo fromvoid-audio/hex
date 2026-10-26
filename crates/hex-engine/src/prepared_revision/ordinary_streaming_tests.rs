@@ -64,6 +64,7 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
             &instruments,
             &crate::audio_transform::AudioTransformPreparation::default(),
             None,
+            None,
         )
         .unwrap(),
     );
