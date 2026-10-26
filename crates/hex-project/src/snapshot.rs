@@ -116,9 +116,11 @@ pub struct TrackSnapshot {
     pub muted: bool,
     pub soloed: bool,
     pub devices: Vec<DeviceSnapshot>,
-    /// Resolved read projection of the bound source instrument. Strict snapshots
-    /// require an identical registry device; this is never a second state owner.
-    /// Historical inline projections use the explicit legacy adapter.
+    /// Resolved read projection of the bound source instrument. Identity, state,
+    /// bypass and comparison must match its registry device; `automation` must be
+    /// empty. NativeSourceSnapshot is the sole source-envelope transport owner,
+    /// avoiding one curve copy per shared binding. This is never a second state
+    /// owner. Historical inline projections use the explicit legacy adapter.
     pub instrument: Option<DeviceSnapshot>,
     /// Number of effects before `instrument`; required exactly when present.
     pub instrument_position: Option<usize>,
@@ -143,6 +145,7 @@ pub struct SendLevelSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSnapshot {
+    pub automation: Vec<crate::DeviceAutomation>,
     pub comparison: Option<crate::DeviceComparison>,
     pub id: u64,
     pub bypassed: bool,
@@ -311,6 +314,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
@@ -318,6 +322,7 @@ impl Project {
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        automation: Vec::new(),
                         comparison: instrument.comparison.clone(),
                         id: instrument.id.value(),
                         bypassed: instrument.bypassed,
@@ -404,6 +409,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
@@ -484,6 +490,7 @@ impl Project {
                 .main_devices
                 .iter()
                 .map(|device| DeviceSnapshot {
+                    automation: device.automation().to_vec(),
                     comparison: device.comparison.clone(),
                     id: device.id.value(),
                     bypassed: device.bypassed,
@@ -503,7 +510,33 @@ impl Project {
     /// authoritative. Current-format callers use strict `from_snapshot` instead.
     /// Original DeviceIds and source membership/order survive; fresh SourceIds
     /// are reserved after the old identity cursor, without writing any file.
+    /// Generic device envelopes did not exist in these historical formats;
+    /// snapshots containing them must use strict `from_snapshot` so an inline
+    /// projection cannot replace their canonical source owner.
     pub fn from_legacy_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        if snapshot
+            .tracks
+            .iter()
+            .flat_map(|track| track.devices.iter().chain(track.instrument.iter()))
+            .chain(
+                snapshot
+                    .return_tracks
+                    .iter()
+                    .flat_map(|track| track.devices.iter()),
+            )
+            .chain(snapshot.main_devices.iter())
+            .chain(
+                snapshot
+                    .native_sources
+                    .iter()
+                    .flat_map(|source| source.devices.iter()),
+            )
+            .any(|device| !device.automation.is_empty())
+        {
+            return Err(Invalid(
+                "legacy snapshots cannot carry device automation; use strict current snapshots",
+            ));
+        }
         let mut max_id = 0;
         let mut note_id = |id: u64| {
             max_id = max_id.max(id);
@@ -713,6 +746,7 @@ impl Project {
         for device in snapshot.main_devices {
             insert_id(device.id, &mut ids, &mut max_id)?;
             main_devices.push(Device {
+                automation: device.automation,
                 comparison: device.comparison,
                 id: DeviceId(device.id),
                 state: device.state,
@@ -743,6 +777,7 @@ impl Project {
                     comparison.validate(&device.state)?;
                 }
                 devices.push(Device {
+                    automation: device.automation,
                     id: DeviceId(device.id),
                     state: device.state,
                     bypassed: device.bypassed,
@@ -780,6 +815,7 @@ impl Project {
                     return Err(Invalid("project device limit reached"));
                 }
                 devices.push(Device {
+                    automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
@@ -830,6 +866,7 @@ impl Project {
             for device in track.devices {
                 insert_id(device.id, &mut ids, &mut max_id)?;
                 devices.push(Device {
+                    automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
@@ -843,7 +880,8 @@ impl Project {
                     .find(|source| source.instrument().id().value() == instrument.id)
                     .ok_or(Invalid("track instrument has no retained source"))?;
                 let expected = source.instrument();
-                if expected.state() != &instrument.state
+                if !instrument.automation.is_empty()
+                    || expected.state() != &instrument.state
                     || expected.bypassed() != instrument.bypassed
                     || expected.comparison() != instrument.comparison.as_ref()
                 {
@@ -1205,6 +1243,7 @@ impl Project {
         }
         project.validate_retained_audio_roots()?;
         project.validate_device_asset_references()?;
+        project.validate_device_automation()?;
         for track in &project.tracks {
             for clip in track.clips() {
                 if let Some(edit) = &clip.edit {

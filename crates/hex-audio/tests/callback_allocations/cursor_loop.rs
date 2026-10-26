@@ -137,3 +137,96 @@ fn event_fade_pcm_publication_seek_stop_and_shutdown_allocate_and_free_nothing_i
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn selection_crossfade_publication_seek_stop_and_retirement_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let Created::Imported {
+        track,
+        asset,
+        clip: left,
+    } = editor.execute(Command::ImportAudioTrack {
+        name: "crossfade".into(),
+        path: "original-crossfade.wav".into(),
+        sample_rate: RATE,
+        frames: 16,
+    })?
+    else {
+        return Err("expected audio import".into());
+    };
+    editor.execute(Command::SetClipLooping {
+        clip: left,
+        looping: true,
+    })?;
+    editor.execute(Command::TrimClipEdge {
+        clip: left,
+        edge: hex_project::TrimEdge::Right,
+        frame: 8,
+    })?;
+    let Created::Clip(right) = editor.execute(Command::CopyClipTo {
+        clip: left,
+        track,
+        start: 8,
+    })?
+    else {
+        return Err("expected audio copy".into());
+    };
+    editor.execute(Command::SetClipSourcePhase {
+        clip: right,
+        phase: 5,
+    })?;
+    for clip in [left, right] {
+        editor.execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })?;
+    }
+    editor.execute(Command::CreateArrangementFades {
+        range: hex_project::TimeRange::new(vec![track], 6, 10)?,
+    })?;
+    let graph = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &BTreeMap::from([(
+            asset,
+            Audio::new(RATE, (1..=16).map(|n| [n as f32 / 16.0; 2]).collect())?,
+        )]),
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(graph)?)
+        .map_err(|_| "crossfade publication")?;
+    control
+        .command(PlaybackCommand::PlayFrom(4))
+        .map_err(|_| "crossfade seek")?;
+    let mut output = [[0.0; 2]; 12];
+    measured_block(&mut callback, &mut output);
+    for (offset, frame) in output.iter().enumerate() {
+        let at = 4 + offset;
+        let expected = if at < 6 {
+            (at + 1) as f32 / 16.0
+        } else if at < 10 {
+            let progress = (at - 6) as f64 / 3.0;
+            (at + 1) as f32 / 16.0 * (1.0 - progress) as f32
+                + (at - 2) as f32 / 16.0 * progress as f32
+        } else {
+            (at - 2) as f32 / 16.0
+        };
+        for sample in frame {
+            assert!((*sample - expected).abs() < 1e-7, "frame {at}");
+        }
+    }
+    control.reclaim();
+    control
+        .command(PlaybackCommand::Stop)
+        .map_err(|_| "crossfade stop")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(output, [[0.0; 2]; 12]);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}

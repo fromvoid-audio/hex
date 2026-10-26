@@ -103,6 +103,8 @@ impl Channel {
                         b"HXVIQF02",
                         b"HXVIRR02",
                         b"HXVICS01",
+                        b"HXVIFL01",
+                        b"HXVIGE01",
                         b"HXVLCA01",
                         b"HXVIER01",
                         b"HXVITR01",
@@ -128,10 +130,20 @@ impl Channel {
                 }
                 if wanted == 64 && (&out.bytes[..4] == b"HXVB" || &out.bytes[..4] == b"HXVE") {
                     let frames = usize::from(u16::from_le_bytes([out.bytes[6], out.bytes[7]]));
-                    if frames > 256 || out.bytes[8..10] != [0, 0] {
+                    let version = u16::from_le_bytes([out.bytes[4], out.bytes[5]]);
+                    let parameters =
+                        usize::from(u16::from_le_bytes([out.bytes[10], out.bytes[11]]));
+                    if frames > crate::transport::MAX_FRAMES
+                        || out.bytes[8..10] != [0, 0]
+                        || !matches!(version, 1 | 2)
+                        || (version == 1 && parameters != 0)
+                        || parameters > crate::transport::MAX_PARAMETER_POINTS
+                        || out.bytes[12..16] != [0; 4]
+                        || (parameters != 0 && (frames == 0 || &out.bytes[..4] != b"HXVB"))
+                    {
                         return Err(Error::Protocol("unsupported instance PCM extent or events"));
                     }
-                    wanted = 64 + frames * 8;
+                    wanted = 64 + frames * 8 + parameters * 16;
                     if wanted == 64 {
                         return Ok(());
                     }
@@ -204,6 +216,63 @@ fn remaining(until: Instant) -> Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parameter_packet_framing_consumes_exact_payload_without_eating_the_successor() {
+        use crate::transport::{Block, Events, ParameterPoint, Parameters};
+        use hex_lattice_contract::ForeignProcessorBinding;
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let mut block = Block {
+            binding: ForeignProcessorBinding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            sequence: 0,
+            first_frame: 0,
+            frames: 8,
+            pcm: [[0.5; 2]; crate::transport::MAX_FRAMES],
+            events: Events::default(),
+            parameters: Parameters::default(),
+        };
+        block
+            .parameters
+            .push(ParameterPoint {
+                frame: 7,
+                id: 0,
+                normalized: 0.125,
+            })
+            .unwrap();
+        crate::transport::wire::write(&mut peer, &block).unwrap();
+        block.parameters = Parameters::default();
+        block.sequence = 1;
+        block.first_frame = 8;
+        crate::transport::wire::write(&mut peer, &block).unwrap();
+        drop(peer);
+        let mut channel = Channel::new(stream).unwrap();
+        let mut packet = Packet::new();
+        let until = end_after(Duration::from_secs(2)).unwrap();
+        channel.read(&mut packet, until, &mut || Ok(())).unwrap();
+        let first = crate::transport::wire::read(&mut packet.data())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: 7,
+                id: 0,
+                normalized: 0.125
+            }]
+        );
+        assert_eq!(packet.len, 64 + 8 * 8 + 16);
+        channel.read(&mut packet, until, &mut || Ok(())).unwrap();
+        let second = crate::transport::wire::read(&mut packet.data())
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.sequence, 1);
+        assert!(second.parameters.as_slice().is_empty());
+        assert_eq!(packet.len, 64 + 8 * 8);
+    }
     #[test]
     fn hostile_frames_refuse_before_unbounded_reads_or_allocation() {
         let mut oversized = b"HXVIRD04".to_vec();

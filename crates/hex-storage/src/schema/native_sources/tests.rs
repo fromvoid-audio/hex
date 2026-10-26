@@ -110,6 +110,16 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     );
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut schema46: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        schema46
+            .as_object_mut()
+            .unwrap()
+            .remove("device_automation")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     schema46["version"] = 46.into();
     for source in schema46["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
@@ -515,6 +525,16 @@ fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
     assert_eq!(decode(&encode(&no_receiver).unwrap()).unwrap(), no_receiver);
 
     let mut old46: serde_json::Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
+    assert!(
+        old46
+            .as_object_mut()
+            .unwrap()
+            .remove("device_automation")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     old46["version"] = 46.into();
     old46
         .as_object_mut()
@@ -745,7 +765,7 @@ fn authentic_schema47_audio_and_source_migration_preserves_complete_state_and_by
         "schema47's frozen source DTO has no receiver field"
     );
     let current: serde_json::Value = serde_json::from_slice(&encode(&migrated).unwrap()).unwrap();
-    assert_eq!(current["version"], 49);
+    assert_eq!(current["version"], crate::CURRENT_SCHEMA_VERSION);
     assert_eq!(current["audio_clip_state"], wire["audio_clip_state"]);
     assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
     assert_eq!(bytes, original.as_slice());

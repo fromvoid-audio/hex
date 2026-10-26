@@ -2,7 +2,8 @@
 //! Header overview has a separate transient height map: temporary resizing never
 //! overwrites normal custom heights. Stable track IDs survive topology changes;
 //! project replacement clears both layouts. Plain H belongs to this workspace
-//! only while the computer MIDI keyboard is disabled.
+//! only while the computer MIDI keyboard is disabled. Held sizing uses the shared
+//! Window pointer lease; its local snapshot owns complete cancellation rollback.
 use super::{
     EditorView,
     tracks::{TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT},
@@ -297,6 +298,77 @@ impl EditorView {
             }
         }
     }
+    fn capture_track_resize(
+        &self,
+        track: Option<TrackId>,
+        revision: u64,
+        window: &mut Window,
+        cx: &Context<Self>,
+    ) -> bool {
+        let generation = self.project_generation;
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            if track.is_some() {
+                gpui::CursorStyle::ResizeRow
+            } else {
+                gpui::CursorStyle::ResizeColumn
+            },
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<MouseUpEvent>()
+                    .filter(|e| e.button == MouseButton::Left);
+                let Some(position) = moved
+                    .map(|e| e.position)
+                    .or_else(|| released.map(|e| e.position))
+                else {
+                    return;
+                };
+                let _ = owner.update(cx, |view, cx| {
+                    if !view.track_layout.drag.as_ref().is_some_and(|d| {
+                        d.track == track && d.generation == generation && d.revision == revision
+                    }) {
+                        return;
+                    }
+                    view.reconcile_track_resize(window, cx);
+                    if view.track_layout.drag.is_none() {
+                        return;
+                    }
+                    if !f32::from(position.x).is_finite() || !f32::from(position.y).is_finite() {
+                        view.cancel_track_resize(cx);
+                        return;
+                    }
+                    let all_tracks = moved
+                        .map(|e| e.modifiers.alt)
+                        .or_else(|| released.map(|e| e.modifiers.alt))
+                        .unwrap_or(false);
+                    view.update_track_resize(
+                        f32::from(position.x),
+                        f32::from(position.y),
+                        all_tracks,
+                        cx,
+                    );
+                    if released.is_some() {
+                        view.track_layout.drag = None;
+                        cx.notify();
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.track_layout.drag.as_ref().is_some_and(|d| {
+                        d.track == track && d.generation == generation && d.revision == revision
+                    }) {
+                        view.cancel_track_resize(cx);
+                    }
+                });
+            },
+            cx,
+        )
+    }
     fn begin_track_resize(
         &mut self,
         track: Option<TrackId>,
@@ -339,6 +411,9 @@ impl EditorView {
             self.maximum_header_width()
         };
         let original = track.map_or_else(|| self.track_header_width(), |id| self.track_height(id));
+        if !self.capture_track_resize(track, revision, window, cx) {
+            return;
+        }
         self.track_layout.drag = Some(ResizeDrag {
             track,
             pointer,
@@ -501,49 +576,21 @@ impl EditorView {
         let entity = cx.entity();
         canvas(
             |_, _, _| (),
-            move |_, _, window, _| {
-                let moved = entity.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                    if !phase.capture() {
-                        return;
-                    }
-                    moved.update(cx, |view, cx| {
-                        if view.track_layout.drag.is_none() {
-                            return;
-                        }
-                        if event.pressed_button != Some(MouseButton::Left) {
-                            view.cancel_track_resize(cx);
+            move |_, _, window, cx| {
+                let view = entity.read(cx);
+                if let Some(drag) = view.track_layout.drag.as_ref()
+                    && view.track_resize_current(drag)
+                    && view.focus.is_focused(window)
+                {
+                    window.renew_pointer_capture(
+                        entity.entity_id(),
+                        if drag.track.is_some() {
+                            gpui::CursorStyle::ResizeRow
                         } else {
-                            view.update_track_resize(
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                                event.modifiers.alt,
-                                cx,
-                            );
-                        }
-                        cx.stop_propagation();
-                    });
-                });
-                let released = entity.clone();
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                    if !phase.capture() || event.button != MouseButton::Left {
-                        return;
-                    }
-                    released.update(cx, |view, cx| {
-                        if view.track_layout.drag.is_none() {
-                            return;
-                        }
-                        view.update_track_resize(
-                            f32::from(event.position.x),
-                            f32::from(event.position.y),
-                            event.modifiers.alt,
-                            cx,
-                        );
-                        view.track_layout.drag = None;
-                        cx.notify();
-                        cx.stop_propagation();
-                    });
-                });
+                            gpui::CursorStyle::ResizeColumn
+                        },
+                    );
+                }
             },
         )
         .absolute()

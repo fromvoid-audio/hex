@@ -299,6 +299,12 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
+    /// Replace one canonical Arrangement envelope; empty points clear it.
+    ReplaceDeviceAutomation {
+        device: DeviceId,
+        parameter: hex_lattice_contract::ParameterId,
+        points: Vec<crate::AutomationPoint>,
+    },
     ReplaceDeviceState {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
@@ -685,6 +691,18 @@ pub enum Command {
         duration: u64,
         source_offset: u64,
         source_length: u64,
+    },
+    /// Fit an edge fade or a two-voice source-handle crossfade to a validated
+    /// Arrangement selection. Source content never translates; failures are atomic.
+    CreateArrangementFades {
+        range: crate::TimeRange,
+    },
+    /// Fit one source-event edge fade. Positions use the retained root's declared
+    /// frame/beat clock; Console source windows and event joins explicitly refuse.
+    CreateAudioEventFades {
+        clip: ClipId,
+        start: u64,
+        end: u64,
     },
     /// Set linear fade lengths and reanchor them to the clip's current duration.
     SetClipFades {
@@ -1835,6 +1853,11 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            Command::ReplaceDeviceAutomation {
+                device,
+                parameter,
+                points,
+            } => self.replace_device_automation(device, parameter, points),
             main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
                 crate::main_devices::apply(self, main_command)
             }
@@ -2787,6 +2810,12 @@ impl Project {
                     target.gain = gain;
                 }
                 Ok(Created::None)
+            }
+            Command::CreateArrangementFades { range } => {
+                crate::selection_fades::arrangement(self, &range)
+            }
+            Command::CreateAudioEventFades { clip, start, end } => {
+                crate::selection_fades::event(self, clip, start, end)
             }
             Command::SetClipFadeEnvelope { clip, fade } => {
                 let target = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;

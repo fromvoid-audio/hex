@@ -530,8 +530,8 @@ impl Render for EditorView {
                     }
                 });
             })
-            .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
-                super::device_panel::capture_navigation_pointer_down(view, event, cx);
+            .capture_any_mouse_down(cx.listener(|view, event, window, cx| {
+                super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
                 if event.button == MouseButton::Left {
@@ -686,6 +686,14 @@ impl Render for EditorView {
             .capture_action(cx.listener(|view, _: &super::SearchBrowser, window, cx| {
                 view.search_browser(window, cx);
             }))
+            .capture_action(
+                cx.listener(|view, _: &super::CreateFadesOrSearch, window, cx| {
+                    if !view.create_selection_fades(window, cx) {
+                        view.search_browser(window, cx);
+                    }
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::RenameTrack, window, cx| {
                 view.begin_track_name(window, cx);
             }))

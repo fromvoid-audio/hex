@@ -443,6 +443,7 @@ impl Command {
                 ClipCommandScope::FocusedSnapshot { clip: *clip }
             }
             Self::EditAudioEvents { clip, .. }
+            | Self::CreateAudioEventFades { clip, .. }
             | Self::SetSessionAudioClipLoop { clip, .. }
             | Self::SetSessionAudioClipSource { clip, .. }
             | Self::SetSessionMidiClipSource { clip, .. }
@@ -506,6 +507,7 @@ impl Command {
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
             | Self::SplitTimeRange { .. }
+            | Self::CreateArrangementFades { .. }
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupTimeRange(_)
@@ -551,6 +553,7 @@ impl Command {
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::ReplaceDeviceAutomation { .. }
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }

@@ -177,6 +177,13 @@ public:
         ++received_messages; return kResultOk;
     }
     tresult send_restart(int32 flags) { return handler?handler->restartComponent(flags):kNotImplemented; }
+    tresult send_edit(int kind,ParamID id,ParamValue value) {
+        if(!handler) return kNotImplemented;
+        if(kind==1) return handler->beginEdit(id);
+        if(kind==2) {metadata_value=value;return handler->performEdit(id,value);}
+        if(kind==3) return handler->endEdit(id);
+        return kInvalidArgument;
+    }
     FUnknown* host_context() const { return context; }
     IConnectionPoint* connected_peer() const { return peer; }
     tresult PLUGIN_API setComponentHandler(IComponentHandler* supplied) override {
@@ -296,6 +303,9 @@ extern "C" __attribute__((visibility("default"))) int HexHostAction(int action,i
     if (action==6) return received_messages;
     if (action==7) return processing_message_result;
     return kInvalidArgument;
+}
+extern "C" __attribute__((visibility("default"))) int HexHostEdit(int kind,uint32 id,double value) {
+    return host_testing && active_controller?active_controller->send_edit(kind,id,value):kNotImplemented;
 }
 extern "C" __attribute__((visibility("default"))) int HexHostMessages(int retain) {
     if (!host_testing || !active_controller || !pthread_main_np()) return kInvalidArgument;

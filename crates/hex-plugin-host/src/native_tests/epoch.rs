@@ -700,3 +700,87 @@ fn actual_quiescent_stale_cancelled_dropped_and_retired_owners_never_restart() {
         assert_eq!(observed[10], 0, "no PCM replay for {terminal}");
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_stopped_flush_refusal_exception_shape_controller_and_retained_borrow_keep_failed_source_custody()
+ {
+    use crate::transport::{ParameterPoint, Parameters};
+    for (variant, reason) in [(72, 7), (73, 12), (75, 7), (76, 11), (77, 7)] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        let initial = instance.ready().initial_state.clone();
+        let probe = epoch_probe(&mut instance);
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let mut points = Parameters::default();
+        points
+            .push(ParameterPoint {
+                frame: 0,
+                id: 7,
+                normalized: 0.75,
+            })
+            .unwrap();
+        epoch_refusal(
+            stopped.flush_parameters_retained_on_control(&points),
+            Some(reason),
+            &probe,
+        );
+        assert_eq!(
+            &decode(&initial).unwrap().component.unwrap()[8..12],
+            &1.0_f32.to_le_bytes(),
+            "failure never rewrites confirmed startup state"
+        );
+    }
+    for cancel in [true, false] {
+        let case = Case::new();
+        let context = PreparationCancellation::new_on_control().unwrap();
+        let token = context.token_on_control();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            context,
+            case.setup_restore(74),
+        )
+        .unwrap();
+        let probe = epoch_probe(&mut instance);
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let result = case.after_stage(
+            24,
+            move || {
+                let mut points = Parameters::default();
+                points
+                    .push(ParameterPoint {
+                        frame: 0,
+                        id: 7,
+                        normalized: 0.75,
+                    })
+                    .unwrap();
+                stopped
+                    .flush_parameters_retained_on_control(&points)
+                    .map(|_| ())
+            },
+            || {
+                if cancel {
+                    token.cancel_on_control();
+                }
+            },
+        );
+        let failure = retained_epoch_failure(result, &probe);
+        assert!(
+            matches!(failure.cause(), Error::Cancelled) && cancel
+                || matches!(failure.cause(), Error::Timeout) && !cancel
+        );
+        assert_eq!(
+            dispose_epoch_failure(failure, &probe).status.code(),
+            Some(9)
+        );
+    }
+}

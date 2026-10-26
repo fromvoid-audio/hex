@@ -1,0 +1,197 @@
+//! Canonical Arrangement envelopes owned by stable device/parameter identity.
+//! The model retains normalized values independently of provider availability.
+//! Providers and playback admission validate current parameter capabilities;
+//! this neutral owner never interprets device state or constructs DSP. Empty
+//! replacement removes an authored envelope: lane visibility and dashed previews
+//! are transient UI state, and never override the device's base parameter value.
+use crate::{BeatTime, Created, Device, DeviceId, Invalid, Project};
+use hex_lattice_contract::ParameterId;
+
+pub const MAX_DEVICE_AUTOMATION_LANES: usize = 256;
+pub const MAX_DEVICE_AUTOMATION_POINTS_PER_LANE: usize = 1_024;
+pub const MAX_DEVICE_AUTOMATION_POINTS: usize = 65_536;
+
+/// A finite normalized parameter value, including a canonical positive zero.
+/// Private representation makes Eq sound and prevents NaN entering authored state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutomationValue(u32);
+impl AutomationValue {
+    pub fn new(value: f32) -> Result<Self, Invalid> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(Invalid("automation value must be finite and within 0..1"));
+        }
+        Ok(Self(if value == 0.0 { 0 } else { value.to_bits() }))
+    }
+    pub fn get(self) -> f32 {
+        f32::from_bits(self.0)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutomationInterpolation {
+    Step,
+    Linear,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutomationPoint {
+    pub beat: BeatTime,
+    pub value: AutomationValue,
+    pub outgoing: AutomationInterpolation,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceAutomation {
+    pub parameter: ParameterId,
+    pub points: Vec<AutomationPoint>,
+}
+impl DeviceAutomation {
+    /// Evaluate a validated normalized envelope on canonical Arrangement time.
+    /// Endpoint values hold outside the authored range; a preview has no points
+    /// and returns None. This read-only query never allocates or patches DSP.
+    pub fn value_at(&self, beat: BeatTime) -> Option<AutomationValue> {
+        let first = self.points.first()?;
+        let next = self.points.partition_point(|point| point.beat <= beat);
+        if next == 0 {
+            return Some(first.value);
+        }
+        let left = self.points.get(next - 1)?;
+        let Some(right) = self.points.get(next) else {
+            return Some(left.value);
+        };
+        if left.outgoing == AutomationInterpolation::Step || beat == left.beat {
+            return Some(left.value);
+        }
+        let span = right.beat.raw().checked_sub(left.beat.raw())?;
+        if span == 0 {
+            return None;
+        }
+        let elapsed = beat.raw().checked_sub(left.beat.raw())?;
+        let fraction = elapsed as f64 / span as f64;
+        AutomationValue::new(
+            (f64::from(left.value.get())
+                + (f64::from(right.value.get()) - f64::from(left.value.get())) * fraction)
+                as f32,
+        )
+        .ok()
+    }
+}
+pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Invalid> {
+    if lanes.len() > MAX_DEVICE_AUTOMATION_LANES {
+        return Err(Invalid("device automation lane limit reached"));
+    }
+    let mut previous = None;
+    for lane in lanes {
+        ParameterId::new(lane.parameter.value())
+            .map_err(|_| Invalid("invalid automation parameter identity"))?;
+        if previous.is_some_and(|id| id >= lane.parameter) {
+            return Err(Invalid(
+                "device automation parameters must strictly increase",
+            ));
+        }
+        previous = Some(lane.parameter);
+        validate_points(&lane.points)?;
+    }
+    Ok(())
+}
+fn validate_points(points: &[AutomationPoint]) -> Result<(), Invalid> {
+    if points.is_empty() || points.len() > MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
+        return Err(Invalid("device automation envelope needs 1..1024 points"));
+    }
+    if points.windows(2).any(|pair| pair[0].beat >= pair[1].beat) {
+        return Err(Invalid("device automation beats must strictly increase"));
+    }
+    Ok(())
+}
+impl Device {
+    pub(crate) fn validate_automation_provider(
+        &self,
+        state: &hex_lattice_contract::NativeDeviceState,
+    ) -> Result<(), Invalid> {
+        if !self.automation.is_empty() && self.state.type_id() != state.type_id() {
+            return Err(Invalid(
+                "clear automation before replacing a device provider",
+            ));
+        }
+        Ok(())
+    }
+    pub fn automation(&self) -> &[DeviceAutomation] {
+        &self.automation
+    }
+    pub fn automation_lane(&self, parameter: ParameterId) -> Option<&DeviceAutomation> {
+        self.automation
+            .binary_search_by_key(&parameter, |lane| lane.parameter)
+            .ok()
+            .map(|index| &self.automation[index])
+    }
+}
+impl Project {
+    /// Each canonical device is visited once; immutable track source bindings
+    /// are views and do not add duplicate authored envelopes to this inventory.
+    pub fn automation_devices(&self) -> impl Iterator<Item = &Device> {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.devices())
+            .chain(self.returns.iter().flat_map(|track| track.devices()))
+            .chain(self.main_devices())
+            .chain(
+                self.native_sources
+                    .iter()
+                    .flat_map(|source| source.devices()),
+            )
+    }
+    pub fn has_device_automation(&self) -> bool {
+        self.automation_devices()
+            .any(|device| !device.automation.is_empty())
+    }
+    pub(crate) fn validate_device_automation(&self) -> Result<(), Invalid> {
+        let mut total = 0usize;
+        for device in self.automation_devices() {
+            validate_device_automation(&device.automation)?;
+            for lane in &device.automation {
+                total = total
+                    .checked_add(lane.points.len())
+                    .ok_or(Invalid("automation point count overflow"))?;
+                if total > MAX_DEVICE_AUTOMATION_POINTS {
+                    return Err(Invalid("project device automation point limit reached"));
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn replace_device_automation(
+        &mut self,
+        device: DeviceId,
+        parameter: ParameterId,
+        points: Vec<AutomationPoint>,
+    ) -> Result<Created, Invalid> {
+        ParameterId::new(parameter.value())
+            .map_err(|_| Invalid("invalid automation parameter identity"))?;
+        if !points.is_empty() {
+            validate_points(&points)?;
+        }
+        self.edit_device(device, move |device| {
+            match device
+                .automation
+                .binary_search_by_key(&parameter, |lane| lane.parameter)
+            {
+                Ok(index) if points.is_empty() => {
+                    device.automation.remove(index);
+                }
+                Ok(index) => device.automation[index].points = points,
+                Err(index) if !points.is_empty() => {
+                    if device.automation.len() == MAX_DEVICE_AUTOMATION_LANES {
+                        return Err(Invalid("device automation lane limit reached"));
+                    }
+                    device
+                        .automation
+                        .insert(index, DeviceAutomation { parameter, points });
+                }
+                Err(_) => {}
+            }
+            Ok(())
+        })?;
+        self.validate_device_automation()?;
+        Ok(Created::None)
+    }
+}
+
+#[cfg(test)]
+mod tests;

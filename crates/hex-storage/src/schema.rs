@@ -6,7 +6,9 @@ pub(crate) mod clip_activation;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
 pub(crate) mod content_views;
+pub(crate) mod crossfades;
 pub(crate) mod device_assets;
+pub(crate) mod device_automation;
 pub(crate) mod event_fades;
 pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
@@ -1198,6 +1200,7 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
         .with_output_gain_millidb(device.output_gain_millidb)
         .map_err(|_| StorageError::Invalid("invalid device output gain"))?;
     Ok(DeviceSnapshot {
+        automation: Vec::new(),
         id: device.id,
         bypassed: device.bypassed,
         comparison: None,
