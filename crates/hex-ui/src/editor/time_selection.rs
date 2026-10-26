@@ -1141,7 +1141,7 @@ impl EditorView {
         let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
             return (true, false);
         };
-        let handle_hit = |start: u64, end: u64, minimum: f32| {
+        let handle_hit = |start: u64, end: u64| {
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
             if visible_start >= visible_end {
@@ -1151,7 +1151,7 @@ impl EditorView {
                 + lane.width
                     * ((visible_start - viewport.start) as f64 / viewport.length as f64) as f32;
             let fraction = (visible_end - visible_start) as f64 / viewport.length as f64;
-            let width = super::trim::rendered_clip_width(lane.width, fraction, minimum);
+            let width = super::trim::rendered_clip_width(lane.width, fraction);
             if x < left || x >= left + width {
                 return None;
             }
@@ -1173,7 +1173,7 @@ impl EditorView {
                     return None;
                 }
                 let preview = state.midi_preview.get(clip.id())?;
-                handle_hit(preview.frame_start, preview.frame_end, 4.0).map(|ordinary| {
+                handle_hit(preview.frame_start, preview.frame_end).map(|ordinary| {
                     (
                         ordinary,
                         super::trim::loop_handles::midi_controls(
@@ -1192,7 +1192,7 @@ impl EditorView {
                         return None;
                     }
                     let end = clip.start().checked_add(clip.duration())?;
-                    handle_hit(clip.start(), end, 3.0).map(|ordinary| {
+                    handle_hit(clip.start(), end).map(|ordinary| {
                         (
                             ordinary,
                             self.fade_handle_hit(state, track.id(), clip, x, y, viewport)

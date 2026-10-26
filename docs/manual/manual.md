@@ -295,6 +295,9 @@ clips have rounded bottom corners. drag the first repeat boundary to change the
 cycle while keeping the outer duration; directed clips retain only the outer
 repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
 
+clips and sections keep their actual timeline width when zoomed out. zoom in
+to resize very short clips when their edge handles no longer fit.
+
 ## audio event fades
 
 the audio event editor marks the clip's playback start with a fixed vertical
