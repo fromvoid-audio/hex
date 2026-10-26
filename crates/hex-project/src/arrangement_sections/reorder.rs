@@ -402,6 +402,9 @@ fn reorder_preview(
     if preview.is_noop() {
         return Ok(Created::None);
     }
+    if project.has_device_automation() {
+        return Err(Invalid(crate::AUTOMATION_EDIT_UNSUPPORTED));
+    }
     let old_tempo = std::sync::Arc::new(project.tempo_map.clone());
     let frame_permutation = FramePermutation::new(&old_tempo, &preview)?;
     let new_tempo = preview.tempo_map.clone();

@@ -299,6 +299,12 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
+    /// Replace one canonical Arrangement envelope; empty points clear it.
+    ReplaceDeviceAutomation {
+        device: DeviceId,
+        parameter: hex_lattice_contract::ParameterId,
+        points: Vec<crate::AutomationPoint>,
+    },
     ReplaceDeviceState {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
@@ -1847,6 +1853,11 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            Command::ReplaceDeviceAutomation {
+                device,
+                parameter,
+                points,
+            } => self.replace_device_automation(device, parameter, points),
             main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
                 crate::main_devices::apply(self, main_command)
             }

@@ -4165,6 +4165,7 @@ mod tests {
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 2,
                     bypassed: false,
@@ -4203,6 +4204,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID,
                     bypassed: false,
@@ -4241,6 +4243,7 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 1,
                     bypassed: false,
@@ -4364,6 +4367,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
@@ -4398,6 +4402,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
@@ -4494,6 +4499,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
@@ -4528,6 +4534,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
@@ -4645,6 +4652,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        automation: Vec::new(),
                         comparison: None,
                         id: TRACK_DEVICE_ID,
                         bypassed: false,
@@ -4683,6 +4691,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        automation: Vec::new(),
                         comparison: None,
                         id: RETURN_DEVICE_ID,
                         bypassed: false,

@@ -93,6 +93,12 @@ pub use clip_group_preview::ClipGroupMovePreview;
 mod clip_fragment;
 mod conversion;
 mod device;
+mod device_automation;
+pub use device_automation::{
+    AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomation,
+    MAX_DEVICE_AUTOMATION_LANES, MAX_DEVICE_AUTOMATION_POINTS,
+    MAX_DEVICE_AUTOMATION_POINTS_PER_LANE, validate_device_automation,
+};
 mod device_comparison;
 mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};

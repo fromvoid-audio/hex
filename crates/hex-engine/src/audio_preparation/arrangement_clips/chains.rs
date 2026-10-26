@@ -521,6 +521,7 @@ mod tests {
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,

@@ -26,6 +26,16 @@ fn schema47_migrates_every_field_and_preserves_original_document_and_media() {
     for source in current["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
     }
+    assert!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("device_automation")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     current["version"] = 47.into();
     assert_eq!(
         current,
@@ -159,6 +169,16 @@ fn authentic_schema48_migrates_complete_loop_and_singleton_source_without_rewrit
     for source in current["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
     }
+    assert!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("device_automation")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     current["version"] = 48.into();
     assert_eq!(
         current, old,
