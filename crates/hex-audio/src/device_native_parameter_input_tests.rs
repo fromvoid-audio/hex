@@ -502,3 +502,145 @@ fn stopped_native_begin_release_aborts_once_and_releases_publication_admission()
     control.status.publication_clear_for_test();
     shutdown(&mut control, &mut callback);
 }
+
+#[test]
+fn native_begin_rejects_each_stale_source_field_without_consuming_admission_or_credit() {
+    let (mut control, mut callback, target) = fixture(false);
+    for field in 0..4 {
+        let mut stale = target;
+        match field {
+            0 => stale.source.output_identity += 1,
+            1 => stale.source.context.project_generation += 1,
+            2 => stale.source.context.editor_revision += 1,
+            _ => stale.source.audio_revision += 1,
+        }
+        assert!(
+            control
+                .native_parameter_input
+                .begin(stale, value(0.5))
+                .is_err()
+        );
+        assert!(control.native_parameter_input.target().is_none());
+        assert!(control.native_parameter_input.try_receipt().is_none());
+        assert!(
+            control.status.publication_reserve_for_test(),
+            "stale field {field} must not retain shared publication admission"
+        );
+        control.status.publication_clear_for_test();
+    }
+    // The identical valid gesture is still usable: no failed Begin consumed its
+    // normal credit or advanced the monotonically increasing gesture serial.
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control.native_parameter_input.cancel().unwrap();
+    let mut source = [[0.0; 2]; 1];
+    let rendered = render(&mut callback, &mut source);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source, &rendered, 2));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { sequence: 1, .. })
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted {
+            reason: AbortReason::Cancelled,
+            ..
+        })
+    ));
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
+fn seek_revokes_a_delayed_native_marker_and_resumes_with_base_pcm() {
+    let (mut control, mut callback, mut target) = fixture(true);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    let mut source = [[0.0; 2]; 64];
+    let rendered = render(&mut callback, &mut source[..32]);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source[..32], &rendered, 2));
+    assert_eq!(source[..32], [[0.0; 2]; 32]);
+    assert!(
+        control.native_parameter_input.try_receipt().is_none(),
+        "actual Set is processed but its frame 304 has not reached the sink"
+    );
+    control
+        .command(hex_engine::PlaybackCommand::Seek(0))
+        .unwrap();
+    control.command(hex_engine::PlaybackCommand::Play).unwrap();
+    let rendered = render(&mut callback, &mut source[..1]);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source[..1], &rendered, 2));
+    assert_eq!(source[0], [0.0; 2]);
+    assert!(
+        matches!(control.native_parameter_input.try_receipt(), Some(Receipt::Superseded { target: actual, sequence: 1 }) if actual == target)
+    );
+    assert!(
+        !control.status.publication_reserve_for_test(),
+        "normal credit alone does not retire the terminal reservation"
+    );
+    assert!(
+        matches!(control.native_parameter_input.try_receipt(), Some(Receipt::Aborted { target: actual, reason: AbortReason::TransportChanged }) if actual == target)
+    );
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    assert!(control.native_parameter_input.target().is_none());
+    assert!(control.status.publication_reserve_for_test());
+    control.status.publication_clear_for_test();
+    // Seek(0) resets the real Limiter. The first 288 output frames are silent;
+    // the following frames are the original base-gain PCM, not the old Set.
+    let mut at = 1;
+    for requested in [19, 37, 1, 64].into_iter().cycle() {
+        if at == 320 {
+            break;
+        }
+        let len = requested.min(320 - at);
+        let rendered = render(&mut callback, &mut source[..len]);
+        assert!(rendered.is_ok());
+        assert!(write(&mut callback, &mut source[..len], &rendered, 2));
+        for (offset, actual) in source[..len].iter().enumerate() {
+            assert_eq!(
+                *actual,
+                if at + offset < 288 {
+                    [0.0; 2]
+                } else {
+                    [0.25, -0.5]
+                }
+            );
+        }
+        assert!(
+            control.native_parameter_input.try_receipt().is_none(),
+            "a pre-seek marker can never become Applied after resume"
+        );
+        at += len;
+    }
+    // A fresh Begin proves that the one issued normal credit was returned too.
+    target.gesture_serial += 1;
+    target.transport_epoch = control.status.transport_epoch.load(Acquire);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control.native_parameter_input.cancel().unwrap();
+    let rendered = render(&mut callback, &mut source[..1]);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source[..1], &rendered, 2));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { sequence: 1, .. })
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted {
+            reason: AbortReason::Cancelled,
+            ..
+        })
+    ));
+    assert!(control.native_parameter_input.try_receipt().is_none());
+    shutdown(&mut control, &mut callback);
+}
