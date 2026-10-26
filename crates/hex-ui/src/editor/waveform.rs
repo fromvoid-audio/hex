@@ -287,6 +287,7 @@ pub(super) fn waveform_source_segment_gain_view_cached(
     visible_start: u64,
     visible_end: u64,
     gain: hex_project::ClipGain,
+    detail: bool,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
     waveform_canvas(
@@ -294,6 +295,7 @@ pub(super) fn waveform_source_segment_gain_view_cached(
         WaveformMapping::GainedSource {
             timeline_origin,
             gain,
+            detail,
         },
         visible_start,
         visible_end,
