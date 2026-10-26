@@ -765,7 +765,7 @@ fn authentic_schema47_audio_and_source_migration_preserves_complete_state_and_by
         "schema47's frozen source DTO has no receiver field"
     );
     let current: serde_json::Value = serde_json::from_slice(&encode(&migrated).unwrap()).unwrap();
-    assert_eq!(current["version"], 50);
+    assert_eq!(current["version"], crate::CURRENT_SCHEMA_VERSION);
     assert_eq!(current["audio_clip_state"], wire["audio_clip_state"]);
     assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
     assert_eq!(bytes, original.as_slice());
