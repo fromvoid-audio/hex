@@ -134,3 +134,6 @@ pub use waveform_plot::{
     WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode, WaveformGeometry, WaveformRange,
     WaveformStroke, WaveformViewport, waveform_plot,
 };
+
+#[cfg(test)]
+mod pointer_hover_tests;
