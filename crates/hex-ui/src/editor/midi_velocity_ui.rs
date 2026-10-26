@@ -746,6 +746,7 @@ impl EditorView {
             );
         row = row.child(content);
         let splitter = self.velocity_size_input(cx);
+        let pointer_layer = splitter.pointer_layer();
         let handle = hex_widgets::SplitterHandleConfig::new(
             hex_widgets::SplitterAxis::Vertical,
             3.0,
@@ -758,7 +759,7 @@ impl EditorView {
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
-                .child(splitter.pointer_layer())
+                .child(pointer_layer)
                 .children(handle)
                 .child(row),
         )
