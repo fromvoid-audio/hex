@@ -198,6 +198,8 @@ notes or velocity bars, even with midi draw mode enabled. release **2** to retur
 to ordinary editing. a range already being dragged continues until mouse release.
 an i-beam cursor marks the time-selection tool while **2** is held.
 text and numeric fields keep normal number entry.
+the clip editor shows the selected clip. clicking away or making an arrange time
+selection clears its contents until a clip is selected again.
 
 a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
@@ -365,6 +367,18 @@ modulator assignments are not implemented.
 recorded track-gain touch spans are displayed but read-only: leave automation
 view and use the track's gain editor to clear the lane before editing its base
 curve.
+
+## audio clip pitch
+
+for an ordinary audio clip, drag the **pitch** dial beside the warp controls.
+its readout is in cents; 100 cents is one semitone. click the readout to type a
+value between -4800 and +4800 cents. **up/down** steps by 100 cents;
+**shift+up/down** steps by one cent. double-click the dial to reset to zero.
+**escape** cancels a held draft; one undo restores a completed change.
+
+with several clips selected, pitch changes remain relative to each clip's
+existing value. in **re-pitch** mode the dial is unavailable: tempo determines
+the audible pitch while the stored transpose value is retained.
 
 ## clip loop resizing
 

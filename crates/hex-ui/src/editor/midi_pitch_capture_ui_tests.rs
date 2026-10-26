@@ -147,7 +147,6 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
             }),
             "source" => editor.update(&mut visual, |v, cx| {
                 v.selected_clip = None;
-                v.retained_clip_detail = None;
                 cx.notify();
             }),
             "generation" => editor.update(&mut visual, |v, cx| {

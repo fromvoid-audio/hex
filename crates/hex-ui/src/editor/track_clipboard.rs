@@ -221,7 +221,6 @@ impl EditorView {
         self.track_selection.replace(&ids);
         self.selected_track = ids.first().copied();
         self.selected_clip = None;
-        self.retained_clip_detail = None;
         self.selected_cell = None;
         self.selected_scene = None;
         self.focused_return = None;

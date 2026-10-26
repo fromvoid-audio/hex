@@ -649,6 +649,21 @@ fn check_event_move_release(cx: &mut TestAppContext, outside: bool) {
             assert_eq!(v.state.as_ref().unwrap().project, before)
         });
     }
+    let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&v.selected_track.unwrap()]);
+    let empty = point(
+        px(lane.left + lane.width * 0.95),
+        px(lane.top + lane.height * 0.75),
+    );
+    visual.simulate_click(empty, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("audio-events-waveform").is_none());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_some())
+    });
+    let original_header = visual.debug_bounds(name(clip)).unwrap().center();
+    visual.simulate_click(original_header, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("audio-event-1"), Some(held));
     let other_header = visual.debug_bounds(name(other)).unwrap().center();
     visual.simulate_click(other_header, Modifiers::default());
     visual.run_until_parked();
