@@ -131,32 +131,29 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                 "focus" => visual.update(|w, cx| {
                     editor.update(cx, |v, _| v.focus.focus(w));
                     w.dispatch_input(
-                        MouseUpEvent {
+                        gpui::PlatformInput::MouseUp(MouseUpEvent {
                             button: MouseButton::Left,
                             position: end,
                             ..Default::default()
-                        }
-                        .into(),
+                        }),
                         cx,
                     );
                 }),
                 "invalid-x" => visual.update(|w, cx| {
                     w.dispatch_input(
-                        MouseMoveEvent {
+                        gpui::PlatformInput::MouseMove(MouseMoveEvent {
                             position: point(px(f32::NAN), end.y),
                             pressed_button: Some(MouseButton::Left),
                             ..Default::default()
-                        }
-                        .into(),
+                        }),
                         cx,
                     );
                     w.dispatch_input(
-                        MouseUpEvent {
+                        gpui::PlatformInput::MouseUp(MouseUpEvent {
                             button: MouseButton::Left,
                             position: end,
                             ..Default::default()
-                        }
-                        .into(),
+                        }),
                         cx,
                     );
                 }),
@@ -181,7 +178,7 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                     v.midi_velocity.height = 90.;
                     cx.notify();
                 }),
-                "window" => visual.simulate_window_deactivation(),
+                "window" => visual.deactivate_window(),
                 _ => unreachable!(),
             }
             repaint(&editor, &mut visual);
