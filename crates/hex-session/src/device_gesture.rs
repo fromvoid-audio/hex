@@ -57,37 +57,39 @@ pub enum GestureTarget {
     },
 }
 
-/// Bounded sorted snapshot-edit intent. Validation-only entries are excluded;
-/// the union survives coalescing and movement back to the starting value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Snapshot-edit intent indexed by the gesture's immutable ordered parameter domain.
+/// The client and worker require `same_parameters` before interpreting a mask;
+/// validation-only entries stay clear, and the union survives coalesced move-back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TouchedParameters {
-    ids: [ParameterId; hex_lattice_contract::MAX_PARAMETER_SNAPSHOT_ENTRIES],
-    len: usize,
+    bits: u64,
 }
-impl Default for TouchedParameters {
-    fn default() -> Self {
-        Self {
-            ids: [ParameterId::from_static(1);
-                hex_lattice_contract::MAX_PARAMETER_SNAPSHOT_ENTRIES],
-            len: 0,
-        }
-    }
-}
+const _: () = assert!(hex_lattice_contract::MAX_PARAMETER_SNAPSHOT_ENTRIES <= u64::BITS as usize);
 impl TouchedParameters {
-    pub fn ids(&self) -> &[ParameterId] {
-        &self.ids[..self.len]
+    pub fn is_empty(self) -> bool {
+        self.bits == 0
     }
-    fn include(&mut self, id: ParameterId) -> Result<(), &'static str> {
-        match self.ids().binary_search(&id) {
-            Ok(_) => Ok(()),
-            Err(index) if self.len < self.ids.len() => {
-                self.ids.copy_within(index..self.len, index + 1);
-                self.ids[index] = id;
-                self.len += 1;
-                Ok(())
-            }
-            Err(_) => Err("snapshot touched parameter limit reached"),
+    pub fn len(self) -> usize {
+        self.bits.count_ones() as usize
+    }
+    /// Resolve only against the same ordered domain validated for this gesture.
+    pub fn ids(
+        self,
+        domain: &DeviceParameterSnapshot,
+    ) -> Result<impl Iterator<Item = ParameterId> + '_, &'static str> {
+        self.validate_domain(domain)?;
+        Ok(domain
+            .entries()
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, &(id, _))| (self.bits & (1_u64 << index) != 0).then_some(id)))
+    }
+    fn validate_domain(self, domain: &DeviceParameterSnapshot) -> Result<(), &'static str> {
+        let count = domain.entries().len();
+        if count < u64::BITS as usize && self.bits >> count != 0 {
+            return Err("snapshot touched parameter changed");
         }
+        Ok(())
     }
     fn include_changed(
         &mut self,
@@ -97,20 +99,18 @@ impl TouchedParameters {
         if !origin.same_parameters(&value) {
             return Err("snapshot gesture parameters changed");
         }
-        for (&(id, old), &(_, next)) in origin.entries().iter().zip(value.entries()) {
+        for (index, (&(_, old), &(_, next))) in
+            origin.entries().iter().zip(value.entries()).enumerate()
+        {
             if old != next {
-                self.include(id)?;
+                self.bits |= 1_u64 << index;
             }
         }
         Ok(())
     }
-    fn merge(&mut self, other: Self, allowed: DeviceParameterSnapshot) -> Result<(), &'static str> {
-        for &id in other.ids() {
-            if !allowed.entries().iter().any(|entry| entry.0 == id) {
-                return Err("snapshot touched parameter changed");
-            }
-            self.include(id)?;
-        }
+    fn merge(&mut self, other: Self, domain: DeviceParameterSnapshot) -> Result<(), &'static str> {
+        other.validate_domain(&domain)?;
+        self.bits |= other.bits;
         Ok(())
     }
 }
@@ -166,8 +166,6 @@ pub enum GestureRequest {
         touched_parameters: TouchedParameters,
         key: GestureKey,
         sequence: u64,
-        /// An explicit update occurred, even if its value equals the base.
-        manual_edit: bool,
         snapshot: DeviceParameterSnapshot,
     },
     BeginEqCreation {
@@ -370,13 +368,12 @@ impl GestureClient {
             self.origin_parameters.ok_or("snapshot origin is missing")?,
             value,
         )?;
-        active.manual_edit = !active.touched_parameters.ids().is_empty();
+        active.manual_edit = !active.touched_parameters.is_empty();
         active.sequence = active.sequence.saturating_add(1).max(1);
         active.parameters = Some(value);
         let request = if terminal {
             GestureRequest::CommitSnapshot {
                 touched_parameters: active.touched_parameters,
-                manual_edit: active.manual_edit,
                 key: active.key,
                 sequence: active.sequence,
                 snapshot: value,
@@ -1135,9 +1132,10 @@ impl GestureRequest {
     fn manual_edit(self) -> bool {
         match self {
             Self::Change { .. } | Self::ChangePair { .. } | Self::ChangeSnapshot { .. } => true,
-            Self::Commit { manual_edit, .. }
-            | Self::CommitPair { manual_edit, .. }
-            | Self::CommitSnapshot { manual_edit, .. } => manual_edit,
+            Self::Commit { manual_edit, .. } | Self::CommitPair { manual_edit, .. } => manual_edit,
+            Self::CommitSnapshot {
+                touched_parameters, ..
+            } => !touched_parameters.is_empty(),
             _ => false,
         }
     }
@@ -1371,6 +1369,9 @@ impl GestureMachine {
                     .as_ref()
                     .and_then(|active| active.origin_parameters)
                     .ok_or(SessionError::Invalid("snapshot origin is missing"))?;
+                if !origin.same_parameters(&snapshot) {
+                    return Err(SessionError::Invalid("snapshot gesture parameters changed"));
+                }
                 let mut touched = active.touched_parameters;
                 let requested_touched = match request {
                     GestureRequest::ChangeSnapshot {
@@ -1392,7 +1393,7 @@ impl GestureMachine {
                     let (_, prepared) = prepare(
                         session,
                         GesturePreparation::Commit(GestureSnapshot {
-                            manual_edit: !touched.ids().is_empty(),
+                            manual_edit: !touched.is_empty(),
                             touched_parameters: touched,
                             sequence,
                             parameters: Some(snapshot),
@@ -1407,7 +1408,7 @@ impl GestureMachine {
                     let (project, prepared) = prepare(
                         session,
                         GesturePreparation::Preview(GestureSnapshot {
-                            manual_edit: !touched.ids().is_empty(),
+                            manual_edit: !touched.is_empty(),
                             touched_parameters: touched,
                             sequence,
                             parameters: Some(snapshot),
@@ -1418,7 +1419,7 @@ impl GestureMachine {
                         "gesture preview produced no revision",
                     ))?;
                     let current = self.active.as_mut().unwrap();
-                    current.snapshot.manual_edit = !touched.ids().is_empty();
+                    current.snapshot.manual_edit = !touched.is_empty();
                     current.snapshot.touched_parameters = touched;
                     current.snapshot.sequence = sequence;
                     current.snapshot.parameters = Some(snapshot);
@@ -1958,7 +1959,6 @@ fn terminal_request(active: GestureSnapshot) -> GestureRequest {
     } else if let Some(snapshot) = active.parameters {
         GestureRequest::CommitSnapshot {
             touched_parameters: active.touched_parameters,
-            manual_edit: active.manual_edit,
             key: active.key,
             sequence: active.sequence.max(1),
             snapshot,

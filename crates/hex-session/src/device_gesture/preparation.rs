@@ -30,7 +30,10 @@ pub(crate) fn command_for_snapshot(
             session,
             device,
             state,
-            snapshot.touched_parameters.ids().iter().copied(),
+            snapshot
+                .touched_parameters
+                .ids(&parameters)
+                .map_err(SessionError::Invalid)?,
             snapshot.manual_edit,
         ));
     }
@@ -134,15 +137,16 @@ pub(crate) fn manual_device_edit(
         .into_iter()
         .map(automation_target)
         .filter(|target| {
-            hex_engine::project_device_automation_target_supported(
-                session.project(),
-                device,
-                *target,
-            ) && session
+            session
                 .project()
                 .device(device)
                 .and_then(|device| device.automation_target(*target))
                 .is_some()
+                && hex_engine::project_device_automation_target_supported(
+                    session.project(),
+                    device,
+                    *target,
+                )
         })
         .collect();
     targets.sort_unstable();

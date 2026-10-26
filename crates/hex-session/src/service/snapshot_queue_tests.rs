@@ -12,7 +12,6 @@ fn snapshot_full_and_closed_queue_return_exact_inline_terminal_for_retry() {
             .unwrap();
     let terminal = GestureRequest::CommitSnapshot {
         touched_parameters: crate::device_gesture::TouchedParameters::default(),
-        manual_edit: false,
         key: GestureKey {
             generation: 3,
             token: 9,

@@ -123,7 +123,6 @@ fn snapshot_atomic_preview_commit_cancel_noop_and_history() {
                 &mut session,
                 GestureRequest::CommitSnapshot {
                     touched_parameters: crate::device_gesture::TouchedParameters::default(),
-                    manual_edit: false,
                     key,
                     sequence: 1,
                     snapshot: values(1500.0, 6.0)
@@ -326,6 +325,9 @@ fn snapshot_control_storage_and_coalescing_are_finitely_bounded() {
         start.elapsed().as_nanos()
     );
     assert!(size_of::<GestureRequest>() <= 832);
+    // The bounded 32-slot service queue must not grow when snapshot intent grows.
+    assert!(size_of::<crate::service::Request>() <= 832);
+    assert!(32 * size_of::<crate::service::Request>() <= 26_624);
     assert!(size_of::<GestureClient>() < 8192);
     assert_eq!(client.snapshot().unwrap().sequence, 100_000);
     assert!(client.latest_change.is_some());
@@ -402,7 +404,6 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
                 &mut session,
                 GestureRequest::CommitSnapshot {
                     touched_parameters: crate::device_gesture::TouchedParameters::default(),
-                    manual_edit: false,
                     key,
                     sequence: 3,
                     snapshot: values(1600.0, 8.0)
@@ -525,7 +526,6 @@ fn actual_harmonic_stroke_is_one_history_edit_and_hidden_partials_survive_reopen
         },
         GestureRequest::CommitSnapshot {
             touched_parameters: crate::device_gesture::TouchedParameters::default(),
-            manual_edit: false,
             key,
             sequence: 3,
             snapshot: spectrum(0.5),

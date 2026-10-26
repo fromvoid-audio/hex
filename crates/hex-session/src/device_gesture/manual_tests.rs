@@ -203,8 +203,14 @@ fn snapshot_union_preserves_move_back_without_overriding_validation_fields() {
     client.change_snapshot(initial).unwrap();
     client.finish_snapshot(initial).unwrap();
     assert_eq!(
-        client.snapshot().unwrap().touched_parameters.ids(),
-        &[ParameterId::from_static(1)]
+        client
+            .snapshot()
+            .unwrap()
+            .touched_parameters
+            .ids(&initial)
+            .unwrap()
+            .collect::<Vec<_>>(),
+        vec![ParameterId::from_static(1)]
     );
     deliver(&mut client, &mut machine, &mut session, &prepared);
     assert_eq!(
@@ -288,4 +294,40 @@ fn cancel_and_invalid_change_preserve_read_selection_and_authored_points() {
     );
     assert!(cancel.ack.accepted);
     assert_eq!(session.project(), &original);
+}
+
+#[test]
+fn snapshot_touch_mask_resolves_exact_ordered_ids_including_the_last_slot() {
+    // IDs deliberately differ from bit indices and are not sorted: identity comes
+    // from the sealed snapshot domain, never from interpreting a bit as an ID.
+    let entries: Vec<_> = (1..=64)
+        .rev()
+        .map(|id| (ParameterId::from_static(id * 3), ParameterValue::Float(0.0)))
+        .collect();
+    let origin = DeviceParameterSnapshot::new(&entries).unwrap();
+    let mut edited = entries.clone();
+    edited[0].1 = ParameterValue::Float(0.5);
+    edited[63].1 = ParameterValue::Float(1.0);
+    let edited = DeviceParameterSnapshot::new(&edited).unwrap();
+    let mut touched = TouchedParameters::default();
+    touched.include_changed(origin, edited).unwrap();
+    touched.include_changed(origin, origin).unwrap();
+    assert_eq!(touched.len(), 2);
+    assert_eq!(
+        touched.ids(&origin).unwrap().collect::<Vec<_>>(),
+        vec![ParameterId::from_static(192), ParameterId::from_static(3)]
+    );
+    let mut reordered = entries.clone();
+    reordered.swap(0, 63);
+    assert!(
+        touched
+            .include_changed(origin, DeviceParameterSnapshot::new(&reordered).unwrap())
+            .is_err()
+    );
+    let short = DeviceParameterSnapshot::new(&entries[..1]).unwrap();
+    assert!(touched.ids(&short).is_err());
+    let mut untouched = TouchedParameters::default();
+    assert!(untouched.merge(touched, short).is_err());
+    assert!(untouched.is_empty());
+    assert_eq!(std::mem::size_of::<TouchedParameters>(), 8);
 }
