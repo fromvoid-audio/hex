@@ -137,6 +137,10 @@ with the same bounds toggles looping off or on, retaining the range. with no
 selection, these keys toggle the existing loop. **command+l** uses the same action.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
+setting new loop bounds from selected main sections also turns on section focus
+after the edit is accepted. focus shows tracks that intersect the selected
+sections, excluding gaps between them. repeated loop toggles leave focus unchanged;
+press **q** or use the section focus toggle to restore all tracks.
 
 **shift-click** section blocks to add or remove them from the section selection,
 including clicks in their lower body. ordinary lower-body dragging still selects time.
