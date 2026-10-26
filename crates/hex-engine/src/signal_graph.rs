@@ -1036,7 +1036,7 @@ impl SignalRuntime {
             offset,
             foreign,
             observer,
-            input.as_deref_mut(),
+            input,
         )?;
         Ok(mixed)
     }
