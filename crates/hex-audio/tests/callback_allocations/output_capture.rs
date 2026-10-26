@@ -239,7 +239,10 @@ fn automated_utility_callback_publication_and_late_failure_retry_are_allocation_
 -> Result<(), Box<dyn Error>> {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
-        .spawn(|| run_automated_native_allocation_probe(false).map_err(|e| e.to_string()))?
+        .spawn(|| {
+            run_automated_native_allocation_probe(AutomatedFamily::Utility)
+                .map_err(|e| e.to_string())
+        })?
         .join()
         .map_err(|_| "automation allocation probe panicked")?
         .map_err(Into::into)
@@ -249,12 +252,34 @@ fn automated_saturator_callback_publication_and_late_failure_retry_are_allocatio
 -> Result<(), Box<dyn Error>> {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
-        .spawn(|| run_automated_native_allocation_probe(true).map_err(|e| e.to_string()))?
+        .spawn(|| {
+            run_automated_native_allocation_probe(AutomatedFamily::Saturator)
+                .map_err(|e| e.to_string())
+        })?
         .join()
         .map_err(|_| "saturator allocation probe panicked")?
         .map_err(Into::into)
 }
-fn run_automated_native_allocation_probe(saturator: bool) -> Result<(), Box<dyn Error>> {
+#[test]
+fn automated_auto_pan_callback_publication_and_late_failure_retry_are_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            run_automated_native_allocation_probe(AutomatedFamily::AutoPan)
+                .map_err(|e| e.to_string())
+        })?
+        .join()
+        .map_err(|_| "auto pan allocation probe panicked")?
+        .map_err(Into::into)
+}
+#[derive(Clone, Copy)]
+enum AutomatedFamily {
+    Utility,
+    Saturator,
+    AutoPan,
+}
+fn run_automated_native_allocation_probe(family: AutomatedFamily) -> Result<(), Box<dyn Error>> {
     use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
     let (project, track, bus) = source()?;
     let mut editor = Editor::new(project, 16)?;
@@ -279,27 +304,38 @@ fn run_automated_native_allocation_probe(saturator: bool) -> Result<(), Box<dyn 
             .id(),
     ];
     for device in devices {
-        if saturator {
-            editor.execute(Command::ReplaceDeviceState {
-                device,
-                state: hex_devices::saturator::SATURATOR_DEFINITION.default_state()?,
-            })?;
-        }
-        let controls: &[(u32, f32, f32)] = if saturator {
-            &[
-                (1, 0.5, 0.75),
-                (2, 0.75, 1.0),
-                (3, 0.25, 0.75),
-                (4, 0.0, 1.0),
-            ]
-        } else {
-            &[
-                (1, 0.0, 0.04),
-                (3, 0.25, 0.75),
-                (12, 1.0, 1.0),
-                (13, 0.25, 0.75),
-            ]
+        let (state, controls): (_, &[(u32, f32, f32)]) = match family {
+            AutomatedFamily::Utility => (
+                None,
+                &[
+                    (1, 0.0, 0.04),
+                    (3, 0.25, 0.75),
+                    (12, 1.0, 1.0),
+                    (13, 0.25, 0.75),
+                ],
+            ),
+            AutomatedFamily::Saturator => (
+                Some(hex_devices::saturator::SATURATOR_DEFINITION.default_state()?),
+                &[
+                    (1, 0.5, 0.75),
+                    (2, 0.75, 1.0),
+                    (3, 0.25, 0.75),
+                    (4, 0.0, 1.0),
+                ],
+            ),
+            AutomatedFamily::AutoPan => (
+                Some(hex_devices::auto_pan::AUTO_PAN_DEFINITION.default_state()?),
+                &[
+                    (1, 0.25, 0.75),
+                    (2, 0.25, 0.75),
+                    (3, 0.9, 0.0),
+                    (4, 0.0, 1.0),
+                ],
+            ),
         };
+        if let Some(state) = state {
+            editor.execute(Command::ReplaceDeviceState { device, state })?;
+        }
         for &(parameter, start, end) in controls {
             editor.execute(Command::ReplaceDeviceAutomation {
                 device,

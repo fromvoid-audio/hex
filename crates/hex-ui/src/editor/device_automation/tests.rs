@@ -528,6 +528,10 @@ mod native {
     fn saturator_dry_wet_uses_the_same_parameter_menu_and_empty_lane_path(cx: &mut TestAppContext) {
         shared_parameter_right_click(DeviceTypeId::from_static("hex.saturator"), cx);
     }
+    #[gpui::test]
+    fn auto_pan_phase_uses_the_shared_parameter_menu_and_empty_lane_path(cx: &mut TestAppContext) {
+        shared_parameter_right_click(DeviceTypeId::from_static("hex.auto-pan"), cx);
+    }
     fn shared_parameter_right_click(provider: DeviceTypeId, cx: &mut TestAppContext) {
         cx.update(super::super::super::bind_editor_keys);
         let (mut project, track, device, mut parameter) = project();
