@@ -340,13 +340,44 @@ fn clip_loop_first_boundary_keeps_outer_extent_and_escape_does_not_commit(cx: &m
     for midi in [false, true] {
         let mut f = fixture(cx, midi);
         let target = drag(&mut f, "outer", 70.0, Modifiers::default());
+        f.visual.update(|_, cx| {
+            assert_eq!(cx.active_drag_cursor_style(), Some(gpui::CursorStyle::Loop))
+        });
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         pump(&f.editor, &mut f.visual);
         let before = f.editor.read_with(&f.visual, |v, _| {
             v.state.as_ref().unwrap().project.snapshot()
         });
+        let cycle = f.visual.debug_bounds(selector(&f, "cycle")).unwrap();
+        f.visual
+            .simulate_mouse_move(cycle.center(), None, Modifiers::default());
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::ResizeLeftRight)
+        );
         let target = drag(&mut f, "cycle", -35.0, Modifiers::default());
+        f.visual.update(|_, cx| {
+            assert_eq!(
+                cx.active_drag_cursor_style(),
+                Some(gpui::CursorStyle::ResizeLeftRight)
+            )
+        });
+        // Active cursor follows the admitted handle outside its original hit zone.
+        f.visual.simulate_mouse_move(
+            point(px(2.), px(2.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::ResizeLeftRight)
+        );
+        f.visual
+            .simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
         let overlay = if midi {
             "midi-trim-live-preview"
         } else {
@@ -357,6 +388,8 @@ fn clip_loop_first_boundary_keeps_outer_extent_and_escape_does_not_commit(cx: &m
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         f.visual.run_until_parked();
+        f.visual
+            .update(|_, cx| assert_eq!(cx.active_drag_cursor_style(), None));
         f.editor.read_with(&f.visual, |v, _| {
             assert!(
                 v.active_trim_drag.is_none()
@@ -374,6 +407,8 @@ fn clip_loop_first_boundary_keeps_outer_extent_and_escape_does_not_commit(cx: &m
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         pump(&f.editor, &mut f.visual);
+        f.visual
+            .update(|_, cx| assert_eq!(cx.active_drag_cursor_style(), None));
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             assert_ne!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -610,5 +645,54 @@ fn clip_loop_existing_repeat_shift_warp_keeps_processed_waveform_and_real_histor
         f.editor.read_with(&f.visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
         });
+    }
+}
+
+#[gpui::test]
+fn repeat_boundary_cursor_retires_with_focus_and_window_loss(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        for window_loss in [false, true] {
+            let mut f = fixture(cx, midi);
+            let target = drag(&mut f, "outer", 70., Modifiers::default());
+            f.visual
+                .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            pump(&f.editor, &mut f.visual);
+            let before = f.editor.read_with(&f.visual, |v, _| {
+                v.state.as_ref().unwrap().project.snapshot()
+            });
+            let target = drag(&mut f, "cycle", -35., Modifiers::default());
+            f.visual.update(|_, cx| {
+                assert_eq!(
+                    cx.active_drag_cursor_style(),
+                    Some(gpui::CursorStyle::ResizeLeftRight)
+                )
+            });
+            if window_loss {
+                f.visual.deactivate_window();
+            } else {
+                f.visual
+                    .update(|window, cx| f.editor.update(cx, |v, cx| v.search_browser(window, cx)));
+            }
+            f.visual.run_until_parked();
+            f.visual
+                .update(|_, cx| assert_eq!(cx.active_drag_cursor_style(), None));
+            f.visual
+                .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            f.visual
+                .simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::default());
+            f.visual.run_until_parked();
+            assert_ne!(
+                f.visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::ResizeLeftRight)
+            );
+            f.editor.read_with(&f.visual, |v, _| {
+                assert!(
+                    v.active_trim_drag.is_none()
+                        && v.active_midi_trim_drag.is_none()
+                        && v.pending_trim.is_none()
+                );
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            });
+        }
     }
 }
