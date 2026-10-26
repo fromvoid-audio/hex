@@ -320,4 +320,26 @@ fn discovery_is_bounded_and_never_treats_candidate_names_as_valid_files() {
     assert_eq!(fs::read(files.path("unknown.txt")).unwrap(), b"keep");
     assert!(discover_on_control(&files.0, 1).unwrap().truncated);
     assert!(discover_on_control(&files.0, 0).is_err());
+    for index in 0..7 {
+        fs::write(
+            files.path(&format!("{index}.hex-automation-draft")),
+            b"candidate only",
+        )
+        .unwrap();
+    }
+    let mut cursor = DraftDiscoveryCursor::open_on_control(&files.0).unwrap();
+    let mut observed = std::collections::BTreeSet::new();
+    loop {
+        let page = cursor.next_page_on_control(1).unwrap();
+        assert!(page.candidates.len() <= 1);
+        observed.extend(page.candidates);
+        if !page.truncated {
+            break;
+        }
+    }
+    assert_eq!(
+        observed.len(),
+        8,
+        "paging does not discard the prefetched entry or impose a total-file ceiling"
+    );
 }

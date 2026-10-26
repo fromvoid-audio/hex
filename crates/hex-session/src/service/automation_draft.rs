@@ -44,52 +44,72 @@ pub struct DraftDiscovery {
     /// Work was bounded by examined directory entries, including unknown files.
     pub truncated: bool,
 }
-/// Bounded control-side discovery. Unknown files and symlinks are never followed or modified.
-/// No automatic reclamation exists: abandoning a draft stops input but preserves durable bytes.
+/// A control-owned directory cursor keeps discovery bounded without imposing a lifetime
+/// file-count ceiling. Candidate identity is its complete path, never a painted row index.
+/// Directory changes can affect OS enumeration; callers reconcile refreshed rows by path.
+pub struct DraftDiscoveryCursor {
+    entries: Option<std::fs::ReadDir>,
+    pending: Option<std::io::Result<std::fs::DirEntry>>,
+}
+impl DraftDiscoveryCursor {
+    pub fn open_on_control(directory: &Path) -> Result<Self, String> {
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.to_string()),
+        };
+        Ok(Self {
+            entries,
+            pending: None,
+        })
+    }
+    /// Unknown files count toward the work budget; symlinks are never followed or modified.
+    /// At most one prefetched directory entry survives between pages.
+    pub fn next_page_on_control(&mut self, max_entries: usize) -> Result<DraftDiscovery, String> {
+        if !(1..=4096).contains(&max_entries) {
+            return Err("automation draft discovery budget must be within 1..4096".into());
+        }
+        let mut candidates = Vec::new();
+        candidates
+            .try_reserve_exact(max_entries)
+            .map_err(|error| error.to_string())?;
+        for _ in 0..max_entries {
+            let entry = self
+                .pending
+                .take()
+                .or_else(|| self.entries.as_mut().and_then(Iterator::next));
+            let Some(entry) = entry else {
+                candidates.sort();
+                return Ok(DraftDiscovery {
+                    candidates,
+                    truncated: false,
+                });
+            };
+            let entry = entry.map_err(|error| error.to_string())?;
+            if entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "hex-automation-draft")
+            {
+                candidates.push(entry.path());
+            }
+        }
+        self.pending = self.entries.as_mut().and_then(Iterator::next);
+        candidates.sort();
+        Ok(DraftDiscovery {
+            candidates,
+            truncated: self.pending.is_some(),
+        })
+    }
+}
+/// One bounded first-page query. Use a cursor to enumerate the remaining files. No automatic
+/// reclamation exists: abandoning input preserves the durable draft for explicit recovery.
 pub fn discover_on_control(directory: &Path, max_entries: usize) -> Result<DraftDiscovery, String> {
-    if !(1..=4096).contains(&max_entries) {
-        return Err("automation draft discovery budget must be within 1..4096".into());
-    }
-    let entries = match std::fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(DraftDiscovery {
-                candidates: Vec::new(),
-                truncated: false,
-            });
-        }
-        Err(error) => return Err(error.to_string()),
-    };
-    let mut candidates = Vec::new();
-    candidates
-        .try_reserve_exact(max_entries)
-        .map_err(|error| error.to_string())?;
-    for (examined, entry) in entries.enumerate() {
-        if examined == max_entries {
-            candidates.sort();
-            return Ok(DraftDiscovery {
-                candidates,
-                truncated: true,
-            });
-        }
-        let entry = entry.map_err(|error| error.to_string())?;
-        if entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_file()
-            && entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "hex-automation-draft")
-        {
-            candidates.push(entry.path());
-        }
-    }
-    candidates.sort();
-    Ok(DraftDiscovery {
-        candidates,
-        truncated: false,
-    })
+    DraftDiscoveryCursor::open_on_control(directory)?.next_page_on_control(max_entries)
 }
 
 struct Batch {
