@@ -170,7 +170,9 @@ pub(crate) fn paste(
             device.id = DeviceId(project.allocate_id()?);
         }
         if let Some(binding) = &track.instrument {
-            track.instrument = Some(project.copy_source_binding(binding)?);
+            // Duplicating a track is an explicit independent-copy operation;
+            // it receives a new source and device identity, unlike linking.
+            track.instrument = Some(project.copy_source_binding(binding, track.id)?);
         }
 
         for clip in &mut track.content.audio_clips {

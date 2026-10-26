@@ -191,8 +191,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
 #[test]
 fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() {
     let files = sampler_export::tests::Files::new(false);
-    let (mut session, private) = sampler_export::tests::direct_sampler(&files);
-    drop(private);
+    let mut session = interactive_sampler_session(&files);
     let mut sink = OfflineSink {
         observed: Arc::new(Observed::default()),
         pending: None,
@@ -224,6 +223,14 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
     let (stop, wait) = mpsc::sync_channel(1);
     let worker = thread::spawn(move || wait.recv().unwrap());
     let mut lane = ExportLane::new(work, completion, worker);
+    struct StopWorker(mpsc::SyncSender<()>);
+    impl Drop for StopWorker {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    // Release the worker before lane's joining Drop, including assertion unwinds.
+    let _stop_worker = StopWorker(stop);
     let before = session.project().clone();
     let refs = Arc::strong_count(&snapshot.prepared);
     let mut missing = sampler_export::tests::job(&source, files.output().to_owned());
@@ -307,5 +314,4 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
     assert_eq!(Arc::strong_count(&snapshot.prepared), refs);
     assert_eq!(session.project(), &before);
     assert!(!files.output().exists());
-    stop.send(()).unwrap();
 }

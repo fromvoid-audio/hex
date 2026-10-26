@@ -851,6 +851,9 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
         let id = project.tracks()[0].id();
         let mut removed = local.snapshot();
         removed.tracks.clear();
+        for source in &mut removed.native_sources {
+            source.receiver = None;
+        }
         removed.midi_routes.clear();
         let removed = Project::from_snapshot(removed).unwrap();
         let removed_revision = Arc::new(
@@ -1286,4 +1289,87 @@ fn solo_overrides_mute_for_launched_session_audio_without_changing_authored_flag
         assert!(project.tracks()[0].muted());
         assert_eq!(project.tracks()[0].soloed(), solo);
     }
+}
+
+#[test]
+fn removed_midi_contributor_cannot_capture_a_separate_shared_source_stem() {
+    use hex_project::{Command, Created, Editor};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "midi".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: contributor,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            velocity: 100,
+            channel: 0,
+        })
+        .unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut old = SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 128]).unwrap();
+    editor.execute(Command::RemoveTrack(contributor)).unwrap();
+    let mut candidate = SessionPlayback::new(revision(editor.project(), table)).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(
+        matches!(
+            candidate.output_capture_plan(&[OutputCaptureId::Track(contributor)], 8),
+            Err(OutputCaptureError::MissingOwner)
+        ),
+        "MIDI identity does not establish an independently separable audio stem"
+    );
+    let plan = candidate
+        .output_capture_plan(&[OutputCaptureId::Track(receiver)], 8)
+        .unwrap();
+    let mut main = [[0.0; 2]; 8];
+    let mut track = main;
+    let mut buffers: [&mut [Frame]; 1] = [&mut track];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    candidate
+        .render_with_capture(&mut main, &mut capture)
+        .unwrap();
+    assert_eq!(main, capture.output(0).unwrap());
+    assert!(main.iter().flatten().any(|sample| sample.abs() > 0.000_001));
 }

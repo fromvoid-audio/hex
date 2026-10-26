@@ -1,6 +1,7 @@
 //! Schema48 adds a mandatory ordered cycle row for every Console audio cell.
+//! Schema49 retains these cycles and adds explicit nullable source receivers.
 //! Schemas1–47 keep their frozen codecs and migrate as one-shots, in memory.
-//! The private schema47 core contains no loop state; this is not a public lossy
+//! The private native-source cores contain no loop state; this is not a public lossy
 //! downgrade. Original documents/media are never rewritten during decoding.
 use crate::{Project, StorageError};
 use hex_project::{SessionAudioLoop, SessionCellContentSnapshot};
@@ -63,24 +64,39 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     }
     let core = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
     let mut value = super::native_sources::encode(&core)?;
-    value["version"] = 48.into();
+    value["version"] = 49.into();
     value["session_audio_cycles"] = serde_json::to_value(rows)?;
     Ok(value)
 }
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+pub(crate) fn decode48(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 48)
+}
+
+pub(crate) fn decode49(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 49)
+}
+
+fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
     let object = value.as_object_mut().ok_or(StorageError::Invalid(
         "invalid console audio cycle envelope",
     ))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(48) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(version) {
         return Err(StorageError::Invalid("invalid console audio cycle schema"));
     }
     let Rows(rows) = serde_json::from_value(object.remove("session_audio_cycles").ok_or(
         StorageError::Invalid("console audio cycle inventory missing"),
     )?)?;
-    object.insert("version".into(), 47.into());
-    let mut snapshot = super::native_sources::decode47(&serde_json::to_vec(&value)?)?.snapshot();
+    // Schema48's source layout is exactly the frozen schema47 receiverless
+    // singleton contract. Only49 admits explicit receivers and shared bindings.
+    let core = if version == 48 {
+        object.insert("version".into(), 47.into());
+        super::native_sources::decode47(&serde_json::to_vec(&value)?)?
+    } else {
+        super::native_sources::decode49(&serde_json::to_vec(&value)?)?
+    };
+    let mut snapshot = core.snapshot();
     let mut rows = rows.into_iter();
     for cell in &mut snapshot.session.cells {
         if let SessionCellContentSnapshot::Audio(clip) = &mut cell.content {

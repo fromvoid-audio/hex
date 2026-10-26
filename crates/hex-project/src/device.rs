@@ -48,11 +48,15 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::Device(id))
         }
         Command::RemoveInstrument { track } => {
-            let target = project.track_mut(track)?;
-            if target.instrument.take().is_none() {
+            if project
+                .track(track)
+                .ok_or(Invalid("track no longer exists"))?
+                .instrument
+                .is_none()
+            {
                 return Err(Invalid("instrument slot is already empty"));
             }
-            target.instrument_position = None;
+            project.bind_track_source(track, None)?;
             Ok(crate::Created::None)
         }
         Command::RemoveDevice(id) => {
@@ -200,6 +204,7 @@ fn insert_instrument(
             state,
             bypassed: false,
         },
+        track,
     )?;
     project.track_mut(track)?.instrument = Some(binding);
     project.track_mut(track)?.instrument_position = Some(0);
@@ -461,6 +466,18 @@ fn move_track_device(
         return Err(Invalid("track device limit reached"));
     }
 
+    let receiver_transfer = match source {
+        DeviceLocation::Instrument { track } => {
+            let source_track = project.tracks[track].id;
+            project.tracks[track].source_id().filter(|source| {
+                project
+                    .native_source(*source)
+                    .is_some_and(|definition| definition.receiver() == Some(source_track))
+            })
+        }
+        DeviceLocation::Effect { .. } => None,
+    };
+
     let moving = match source {
         DeviceLocation::Effect { track, index } => {
             let old_position = project.tracks[track].instrument_position;
@@ -480,33 +497,38 @@ fn move_track_device(
             (None, Some(device))
         }
     };
-    let target = &mut project.tracks[target_index];
-    if let Some(binding) = moving.1 {
-        let position = chain_effect_index_before(target, before)?;
-        target.instrument = Some(binding);
-        target.instrument_position = Some(position);
-    } else {
-        let position = chain_effect_index_before(target, before)?;
-        let before_instrument = before.is_some_and(|anchor| {
-            target
-                .instrument
-                .as_ref()
-                .is_some_and(|instrument| instrument.id == anchor)
-        });
-        let device = moving.0.ok_or(Invalid("moving effect is missing"))?;
-        target.devices.insert(position, device);
-        if before_instrument
-            || target
-                .instrument_position
-                .is_some_and(|instrument_position| position < instrument_position)
-        {
-            target.instrument_position = Some(
+    {
+        let target = &mut project.tracks[target_index];
+        if let Some(binding) = moving.1 {
+            let position = chain_effect_index_before(target, before)?;
+            target.instrument = Some(binding);
+            target.instrument_position = Some(position);
+        } else {
+            let position = chain_effect_index_before(target, before)?;
+            let before_instrument = before.is_some_and(|anchor| {
                 target
+                    .instrument
+                    .as_ref()
+                    .is_some_and(|instrument| instrument.id == anchor)
+            });
+            let device = moving.0.ok_or(Invalid("moving effect is missing"))?;
+            target.devices.insert(position, device);
+            if before_instrument
+                || target
                     .instrument_position
-                    .and_then(|instrument_position| instrument_position.checked_add(1))
-                    .ok_or(Invalid("instrument position overflow"))?,
-            );
+                    .is_some_and(|instrument_position| position < instrument_position)
+            {
+                target.instrument_position = Some(
+                    target
+                        .instrument_position
+                        .and_then(|instrument_position| instrument_position.checked_add(1))
+                        .ok_or(Invalid("instrument position overflow"))?,
+                );
+            }
         }
+    }
+    if let Some(source) = receiver_transfer {
+        project.set_native_source_receiver(source, Some(target_track))?;
     }
     Ok(())
 }

@@ -17,6 +17,26 @@ pub(crate) fn isolated(
     item: &BounceTrack,
 ) -> Result<Project, String> {
     let mut snapshot = project.snapshot();
+    let selected_track_id = item.track.value();
+    let selected_instrument_id = snapshot
+        .tracks
+        .iter()
+        .find(|track| track.id == selected_track_id)
+        .and_then(|track| track.instrument.as_ref().map(|instrument| instrument.id));
+    let selected_source = snapshot.native_sources.iter().find(|source| {
+        selected_instrument_id.is_some_and(|instrument_id| {
+            source
+                .devices
+                .get(source.instrument_index)
+                .is_some_and(|device| device.id == instrument_id)
+        })
+    });
+    let selected_source_instrument_id = selected_source
+        .and_then(|source| source.devices.get(source.instrument_index))
+        .map(|device| device.id);
+    let selected_is_receiver =
+        selected_source.is_some_and(|source| source.receiver == Some(selected_track_id));
+
     if target.is_audio_group() {
         let selected: std::collections::BTreeSet<_> =
             item.clips.iter().map(|id| id.value()).collect();
@@ -55,36 +75,139 @@ pub(crate) fn isolated(
             track.sends.clear();
         }
     } else {
-        snapshot
-            .tracks
-            .retain(|track| track.id == item.track.value());
-        let track = snapshot.tracks.first_mut().ok_or("bounce track changed")?;
-        if matches!(item.source, hex_project::BounceSource::Console { .. }) {
+        let console_source = matches!(item.source, hex_project::BounceSource::Console { .. });
+        if console_source {
+            let track = snapshot
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == selected_track_id)
+                .ok_or("bounce track changed")?;
             track.content = console::content(project, item, &mut snapshot.next_id)?;
-        } else if matches!(target, BounceTarget::Clips(_)) {
+        }
+        let selected_midi = snapshot
+            .tracks
+            .iter()
+            .find(|track| track.id == selected_track_id)
+            .map(|track| match &track.content {
+                TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips
+                    .iter()
+                    .map(|clip| clip.id)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                _ => std::collections::BTreeSet::new(),
+            })
+            .ok_or("bounce track changed")?;
+        if !selected_is_receiver
+            && (item
+                .clips
+                .iter()
+                .any(|clip| selected_midi.contains(&clip.value()))
+                // A range may include a shared voice's release from an earlier
+                // onset. There is no independent contributor audio stem.
+                || matches!(target, BounceTarget::Range(_)) && !selected_midi.is_empty())
+        {
+            return Err(
+                "cannot bounce midi from a shared-source contributor; bounce its receiver instead"
+                    .into(),
+            );
+        }
+
+        let retain_contributors =
+            !console_source && selected_is_receiver && selected_source_instrument_id.is_some();
+        snapshot.tracks.retain(|track| {
+            track.id == selected_track_id
+                || (retain_contributors
+                    && track.instrument.as_ref().is_some_and(|instrument| {
+                        Some(instrument.id) == selected_source_instrument_id
+                    }))
+        });
+        let track_index = snapshot
+            .tracks
+            .iter()
+            .position(|track| track.id == selected_track_id)
+            .ok_or("bounce track changed")?;
+        if matches!(target, BounceTarget::Clips(_)) {
             let selected = item
                 .clips
                 .iter()
                 .map(|id| id.value())
                 .collect::<std::collections::BTreeSet<_>>();
-            match &mut track.content {
-                TrackContentSnapshot::Hybrid {
-                    audio_clips,
-                    midi_clips,
-                } => {
-                    audio_clips.retain(|c| selected.contains(&c.id));
-                    midi_clips.retain(|c| selected.contains(&c.id));
+            for track in &mut snapshot.tracks {
+                if track.id == selected_track_id {
+                    match &mut track.content {
+                        TrackContentSnapshot::Hybrid {
+                            audio_clips,
+                            midi_clips,
+                        } => {
+                            audio_clips.retain(|c| selected.contains(&c.id));
+                            midi_clips.retain(|c| selected.contains(&c.id));
+                        }
+                        _ => return Err("bounce requires a hybrid track".into()),
+                    }
+                } else {
+                    track.audio_clips_mut().map_err(|e| e.to_string())?.clear();
                 }
-                _ => return Err("bounce requires a hybrid track".into()),
             }
         }
-        track.gain = 1.0;
-        track.balance = 0.0;
-        track.muted = false;
-        track.soloed = false;
-        track.gain_envelope.clear();
-        track.gain_touch_spans.clear();
-        track.sends.clear();
+        for (index, track) in snapshot.tracks.iter_mut().enumerate() {
+            if index == track_index {
+                track.gain = 1.0;
+                track.balance = 0.0;
+                track.muted = false;
+                track.soloed = false;
+                track.gain_envelope.clear();
+                track.gain_touch_spans.clear();
+                track.sends.clear();
+                if !selected_is_receiver {
+                    let audio_clips = track.audio_clips_mut().map_err(|e| e.to_string())?.clone();
+                    track.instrument = None;
+                    track.instrument_position = None;
+                    track.content = TrackContentSnapshot::Hybrid {
+                        audio_clips,
+                        midi_clips: Vec::new(),
+                    };
+                }
+            } else if retain_contributors {
+                // Shared MIDI contributors feed the selected receiver's one
+                // source instance. Their local audio and effects are not part
+                // of that path.
+                let midi_clips = match &mut track.content {
+                    TrackContentSnapshot::Hybrid { midi_clips, .. } => std::mem::take(midi_clips),
+                    _ => return Err("bounce requires a hybrid contributor track".into()),
+                };
+                track.devices.clear();
+                track.instrument_position = Some(0);
+                track.content = TrackContentSnapshot::Hybrid {
+                    audio_clips: Vec::new(),
+                    midi_clips,
+                };
+                track.gain = 1.0;
+                track.balance = 0.0;
+                track.muted = false;
+                track.soloed = false;
+                track.gain_envelope.clear();
+                track.gain_touch_spans.clear();
+                track.sends.clear();
+            }
+        }
+    }
+    for source in &mut snapshot.native_sources {
+        let Some(receiver) = source.receiver else {
+            continue;
+        };
+        let instrument_id = source
+            .devices
+            .get(source.instrument_index)
+            .map(|device| device.id);
+        let retained_receiver = snapshot.tracks.iter().any(|track| {
+            track.id == receiver
+                && track
+                    .instrument
+                    .as_ref()
+                    .is_some_and(|instrument| Some(instrument.id) == instrument_id)
+        });
+        if !retained_receiver {
+            source.receiver = None;
+        }
     }
     snapshot.session = Default::default();
     snapshot.return_tracks.clear();

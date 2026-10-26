@@ -133,7 +133,7 @@ fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_an
 }
 
 #[test]
-fn schema47_roundtrips_retained_musical_repeat_after_section_reorder() {
+fn schema49_roundtrips_retained_musical_repeat_after_section_reorder() {
     let project = fixture();
     let tempo = project.tempo_map().clone();
     let mut snapshot = project.snapshot();
@@ -172,6 +172,7 @@ fn schema47_roundtrips_retained_musical_repeat_after_section_reorder() {
     let bytes = hex_storage::encode(&project).unwrap();
     let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+
     assert_eq!(
         hex_storage::decode(&bytes).unwrap().snapshot(),
         project.snapshot()
@@ -310,6 +311,7 @@ fn schema47_accepts_but_historical_schemas_reject_empty_intro_for_both_timing_mo
         let bytes = hex_storage::encode(&project).unwrap();
         let current: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(current["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+
         assert_eq!(hex_storage::decode(&bytes).unwrap(), project);
 
         let mut prior = current;
