@@ -130,6 +130,7 @@ mod midi_marquee;
 mod midi_note_copy;
 mod midi_note_overwrite;
 mod midi_pan;
+mod midi_pitch_zoom;
 mod midi_recording;
 mod midi_ruler;
 mod midi_scene;
@@ -182,6 +183,7 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod time_selection_tool;
 mod track_clipboard;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_clipboard_ui_test;
@@ -784,7 +786,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
     piano_pitch_rows: u8,
-    piano_pitch_zoom: Option<(f32, u8, u8)>,
+    piano_pitch_zoom: Option<midi_pitch_zoom::Zoom>,
     pub(in crate::editor) midi_snap_grid: midi_drag::MidiGrid,
     pending_requests: VecDeque<Request>,
     device_gesture: hex_session::device_gesture::GestureClient,
@@ -908,6 +910,7 @@ pub(super) struct EditorView {
     active_trim_drag: Option<trim::TrimDrag>,
     pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
+    time_selection_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     pending_fade: Option<fade_handles::PendingFade>,
     hovered_fade_clip: Option<(u64, ClipId)>,
@@ -1266,6 +1269,7 @@ impl EditorView {
         });
         let focus = cx.focus_handle();
         let scrub_focus_blur = cx.on_blur(&focus, window, |view, window, cx| {
+            view.clear_time_selection_key_on_blur(window, cx);
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
                 view.cancel_project_spectrum_resize(cx);
@@ -1291,7 +1295,8 @@ impl EditorView {
             }
         });
         let audio_event_focus = cx.focus_handle();
-        let audio_event_blur = cx.on_blur(&audio_event_focus, window, |view, _, cx| {
+        let audio_event_blur = cx.on_blur(&audio_event_focus, window, |view, window, cx| {
+            view.clear_time_selection_key_on_blur(window, cx);
             view.audio_event_editor.gesture = None;
             view.cancel_audio_loop_gesture();
             view.audio_event_editor.fade_key_held = false;
@@ -1299,6 +1304,7 @@ impl EditorView {
         });
         let midi_focus = cx.focus_handle();
         let focus_blur = cx.on_blur(&midi_focus, window, |view, window, cx| {
+            view.clear_time_selection_key_on_blur(window, cx);
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
             view.midi_step.cancel_pending();
@@ -1312,6 +1318,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.time_selection_key_held = false;
                 let boundary_cancelled = device_panel::cancel_sampler_boundary(view);
                 let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
@@ -1586,6 +1593,7 @@ impl EditorView {
             active_trim_drag: None,
             pending_trim: None,
             fade_key_held: false,
+            time_selection_key_held: false,
             active_fade_drag: None,
             pending_fade: None,
             hovered_fade_clip: None,
