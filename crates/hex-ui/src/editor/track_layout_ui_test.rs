@@ -410,6 +410,9 @@ fn option_resize_equalizes_all_ordinary_rows_and_escape_restores_each_height(
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, tracks) = fixture(cx, 3);
+    // Main participates too; keep all three enlarged rows visible for geometry assertions.
+    visual.simulate_resize(size(px(1280.), px(1000.)));
+    visual.run_until_parked();
     for (track, delta) in [(tracks[0], 40.0), (tracks[1], 80.0)] {
         let handle = bounds(&mut visual, "track-height-resize", track).center();
         drag(&mut visual, handle, point(handle.x, handle.y + px(delta)));
@@ -473,7 +476,12 @@ fn option_resize_equalizes_all_ordinary_rows_and_escape_restores_each_height(
                 );
             }
         }
-        assert_eq!(visual.debug_bounds("pinned-main-track").unwrap(), main);
+        let resized_main = visual.debug_bounds("pinned-main-track").unwrap();
+        assert_eq!(resized_main.bottom(), main.bottom());
+        assert_eq!(
+            resized_main.size.height,
+            if cancel { main.size.height } else { expected }
+        );
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project, original);
             assert_eq!(view.worker_requests_pending, 0);
@@ -565,7 +573,7 @@ fn install_layout_project(
 }
 
 #[gpui::test]
-fn h_overview_roundtrip_preserves_distinct_heights_and_fixed_return_main_rows(
+fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
     cx: &mut TestAppContext,
 ) {
     let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -633,7 +641,7 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_fixed_return_main_rows(
             .unwrap()
             .size
             .height,
-        px(44.0)
+        px(23.0)
     );
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("h");

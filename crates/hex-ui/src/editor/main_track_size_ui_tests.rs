@@ -87,3 +87,25 @@ fn main_all_track_resize_and_overview_share_rollback_and_restore_normal_heights(
     assert_heights(&mut visual, &tracks, &[23.; 2]);
     assert_eq!(main(&mut visual).size.height, px(23.));
 }
+
+#[gpui::test]
+fn main_resize_after_window_shrink_starts_from_painted_height(cx: &mut TestAppContext) {
+    let (mut visual, editor, _) = fixture(cx, 0);
+    let from = edge(&mut visual);
+    drag(&mut visual, from, from - point(px(0.), px(1000.)));
+    visual.simulate_resize(size(px(880.), px(540.)));
+    visual.run_until_parked();
+    let displayed = main(&mut visual);
+    let detail = visual.debug_bounds("clip-view-toggle-row").unwrap();
+    assert!(displayed.size.height >= px(23.));
+    assert!(displayed.bottom() <= detail.top());
+    let from = edge(&mut visual);
+    drag(&mut visual, from, from + point(px(0.), px(10.)));
+    let next = main(&mut visual);
+    assert_eq!(
+        next.size.height,
+        (displayed.size.height - px(10.)).max(px(23.))
+    );
+    assert_eq!(next.bottom(), displayed.bottom());
+    editor.read_with(&visual, |v, _| assert_eq!(v.worker_requests_pending, 0));
+}
