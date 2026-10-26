@@ -331,6 +331,17 @@ impl EditorView {
                     entity.entity_id(),
                     window,
                 );
+                entity.read(cx).renew_piano_pan_capture(
+                    super::midi_stroke::CanvasBounds {
+                        x: f32::from(bounds.origin.x),
+                        y: f32::from(bounds.origin.y),
+                        width,
+                        height,
+                    },
+                    clip_id,
+                    entity.entity_id(),
+                    window,
+                );
                 let marquee_context = super::midi_selection::MarqueeContext {
                     scene: canvas_scene.key(),
                     bounds: super::midi_stroke::CanvasBounds {
@@ -870,6 +881,8 @@ impl EditorView {
                                 rendered_context.bounds,
                                 [f32::from(event.position.x), f32::from(event.position.y)],
                                 event.button,
+                                window,
+                                view_cx,
                             ) {
                                 view_cx.notify();
                             }
@@ -1136,9 +1149,6 @@ impl EditorView {
                             if view.cancel_all_midi_marquees() {
                                 view_cx.notify();
                             }
-                            if view.midi_pan.gesture.take().is_some() {
-                                view_cx.notify();
-                            }
                             let target = if hover_allowed
                                 && hitbox.is_hovered(window)
                                 && view.project_generation == generation
@@ -1168,16 +1178,6 @@ impl EditorView {
                         return;
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
-                        if view.midi_pan.gesture.is_some() {
-                            if view.update_piano_pan(
-                                rendered_context.bounds,
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                event.pressed_button,
-                            ) {
-                                view_cx.notify();
-                            }
-                            return;
-                        }
                         if event.pressed_button == Some(MouseButton::Middle) {
                             return;
                         }
@@ -1318,14 +1318,6 @@ impl EditorView {
                         return;
                     }
                     mouse_up_entity.update(cx, |view, view_cx| {
-                        if view.finish_piano_pan(
-                            rendered_context.bounds,
-                            [f32::from(event.position.x), f32::from(event.position.y)],
-                            event.button,
-                        ) {
-                            view_cx.notify();
-                            return;
-                        }
                         if event.button != MouseButton::Left {
                             return;
                         }
