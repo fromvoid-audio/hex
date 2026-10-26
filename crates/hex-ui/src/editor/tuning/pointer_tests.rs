@@ -11,7 +11,8 @@ impl Render for Host {
         let down = self.actions.clone();
         let up = self.actions.clone();
         let wheel = self.actions.clone();
-        div().size_full().child(self.editor.clone()).child(
+        let editor = self.editor.clone();
+        div().size_full().child(editor).child(
             div()
                 .absolute()
                 .left(px(100.))
@@ -240,7 +241,7 @@ fn profile_tuning_pointer(cx: &mut TestAppContext) {
             v.tuning.value = v.state.as_ref().unwrap().project.tuning();
             v.tuning.drag = None;
             // Freeze asynchronous analysis and exclude worker/terminal setup;
-            // canonical gesture changes and actual overlay paint remain timed.
+            // local gesture changes and actual overlay paint remain timed.
             v.tuning.analysis_pending = true;
             v.tuning.analysis_queued = None;
             v.tuning.last_variations = Instant::now();
