@@ -39,6 +39,9 @@ impl Default for Payload {
     }
 }
 pub(super) struct Slot {
+    pub(super) parameters: super::parameters::NativeParameterValues,
+    pub(super) edits_pending: bool,
+    pub(super) edits_result: Option<hex_plugin_host::protocol::ParameterEdits>,
     ordinal: u64,
     phase: Phase,
     mode: Mode,
@@ -47,6 +50,9 @@ pub(super) struct Slot {
 impl Default for Slot {
     fn default() -> Self {
         Self {
+            parameters: super::parameters::NativeParameterValues::default(),
+            edits_pending: false,
+            edits_result: None,
             ordinal: 0,
             phase: Phase::Idle,
             mode: Mode::Live,
@@ -69,6 +75,9 @@ impl Default for Work {
     }
 }
 impl Work {
+    pub(super) fn between_polls(&self) -> bool {
+        self.is_in_flight() && Instant::now() < self.poll_after
+    }
     pub(super) fn is_in_flight(&self) -> bool {
         self.ordinal.is_some() && self.result.is_none()
     }
