@@ -69,8 +69,8 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
     )?);
     assert_eq!(revision.arrangement().main_latency_frames(), LATENCY as u32);
     // Below the Limiter ceiling, each output sample is exactly the original
-    // content delayed288 frames. The gain step belongs to content1500, so its
-    // first attenuated output must be1788, independent of callback boundaries.
+    // content delayed by 288 frames. The gain step belongs to content frame 1500, so its
+    // first attenuated output must be frame 1788, independent of callback boundaries.
     let expected: [Frame; OUTPUT_FRAMES] = std::array::from_fn(|frame| {
         if frame < LATENCY {
             [0.0; 2]
