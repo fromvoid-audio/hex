@@ -323,6 +323,20 @@ pub enum Command {
         parameter: hex_lattice_contract::ParameterId,
         points: Vec<crate::AutomationPoint>,
     },
+    /// One explicit manual edit selects base only for touched retained lanes.
+    /// Ordinary state/preset/comparison replacements retain their read selection.
+    ManualDeviceEdit {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        targets: Vec<hex_lattice_contract::DeviceAutomationTarget>,
+    },
+    SetDeviceAutomationReadSelection {
+        device: DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        selection: crate::AutomationReadSelection,
+    },
+    /// Resume every retained device envelope in one canonical history edit.
+    ReenableDeviceAutomation,
     ReplaceDeviceState {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
@@ -1888,6 +1902,17 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            Command::ManualDeviceEdit {
+                device,
+                state,
+                targets,
+            } => self.manual_device_edit(device, state, targets),
+            Command::SetDeviceAutomationReadSelection {
+                device,
+                target,
+                selection,
+            } => self.set_device_automation_read_selection(device, target, selection),
+            Command::ReenableDeviceAutomation => self.reenable_device_automation(),
             Command::ReplaceDeviceAutomationTarget {
                 device,
                 target,

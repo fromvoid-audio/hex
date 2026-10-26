@@ -277,7 +277,7 @@ fn drag_source_to_inserted_track(
     assert_eq!(source_lane.origin.x, body.origin.x);
     assert_eq!(
         source_lane.size.width,
-        body.size.width - px(super::tracks::TRACK_HEADER_WIDTH)
+        body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
     );
 
     let down = point(
@@ -788,7 +788,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
         let viewport = view.visible_viewport(state.timeline_frames);
         let width = view
             .arrangement_bounds
-            .map(|bounds| bounds.width - super::tracks::TRACK_HEADER_WIDTH)
+            .map(|bounds| bounds.width - view.track_header_width())
             .unwrap_or(400.0);
         super::musical_time::grid_lines(&state.project, viewport, width, view.snap_grid)
             .into_iter()
