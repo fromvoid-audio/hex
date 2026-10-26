@@ -11,14 +11,15 @@ mod history;
 mod insertion;
 mod place_icons;
 mod plugins;
+mod resize;
 mod samples;
 mod tree;
 
 use super::{EditorMode, EditorView, browser_input, drag};
 use crate::theme;
 use gpui::{
-    App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathPromptOptions, Window, canvas, div, prelude::*, px, relative, rgb, uniform_list,
+    App, Context, Div, MouseButton, MouseDownEvent, PathPromptOptions, Window, canvas, div,
+    prelude::*, px, relative, rgb, uniform_list,
 };
 use hex_audio::sample_preview::Phase;
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
@@ -2155,67 +2156,33 @@ impl EditorView {
                 "browser-resize-line",
                 self.browser.resizing,
             ));
-        resize = resize.child(
-            canvas(
-                |_, _, _| (),
-                move |handle_bounds, _, window, _| {
-                    let down_entity = entity.clone();
-                    // Mouse event positions are window-local; the browser starts at x = 0.
-                    let start_x = 0.0_f32;
-                    window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
-                        if !phase.bubble()
-                            || event.button != MouseButton::Left
-                            || !handle_bounds.contains(&event.position)
-                        {
-                            return;
-                        }
-                        down_entity.update(cx, |view, cx| {
-                            view.browser.resizing = true;
-                            view.browser.width = pane_width;
-                            cx.notify();
-                        });
-                    });
-                    let move_entity = entity.clone();
-                    let available = f32::from(bounds.size.width);
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if !phase.bubble() {
-                            return;
-                        }
-                        move_entity.update(cx, |view, cx| {
-                            if !event.dragging() {
-                                if view.browser.resizing {
-                                    view.browser.resizing = false;
-                                    cx.notify();
-                                }
-                                return;
-                            }
-                            if view.browser.resizing {
-                                view.browser.width = clamped_panel_width(
-                                    view.browser.layout.base_width_for_total(
-                                        f32::from(event.position.x) - start_x,
-                                    ),
-                                    available,
-                                );
-                                cx.notify();
-                            }
-                        });
-                    });
-                    let up_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                        if !phase.bubble() || event.button != MouseButton::Left {
-                            return;
-                        }
-                        up_entity.update(cx, |view, cx| {
-                            if view.browser.resizing {
-                                view.browser.resizing = false;
-                                cx.notify();
-                            }
-                        });
-                    });
-                },
+        resize = resize
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event, window, cx| {
+                    view.begin_browser_resize(
+                        resize::Divider::Outer,
+                        event,
+                        pane_width,
+                        window,
+                        cx,
+                    );
+                }),
             )
-            .size_full(),
-        );
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, cx| {
+                        entity.read(cx).renew_browser_resize(
+                            resize::Divider::Outer,
+                            window,
+                            entity.entity_id(),
+                        );
+                    },
+                )
+                .size_full(),
+            );
+
         div()
             .track_focus(&self.browser.results_focus)
             .on_mouse_down(

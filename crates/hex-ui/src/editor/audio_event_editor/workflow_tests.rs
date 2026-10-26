@@ -1924,3 +1924,5 @@ fn cmd_f_fits_the_focused_event_selection_without_opening_browser(cx: &mut TestA
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
 }
+#[path = "pointer_tests.rs"]
+mod pointer_tests;
