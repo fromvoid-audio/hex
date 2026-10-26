@@ -363,9 +363,18 @@ fn routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and
             track: source,
             quantization: LaunchQuantization::Immediate,
         }),
-        Err(SessionPlaybackError::MutableInstrumentActive),
-        "the source route cannot cut off the destination's committed mutable voices"
+        Ok(()),
+        "the source route cuts its authored destination gates without resetting source DSP"
     );
+    // Independent routing oracle: explicitly stop the destination and source.
+    for track in [destination, source] {
+        painted_reference
+            .apply(SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+    }
     let mut actual = [[0.0; 2]; 37];
     let mut expected = actual;
     painted.render(&mut actual).unwrap();

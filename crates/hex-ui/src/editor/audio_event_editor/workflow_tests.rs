@@ -1645,3 +1645,240 @@ fn grouped_fade_handles_use_retained_source_extent_and_keep_release_geometry(
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
     });
 }
+
+#[gpui::test]
+fn held_f_keeps_authored_fade_knots_aligned_in_an_offset_loop(cx: &mut TestAppContext) {
+    for (looping, warped) in [(true, false), (false, false), (true, true), (false, true)] {
+        let (files, mut visual, editor, clip) = open(cx);
+        if warped {
+            editor.update(&mut visual, |v, _| {
+                let p = &v.state.as_ref().unwrap().project;
+                let settings = hex_project::default_audio_warp(
+                    p.clip(clip).unwrap(),
+                    p.tempo_map(),
+                    hex_project::WarpMode::RePitch,
+                )
+                .unwrap();
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings)
+                })));
+            });
+            pump(&editor, &mut visual);
+        }
+        let length = editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .audio_event_root()
+                .domain
+                .clock
+                .length()
+        });
+        let shape = hex_project::ClipFade::new(
+            length,
+            0,
+            length * 5 / 8,
+            length / 3 + if warped { 17 } else { 0 },
+        )
+        .unwrap()
+        .with_shape(0, 0, 200, -200)
+        .unwrap()
+        .with_curve_positions(300, 700)
+        .unwrap();
+        edit(
+            &mut visual,
+            &editor,
+            clip,
+            AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(hex_project::AudioEventFade::new(0, shape).unwrap()),
+            },
+        );
+        let track = editor.read_with(&visual, |v, _| {
+            v.state.as_ref().unwrap().project.tracks()[0].id()
+        });
+        for command in [
+            Command::MoveClip {
+                clip,
+                track,
+                start: 96_000,
+            },
+            Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: length / 4,
+                    end: length * 3 / 4,
+                    looping,
+                },
+            },
+        ] {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(command)))
+            });
+            pump(&editor, &mut visual);
+        }
+        focus_events(&mut visual);
+        // Exercise the same retained source coordinates in a scrolled/zoomed
+        // editor; placement position and loop repetition do not own this view.
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.viewport = Some(Viewport {
+                start: 12_000,
+                length: 72_000,
+            });
+            cx.notify();
+        });
+        repaint(&mut visual, &editor);
+        let baseline_pcm = editor.read_with(&visual, |v, _| render_accepted_event(v, clip));
+        let (before, middle) = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            let c = p.clip(clip).unwrap();
+            assert_eq!(c.start(), 96_000);
+            let projection = hex_project::AudioViewProjection::new(c, p.tempo_map()).unwrap();
+            assert_eq!(projection.play_start_position().unwrap(), Some(length / 4));
+            assert_eq!(projection.occurrence_count() >= 2, looping);
+            let events = c.editable_audio_events().unwrap();
+            let middle = events
+                .events
+                .iter()
+                .find(|e| e.start == length / 4 && e.end == length * 3 / 4)
+                .unwrap();
+            assert_eq!(middle.source_start, length / 4);
+            assert_eq!(middle.fade.unwrap().source_start(), 0);
+            assert_eq!(
+                middle.fade.unwrap().shape(),
+                shape,
+                "crop retains the authored fade domain"
+            );
+            (p.snapshot(), middle.id)
+        });
+        let selector = |side| {
+            Box::leak(format!("audio-event-fade-{side}-top-{middle}").into_boxed_str())
+                as &'static str
+        };
+        let incoming = selector("in");
+        let outgoing = selector("out");
+        let old = [
+            visual.debug_bounds(incoming).unwrap(),
+            visual.debug_bounds(outgoing).unwrap(),
+        ];
+        fade_key(&mut visual, true);
+        assert_eq!(
+            visual.debug_bounds(incoming),
+            Some(old[0]),
+            "F is view-only; the retained incoming knot must not reanchor into the loop window"
+        );
+        assert_eq!(
+            visual.debug_bounds(outgoing),
+            Some(old[1]),
+            "the outgoing knot must still align with its authored source curve"
+        );
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        fade_key(&mut visual, false);
+        assert_eq!(visual.debug_bounds(incoming), Some(old[0]));
+        assert_eq!(visual.debug_bounds(outgoing), Some(old[1]));
+
+        // Hit the actual retained knot and edit just its incoming endpoint. The
+        // outgoing law/domain must survive, including fractional beat coordinates.
+        fade_key(&mut visual, true);
+        let down = old[0].center();
+        let target = point(down.x - px(18.0), down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        repaint(&mut visual, &editor);
+        let preview = visual.debug_bounds(incoming).unwrap();
+        assert!(
+            preview.center().x < down.x - px(8.0),
+            "looping={looping} warped={warped}: {preview:?} from {down:?}"
+        );
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        fade_key(&mut visual, false);
+        for _ in 0..3 {
+            repaint(&mut visual, &editor);
+            assert_eq!(visual.debug_bounds(incoming), Some(preview));
+        }
+        editor.read_with(&visual, |v, _| {
+            assert!(v.audio_event_editor.pending.is_some());
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        pump(&editor, &mut visual);
+        repaint(&mut visual, &editor);
+        assert_eq!(visual.debug_bounds(incoming), Some(preview));
+        let accepted = editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let p = &v.state.as_ref().unwrap().project;
+            let event = p
+                .clip(clip)
+                .unwrap()
+                .audio_events()
+                .events
+                .iter()
+                .find(|e| e.id == middle)
+                .copied()
+                .unwrap();
+            let fade = event.fade.unwrap();
+            assert_eq!(fade.source_start(), 0);
+            assert_eq!(fade.shape().span(), length);
+            assert!(fade.shape().fade_in() < shape.fade_in());
+            assert_eq!(
+                fade.shape().fade_out(),
+                shape.fade_out(),
+                "editing the incoming knot must preserve the exact outgoing beat coordinates"
+            );
+            assert_eq!(fade.shape().in_curve(), shape.in_curve());
+            assert_eq!(fade.shape().out_curve(), shape.out_curve());
+            assert_eq!(fade.shape().in_position(), shape.in_position());
+            assert_eq!(fade.shape().out_position(), shape.out_position());
+            p.snapshot()
+        });
+        editor.read_with(&visual, |v, _| {
+            let pcm = render_accepted_event(v, clip);
+            assert_ne!(
+                &pcm[..24_000],
+                &baseline_pcm[..24_000],
+                "incoming edit must change audible source samples"
+            );
+            assert_eq!(
+                &pcm[40_000..48_000],
+                &baseline_pcm[40_000..48_000],
+                "outgoing source envelope must remain sample exact"
+            );
+            if looping {
+                assert_eq!(
+                    &pcm[..48_000],
+                    &pcm[48_000..96_000],
+                    "repeated occurrences read the same edited source envelope"
+                );
+            }
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
+        });
+        let path = files.root().join("retained-fade.hex");
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::SaveNew(path.clone())))
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(path))));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted);
+        });
+    }
+}
+
+#[path = "pointer_tests.rs"]
+mod pointer_tests;

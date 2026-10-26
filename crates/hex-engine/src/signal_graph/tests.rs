@@ -20,6 +20,10 @@ mod limiter_latency;
 
 #[path = "tests/eq_automation.rs"]
 mod eq_automation;
+#[path = "tests/shared_legacy.rs"]
+mod shared_legacy;
+#[path = "tests/shared_sources.rs"]
+mod shared_sources;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.compensation.delay");
 pub(crate) struct Definition;
@@ -395,6 +399,8 @@ fn unknown_latency_and_cumulative_overflow_refuse_actual_preparation() {
     assert!(prepare(&fixture(&[&[40000, 40000]], 8)).is_err());
 }
 
+thread_local! { static CONTEXT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! { static INSTRUMENT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 struct InstrumentDefinition;
 const INSTRUMENT: DeviceTypeId = DeviceTypeId::from_static("test.compensation.generator");
 impl NativeDeviceMetadata for InstrumentDefinition {
@@ -446,12 +452,20 @@ impl hex_lattice::NativeInstrumentDefinition for InstrumentDefinition {
         _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
         self.migrate_state(state)?;
+        INSTRUMENT_PREPARATIONS.with(|count| count.set(count.get() + 1));
         Ok(Box::new(Instrument))
     }
 }
 impl hex_lattice::PreparedNativeInstrument for Instrument {
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(5)
+    }
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedSharedAnalyticContext>>, DeviceContractError>
+    {
+        CONTEXT_PREPARATIONS.with(|count| count.set(count.get() + 1));
+        Ok(Some(Box::new(Instrument)))
     }
     fn prepare_note(
         &self,
@@ -465,6 +479,27 @@ impl hex_lattice::PreparedNativeInstrument for Instrument {
         ))
     }
 }
+impl hex_lattice::PreparedSharedAnalyticContext for Instrument {
+    fn declared_context_bytes(&self) -> usize {
+        1
+    }
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedSharedAnalyticNote, DeviceContractError> {
+        Ok(hex_lattice::PreparedSharedAnalyticNote::new([0; 8], 5))
+    }
+    fn sample(
+        &self,
+        _: &hex_lattice::PreparedSharedAnalyticNote,
+        age: u64,
+        _: u64,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Frame {
+        if age == 5 { [0.25, -0.5] } else { [0.0; 2] }
+    }
+}
 #[test]
 fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     let mut f = fixture(&[&[3]], 32);
@@ -473,6 +508,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     snapshot.next_id += 3;
     let owner = &mut snapshot.tracks[0];
     owner.instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: next,
         bypassed: false,

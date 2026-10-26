@@ -554,3 +554,5 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
         2
     );
 }
+
+mod shared_source_release;

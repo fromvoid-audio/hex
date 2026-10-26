@@ -52,7 +52,22 @@ impl Project {
     pub(crate) fn refuse_automation_transform(&self, tracks: &[TrackId]) -> Result<(), Invalid> {
         for &id in tracks {
             let track = self.track(id).ok_or(Invalid("track no longer exists"))?;
-            if !track.gain_envelope().is_empty() || !track.gain_lane.spans.is_empty() {
+            if !track.gain_envelope().is_empty()
+                || !track.gain_lane.spans.is_empty()
+                || track
+                    .devices()
+                    .iter()
+                    .chain(track.instrument())
+                    .any(|device| !device.automation().is_empty())
+                || track
+                    .source_id()
+                    .and_then(|id| self.native_source(id))
+                    .is_some_and(|source| {
+                        source
+                            .devices()
+                            .any(|device| !device.automation().is_empty())
+                    })
+            {
                 return Err(Invalid(AUTOMATION_EDIT_UNSUPPORTED));
             }
         }

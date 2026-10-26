@@ -105,6 +105,21 @@ fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() 
         )
         .unwrap(),
     );
+    let factory = revision
+        .session()
+        .mutable_instrument_factory(track)
+        .unwrap();
+    let hex_lattice::InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        factory.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("sampler scalar retarget proof")
+    };
+    assert_eq!(
+        scope.compiler_factory_allowance().unwrap(),
+        std::mem::size_of_val(factory) + std::mem::size_of_val(proof.as_ref()),
+        "the future generic factory quote covers its actual scalar proof owner"
+    );
+    drop(proof);
     assert!(SessionPlayback::new(Arc::clone(&revision)).is_err());
     assert!(SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).is_err());
     dispatched_owner_accounting(&store, &scope, &revision, limits);
@@ -148,6 +163,25 @@ fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() 
     );
     let mut playback =
         SessionPlayback::new_control_sampler_export(Arc::clone(&revision), &scope).unwrap();
+    let allowance =
+        SessionPlayback::control_sampler_export_runtime_allowance(&revision, &scope).unwrap();
+    let actual = playback.accounted_runtime_storage_bytes().unwrap();
+    assert_eq!(playback.release_storage_capacity(), 0);
+    assert!(actual <= allowance, "actual={actual}, quote={allowance}");
+    assert!(allowance < limits.max_retained_bytes);
+    assert!(playback.apply(SessionPlaybackCommand::Pause).is_err());
+    assert!(
+        playback
+            .apply(SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: crate::LaunchQuantization::Immediate,
+            })
+            .is_err()
+    );
+    let mut other_export =
+        SessionPlayback::new_control_sampler_export(Arc::clone(&revision), &scope).unwrap();
+    assert!(other_export.try_inherit_state_from(&mut playback).is_err());
+    drop(other_export);
     let weak = Arc::downgrade(scope.data.configurations[0].source.owner.arc());
     drop(store);
     drop(editor);

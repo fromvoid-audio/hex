@@ -29,6 +29,7 @@ fn fixture_duration(duration: u64) -> Project {
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id,
         bypassed: false,
@@ -223,9 +224,20 @@ fn operator_filter_pause_seek_stop_and_saved_snapshot_preserve_expected_history(
     }
     active.apply(SessionPlaybackCommand::Pause).unwrap();
     let at = active.performance_frame();
-    let mut silence = [[1.0; 2]; 128];
-    active.render(&mut silence).unwrap();
-    assert_eq!(silence, [[0.0; 2]; 128]);
+    continuous
+        .apply(SessionPlaybackCommand::StopTrack {
+            track: source.tracks()[0].id(),
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    let mut released = [[0.0; 2]; 128];
+    let mut expected_release = released;
+    active.render(&mut released).unwrap();
+    continuous.render(&mut expected_release).unwrap();
+    assert_eq!(
+        released, expected_release,
+        "Pause preserves the one native kernel while releasing authored gates"
+    );
     assert_eq!(active.performance_frame(), at);
     active.apply(SessionPlaybackCommand::Play).unwrap();
     assert_eq!(

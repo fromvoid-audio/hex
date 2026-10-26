@@ -100,6 +100,7 @@ pub(super) fn clip_intersection(clip: &Clip, interval: (u64, u64)) -> Option<(u6
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn passive_audio_fragment(
+    lane_width: f32,
     fill: u32,
     clip: &Clip,
     waveform: Option<&std::sync::Arc<hex_session::CachedWaveform>>,
@@ -118,18 +119,14 @@ pub(super) fn passive_audio_fragment(
     }
     let left = (start - viewport.start) as f64 / viewport.length as f64;
     let width = (stop - start) as f64 / viewport.length as f64;
-    let mut content = div()
-        .debug_selector(move || selector.clone())
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(relative(left as f32))
-        .w(relative(width as f32))
-        .min_w(px(3.0))
-        .overflow_hidden()
-        .border_1()
-        .border_color(rgb(0x000000))
-        .bg(rgb(fill));
+    let mut content = hex_widgets::rectangle_surface(
+        left as f32,
+        width as f32,
+        super::trim::rendered_clip_width(lane_width, width),
+    )
+    .debug_selector(move || selector.clone())
+    .border_color(rgb(0x000000))
+    .bg(rgb(fill));
     if let Some(header) = compact_header {
         return Some(content.child(header));
     }
@@ -156,6 +153,7 @@ pub(super) fn passive_audio_fragment(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn passive_midi_fragment(
+    lane_width: f32,
     fill: u32,
     clip_id: hex_project::ClipId,
     samples: &[hex_engine::MidiPreviewSample],
@@ -175,18 +173,14 @@ pub(super) fn passive_midi_fragment(
     }
     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-    let mut content = div()
-        .debug_selector(move || format!("{selector}-{}", clip_id.value()))
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(relative(left as f32))
-        .w(relative(width as f32))
-        .min_w(px(4.0))
-        .overflow_hidden()
-        .bg(rgb(fill))
-        .border_1()
-        .border_color(rgb(0x000000));
+    let mut content = hex_widgets::rectangle_surface(
+        left as f32,
+        width as f32,
+        super::trim::rendered_clip_width(lane_width, width),
+    )
+    .debug_selector(move || format!("{selector}-{}", clip_id.value()))
+    .bg(rgb(fill))
+    .border_color(rgb(0x000000));
     if let Some(header) = compact_header {
         return (Some(content.child(header)), 0);
     }

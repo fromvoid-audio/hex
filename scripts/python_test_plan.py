@@ -13,6 +13,9 @@ REVIEWED_MODULES = frozenset({
     "test_eq8_response_compare", "test_gpui_patch", "test_hex_test_build",
     "test_launch", "test_launch_restart", "test_launch_restart_compile",
     "test_local_ci", "test_pcm_build_gate", "test_python_test_plan",
+    # Read-only target-volume probes depend on CI tooling and mocked OS metadata,
+    # not app Rust; changes to the helper/tests retain comprehensive discovery.
+    "test_ci_target_storage",
     # Release-ledger fixtures use only their tool and changelog module; edits
     # to those scripts still take the comprehensive unknown/tooling path.
     "test_release_notes",

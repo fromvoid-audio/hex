@@ -180,13 +180,15 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             Err(error) => panic!("{error}"),
         }
     };
+    // Recovery constructs an interactive runtime with full release/handoff banks.
+    let runtime_storage = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
     let reservation = hex_session::ResidentNativeReservation {
         storage: hex_engine::AudioStorageLedgerReservation {
             data_rows: 512,
             handle_rows: 256,
             root_rows: 128,
-            max_retained_bytes: 20_000_000,
-            max_construction_peak_bytes: 20_000_000,
+            max_retained_bytes: runtime_storage.checked_mul(2).unwrap(),
+            max_construction_peak_bytes: runtime_storage.checked_mul(3).unwrap(),
         },
         max_scan_frames: 100_000,
     };

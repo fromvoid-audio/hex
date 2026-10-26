@@ -1,0 +1,24 @@
+{
+  "source_revision": "677a00f4f384c42c59e5811687a6fb69d50aa689",
+  "schema": 48,
+  "writer": "schema48-writer.rs",
+  "command": "cargo run -p hex-storage --example schema48_writer --locked -- OUTPUT",
+  "execution": "historical git archive with dedicated isolated target; current target never used",
+  "result": "exit0; historical encode/decode complete project equality asserted before create_new output",
+  "fixture": "schema48-console-loop-677a00f4.json",
+  "inputs": "authentic schema47-console-one-shot.json; canonical SetSessionAudioClipLoop(17,71); original media untouched",
+  "files": {
+    "schema47-console-one-shot.json": {
+      "sha256": "b224d111e05b2e79db055b47bae0bf17c5a2810c7163c98a1c39b3ea7aa58170",
+      "bytes": 11074
+    },
+    "schema48-writer.rs": {
+      "sha256": "be6231a4a66c63a974b64dbe6aaf9a08e718be08050221eff1d16ba8051f3780",
+      "bytes": 1282
+    },
+    "schema48-console-loop-677a00f4.json": {
+      "sha256": "1059533bec5dc130747708be339f56619af83629cda4f613f58c084a86da2d0f",
+      "bytes": 11153
+    }
+  }
+}

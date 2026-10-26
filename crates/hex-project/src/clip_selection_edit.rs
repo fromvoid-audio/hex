@@ -505,6 +505,7 @@ impl Command {
             | Self::MoveTimeRange { .. }
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
+            | Self::SplitTimeRange { .. }
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupTimeRange(_)
@@ -550,6 +551,7 @@ impl Command {
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::ReplaceDeviceAutomation { .. }
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }
@@ -620,6 +622,7 @@ impl Command {
             | Self::SetSessionStopCell { .. }
             | Self::PlaceMidiClip { .. }
             | Self::BindTrackSource { .. }
+            | Self::SetNativeSourceReceiver { .. }
             | Self::CreateNativeSource { .. }
             | Self::RenameNativeSource { .. }
             | Self::RemoveNativeSource(_)

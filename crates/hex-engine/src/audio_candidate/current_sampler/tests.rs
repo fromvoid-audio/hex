@@ -602,6 +602,13 @@ fn current_sampler_keyboard_pool_preflight_and_host_route_gains_are_bounded_once
         let revision = runtime.playback.prepared_revision().unwrap();
         let bytes =
             crate::SessionPlayback::current_sampler_runtime_preflight(revision, sources).unwrap();
+        let interactive = crate::SessionPlayback::interactive_runtime_allowance(revision).unwrap();
+        let export = crate::SessionPlayback::linear_export_runtime_allowance(revision).unwrap();
+        assert!(
+            interactive > export,
+            "interactive retains release/handoff banks"
+        );
+        assert!(bytes > interactive, "CURRENT also funds its keyboard pool");
         struct Restore(usize);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -625,6 +632,8 @@ fn current_sampler_keyboard_pool_preflight_and_host_route_gains_are_bounded_once
         let candidate =
             crate::SessionPlayback::new_current_sampler_candidate(Arc::clone(revision), sources)
                 .unwrap();
+        assert!(candidate.release_storage_capacity() > 0);
+        assert!(candidate.accounted_runtime_storage_bytes().unwrap() <= bytes);
         assert_eq!(
             crate::computer_keyboard::CURRENT_SAMPLER_CONSTRUCTION_ENTRIES.with(|n| n.get()),
             before + 1

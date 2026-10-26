@@ -4165,6 +4165,7 @@ mod tests {
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 2,
                     bypassed: false,
@@ -4203,6 +4204,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID,
                     bypassed: false,
@@ -4241,6 +4243,7 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 1,
                     bypassed: false,
@@ -4364,6 +4367,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
@@ -4398,6 +4402,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
@@ -4494,6 +4499,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
@@ -4528,6 +4534,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
@@ -4645,6 +4652,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        automation: Vec::new(),
                         comparison: None,
                         id: TRACK_DEVICE_ID,
                         bypassed: false,
@@ -4683,6 +4691,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        automation: Vec::new(),
                         comparison: None,
                         id: RETURN_DEVICE_ID,
                         bypassed: false,
@@ -8566,16 +8575,28 @@ mod tests {
                 ),
                 (0, 0, 0, 0)
             );
-            assert_eq!(control.status.applied_revision.load(Acquire), revision);
-            assert_eq!(!input.is_cancelled(), retained);
+            if retained {
+                assert_eq!(control.status.applied_revision.load(Acquire), revision);
+                assert!(!input.is_cancelled());
+            } else {
+                // Without a matching input-context generation, the callback
+                // cannot transfer source-owned live IDs safely. Keep the old
+                // graph and input installed rather than retiring their only
+                // shared DSP owner or pretending the new revision applied.
+                assert_eq!(control.status.applied_revision.load(Acquire), 1);
+                assert_eq!(
+                    control.status.rejected_revision(),
+                    Some((revision, PlaybackHandoffRejection::SessionRuntime)),
+                    "context={old_context:?}->{next_context:?}, fresh={fresh}"
+                );
+                assert!(!input.is_cancelled());
+            }
             // Normal inheritance retains the existing certified audition continuation. Fresh
             // runtime installation instead rebinds only its input after the final fence cut.
             if fresh {
                 assert!(!audition.is_cancelled());
             }
-            if retained {
-                assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
-            }
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
             control.reclaim();
             control.stop();
             callback.begin_block();

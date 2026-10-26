@@ -696,12 +696,14 @@ pub(super) fn handle_width(clip_width: f32) -> f32 {
     .handle_width(clip_width)
 }
 
-pub(super) fn rendered_clip_width(lane_width: f32, width_fraction: f64, minimum: f32) -> f32 {
+/// The painted interval and its hit geometry retain canonical endpoints even
+/// below handle size; narrow clips yield their edge handles to the move body.
+pub(super) fn rendered_clip_width(lane_width: f32, width_fraction: f64) -> f32 {
     let width = lane_width * width_fraction as f32;
-    if !width.is_finite() || width <= 0.0 || !minimum.is_finite() || minimum <= 0.0 {
+    if !width.is_finite() || width <= 0.0 || lane_width <= 0.0 || width_fraction <= 0.0 {
         return 0.0;
     }
-    width.max(minimum)
+    width
 }
 
 fn pointer_in_lane_x(x: f32, lane: LaneBounds) -> bool {
@@ -1983,12 +1985,11 @@ mod tests {
             // Full-height edges must leave the central body available for moves.
             assert!(clip_width - left - right >= 1.0);
         }
-        let narrow_audio = rendered_clip_width(720.0, 0.0005, 3.0);
-        let narrow_midi = rendered_clip_width(720.0, 0.0005, 4.0);
-        assert_eq!(narrow_audio, 3.0);
-        assert_eq!(handle_width(narrow_audio), 1.0);
-        assert_eq!(narrow_midi, 4.0);
-        assert_eq!(handle_width(narrow_midi), 1.5);
+        let narrow = rendered_clip_width(720.0, 0.0005);
+        assert_eq!(narrow, 0.36);
+        assert_eq!(handle_width(narrow), 0.0);
+        assert_eq!(rendered_clip_width(f32::NAN, 1.0), 0.0);
+        assert_eq!(rendered_clip_width(720.0, f64::INFINITY), 0.0);
         assert_eq!(handle_width(f32::NAN), 0.0);
         assert_eq!(handle_width(0.0), 0.0);
     }

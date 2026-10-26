@@ -234,6 +234,13 @@ connected. duplication preserves outside tracks' existing midi source choices.
 track and clip/time clipboards are separate and clear when another project opens.
 
 
+press **e** in arrange to split audio and midi clips at both edges of the selected
+time range, across its selected tracks. existing cuts inside the range remain;
+boundaries in gaps or at clip edges add no pieces. the range stays selected and
+one **command+z** undoes all cuts. without a time range, **e** splits at the edit
+cursor. main section focus keeps its section-split behavior; the audio event
+editor uses its own local selection. **command+e** is not assigned.
+
 drag the bottom edge of a track header to resize that row. hold **option** while
 resizing to give all ordinary tracks the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.
@@ -294,6 +301,16 @@ midi clips use the same gesture; no loop icon is painted inside the clip. looped
 clips have rounded bottom corners. drag the first repeat boundary to change the
 cycle while keeping the outer duration; directed clips retain only the outer
 repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
+
+clips and sections keep their actual timeline width when zoomed out. zoom in
+to resize very short clips when their edge handles no longer fit.
+
+shortening or deleting end material keeps your current arrange position and zoom.
+when you pan or zoom afterward, obsolete empty tail outside the new view retires;
+scrolling cannot return to that retired space. arrange keeps at least eight
+seconds of normal space beyond content. **command+0** fits the normal navigation
+extent; **z** fits the selection or content, and **x** explicitly restores the
+prior fitted view, including its former visible trailing space.
 
 ## audio event fades
 
@@ -586,6 +603,7 @@ the complete edit.
 | action | shortcut |
 | --- | --- |
 | reverse selected arrangement clips | `r` |
+| split time-selection edges / edit cursor | e |
 | new project | command+n |
 | open project | command+o |
 | save / save as | command+s / command+shift+s |

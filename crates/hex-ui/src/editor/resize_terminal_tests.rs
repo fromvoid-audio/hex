@@ -73,7 +73,7 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
 }
 const OWNED: Viewport = Viewport {
     start: 28_800,
-    length: 384_000,
+    length: 672_000,
 };
 fn install(v: &mut EditorView, clip: ClipId) -> Request {
     // Controlled UI queue seam. The separate resize_pan_tests prove real

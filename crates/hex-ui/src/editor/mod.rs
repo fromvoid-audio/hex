@@ -66,6 +66,7 @@ mod activation_ui_test;
 mod arrange_clip_range;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrange_clip_range_ui_tests;
+mod arranger_navigation;
 mod audio_import_settings;
 pub(crate) mod changelog;
 mod clip_detail_resize;
@@ -791,6 +792,7 @@ pub(super) struct EditorView {
     pending_metronome_ticket: Option<u64>,
     pending_session_ticket: Option<(u64, u64)>,
     viewport: Option<Viewport>,
+    arranger_navigation: arranger_navigation::Extent,
     zoom_fit: zoom_fit::State,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
@@ -1461,6 +1463,7 @@ impl EditorView {
             pending_metronome_ticket: None,
             pending_session_ticket: None,
             viewport: None,
+            arranger_navigation: arranger_navigation::Extent::default(),
             zoom_fit: zoom_fit::State::default(),
             playback_candidates: VecDeque::new(),
             audible_playback: None,
@@ -1841,7 +1844,9 @@ impl EditorView {
                 })
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
-        let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        let horizon = self
+            .retained_navigation_horizon(horizon)
+            .max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
         // Only a current resize owner may extend the transient display extent.
         horizon.max(self.trim_display_end().unwrap_or(0))
     }

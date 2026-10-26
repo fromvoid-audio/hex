@@ -66,6 +66,11 @@ struct Row {
     ordinal: usize,
     installed_ordinal: Option<usize>,
     id: Option<hex_project::TrackId>,
+    source_id: Option<hex_project::SourceId>,
+    source_receiver_index: Option<usize>,
+    source_audio_receiver: bool,
+    source_input_enabled: bool,
+    audio_content_enabled: bool,
     mix: Option<PreparedTrackMix>,
     source_mix: Option<PreparedTrackMix>,
     clips: Vec<Clip>,
@@ -387,6 +392,15 @@ impl TrackAssembly {
             r.ordinal = ordinal;
             r.installed_ordinal = None;
             r.id = Some(t.id());
+            r.source_id = t.source_id();
+            r.source_receiver_index = t
+                .source_id()
+                .and_then(|id| project.native_source(id))
+                .and_then(|source| source.receiver())
+                .and_then(|id| project.tracks().iter().position(|track| track.id() == id));
+            r.source_audio_receiver = t.receives_source_audio();
+            r.source_input_enabled = !t.muted() && (!solo || t.soloed());
+            r.audio_content_enabled = r.source_input_enabled;
             r.meter_disposal = Disposal::Unstarted;
             r.chain_disposal = Disposal::Unstarted;
             r.mix = Some(
@@ -591,6 +605,11 @@ impl TrackAssembly {
             ) {
                 r.track = Some(Track {
                     track_id: r.id,
+                    source_id: r.source_id,
+                    source_receiver_index: r.source_receiver_index,
+                    source_audio_receiver: r.source_audio_receiver,
+                    source_input_enabled: r.source_input_enabled,
+                    audio_content_enabled: r.audio_content_enabled,
                     clips: mem::take(&mut r.clips),
                     mix,
                     source_mix,
@@ -696,6 +715,11 @@ impl TrackAssembly {
             }
             if let Some(Track {
                 track_id: _,
+                source_id: _,
+                source_receiver_index: _,
+                source_audio_receiver: _,
+                source_input_enabled: _,
+                audio_content_enabled: _,
                 clips,
                 mix: _,
                 source_mix: _,
@@ -989,6 +1013,11 @@ impl TrackAssembly {
         l.growth(*growth)?;
         for r in rows {
             let Row {
+                source_id: _,
+                source_receiver_index: _,
+                source_audio_receiver: _,
+                source_input_enabled: _,
+                audio_content_enabled: _,
                 ordinal: _,
                 installed_ordinal: _,
                 id: _,
@@ -1026,6 +1055,11 @@ impl TrackAssembly {
             let actual_clips = if let Some(t) = actual {
                 let Track {
                     track_id: _,
+                    source_id: _,
+                    source_receiver_index: _,
+                    source_audio_receiver: _,
+                    source_input_enabled: _,
+                    audio_content_enabled: _,
                     clips,
                     mix: _,
                     source_mix: _,

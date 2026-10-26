@@ -53,6 +53,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: Vec::new(),
             instrument: Some(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument,
                 bypassed: false,

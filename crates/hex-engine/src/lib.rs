@@ -36,6 +36,8 @@ pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
 pub mod midi_capture;
+mod source_routing;
+pub use source_routing::PreparedSourceRouting;
 
 // Historical analytic/import proofs opt into the shared pre-global kernel.
 #[cfg(test)]
@@ -105,6 +107,8 @@ pub use native_device_view::{
     sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
 
+mod device_automation;
+pub use device_automation::DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED;
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
@@ -799,6 +803,11 @@ impl Clip {
 #[derive(Debug, Clone)]
 pub struct Track {
     track_id: Option<hex_project::TrackId>,
+    source_id: Option<hex_project::SourceId>,
+    source_receiver_index: Option<usize>,
+    source_audio_receiver: bool,
+    source_input_enabled: bool,
+    audio_content_enabled: bool,
     clips: Vec<Clip>,
     mix: PreparedTrackMix,
     source_mix: PreparedTrackMix,
@@ -971,6 +980,11 @@ impl Track {
             instrument_latency: Some(0),
             instrument_runtime_latency: Some(0),
             instrument_meter: Default::default(),
+            source_id: None,
+            source_receiver_index: None,
+            source_audio_receiver: true,
+            source_input_enabled: true,
+            audio_content_enabled: true,
             mutable_instrument: false,
             mutable_looping_source: false,
             midi_source_index: None,
@@ -1022,6 +1036,11 @@ impl Track {
             instrument_latency: Some(0),
             instrument_runtime_latency: Some(0),
             instrument_meter: Default::default(),
+            source_id: None,
+            source_receiver_index: None,
+            source_audio_receiver: true,
+            source_input_enabled: true,
+            audio_content_enabled: true,
             mutable_instrument: false,
             mutable_looping_source: false,
             midi_source_index: None,
@@ -1068,6 +1087,46 @@ impl Track {
             && self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
             && self.instrument_bypassed == other.instrument_bypassed
+    }
+
+    /// A contributor retains its MIDI bank and local audio/effects, but only the
+    /// selected receiver may render a retained source's generator output.
+    pub(crate) fn with_source_audio_receiver(mut self, receiver: bool) -> Self {
+        self.source_audio_receiver = receiver;
+        self
+    }
+    pub(crate) fn with_source_mix_scope(
+        mut self,
+        input_enabled: bool,
+        audio_enabled: bool,
+    ) -> Self {
+        self.source_input_enabled = input_enabled;
+        self.audio_content_enabled = audio_enabled;
+        self
+    }
+    pub(crate) fn source_input_enabled(&self) -> bool {
+        self.source_input_enabled
+    }
+    pub(crate) fn audio_content_enabled(&self) -> bool {
+        self.audio_content_enabled
+    }
+    pub fn receives_source_audio(&self) -> bool {
+        self.source_audio_receiver
+    }
+    pub(crate) fn with_source_binding(
+        mut self,
+        source: Option<hex_project::SourceId>,
+        receiver_index: Option<usize>,
+    ) -> Self {
+        self.source_id = source;
+        self.source_receiver_index = receiver_index;
+        self
+    }
+    pub fn source_id(&self) -> Option<hex_project::SourceId> {
+        self.source_id
+    }
+    pub(crate) fn source_receiver_index(&self) -> Option<usize> {
+        self.source_receiver_index
     }
 
     pub(crate) fn with_mutable_instrument(mut self, mutable: bool, looping_source: bool) -> Self {
@@ -2846,116 +2905,108 @@ impl RendererRuntime {
         }
         for (index, track) in project.tracks.iter().enumerate() {
             let stateful = track.has_device_chain();
-            if stateful || track.requires_ordered_processing() || track.has_gain_automation() {
-                let mut chain = if stateful {
-                    Some(
+            let ordered = track.requires_ordered_processing();
+            let render_direct_stateless_track = !stateful
+                && !ordered
+                && !track.has_mutable_instrument()
+                && !track.has_gain_automation()
+                && !track.source_id().is_some_and(|source| {
+                    project
+                        .tracks
+                        .iter()
+                        .filter(|candidate| candidate.source_id() == Some(source))
+                        .take(2)
+                        .count()
+                        > 1
+                });
+            if render_direct_stateless_track {
+                // Keep clip/note contributions in the destination mix order;
+                // grouping a track into zeroed scratch changes exact PCM sums.
+                track.render_additive_with_suppressions_and_pages(
+                    block_start,
+                    block_start,
+                    output,
+                    &[],
+                    pages.as_deref_mut(),
+                    &[],
+                    volume_timing,
+                )?;
+                continue;
+            }
+            let mut scratch = [[0.0; 2]; 256];
+            for offset in (0..output.len()).step_by(scratch.len()) {
+                let count = (output.len() - offset).min(scratch.len());
+                let start = block_start
+                    .checked_add(offset as u64)
+                    .ok_or(Invalid("render range overflow"))?;
+                let end = start
+                    .checked_add(count as u64)
+                    .ok_or(Invalid("render range overflow"))?;
+                let target = &mut scratch[..count];
+                target.fill([0.0; 2]);
+                if track.audio_content_enabled() {
+                    render_track_audio_raw(track, start, end, target, pages.as_deref_mut());
+                }
+                let effect_clock = crate::effect_clock::ArrangementEffectClock::canonical(
+                    project.tempo_map.as_ref(),
+                    start,
+                );
+                if ordered {
+                    if stateful {
                         self.device_chains
                             .get_mut(index)
-                            .ok_or(Invalid("native device runtime is unavailable"))?,
-                    )
-                } else {
-                    None
-                };
-                let mut scratch = [[0.0; 2]; 256];
-                let mut offset = 0_usize;
-                while offset < output.len() {
-                    let count = (output.len() - offset).min(scratch.len());
-                    let start = block_start
-                        .checked_add(offset as u64)
-                        .ok_or(Invalid("render range overflow"))?;
-                    let end = start
-                        .checked_add(count as u64)
-                        .ok_or(Invalid("render range overflow"))?;
-                    let target = &mut scratch[..count];
-                    let effect_clock = crate::effect_clock::ArrangementEffectClock::canonical(
-                        project.tempo_map.as_ref(),
-                        start,
-                    );
-                    target.fill([0.0; 2]);
-                    if let Some(page_provider) = pages.as_deref_mut() {
-                        if track.requires_ordered_processing() {
-                            track.render_audio_range_with_pages(start, end, target, page_provider);
-                        } else {
-                            track.render_unmuted_range_with_pages(
-                                start,
-                                end,
+                            .ok_or(Invalid("native device runtime is unavailable"))?
+                            .process_range_with_clock(
+                                0..track.instrument_position(),
                                 target,
-                                None,
-                                page_provider,
-                                volume_timing,
-                            )?;
-                        }
-                    } else {
-                        if track.requires_ordered_processing() {
-                            track.render_audio_range(start, end, target);
-                        } else {
-                            track.render_unmuted_range(start, end, target, None, volume_timing)?;
-                        }
-                    }
-                    if track.requires_ordered_processing() {
-                        if let Some(chain) = chain.as_deref_mut() {
-                            chain
-                                .process_range_with_clock(
-                                    0..track.instrument_position(),
-                                    target,
-                                    Some(&effect_clock),
-                                )
-                                .map_err(|_| Invalid("prepared effect segment is invalid"))?;
-                        } else {
-                            track.apply_ordered_prefix(target);
-                        }
-                        track.apply_instrument_input_gain(target);
-                        track.render_instrument_range(start, end, target, None, volume_timing)?;
-                        track.apply_instrument_output_gain(target);
-                        if let Some(chain) = chain.as_deref_mut() {
-                            let effect_count = chain.len();
-                            chain
-                                .process_range_with_clock(
-                                    track.instrument_position()..effect_count,
-                                    target,
-                                    Some(&effect_clock),
-                                )
-                                .map_err(|_| Invalid("prepared effect segment is invalid"))?;
-                        } else {
-                            track.apply_ordered_suffix(target);
-                        }
-                    } else if let Some(chain) = chain.as_deref_mut() {
-                        chain
-                            .process_range_with_clock(0..chain.len(), target, Some(&effect_clock))
+                                Some(&effect_clock),
+                            )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
-                    }
-                    if track.has_gain_automation() {
-                        for (frame_index, (destination, source)) in output[offset..offset + count]
-                            .iter_mut()
-                            .zip(target.iter().copied())
-                            .enumerate()
-                        {
-                            track
-                                .mix_at(start + frame_index as u64)
-                                .add_frame(destination, source);
-                        }
                     } else {
-                        for (destination, source) in output[offset..offset + count]
-                            .iter_mut()
-                            .zip(target.iter().copied())
-                        {
-                            track.mix.add_frame(destination, source);
-                        }
+                        track.apply_ordered_prefix(target);
                     }
-                    offset += count;
+                    track.apply_instrument_input_gain(target);
+                    render_source_generators(project, index, start, end, target, volume_timing)?;
+                    track.apply_instrument_output_gain(target);
+                    if stateful {
+                        let chain = self
+                            .device_chains
+                            .get_mut(index)
+                            .ok_or(Invalid("native device runtime is unavailable"))?;
+                        let effect_count = chain.len();
+                        chain
+                            .process_range_with_clock(
+                                track.instrument_position()..effect_count,
+                                target,
+                                Some(&effect_clock),
+                            )
+                            .map_err(|_| Invalid("prepared effect segment is invalid"))?;
+                    } else {
+                        track.apply_ordered_suffix(target);
+                    }
+                } else if stateful {
+                    let chain = self
+                        .device_chains
+                        .get_mut(index)
+                        .ok_or(Invalid("native device runtime is unavailable"))?;
+                    chain
+                        .process_range_with_clock(0..chain.len(), target, Some(&effect_clock))
+                        .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
-            } else if !track.mix.muted {
-                if let Some(page_provider) = pages.as_deref_mut() {
-                    track.render_unmuted_range_with_pages(
-                        block_start,
-                        next,
-                        output,
-                        None,
-                        page_provider,
-                        volume_timing,
-                    )?;
-                } else {
-                    track.render_unmuted_range(block_start, next, output, None, volume_timing)?;
+                if !ordered {
+                    render_source_generators(project, index, start, end, target, volume_timing)?;
+                }
+                for (frame_index, (destination, source)) in output[offset..offset + count]
+                    .iter_mut()
+                    .zip(target.iter().copied())
+                    .enumerate()
+                {
+                    let mix = if track.has_gain_automation() {
+                        track.mix_at(start + frame_index as u64)
+                    } else {
+                        track.mix
+                    };
+                    mix.add_frame(destination, source);
                 }
             }
         }
@@ -3011,47 +3062,10 @@ impl RendererRuntime {
             for (track_index, track) in project.tracks.iter().enumerate() {
                 let stateful = track.has_device_chain();
                 let ordered = track.requires_ordered_processing();
-                if !stateful && !ordered && !track.has_gain_automation() && track.sends.is_empty() {
-                    if let Some(provider) = pages.as_deref_mut() {
-                        track.render_unmuted_range_with_pages(
-                            start,
-                            end,
-                            output_chunk,
-                            None,
-                            provider,
-                            volume_timing,
-                        )?;
-                    } else {
-                        track.render_unmuted_range(
-                            start,
-                            end,
-                            output_chunk,
-                            None,
-                            volume_timing,
-                        )?;
-                    }
-                    continue;
-                }
-
                 let mut scratch = [[0.0; 2]; 256];
                 let rendered = &mut scratch[..count];
-                if let Some(provider) = pages.as_deref_mut() {
-                    if ordered {
-                        track.render_audio_range_with_pages(start, end, rendered, provider);
-                    } else {
-                        track.render_unmuted_range_with_pages(
-                            start,
-                            end,
-                            rendered,
-                            None,
-                            provider,
-                            volume_timing,
-                        )?;
-                    }
-                } else if ordered {
-                    track.render_audio_range(start, end, rendered);
-                } else {
-                    track.render_unmuted_range(start, end, rendered, None, volume_timing)?;
+                if track.audio_content_enabled() {
+                    render_track_audio_raw(track, start, end, rendered, pages.as_deref_mut());
                 }
                 if ordered {
                     if stateful {
@@ -3068,7 +3082,14 @@ impl RendererRuntime {
                         track.apply_ordered_prefix(rendered);
                     }
                     track.apply_instrument_input_gain(rendered);
-                    track.render_instrument_range(start, end, rendered, None, volume_timing)?;
+                    render_source_generators(
+                        project,
+                        track_index,
+                        start,
+                        end,
+                        rendered,
+                        volume_timing,
+                    )?;
                     track.apply_instrument_output_gain(rendered);
                     if stateful {
                         let chain = self
@@ -3094,6 +3115,16 @@ impl RendererRuntime {
                     chain
                         .process_range_with_clock(0..chain.len(), rendered, Some(&effect_clock))
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
+                }
+                if !ordered {
+                    render_source_generators(
+                        project,
+                        track_index,
+                        start,
+                        end,
+                        rendered,
+                        volume_timing,
+                    )?;
                 }
                 for (frame_index, source) in rendered.iter().copied().enumerate() {
                     let mixed = if track.has_gain_automation() {
@@ -3174,6 +3205,66 @@ impl RendererRuntime {
         }
         Ok(())
     }
+}
+
+pub(crate) fn render_track_audio_raw<P: MediaPages + ?Sized>(
+    track: &Track,
+    start_frame: u64,
+    end_frame: u64,
+    output: &mut [Frame],
+    pages: Option<&mut P>,
+) {
+    track.render_audio_range_captured_with_mix(
+        start_frame,
+        end_frame,
+        output,
+        pages,
+        None,
+        PreparedTrackMix::identity(),
+    );
+}
+
+/// Add every enabled contributor's generated signal to the chosen receiver's
+/// source slot. The caller places this between local prefix and suffix stages.
+pub(crate) fn render_source_generators(
+    project: &Project,
+    receiver_index: usize,
+    start_frame: u64,
+    end_frame: u64,
+    output: &mut [Frame],
+    timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+) -> Result<(), Invalid> {
+    let receiver = project
+        .tracks
+        .get(receiver_index)
+        .ok_or(Invalid("source receiver track is missing"))?;
+    if !receiver.receives_source_audio() {
+        return Ok(());
+    }
+    for (contributor_index, contributor) in project.tracks.iter().enumerate() {
+        let contributes_to_receiver = match receiver.source_id() {
+            Some(source) => {
+                contributor.source_id() == Some(source)
+                    && contributor.source_receiver_index() == Some(receiver_index)
+            }
+            None => contributor_index == receiver_index && contributor.source_id().is_none(),
+        };
+        if !contributes_to_receiver || !contributor.source_input_enabled() {
+            continue;
+        }
+        contributor.render_instrument_range_with_mix(
+            (start_frame, end_frame),
+            output,
+            None,
+            0,
+            &[],
+            None,
+            &[],
+            PreparedTrackMix::identity(),
+            timing,
+        )?;
+    }
+    Ok(())
 }
 
 pub struct Renderer<'a> {

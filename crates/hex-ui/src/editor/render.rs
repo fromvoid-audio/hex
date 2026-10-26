@@ -530,8 +530,8 @@ impl Render for EditorView {
                     }
                 });
             })
-            .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
-                super::device_panel::capture_navigation_pointer_down(view, event, cx);
+            .capture_any_mouse_down(cx.listener(|view, event, window, cx| {
+                super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
                 if event.button == MouseButton::Left {
@@ -1292,7 +1292,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &SplitClip, window, cx| {
                 if !view.split_section_at_cursor(window) {
-                    view.split_at_edit_cursor();
+                    view.split_arrangement_clips(window, cx);
                 }
                 cx.notify();
             }))
