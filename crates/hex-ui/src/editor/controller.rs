@@ -9,7 +9,7 @@ use super::{
     PendingPlaybackAction, PendingResidentPublication, Playback, PlaybackCandidate,
     UI_EVENT_BUDGET, UI_REQUEST_CAPACITY,
 };
-use gpui::Context;
+use gpui::{App, Context};
 use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_session::device_gesture::GestureKey;
@@ -680,7 +680,7 @@ impl EditorView {
         }
     }
 
-    fn poll_editor_audio_events(&mut self) -> bool {
+    fn poll_editor_audio_events(&mut self, cx: &mut App) -> bool {
         let mut changed = false;
         for _ in 0..UI_EVENT_BUDGET {
             let event = match self.audio_events.try_recv() {
@@ -688,6 +688,7 @@ impl EditorView {
                 Err(std::sync::mpsc::TryRecvError::Empty)
                 | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
             };
+            crate::diagnostics::record_audio_backend_event(cx, &event);
             match event {
                 crate::EditorAudioEvent::RelinquishClient {
                     old_output_identity,
@@ -985,6 +986,7 @@ impl EditorView {
     }
 
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        crate::diagnostics::record_audio(cx, self.audio.as_mut());
         let logging_failure =
             crate::diagnostics::record_state(cx, &self.status, self.error.as_deref());
         let logging_changed = if let Some(failure) = logging_failure {
@@ -1071,7 +1073,7 @@ impl EditorView {
         if !self.edit_pending() {
             self.midi_step.cancel_pending();
         }
-        visible_change |= self.poll_editor_audio_events();
+        visible_change |= self.poll_editor_audio_events(cx);
         visible_change |= self.poll_export(cx);
         visible_change |= self.pump_tuning_gesture();
         if !self.tuning.client.has_pending_requests() && !self.tuning.client.is_recovery_pending() {

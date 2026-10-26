@@ -199,7 +199,9 @@ impl EditorView {
             fade_key_held: self.fade_key_held,
             automation_view: self.automation_view.enabled,
             focus_ranges: self.arrangement_focus_ranges(),
-            drag_available: self.worker_requests_pending == 0 && self.pending_requests.is_empty(),
+            // Match clip_view admission, including physically held track sizing.
+            // Otherwise a body painted without controls can survive release.
+            drag_available: self.drag_available(),
         };
         let parent = cx.weak_entity();
         let fresh = !self.clip_content_cache_allowed();

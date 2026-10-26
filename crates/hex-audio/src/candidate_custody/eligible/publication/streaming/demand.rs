@@ -85,6 +85,7 @@ impl StateView<'_> {
             .as_mut()
             .filter(|w| w.valid())
             .ok_or(hex_engine::Invalid("stream demand workspace unavailable"))?;
+        workspace.handoff_diagnostic = None;
         let runtime = self
             .runtime
             .as_mut()
@@ -158,7 +159,10 @@ impl StateView<'_> {
                         workspace.cancel_pending(refs, request.domains);
                         return Ok(None);
                     }
-                    Err(_) => return Err(hex_engine::Invalid("stream handoff demand refused")),
+                    Err(error) => {
+                        workspace.handoff_diagnostic = Some(error);
+                        return Err(hex_engine::Invalid("stream handoff demand refused"));
+                    }
                 }
             } else if let Some(staged) = staged.filter(|_| role == ProtectionRole::Transition) {
                 runtime.visit_prepared_stream_action(

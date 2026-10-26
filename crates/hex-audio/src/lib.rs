@@ -17,6 +17,7 @@
 //! Does not edit projects, decode media on callback, own GPUI, or implement device DSP. Stop must
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
+pub mod audio_diagnostics;
 mod device;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod plugin_effects;

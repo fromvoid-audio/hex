@@ -31,6 +31,7 @@ struct PendingAction {
     ticket: u64,
 }
 pub(super) struct Workspace {
+    handoff_diagnostic: Option<hex_engine::PlaybackHandoffError>,
     pub(super) extents: [Vec<StreamPageExtent>; 2],
     pub(super) limit: usize,
     pub(super) stamps: [Option<hex_stream::ReadinessStamp>; 2],
@@ -43,6 +44,10 @@ pub(super) struct Workspace {
     candidate_role: CandidateRole,
 }
 impl Workspace {
+    pub(super) fn take_handoff_diagnostic(&mut self) -> Option<hex_engine::PlaybackHandoffError> {
+        self.handoff_diagnostic.take()
+    }
+
     fn prepare(limit: usize) -> Result<Self, &'static str> {
         let mut extents: [Vec<StreamPageExtent>; 2] = std::array::from_fn(|_| Vec::new());
         for rows in &mut extents {
@@ -50,6 +55,7 @@ impl Workspace {
                 .map_err(|_| "stream demand reservation failed")?;
         }
         Ok(Self {
+            handoff_diagnostic: None,
             extents,
             limit,
             stamps: [None; 2],
@@ -77,6 +83,7 @@ impl Workspace {
                 .all(|rows| rows.len() <= self.limit && rows.capacity() >= self.limit)
     }
     pub(super) fn clear(&mut self) {
+        self.handoff_diagnostic = None;
         for rows in &mut self.extents {
             rows.clear();
         }
