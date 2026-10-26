@@ -281,7 +281,8 @@ impl EditorView {
             self.error = Some("split is available in arrangement".into());
             return;
         }
-        let arranger_focused = self.focus.is_focused(window);
+        // Ordinary track headers belong to the same arranger editing scope.
+        let arranger_focused = self.focus.is_focused(window) || self.track_header_focused(window);
         if (!arranger_focused && !self.midi_focus.is_focused(window))
             || !self.arrangement_view_change_available(cx)
             || self.device_panel.has_pending_draft(cx)

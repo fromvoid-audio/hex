@@ -2176,6 +2176,14 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
         });
         visual.run_until_parked();
         visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+        if reversed {
+            visual.update(|window, cx| {
+                editor.update(cx, |v, cx| {
+                    v.track_header_focus(audio_track, cx).focus(window);
+                })
+            });
+            visual.run_until_parked();
+        }
         visual.simulate_keystrokes("cmd-e");
         editor.read_with(&visual, |v, _| {
             assert!(
@@ -2185,7 +2193,10 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
         });
         visual.update(|window, cx| {
             editor.update(cx, |v, cx| {
-                assert!(v.focus.is_focused(window), "arranger focus restored");
+                assert!(
+                    v.focus.is_focused(window) || v.track_header_focused(window),
+                    "arranger focus restored"
+                );
                 assert!(
                     v.arrangement_view_change_available(cx),
                     "split admission restored"
