@@ -310,3 +310,52 @@ fn published_receipts_survive_later_destructor_panic_and_failure_is_distinct_fro
         // Fixture teardown does not assert successful native disposal.
     }
 }
+
+#[test]
+fn detached_receipt_token_does_not_hold_output_lease_or_endpoint_destruction() {
+    let _serial = crate::prepared::candidate_tests::serial();
+    let lease = crate::lifecycle::Lease::acquire().unwrap();
+    let (control, callback, target) = gain_fixture();
+    let root = control.native_candidate_root();
+    let (data, errors, terminals, mut client, mut publication) =
+        reserve_native_worker(control, callback, None);
+    let retirement = NativeRetirement::new(terminals, root);
+    publication
+        .control()
+        .unwrap()
+        .enable_native_custody()
+        .unwrap();
+    let destroyed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&destroyed);
+    let caller = std::thread::current().id();
+    client.test_drop_probe(move || {
+        assert_ne!(std::thread::current().id(), caller);
+        observed.store(true, Release);
+    });
+    client.gain_begin(target, 0.5).unwrap();
+    let mut token = client.close_retaining_gain_receipts().unwrap();
+    publication.close();
+    let mut stream = crate::lifecycle::StreamOwner::prepared_custody(lease, None, retirement);
+    stream.expose_headless_backend();
+    drop(data);
+    drop(errors);
+    drop(stream); // Existing single lifecycle executor receives the entire owner.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let replacement = loop {
+        if let Ok(lease) = crate::lifecycle::Lease::acquire() {
+            break lease;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retained token held native lease"
+        );
+        std::thread::yield_now();
+    };
+    assert!(destroyed.load(Acquire));
+    assert_eq!(
+        token.try_take().unwrap().unwrap().terminal(),
+        ScalarReceiptTerminal::Interrupted
+    );
+    drop(token); // The replacement lease was already acquired while this reader survived.
+    drop(replacement);
+}
