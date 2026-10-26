@@ -3,6 +3,8 @@
 //! Accepted velocity values remain with midi_pending_drag until its exact reply.
 #[path = "midi_velocity_pointer.rs"]
 mod pointer;
+#[path = "midi_velocity_size.rs"]
+mod sizing;
 
 use super::{
     EditorView,
@@ -24,7 +26,7 @@ pub(super) struct State {
     scene: Option<Arc<Scene>>,
     pub(super) gesture: Option<Gesture>,
     marquee: Option<super::midi_selection::Marquee>,
-    resize: Option<(f32, f32)>,
+    resize: Option<sizing::Resize>,
     hover: Option<NoteId>,
     cycle: Option<(SceneKey, [f32; 2], NoteId)>,
 }
@@ -695,16 +697,6 @@ impl EditorView {
                                     }
                                     cx.stop_propagation();
                                     cx.notify();
-                                    return;
-                                }
-                                if let Some((start, initial)) = view.midi_velocity.resize {
-                                    let next = (initial + start - f32::from(event.position.y))
-                                        .clamp(40.0, 128.0);
-                                    if next.is_finite() {
-                                        view.midi_velocity.height = next;
-                                        cx.notify();
-                                    }
-                                    cx.stop_propagation();
                                 }
                             });
                         });
@@ -744,11 +736,6 @@ impl EditorView {
                                     }
                                     cx.stop_propagation();
                                     cx.notify();
-                                    return;
-                                }
-                                if view.midi_velocity.resize.take().is_some() {
-                                    cx.stop_propagation();
-                                    cx.notify();
                                 }
                             });
                         });
@@ -758,29 +745,21 @@ impl EditorView {
                 .inset_0(),
             );
         row = row.child(content);
+        let splitter = self.velocity_size_input(cx);
+        let handle = hex_widgets::SplitterHandleConfig::new(
+            hex_widgets::SplitterAxis::Vertical,
+            3.0,
+            theme::color(theme::PaletteRole::Border),
+        )
+        .map(|config| splitter.handle("midi-velocity-resize".into(), config));
         Some(
             div()
+                .relative()
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
-                .child(
-                    div()
-                        .id("midi-velocity-resize")
-                        .debug_selector(|| "midi-velocity-resize".into())
-                        .h(px(3.0))
-                        .cursor(gpui::CursorStyle::ResizeUpDown)
-                        .bg(rgb(theme::color(theme::PaletteRole::Border)))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|view, event: &MouseDownEvent, _, cx| {
-                                view.cancel_midi_note_gesture();
-                                view.midi_velocity.resize =
-                                    Some((f32::from(event.position.y), view.midi_velocity.height));
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        ),
-                )
+                .child(splitter.pointer_layer())
+                .children(handle)
                 .child(row),
         )
     }
