@@ -450,6 +450,9 @@ fn clip_loop_compact_track_corner_keeps_ordinary_edge_above(cx: &mut TestAppCont
             .simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         f.visual
             .simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+        f.editor
+            .read_with(&f.visual, |v, _| assert!(v.track_resize_active()));
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         f.visual.run_until_parked();
