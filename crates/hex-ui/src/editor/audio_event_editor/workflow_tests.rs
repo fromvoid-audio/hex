@@ -1926,3 +1926,45 @@ fn cmd_f_fits_the_focused_event_selection_without_opening_browser(cx: &mut TestA
 }
 #[path = "pointer_tests.rs"]
 mod pointer_tests;
+
+#[gpui::test]
+fn held_two_selects_audio_event_edges_without_editing_source(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, _clip) = open(cx);
+    focus_events(&mut visual);
+    let event = visual.debug_bounds("audio-event-1").unwrap();
+    let down = point(event.left() + px(2.), event.center().y);
+    let end = point(down.x + px(70.), down.y);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.simulate_mouse_move(down, None, Modifiers::default());
+    visual.run_until_parked();
+    let key = gpui::Keystroke::parse("2").unwrap();
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: key.clone(),
+        is_held: false,
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::IBeam)
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::IBeam)
+    );
+    visual.simulate_event(gpui::KeyUpEvent { keystroke: key });
+    visual.run_until_parked();
+    assert_ne!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::IBeam)
+    );
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let (start, end) = v.audio_event_editor.range.unwrap();
+        assert!(end > start);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+}

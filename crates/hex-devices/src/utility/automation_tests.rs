@@ -259,7 +259,7 @@ fn registry_shared_automation_requires_explicit_factory_and_current_parameter_su
             )
             .is_err()
     );
-    let unsupported = crate::auto_pan::AUTO_PAN_DEFINITION
+    let unsupported = crate::compressor::COMPRESSOR_DEFINITION
         .default_state()
         .unwrap();
     assert!(
@@ -268,7 +268,7 @@ fn registry_shared_automation_requires_explicit_factory_and_current_parameter_su
                 identity,
                 &unsupported,
                 &context,
-                &[crate::auto_pan::parameter::AMOUNT]
+                &[crate::compressor::parameter::THRESHOLD]
             )
             .is_err()
     );

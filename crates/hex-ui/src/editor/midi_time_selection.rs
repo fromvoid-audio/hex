@@ -237,7 +237,7 @@ impl EditorView {
         if !window.capture_pointer(
             cx.entity_id(),
             MouseButton::Left,
-            gpui::CursorStyle::Crosshair,
+            self.time_selection_pointer_cursor(gpui::CursorStyle::Crosshair),
             move |event, window, cx| {
                 let moved = event.downcast_ref::<MouseMoveEvent>();
                 let released = event
@@ -333,7 +333,10 @@ impl EditorView {
                 .as_ref()
                 .is_some_and(|s| s.revision == g.context.revision)
         {
-            window.renew_pointer_capture(owner, gpui::CursorStyle::Crosshair);
+            window.renew_pointer_capture(
+                owner,
+                self.time_selection_pointer_cursor(gpui::CursorStyle::Crosshair),
+            );
         }
     }
     pub(in crate::editor) fn update_midi_time_selection(
