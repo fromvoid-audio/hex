@@ -495,6 +495,7 @@ impl AutoPanRuntime {
         self.right_phase_degrees = ScalarRamp::steady(self.targets.right_phase_degrees);
     }
 
+    #[inline]
     fn process_frame(&mut self, frame: &mut StereoFrame) {
         let left = f64::from(frame[0]);
         let right = f64::from(frame[1]);
