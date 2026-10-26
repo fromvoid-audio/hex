@@ -12281,17 +12281,28 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         let device = project.tracks()[0].instrument().unwrap().id();
         let meter = Arc::clone(prepared.arrangement().device_meter(device.value()).unwrap());
         let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        let track = project.tracks()[0].id();
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
         let mut metered = SessionPlayback::new(prepared).unwrap();
         metered.set_device_metering(true);
         ordinary.apply(SessionPlaybackCommand::Play).unwrap();
         metered.apply(SessionPlaybackCommand::Play).unwrap();
         let mut a = [[0.0; 2]; 127];
         let mut b = a;
+        let mut output_peak = 0.0_f32;
         for _ in 0..5 {
             ordinary.render(&mut a).unwrap();
             metered.render(&mut b).unwrap();
             assert_eq!(a, b, "telemetry must preserve per-voice summation order");
+            output_peak = b
+                .iter()
+                .flatten()
+                .fold(output_peak, |peak, sample| peak.max(sample.abs()));
         }
+        let track_meter = observation.track_output_meter(track).unwrap();
+        assert_eq!(track_meter.take_track_output(), output_peak);
+        assert_eq!(track_meter.take_track_output(), 0.0);
         let peaks = meter.take_peaks();
         assert_eq!(peaks[0], 0.0);
         assert!(peaks[1] > 0.0);
@@ -12328,6 +12339,168 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
             assert!((a * gain - b).abs() < 1e-7);
         }
+    }
+}
+
+#[test]
+fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_blocks() {
+    use super::capture::{CaptureSink, OutputCaptureId};
+    use super::meter_capture::{Cell, MeterCapture};
+
+    let mut editor = Editor::new(project(1.0, 0, 8 << 32), 8).unwrap();
+    let first = editor.project().tracks()[0].id();
+    let Created::Track(second) = editor
+        .execute(Command::AddTrack {
+            name: "second".into(),
+        })
+        .unwrap()
+    else {
+        panic!("fixture track");
+    };
+    let prepared = revision(editor.project(), Arc::new(hex_devices::SineTable::new()));
+    let observation = crate::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
+    let mut cells = vec![
+        Cell::new(OutputCaptureId::Track(first)),
+        Cell::new(OutputCaptureId::Track(second)),
+    ];
+    super::meter_capture::sort(&mut cells);
+    let mut capture = MeterCapture {
+        revision: &prepared,
+        cells: &mut cells,
+        downstream: None,
+        invalidated: false,
+    };
+    // Owners can be interleaved; two contributions to the first owner at the
+    // same offset cancel before the peak is measured.
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.5, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(second), 1, &[[0.9, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[-0.25, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 1, &[[0.1, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.25
+    );
+    assert_eq!(
+        observation
+            .track_output_meter(second)
+            .unwrap()
+            .take_track_output(),
+        0.9
+    );
+
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.3, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.3, 0.0], [0.7, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.7
+    );
+
+    capture
+        .add(OutputCaptureId::Track(first), 5, &[[0.8, 0.0]])
+        .unwrap();
+    // Out-of-order telemetry is discarded without interrupting audio.
+    capture
+        .add(OutputCaptureId::Track(first), 4, &[[0.1, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.0
+    );
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.7, 0.0]])
+        .unwrap();
+    capture.invalidate();
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.0
+    );
+}
+
+#[test]
+fn track_metering_preserves_multiple_track_audio() {
+    let original = project(0.758_499_15, 0, 8 << 32);
+    let mut snapshot = original.snapshot();
+    let clips = match &mut snapshot.tracks[0].content {
+        TrackContentSnapshot::Instrument(clips) => clips,
+        TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+        _ => panic!("fixture must contain MIDI"),
+    };
+    {
+        let mut note = clips[0].notes[0].clone();
+        note.id = 24;
+        note.pitch = 67;
+        clips[0].notes.push(note);
+    }
+    let mut second = snapshot.tracks[0].clone();
+    second.id = 20;
+    second.gain = 0.431;
+    second.instrument.as_mut().unwrap().id = 21;
+    let clips = match &mut second.content {
+        TrackContentSnapshot::Instrument(clips) => clips,
+        TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+        _ => panic!("fixture must contain MIDI"),
+    };
+    {
+        clips[0].id = 22;
+        clips[0].notes[0].id = 23;
+        clips[0].notes[1].id = 25;
+    }
+    snapshot.next_id = 26;
+    snapshot.tracks.push(second);
+    let project = Project::from_legacy_snapshot(snapshot).unwrap();
+    let prepared = revision(&project, Arc::new(hex_devices::SineTable::new()));
+    let observation = crate::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
+    let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut metered = SessionPlayback::new(prepared).unwrap();
+    metered.set_device_metering(true);
+    ordinary.apply(SessionPlaybackCommand::Play).unwrap();
+    metered.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut a = [[0.0; 2]; 127];
+    let mut b = a;
+    for _ in 0..5 {
+        ordinary.render(&mut a).unwrap();
+        metered.render(&mut b).unwrap();
+        // The pre-existing instrument-meter path groups per-track sums, so
+        // metered and unmetered renderers can differ by f32 rounding.
+        for (actual, reference) in b.iter().flatten().zip(a.iter().flatten()) {
+            assert!((actual - reference).abs() < 1e-7);
+        }
+    }
+    for track in project.tracks() {
+        assert!(
+            observation
+                .track_output_meter(track.id())
+                .unwrap()
+                .take_track_output()
+                > 0.0
+        );
     }
 }
 

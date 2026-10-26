@@ -333,6 +333,7 @@ fn verified_gain_case(session: bool) {
     stable_gain(&h, applied, 2.0);
     let commit_at = Instant::now();
     let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        manual_edit: true,
         key: second,
         sequence: 1,
         value: ParameterValue::Float(2.0),
@@ -361,6 +362,7 @@ fn verified_gain_case(session: bool) {
     }));
     applied = wait(&h, applied.audio_revision, 0.5);
     let invalid = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        manual_edit: true,
         key: third,
         sequence: 2,
         value: ParameterValue::Float(f32::NAN),

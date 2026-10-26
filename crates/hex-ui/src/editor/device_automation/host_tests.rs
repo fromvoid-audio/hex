@@ -492,3 +492,216 @@ fn moved_host_target_refusal_retires_only_its_own_receipt_without_new_history(
     pump(&mut visual, &editor);
     editor.read_with(&visual,|view,_|assert!(matches!(owner,Owner::Track(id) if view.state.as_ref().unwrap().project.track(id).unwrap().devices().iter().any(|candidate|candidate.id()==device))));
 }
+
+#[gpui::test]
+fn explicit_equal_numeric_text_and_real_reenable_menus_preserve_curve_and_receipt(
+    cx: &mut TestAppContext,
+) {
+    use hex_project::AutomationReadSelection as Read;
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let kind = DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(3));
+    let points = vec![AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: AutomationValue::new(0.3).unwrap(),
+        outgoing: AutomationInterpolation::Step,
+    }];
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let revision = view.state.as_ref().unwrap().revision;
+            assert!(view.enqueue(Request::DeviceAutomation {
+                project_generation: view.project_generation,
+                revision,
+                device,
+                target: kind,
+                points: points.clone()
+            }));
+            let entry = Entry::read(
+                &view.state.as_ref().unwrap().project,
+                view.project_generation,
+                owner,
+                device,
+                kind,
+            )
+            .unwrap();
+            view.automation_menu_action(Action::Show(entry, true), window, cx);
+        })
+    });
+    pump(&mut visual, &editor);
+    let original = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.clone()
+    });
+    let selector: &'static str =
+        Box::leak(format!("device-{}-parameter-3-value", device.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(selector).unwrap();
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("tab");
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project,
+            original,
+            "passive focus/blur is not an override"
+        )
+    });
+    let bounds = visual.debug_bounds(selector).unwrap();
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("100%");
+    visual.simulate_keystrokes("enter");
+    pump(&mut visual, &editor);
+    let manual = editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = view.state.as_ref().unwrap().project.clone();
+        let lane = project
+            .device(device)
+            .unwrap()
+            .automation_target(kind)
+            .unwrap();
+        assert_eq!(lane.read_selection, Read::Base);
+        assert_eq!(lane.points, points);
+        assert_eq!(
+            project.device(device).unwrap().state(),
+            original.device(device).unwrap().state(),
+            "equal base text still overrides"
+        );
+        project
+    });
+    assert!(visual.debug_bounds("reenable-device-automation").is_some());
+    let bounds = visual.debug_bounds(selector).unwrap();
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Right, Modifiers::default());
+    choose_label(&mut visual, &editor, "re-enable automation");
+    for _ in 0..2 {
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.automation_view.devices.read_pending.is_some());
+            assert_eq!(view.state.as_ref().unwrap().project, manual);
+            let target = view.automation_view.devices.extra[0].target;
+            assert_eq!(
+                view.device_automation_read_selection(target),
+                Some(Read::Authored)
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+    }
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.automation_view.devices.read_pending.is_none());
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, manual)
+    });
+    let bounds = plot(&mut visual, device, kind);
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Right, Modifiers::default());
+    choose_label(&mut visual, &editor, "re-enable automation");
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    let bounds = visual.debug_bounds("reenable-device-automation").unwrap();
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
+}
+
+#[gpui::test]
+fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canonical(
+    cx: &mut TestAppContext,
+) {
+    use hex_project::AutomationReadSelection as Read;
+    use hex_session::service::DeviceAutomationControlEdit as Edit;
+    let (mut visual, editor, owner, track, device) = window(cx, "hex.utility", Slot::Track);
+    let target = DeviceAutomationTarget::HostInputGain;
+    editor.update(&mut visual, |view, _| {
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(view.enqueue(Request::DeviceAutomation {
+            project_generation: view.project_generation,
+            revision,
+            device,
+            target,
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.5).unwrap(),
+                outgoing: AutomationInterpolation::Step
+            }]
+        }));
+    });
+    pump(&mut visual, &editor);
+    editor.update(&mut visual, |view, _| {
+        let request = view
+            .manual_device_parameter_request(
+                device,
+                hex_engine::DEVICE_INPUT_GAIN.id,
+                ParameterValue::Float(-6.0),
+            )
+            .unwrap();
+        assert!(view.enqueue(request));
+    });
+    pump(&mut visual, &editor);
+    editor.update(&mut visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let generation = view.project_generation;
+        let revision = state.revision;
+        let entry = Entry::read(&state.project, generation, owner, device, target).unwrap();
+        assert_eq!(
+            view.device_automation_read_selection(entry.target),
+            Some(Read::Base)
+        );
+        assert!(view.enqueue(Request::Edit(Command::Gain { track, gain: 0.5 })));
+        let edit = Edit::ReadSelection {
+            device,
+            target,
+            selection: Read::Authored,
+        };
+        view.automation_view.devices.read_pending = Some(super::read_selection::PendingRead {
+            generation,
+            revision,
+            edit: edit.clone(),
+            receipt: super::Receipt::new(generation),
+        });
+        assert!(view.enqueue(Request::DeviceAutomationControl {
+            project_generation: generation,
+            revision,
+            edit
+        }));
+    });
+    for _ in 0..2 {
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.automation_view.devices.read_pending.is_some());
+            cx.notify();
+        });
+        visual.run_until_parked();
+    }
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.automation_view.devices.read_pending.is_none());
+        assert!(
+            view.error
+                .as_ref()
+                .is_some_and(|error| error.contains("project changed"))
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .automation_target(target)
+                .unwrap()
+                .read_selection,
+            Read::Base
+        );
+    });
+}

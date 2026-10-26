@@ -95,14 +95,19 @@ impl ArrangementRootAssembly {
     pub(super) fn main_quote(
         &self,
         project: &hex_project::Project,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(usize, usize), AudioStorageError> {
-        self.main_custody
-            .quote(project.main_devices(), project.sample_rate())
+        self.main_custody.quote_with_input(
+            project.main_devices(),
+            project.sample_rate(),
+            native_input,
+        )
     }
     pub(super) fn reserve_main_carrier(
         &mut self,
         project: &hex_project::Project,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
         if self.scalars.is_none() || self.project.is_some() {
             return Err(AudioStorageError::Capacity);
@@ -121,11 +126,12 @@ impl ArrangementRootAssembly {
         if self.main_chain.is_none() {
             self.main_handle = crate::audio_only_inputs::handle()?;
             self.main_disposal = Disposal::Unstarted;
-            let chain = self.main_custody.prepare_with_effects(
+            let chain = self.main_custody.prepare_with_effects_and_input(
                 project.main_devices(),
                 hex_lattice::ProcessorChainOwner::Main,
                 project.sample_rate(),
                 effects,
+                native_input,
             )?;
             let (chain, declaration) = chain.into_paired_parts_on_control();
             self.main_chain = Some(chain);

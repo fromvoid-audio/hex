@@ -323,6 +323,20 @@ pub enum Command {
         parameter: hex_lattice_contract::ParameterId,
         points: Vec<crate::AutomationPoint>,
     },
+    /// One explicit manual edit selects base only for touched retained lanes.
+    /// Ordinary state/preset/comparison replacements retain their read selection.
+    ManualDeviceEdit {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        targets: Vec<hex_lattice_contract::DeviceAutomationTarget>,
+    },
+    SetDeviceAutomationReadSelection {
+        device: DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        selection: crate::AutomationReadSelection,
+    },
+    /// Resume every retained device envelope in one canonical history edit.
+    ReenableDeviceAutomation,
     ReplaceDeviceState {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
@@ -558,6 +572,13 @@ pub enum Command {
     /// Toggle track solo. Exclusive solo clears other solos only when enabling.
     ToggleSolo {
         track: TrackId,
+        exclusive: bool,
+    },
+    /// Toggle one frozen selection atomically. Mixed states enable every member;
+    /// all-soloed members disable together. Exclusive enabling clears outsiders,
+    /// while disabling preserves them. Stale membership refuses before mutation.
+    ToggleSoloTracks {
+        tracks: crate::TrackSelectionIds,
         exclusive: bool,
     },
     SetLoopRegion {
@@ -1881,6 +1902,17 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            Command::ManualDeviceEdit {
+                device,
+                state,
+                targets,
+            } => self.manual_device_edit(device, state, targets),
+            Command::SetDeviceAutomationReadSelection {
+                device,
+                target,
+                selection,
+            } => self.set_device_automation_read_selection(device, target, selection),
+            Command::ReenableDeviceAutomation => self.reenable_device_automation(),
             Command::ReplaceDeviceAutomationTarget {
                 device,
                 target,
@@ -2475,6 +2507,25 @@ impl Project {
                         }
                     }
                     self.track_mut(track)?.soloed = true;
+                }
+                Ok(Created::None)
+            }
+            Command::ToggleSoloTracks { tracks, exclusive } => {
+                let ids = tracks.ids();
+                if ids.iter().any(|id| self.track(*id).is_none()) {
+                    return Err(Invalid("solo selection no longer exists"));
+                }
+                let enable = !self
+                    .tracks
+                    .iter()
+                    .filter(|track| ids.contains(&track.id()))
+                    .all(|track| track.soloed);
+                for track in &mut self.tracks {
+                    if ids.contains(&track.id()) {
+                        track.soloed = enable;
+                    } else if enable && exclusive {
+                        track.soloed = false;
+                    }
                 }
                 Ok(Created::None)
             }

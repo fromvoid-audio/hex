@@ -991,7 +991,7 @@ impl EditorView {
             crate::diagnostics::record_view(
                 cx,
                 format!(
-                    " generation={} revision={:?} track={:?} clip={:?} scene={:?} mode={:?} viewport={:?} browser_open={} browser_query_bytes={}",
+                    " generation={} revision={:?} track={:?} clip={:?} scene={:?} mode={:?} viewport={:?} browser_open={} browser_query_bytes={} forced_time_selection={}",
                     self.project_generation,
                     self.state.as_ref().map(|s| s.revision),
                     self.selected_track.map(|id| id.value()),
@@ -1000,7 +1000,8 @@ impl EditorView {
                     self.mode,
                     self.viewport,
                     self.browser.open,
-                    query_bytes
+                    query_bytes,
+                    self.time_selection_key_held
                 ),
             );
         }
@@ -1380,6 +1381,7 @@ impl EditorView {
                 .worker_requests_pending
                 .saturating_add(self.pending_requests.len());
             visible_change |= pending_before != pending_after;
+            visible_change |= self.tick_track_meters(Instant::now());
             return self.observe_audio_frame(None, visible_change, Instant::now());
         };
         let seek_publication_inflight = self.prepared_seek.as_ref().is_some_and(|seek| {
@@ -1876,6 +1878,7 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         visible_change |= pending_before != pending_after;
         visible_change |= self.finish_audio_recovery_tick();
+        visible_change |= self.tick_track_meters(Instant::now());
         self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 
@@ -2071,6 +2074,7 @@ impl EditorView {
         let duplicate_completion = self.take_duplicate_completion(&mut event);
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
+            self.time_selection_key_held = false;
             self.pending_plugin_effect.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -2471,7 +2475,6 @@ impl EditorView {
             self.device_panel.main_selected = None;
             self.track_selection = super::selection::TrackSelection::default();
             self.selected_clip = None;
-            self.retained_clip_detail = None;
             self.selected_scene = None;
             self.selected_cell = None;
             self.session_copy_source = None;
@@ -2494,20 +2497,14 @@ impl EditorView {
                 self.device_panel.main_selected = None;
             }
             if self.device_panel.main_selected != Some(self.project_generation) {
-                // A completed time range deliberately has no primary clip. The
-                // generic stale-clip fallback must not reselect its first original
-                // after a range copy (or on a later unrelated worker response).
-                // Retained inspector context also keeps that selection empty
-                // during a range gesture and after its cancellation.
-                let time_range_owns_selection = self.selected_clip.is_none()
-                    && ((self.mode == super::EditorMode::Arrangement
-                        && self.retained_clip_detail.is_some())
-                        || (self.time_selection_gesture.is_none()
-                            && self.time_range_move_gesture.is_none()
-                            && self.edit_cursor.is_some_and(|cursor| {
-                                cursor.generation == self.project_generation
-                            })
-                            && self.normalized_time_selection().is_some()));
+                // Worker updates must not replace an active range with a clip.
+                let range_owns_selection = self.selected_clip.is_none()
+                    && self
+                        .edit_cursor
+                        .is_some_and(|cursor| cursor.generation == self.project_generation)
+                    && (self.time_selection_gesture.is_some()
+                        || self.time_range_move_gesture.is_some()
+                        || self.normalized_time_selection().is_some());
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, self.selected_clip);
                 if initialize_clip_selection
@@ -2517,7 +2514,7 @@ impl EditorView {
                     self.selected_track = Some(track);
                     self.selected_clip = clip;
                 }
-                if time_range_owns_selection {
+                if range_owns_selection {
                     self.selected_clip = None;
                 }
             }
@@ -2638,7 +2635,6 @@ impl EditorView {
             self.midi_note_gesture = None;
             self.midi_group_gesture = None;
             self.selected_track = Some(track);
-            self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
             self.reconcile_arrangement_focus();
@@ -2659,7 +2655,6 @@ impl EditorView {
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
                 self.selected_track = Some(track);
-                self.retained_clip_detail = None;
                 self.selected_clip = Some(clip);
                 self.clip_selection.only(track, clip);
                 self.piano_beat_start = hex_project::BeatTime::ZERO;
@@ -3199,6 +3194,7 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::DeviceAutomation { .. }
+                | Request::DeviceAutomationControl { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::TrackClipboard {
                     action: hex_session::service::TrackClipboardAction::Cut(_)
