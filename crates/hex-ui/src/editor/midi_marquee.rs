@@ -10,6 +10,15 @@ use super::{
 };
 use hex_project::NoteId;
 
+#[path = "midi_marquee_pointer.rs"]
+mod pointer;
+
+/// Immutable hit projections; selection, rollback and audition retain their owners.
+pub(super) enum Surface {
+    Piano(std::sync::Arc<super::midi_scene::MidiScene>),
+    Velocity(std::sync::Arc<super::midi_velocity::Scene>),
+}
+
 impl EditorView {
     pub(super) fn midi_marquee_context(&self, bounds: CanvasBounds) -> Option<MarqueeContext> {
         Some(MarqueeContext {

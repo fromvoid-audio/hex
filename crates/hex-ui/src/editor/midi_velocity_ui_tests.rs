@@ -4,7 +4,10 @@ use super::super::{
     test_environment::Environment,
 };
 use super::*;
-use gpui::{Entity, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
+use gpui::{
+    Entity, Modifiers, MouseUpEvent, ScrollDelta, ScrollWheelEvent, TestAppContext,
+    VisualTestContext,
+};
 use hex_project::{BeatTime, ClipId, Command, MidiNoteInsert};
 use hex_session::service::{Event, Request, Service};
 use std::{
@@ -920,27 +923,25 @@ fn velocity_stationary_click_outside_release_and_collapse_keep_capture_bounded(
         let toggle = visual.debug_bounds("midi-velocity-toggle").unwrap();
         visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        if !shift {
-            // Held time selection owns even repeated presses. Collapse becomes
-            // available after explicit cancellation and its trailing release.
-            editor.read_with(&visual, |v, _| {
-                assert!(v.midi_velocity.open);
+        // Both captured selection owners block a repeated press on collapse.
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_velocity.open);
+            if shift {
+                assert!(v.midi_velocity.marquee.is_some());
+            } else {
                 assert!(v.midi_velocity_time_selection_active());
-            });
-            visual.simulate_keystrokes("escape");
-            visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
-            visual.simulate_click(toggle.center(), Modifiers::default());
-            visual.run_until_parked();
-        }
+            }
+        });
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
+        visual.simulate_click(toggle.center(), Modifiers::default());
+        visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert!(!v.midi_velocity.open);
             assert!(v.midi_velocity.marquee.is_none());
             assert!(!v.midi_velocity_time_selection_active());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
-        if shift {
-            visual.simulate_mouse_up(last, MouseButton::Left, modifiers);
-        }
         let toggle = visual.debug_bounds("midi-velocity-toggle").unwrap();
         visual.simulate_click(toggle.center(), Modifiers::default());
         visual.run_until_parked();
