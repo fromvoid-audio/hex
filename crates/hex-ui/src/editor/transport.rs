@@ -30,13 +30,12 @@ impl EditorView {
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
         let field = self.project_tempo_input(cx);
-        let retained_gain_take = super::gain_recording::retained_controls(self, cx);
         let controls = div()
             .flex()
             .items_center()
             .flex_shrink_0()
             .child(field)
-            .child(retained_gain_take)
+            .child(super::gain_recording::retained_controls(self, cx))
             .child(self.control_icon(
                 "♯",
                 "project tuning · cmd+alt+t",
