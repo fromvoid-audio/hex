@@ -922,7 +922,7 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
     visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    for key in ["l"] {
+    for key in ["l", "w"] {
         visual.simulate_keystrokes(key);
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -1004,7 +1004,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
         });
         // Controlled retained-focus dispatch through actual platform keys. This is
         // not a claim that an ordinary browser row click retains editor focus.
-        for key in ["l"] {
+        for key in ["l", "w"] {
             visual.simulate_keystrokes(key);
             editor.read_with(&visual, |v, _| {
                 assert_eq!(v.worker_requests_pending, 0, "{native} / {key}");
@@ -1019,7 +1019,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
 
 #[gpui::test]
 fn loop_review_held_middle_pan_refuses_selection_loop_until_release(cx: &mut TestAppContext) {
-    for key in ["l"] {
+    for key in ["l", "w"] {
         let cx = &mut cx.new_app();
         let (handle, editor, audio, midi, _files) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1136,7 +1136,7 @@ fn loop_review_held_middle_pan_refuses_selection_loop_until_release(cx: &mut Tes
 
 #[gpui::test]
 fn loop_review_ruler_scrub_keeps_held_and_released_targets_until_refusal(cx: &mut TestAppContext) {
-    for key in ["l"] {
+    for key in ["l", "w"] {
         let cx = &mut cx.new_app();
         let (handle, editor, _, midi, _files) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
