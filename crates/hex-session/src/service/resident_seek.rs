@@ -155,7 +155,7 @@ impl Lane {
         let runtime = intent
             .section
             .map_or_else(
-                || hex_engine::SessionPlayback::linear_export_runtime_allowance(&selected.prepared),
+                || hex_engine::SessionPlayback::interactive_runtime_allowance(&selected.prepared),
                 |section| {
                     hex_engine::SessionPlayback::section_runtime_allowance(
                         &selected.prepared,
@@ -217,7 +217,7 @@ impl Lane {
                     .section
                     .map_or_else(
                         || {
-                            hex_engine::SessionPlayback::linear_export_runtime_allowance(
+                            hex_engine::SessionPlayback::interactive_runtime_allowance(
                                 &selected.prepared,
                             )
                         },

@@ -137,8 +137,17 @@ fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
         }
         assert_eq!(audible, destination < 24_000);
         control.command(PlaybackCommand::Pause).unwrap();
+        let paused = control.status.position.load(Acquire);
         block(&mut callback, &mut output);
-        assert_eq!(output, [[0.0; 2]; 127]);
+        assert_eq!(control.status.position.load(Acquire), paused);
+        // Pause releases clip gates while the same source and its effect tails
+        // remain available to live input. Stop below still resets to silence.
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert_eq!(
+            output.iter().flatten().any(|sample| sample.abs() > 1e-6),
+            destination < 24_000,
+            "active notes keep their bounded release/delay tail; an after-song start stays silent",
+        );
     }
     control.stop();
     block(&mut callback, &mut output);

@@ -104,6 +104,9 @@ fn browser_drag_fixture_with_tracks(
                 EditorView::new(window, cx, service, Err("offline ui test".into()))
             });
             editor.update(cx, |view, cx| {
+                // Fixed geometry for pointer/drop tests; the normal navigation
+                // allowance is tested by the arranger navigation regressions.
+                view.viewport = Some(super::super::viewport::Viewport::fit(384_000));
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
@@ -1967,7 +1970,7 @@ fn arrangement_overview_shows_the_project_and_click_centers_a_clamped_viewport(
         view.visible_viewport(state.timeline_frames)
     });
     assert_eq!(after.length, 96_000);
-    assert_eq!(after.end(), Some(384_000));
+    assert_eq!(after.end(), Some(672_000));
     assert!(after.start > before.start);
 }
 

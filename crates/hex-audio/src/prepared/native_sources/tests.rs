@@ -80,9 +80,21 @@ fn setup_for_identity_with_profile(
     }
     let rows =
         hex_engine::AudioCandidateReservationQuote::for_project(topology.project(), 1).unwrap();
+    let runtime_slots = 3;
+    // The public preparation quote includes the owned-runtime ceiling even for
+    // this foreign-only graph. Reserve that current ceiling per runtime cell,
+    // in addition to the fixture's existing source/compiler overlap allowance.
+    // This is caller capacity, not allocated memory or a relaxed admission rule.
+    let fixture_data_bytes = (192 * 1024 * 1024_usize)
+        .checked_add(
+            hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+                .checked_mul(runtime_slots)
+                .unwrap(),
+        )
+        .unwrap();
     control
         .configure_audio_candidate_publication(crate::AudioCandidatePublicationReservation {
-            runtime_slots: 3,
+            runtime_slots,
             archive_slots: 3,
             member_rows: rows.member_rows.checked_mul(3).unwrap(),
             transfer_rows: rows.transfer_rows.checked_mul(3).unwrap(),
@@ -91,8 +103,8 @@ fn setup_for_identity_with_profile(
             handle_rows: 4096,
             // Two original native-source peak reservations coexist with the
             // full effect-aware revision quote during rooted preparation.
-            max_retained_data_bytes: 192 * 1024 * 1024,
-            max_construction_peak_data_bytes: 192 * 1024 * 1024,
+            max_retained_data_bytes: fixture_data_bytes,
+            max_construction_peak_data_bytes: fixture_data_bytes,
         })
         .unwrap();
     control

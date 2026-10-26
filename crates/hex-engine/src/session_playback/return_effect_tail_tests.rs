@@ -530,6 +530,9 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                     .unwrap();
         } else {
             candidate_snapshot.tracks.clear();
+            for source in &mut candidate_snapshot.native_sources {
+                source.receiver = None;
+            }
             candidate_snapshot.return_tracks.clear();
         }
         let candidate_project = Project::from_snapshot(candidate_snapshot).unwrap();
@@ -1330,6 +1333,9 @@ fn full_return_tail_bank_refuses_atomically_and_retries_after_stop() {
 fn feed_capture_includes_retired_return_tail_once_without_refeeding_it() {
     let mut snapshot = prepared_return_project(true, 0.5).snapshot();
     snapshot.tracks.clear();
+    for source in &mut snapshot.native_sources {
+        source.receiver = None;
+    }
     snapshot.return_tracks[0].gain = 1.0;
     snapshot.session = hex_project::SessionSnapshot::default();
     let source_id = snapshot.return_tracks[0].id;

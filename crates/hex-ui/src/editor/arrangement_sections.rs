@@ -1,7 +1,7 @@
 //! Main-lane section display and captured, stamped user intents.
 //!
 //! Project owns section identity, validation and song-wide permutation. This
-//! module projects only marker geometry. Release transfers immutable paint to
+//! module projects marker geometry and gesture-owned feedback. Release transfers immutable paint to
 //! an ordinary FIFO receipt; Escape/blur cancel held input, never admitted work.
 //! Command before or during capture latches marker-only intent independently of
 //! Control's live snapping. Option-drag copies song content at structural edges.
@@ -64,6 +64,34 @@ impl From<&ArrangementSection> for Marker {
 struct Display {
     markers: Vec<Marker>,
     tempo: TempoMap,
+    // Owned gesture feedback, frozen with the exact released display. Ordinary
+    // hover resumes elsewhere without repainting this receipt's final fill.
+    pointer_hover: Option<BeatTime>,
+}
+impl Display {
+    fn pointer_hover_at(
+        &self,
+        viewport: Viewport,
+        [left, top, width, height]: [f32; 4],
+        (x, y): (f32, f32),
+    ) -> Option<BeatTime> {
+        let right = left + width;
+        let bottom = top + height;
+        if [left, top, width, height, right, bottom, x, y]
+            .into_iter()
+            .any(|value| !value.is_finite())
+            || width <= 0.0
+            || height <= 0.0
+            || x < left
+            || x > right
+            || y < top
+            || y > bottom
+        {
+            return None;
+        }
+        let frame = super::seek::pointer_to_frame(x, left, width, viewport)?;
+        self.tempo.frame_to_beat(frame).ok()
+    }
 }
 #[derive(Clone, Copy)]
 enum Mode {
@@ -658,6 +686,7 @@ impl EditorView {
                 .map(Marker::from)
                 .collect(),
             tempo: state.project.tempo_map().clone(),
+            pointer_hover: None,
         };
         let part = match edge {
             Some(SectionEdge::Shared(..)) => RectanglePart::Seam,
@@ -758,6 +787,7 @@ impl EditorView {
                 .map(Marker::from)
                 .collect(),
             tempo: state.project.tempo_map().clone(),
+            pointer_hover: None,
         };
         match g.mode {
             Mode::Reorder(id) => {
@@ -970,6 +1000,9 @@ impl EditorView {
                 }
             }
         }
+        g.display.pointer_hover = g
+            .display
+            .pointer_hover_at(g.viewport, g.layout, g.last_pointer);
         self.sections.gesture = Some(g);
         true
     }
@@ -1381,6 +1414,7 @@ impl EditorView {
                 .map(Marker::from)
                 .collect(),
             tempo: state.project.tempo_map().clone(),
+            pointer_hover: None,
         };
         match &command {
             Command::RenameArrangementSection { section, name } => {
@@ -1578,6 +1612,7 @@ impl EditorView {
                     .map(Marker::from)
                     .collect(),
                 tempo: state.project.tempo_map().clone(),
+                pointer_hover: None,
             };
             &canonical
         };
@@ -1625,19 +1660,24 @@ impl EditorView {
                     && m.id.is_some_and(|id| {
                         self.sections.selection.contains(&id) || self.sections.selected == Some(id)
                     }));
-            let colors = theme::section_colors(m.color, selected, false);
+            let owned_hover = display
+                .pointer_hover
+                .is_some_and(|beat| m.start <= beat && beat <= m.end);
+            let colors = theme::section_colors(m.color, selected, owned_hover);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
+            let pixel_width = self.main_track_lane_bounds.map_or(0.0, |lane| {
+                lane.width * ((end - start) as f32 / viewport.length as f32)
+            });
             let mut element = hex_widgets::rectangle_surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
-                (end - start) as f32 / viewport.length as f32, 0.0,
+                (end - start) as f32 / viewport.length as f32, pixel_width,
             )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))
                 .top_0()
                 .bottom_0()
                 .cursor(gpui::CursorStyle::Arrow)
-                .border_1()
                 .border_color(rgb(border))
                 .bg(section_fill(colors.0))
                 .text_color(rgb(colors.1))
@@ -2116,6 +2156,21 @@ mod tests {
                 bounds(&mut visual, 2),
             ];
             let selected_fill = visual.rendered_background("arrangement-section-2");
+            assert_eq!(
+                selected_fill,
+                Some(
+                    section_fill(
+                        theme::section_colors(
+                            before.arrangement_section(ids[0]).unwrap().color(),
+                            true,
+                            true,
+                        )
+                        .0
+                    )
+                    .into()
+                ),
+                "the captured copy retains its gesture-owned target feedback"
+            );
             visual.simulate_mouse_up(to, MouseButton::Left, copy);
             let terminal = editor.update(cx, |view, _| {
                 assert!(view.sections.gesture.is_none());

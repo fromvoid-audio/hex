@@ -131,6 +131,9 @@ pub(super) fn fixture_with_bounce_media(
                 }
                 assert_eq!(view.browser.directory, directory.join("samples"));
                 assert_eq!(view.browser.places, vec![directory.join("samples")]);
+                // These interaction fixtures declare their visible frame span.
+                // Default/retained navigation bounds have their own regressions.
+                view.viewport = Some(super::viewport::Viewport::fit(event.state.timeline_frames));
                 view.state = Some(event.state);
                 view.focus.focus(window);
                 cx.notify();

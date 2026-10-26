@@ -1435,14 +1435,26 @@ fn bound_synth_preserves_local_prefix_suffix_audio_mix_through_save_reopen_and_u
     let pcm = decode_wav_file(directory.path().join("audio.wav"), Limits::new(4096, 64)).unwrap();
     let mut reopened = Session::from_loaded(restored, 32, 64, vec![(asset, pcm)]).unwrap();
     assert_eq!(render(&reopened), actual);
-    let definition = reopened.project().native_source(source).unwrap().clone();
+    let mut retained_sources = reopened.project().snapshot().native_sources;
+    retained_sources
+        .iter_mut()
+        .find(|entry| entry.id == source.value())
+        .unwrap()
+        .receiver = None;
     reopened
         .command(Command::BindTrackSource {
             track,
             source: None,
         })
         .unwrap();
-    assert_eq!(reopened.project().native_source(source), Some(&definition));
+    assert_eq!(
+        reopened.project().snapshot().native_sources,
+        retained_sources
+    );
+    assert_eq!(
+        reopened.project().native_source(source).unwrap().receiver(),
+        None
+    );
     let detached = render(&reopened);
     assert_eq!(
         &detached[..8],
@@ -1451,6 +1463,10 @@ fn bound_synth_preserves_local_prefix_suffix_audio_mix_through_save_reopen_and_u
     );
     assert!(detached[8..].iter().all(|f| *f == [0.0; 2]));
     assert!(reopened.undo());
+    assert_eq!(
+        reopened.project().native_source(source).unwrap().receiver(),
+        Some(track)
+    );
     assert_eq!(render(&reopened), actual);
     assert!(reopened.redo());
     assert_eq!(render(&reopened), detached);

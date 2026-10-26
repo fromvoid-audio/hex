@@ -131,9 +131,8 @@ impl RectangleDemo {
         }
         if hit.is_none() {
             for (index, [start, end]) in self.canonical.into_iter().enumerate() {
-                // Match the displayed minimum width of tiny clips.
                 let start = left + start * width;
-                let end = (left + end * width).max(start + 3.0);
+                let end = left + end * width;
                 if let Some(part) = self.edges().hit(x, start, end) {
                     if self.kind == Kind::Clip
                         && part == RectanglePart::Body
@@ -290,7 +289,7 @@ impl Render for RectangleDemo {
             }
             let part = RectanglePart::Body;
             let selected = self.selected[index];
-            let mut rect = rectangle_surface(start, end - start, 3.0)
+            let mut rect = rectangle_surface(start, end - start, width * (end - start))
                 .id(("rectangle", index))
                 .debug_selector({
                     let id = self.id.clone();
@@ -298,7 +297,6 @@ impl Render for RectangleDemo {
                 })
                 .bg(rgb(if selected { style.accent } else { style.border }))
                 .opacity(if self.enabled { 1.0 } else { 0.4 })
-                .border_1()
                 .border_color(rgb(if self.focus.is_focused(window) {
                     style.text
                 } else {
@@ -319,18 +317,24 @@ impl Render for RectangleDemo {
                     Kind::Clip => "clip",
                     Kind::TimeRange => "time range",
                 }));
+            let pixel_width = (end - start) * width;
+            let border = hex_widgets::rectangle_border_width(pixel_width);
+            let handle = self.edges().handle_width(pixel_width);
             if self.kind == Kind::TimeRange
                 && let Some(zones) = RangeSelectionZones::new(72.0, 0.0)
             {
                 rect = rect.child(rectangle_body(-1.0, zones.handle_height()));
             }
             if self.kind == Kind::Clip {
-                rect = rect.child(rectangle_body(-1.0, 14.0));
+                rect = rect.child(
+                    rectangle_body(-border, 14.0)
+                        .left(px(handle - border))
+                        .right(px(handle - border)),
+                );
             }
-            let handle = self.edges().handle_width(((end - start) * width).max(3.0));
             if self.kind != Kind::TimeRange {
                 for part in [RectanglePart::Leading, RectanglePart::Trailing] {
-                    rect = rect.child(rectangle_edge(part, handle, -1.0));
+                    rect = rect.child(rectangle_edge(part, handle, -border));
                 }
             }
             area = area.child(rect);
@@ -696,7 +700,13 @@ mod tests {
                         assert_eq!(view.preview, view.canonical);
                     });
                 } else {
-                    assert!((f32::from(b.size.width) - 3.0).abs() < 0.01);
+                    let area = visual.debug_bounds("rectangle-narrow-area").unwrap();
+                    assert!((b.left() - (area.left() + area.size.width * 0.7)).abs() <= px(0.25));
+                    assert!((b.right() - (area.left() + area.size.width * 0.71)).abs() <= px(0.25));
+                    assert!(
+                        b.size.width < px(3.0),
+                        "tiny clip is not widened for handles"
+                    );
                     let at = point(b.left() + b.size.width * 0.5, b.top() + px(5.0));
                     visual.simulate_mouse_move(at, None, Modifiers::default());
                     visual.run_until_parked();

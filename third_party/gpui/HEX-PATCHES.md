@@ -308,3 +308,64 @@ contract changes. Deep identical-prefix click/focus and held-click repaint tests
 plus keys built in ordinary/forced-dynamic storage, exercise the retained values
 and state through the existing root-locked UI test-support graph. Source size
 alone is not navigation performance or native acceptance evidence.
+
+### Pointer drag hover state
+
+Window tracks pressed-pointer motion across the shared two-pixel drag threshold
+before mouse dispatch. This input state survives consumed move events and cached
+view replay, and ends on matching release, button loss, escape or window
+inactivation. Drag-state transitions invalidate only views with hover/tooltip paint
+dependencies whose painted/current hover can change. Their insertion ranges
+replay with cached/deferred paint; group dependencies retain clipped bounds rather
+than an external parent's transient hitbox ID. Unrelated clip scenes and ordinary
+clicks retain their caches. Div suppresses ordinary/group hover styles and tooltip eligibility
+while this state is active. Stored hover callbacks run before mouse dispatch,
+independently of propagation, and reconcile at pointer/key terminals. Focus
+changes clear drag state without synthesizing hover entry. Callbacks never
+mutate view state during paint. Already visible hoverable
+tooltips are hidden immediately, and pending tooltip builders do not run during
+the drag even when capture swallowed their cancellation event. Typed drag-over styles and
+drop handlers keep their existing hit testing and delivery. This is a bounded
+pure-Rust input/paint change in the existing dependency; there is no native API,
+unsafe Hex code, new UI framework or project/audio contract change.
+
+Window-level state is needed because ordinary Hex capture listeners can stop
+propagation without affecting GPUI's style calculation. This state does not grant
+exclusive mouse routing, own gesture cancellation or select a gesture cursor;
+consumers retain those contracts. Completed-scene regressions check consumed
+movement and repeated repaint, tooltip eligibility, release/button-loss/escape/
+deactivation recovery, and retained typed drop feedback/delivery. Native pointer
+and OS tooltip acceptance remain separate from these headless scene checks.
+
+26 October explicit pointer ownership: Window admits one pressed-button lease
+before a control mutates its gesture. Captured mouse input bypasses ordinary/raw
+listeners after the initiating press; that press retains gesture-owned ancestor
+selection. Keyboard dispatch and the existing typed drag path stay independent.
+The owner supplies its mouse handler, cancellation and cursor. Paint records only
+a live-held witness, including cached/deferred replay ranges. Missing witnesses,
+escape, button loss, deactivation and control-side window removal cancel once
+outside paint; normal matching release commits through the owner without cancel.
+Cancelled buttons retain bounded inline tombstones until their old release or
+next press, preventing trailing actions. Numeric controls use weak entity handlers
+and retain their existing typed events, drafts and owner-acknowledgement contracts.
+Selection-anchor loss preserves newer text/IME drafts. No native API/FFI or new
+unsafe code is added; actual OS interaction acceptance remains separate.
+
+Capture-start input notification also clears framework-only click/drag and active
+latches on affected Divs. It uses the existing cached/deferred observer range and
+never invokes an action or synthesizes mouse-up. The initiating press's ancestor
+selection still runs; an ancestor cannot retain that press and begin a phantom
+drag after the exclusive owner releases, including without an intervening repaint.
+
+Pointer-lease Escape sequencing: dispatch the existing keyboard path before
+retiring any remaining lease. Gesture key handlers still see held state and keep
+their cancellation/propagation guards; a handled Escape cannot accidentally reach
+the parent after premature model cancellation. The terminal still runs outside
+paint in that same input turn, and idempotent widget cancellation retains one
+typed terminal. Other loss/normal release paths and native APIs are unchanged.
+
+Owners may revoke their own lease with `cancel_pointer_capture_for` when a
+host refuses Begin after pointer admission. It checks the exact EntityId, leaves
+other owners/typed drags untouched, and runs the existing cancellation terminal
+immediately outside paint. Refusal therefore retains no input lease while its
+trailing release remains suppressed. Splitter sizing snapshots remain host-owned.

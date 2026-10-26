@@ -48,6 +48,10 @@ pub struct PreparedSamplerPlan<'a> {
 }
 
 impl<'a> PreparedSamplerPlan<'a> {
+    pub(super) const fn output_rate(self) -> u32 {
+        self.output_rate
+    }
+
     pub fn new(
         sample: SampleShape,
         output_rate: u32,

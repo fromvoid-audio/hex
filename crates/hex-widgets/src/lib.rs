@@ -122,8 +122,8 @@ mod rectangle;
 pub use range_selection::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 pub use rectangle::{
     RectangleCapture, RectangleEdges, RectangleIntent, RectanglePart, RectanglePhase,
-    RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_edge,
-    rectangle_pointer, rectangle_surface, rectangle_surface_pixels,
+    RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_border_width,
+    rectangle_edge, rectangle_pointer, rectangle_surface, rectangle_surface_pixels,
 };
 #[cfg(test)]
 mod rectangle_tests;
@@ -134,3 +134,12 @@ pub use waveform_plot::{
     WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode, WaveformGeometry, WaveformRange,
     WaveformStroke, WaveformViewport, waveform_plot,
 };
+
+#[cfg(test)]
+mod pointer_hover_tests;
+
+#[cfg(test)]
+mod pointer_capture_tests;
+
+#[cfg(test)]
+mod surface_capture_tests;

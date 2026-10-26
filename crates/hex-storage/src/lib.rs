@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 48;
+pub const CURRENT_SCHEMA_VERSION: u32 = 49;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -252,10 +252,13 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
-/// Schema47 allows retained processing projections on outer musical views and
-/// skips inaudible partial first cycles without rewriting their authored cursor;
-/// historical readers retain their prior validity contract. Schemas46/47 retain
-/// native source definitions and one binding row per track. Schema45 retains
+/// Schema47 retains its evidenced receiverless source layout while allowing
+/// retained processing projections on outer musical views and skipping inaudible
+/// partial first cycles without rewriting authored cursors. Schema48 adds Console
+/// audio cycles while retaining the receiverless singleton-source layout. Schema49
+/// adds a required nullable source receiver and shared contributor bindings;
+/// schemas46–48 infer a receiver only from their singleton binding.
+/// Schema45 retains
 /// independent sources. Schemas1–44 migrate inline instruments
 /// into retained singleton sources, preserving their device identities. Schema44
 /// retains track hierarchy.
@@ -287,7 +290,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::session_audio_loops::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::session_audio_loops::decode49(bytes),
+        48 => schema::session_audio_loops::decode48(bytes),
         47 => schema::native_sources::decode47(bytes),
         46 => schema::native_sources::decode46(bytes),
         45 => schema::native_sources::decode45(bytes),

@@ -342,8 +342,12 @@ impl SessionPlayback {
                 .arrangement()
                 .loop_region()
                 .is_some_and(|region| region.enabled() && destination_frame >= region.end());
-        let storage_preflight = arrangement_runtime_storage_preflight_bytes(&revision)
-            .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
+        let storage_preflight = if matches!(policy, PrerollRuntimePolicy::LinearExport) {
+            linear_export_runtime_storage_preflight_bytes(&revision)
+        } else {
+            arrangement_runtime_storage_preflight_bytes(&revision)
+        }
+        .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if storage_preflight > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
         }
@@ -413,7 +417,11 @@ impl SessionPlayback {
         }
         candidate.transient_loop = transient_loop;
         if !start_playing {
-            candidate.apply(SessionPlaybackCommand::Pause)?;
+            // Restore stopped transport without performing the user Pause
+            // discontinuity: preroll history must remain frozen until Play or
+            // an admitted live input releases the primed clip gates.
+            candidate.playing = false;
+            candidate.monitor_source_releases = false;
         }
         if !Arc::ptr_eq(&candidate.revision, &revision) {
             return Err(ArrangementPrerollError::CandidatePositionMismatch);
@@ -597,6 +605,22 @@ impl RuntimeStorage<'_> {
 pub(super) fn arrangement_runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
 ) -> Option<usize> {
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY)
+}
+
+pub(super) fn linear_export_runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+) -> Option<usize> {
+    runtime_storage_preflight_bytes(
+        revision,
+        SessionPlayback::release_capacity_for(revision, true),
+    )
+}
+
+fn runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+    release_capacity: usize,
+) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
     let return_buses = arrangement.return_buses();
@@ -658,7 +682,8 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
         track_count,
         std::mem::size_of::<Option<MutableInstrumentTrackRuntime>>(),
     )?;
-    for track in arrangement.tracks() {
+    let source_routing = revision.source_routing();
+    for (index, track) in arrangement.tracks().iter().enumerate() {
         let id = track.canonical_track_id()?;
         if let Some(factory) = revision.session().mutable_instrument_factory(id) {
             checked_add(
@@ -672,6 +697,14 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
                 &mut total,
                 std::mem::size_of::<MutableInstrumentTrackRuntime>(),
             )?;
+            if !revision.requires_control_sampler_sources()
+                && source_routing.receiver_index(index) == Some(index)
+            {
+                checked_add(
+                    &mut total,
+                    MutableInstrumentTrackRuntime::source_live_storage_upper_bound(),
+                )?;
+            }
         }
     }
     add_vec(
@@ -707,7 +740,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for _ in 0..2 {
         add_vec(
             &mut total,
-            SESSION_RELEASE_CAPACITY,
+            release_capacity,
             std::mem::size_of::<ReleaseEntry>(),
         )?;
     }
@@ -733,7 +766,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for _ in 0..2 {
         add_vec(
             &mut total,
-            SESSION_RELEASE_CAPACITY,
+            release_capacity,
             std::mem::size_of::<MidiOccurrenceSuppression>(),
         )?;
     }
