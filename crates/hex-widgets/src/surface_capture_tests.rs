@@ -283,17 +283,19 @@ fn surface_capture_loss_cancels_bar_intents_and_keeps_live_color(cx: &mut TestAp
     }
 }
 
-/// CPU-only manual comparison of the actual held controls, with setup, release,
-/// subscriptions, canonical owners, native graphics/audio and destruction excluded.
+/// CPU-only manual comparison of actual held controls through complete input,
+/// notification and repaint turns. Setup/release, subscriptions, canonical owners,
+/// native graphics/audio and destruction are excluded.
 #[gpui::test]
 #[ignore = "manual optimized surface input/CPU-scene profile; no native acceptance"]
 fn profile_surface_capture(cx: &mut TestAppContext) {
+    let smoke = std::env::var_os("HEX_SURFACE_PROFILE_SMOKE").is_some_and(|v| v == "1");
     assert!(
-        !cfg!(debug_assertions),
-        "run this manual profile with --release"
+        !cfg!(debug_assertions) || smoke,
+        "timing requires --release; debug smoke must be explicit"
     );
-    const WARMUP: usize = 16;
-    const SAMPLES: usize = 128;
+    let warmup = if smoke { 1 } else { 16 };
+    let samples = if smoke { 4 } else { 128 };
     for kind in 0..3 {
         let (handle, _, _) = open(cx, kind != 0);
         let mut v = VisualTestContext::from_window(*handle, cx);
@@ -306,50 +308,27 @@ fn profile_surface_capture(cx: &mut TestAppContext) {
                 _ => "surface-hue",
             })
             .unwrap();
-        let mut timings = Vec::with_capacity(SAMPLES);
-        for round in 0..WARMUP + SAMPLES {
-            let elapsed = v.update(|window, cx| {
-                window.dispatch_input(
-                    gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
-                        position: bounds.center(),
-                        button: MouseButton::Left,
-                        ..Default::default()
-                    }),
-                    cx,
-                );
-                window.draw(cx).clear();
-                let start = std::time::Instant::now();
-                let mut at = bounds.center();
-                for step in 0..8 {
-                    at = bounds.origin
-                        + point(
-                            bounds.size.width * (0.2 + ((round + step) % 7) as f32 * 0.1),
-                            bounds.size.height * 0.4,
-                        );
-                    window.dispatch_input(
-                        gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                            position: at,
-                            pressed_button: Some(MouseButton::Left),
-                            ..Default::default()
-                        }),
-                        cx,
-                    );
-                    window.draw(cx).clear();
-                }
-                let elapsed = start.elapsed().as_secs_f64() * 1_000_000.;
-                window.dispatch_input(
-                    gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                        position: at,
-                        button: MouseButton::Left,
-                        ..Default::default()
-                    }),
-                    cx,
-                );
-                window.draw(cx).clear();
-                elapsed
-            });
+        let mut timings = Vec::with_capacity(samples);
+        for round in 0..warmup + samples {
+            v.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
             v.run_until_parked();
-            if round >= WARMUP {
+            let start = std::time::Instant::now();
+            let mut at = bounds.center();
+            for step in 0..8 {
+                at = bounds.origin
+                    + point(
+                        bounds.size.width * (0.2 + ((round + step) % 7) as f32 * 0.1),
+                        bounds.size.height * 0.4,
+                    );
+                // Match native event boundaries: flush the model notification
+                // before its completed scene instead of replaying a stale cache.
+                v.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::default());
+                v.run_until_parked();
+            }
+            let elapsed = start.elapsed().as_secs_f64() * 1_000_000.;
+            v.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+            v.run_until_parked();
+            if round >= warmup {
                 timings.push(elapsed);
             }
         }
@@ -357,7 +336,7 @@ fn profile_surface_capture(cx: &mut TestAppContext) {
         let percentile = |p: usize| timings[(timings.len() - 1) * p / 100];
         let scale = v.update(|w, _| w.scale_factor());
         println!(
-            "SURFACE_PROFILE kind={kind} size=500x180 scale={scale} warmup={WARMUP} samples={SAMPLES} moves_per_sample=8 headless_cpu_only=true p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3}",
+            "SURFACE_PROFILE kind={kind} size=500x180 scale={scale} warmup={warmup} samples={samples} debug_smoke={smoke} completed_updates_per_sample=8 moves_per_sample=8 headless_cpu_only=true p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3}",
             percentile(50),
             percentile(95),
             percentile(99),
