@@ -592,3 +592,29 @@ fn selected_track_header_outline_is_complete_and_color_strip_stays_distinct(
         );
     }
 }
+
+#[gpui::test]
+fn clip_name_fill_stays_inside_clip_border(cx: &mut TestAppContext) {
+    let (project, _track, _, clip) = audio_project();
+    let (handle, _editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let parent = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let header = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(parent).unwrap();
+    let fill = visual.debug_bounds(header).unwrap();
+    let (_, mask) = visual.rendered_surface_geometry(header).unwrap();
+    let scale = visual.update(|window, _| window.scale_factor());
+    let physical = fill.scale(scale);
+    let outer = bounds.scale(scale);
+    let clip = |value: gpui::ScaledPixels| f64::from(value);
+    let visible_left = clip(physical.left()).max(clip(mask.left()));
+    let visible_right = clip(physical.right()).min(clip(mask.right()));
+    let visible_top = clip(physical.top()).max(clip(mask.top()));
+    let visible_bottom = clip(physical.bottom()).min(clip(mask.bottom()));
+    let (_, widths, _) = visual.rendered_border(parent).unwrap();
+    assert!(visible_left >= clip(outer.left()) + clip(widths.left));
+    assert!(visible_right <= clip(outer.right()) - clip(widths.right));
+    assert!(visible_top >= clip(outer.top()) + clip(widths.top));
+    assert!(visible_bottom <= clip(outer.bottom()) - clip(widths.bottom));
+}
