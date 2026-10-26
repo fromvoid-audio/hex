@@ -234,6 +234,13 @@ connected. duplication preserves outside tracks' existing midi source choices.
 track and clip/time clipboards are separate and clear when another project opens.
 
 
+press **e** in arrange to split audio and midi clips at both edges of the selected
+time range, across its selected tracks. existing cuts inside the range remain;
+boundaries in gaps or at clip edges add no pieces. the range stays selected and
+one **command+z** undoes all cuts. without a time range, **e** splits at the edit
+cursor. main section focus keeps its section-split behavior; the audio event
+editor uses its own local selection. **command+e** is not assigned.
+
 drag the bottom edge of a track header to resize that row. hold **option** while
 resizing to give all ordinary tracks the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.
@@ -589,6 +596,7 @@ the complete edit.
 | action | shortcut |
 | --- | --- |
 | reverse selected arrangement clips | `r` |
+| split time-selection edges / edit cursor | e |
 | new project | command+n |
 | open project | command+o |
 | save / save as | command+s / command+shift+s |

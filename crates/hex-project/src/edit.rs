@@ -613,6 +613,11 @@ pub enum Command {
         tracks: Vec<TrackId>,
         frame: u64,
     },
+    /// Split both boundaries of a finite Arrangement range as one edit. Existing
+    /// boundaries and gaps are no-ops; authored material and global time stay put.
+    SplitTimeRange {
+        range: crate::TimeRange,
+    },
     /// Trim an absolute timeline edge, clamping to the nearest valid clip region.
     TrimClipEdge {
         clip: ClipId,
@@ -1991,6 +1996,7 @@ impl Project {
             Command::SplitTracksAtFrame { tracks, frame } => {
                 crate::split_tracks::apply(self, &tracks, frame)
             }
+            Command::SplitTimeRange { range } => crate::split_tracks::apply_range(self, &range),
             Command::NudgeClip { clip, frames } => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = if frames < 0 {

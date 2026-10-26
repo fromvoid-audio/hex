@@ -505,6 +505,7 @@ impl Command {
             | Self::MoveTimeRange { .. }
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
+            | Self::SplitTimeRange { .. }
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupTimeRange(_)
