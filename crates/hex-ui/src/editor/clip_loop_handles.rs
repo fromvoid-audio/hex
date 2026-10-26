@@ -1,5 +1,7 @@
 //! Shared painted/captured loop zones in outer clip pixels. Musical projection
 //! comes from project queries; ordinary trim/warp/fade policies stay with owners.
+//! First-boundary handles use horizontal arrows; outer repeat handles retain
+//! the circular-arrow cursor. GPUI typed drags inherit that same handle style.
 use super::*;
 use crate::theme;
 use gpui::{CursorStyle, relative, rgb};
@@ -178,7 +180,10 @@ pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>) -> 
         .top(px(control.top - border))
         .w(px(WIDTH))
         .h(px(control.height))
-        .cursor(CursorStyle::Loop)
+        .cursor(match control.kind {
+            LoopHandleKind::FirstBoundary => CursorStyle::ResizeLeftRight,
+            LoopHandleKind::Outer => CursorStyle::Loop,
+        })
 }
 
 pub(super) fn decorate(surface: Stateful<Div>, control: Option<LoopControl>) -> Stateful<Div> {

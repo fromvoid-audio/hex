@@ -196,6 +196,7 @@ runtime storage or midi density limits, is refused while current playback contin
 hold **2** to force time selection over arrange clips, audio events, piano-roll
 notes or velocity bars, even with midi draw mode enabled. release **2** to return
 to ordinary editing. a range already being dragged continues until mouse release.
+an i-beam cursor marks the time-selection tool while **2** is held.
 text and numeric fields keep normal number entry.
 
 a time selection shows a dark dot when its musical length is a power of two,
@@ -367,11 +368,11 @@ curve.
 
 ## clip loop resizing
 
-hover the lower part of a clip's right edge to show the loop cursor, then drag
+hover the lower part of a clip's right edge to show the circular-arrow cursor, then drag
 to repeat its source. the rest of the edge keeps ordinary trimming. audio and
 midi clips use the same gesture; no loop icon is painted inside the clip. looped
-clips have rounded bottom corners. drag the first repeat boundary to change the
-cycle while keeping the outer duration; directed clips retain only the outer
+clips have rounded bottom corners. the first repeat boundary uses left/right
+arrows; drag it to change the cycle while keeping the outer duration; directed clips retain only the outer
 repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
 
 clips and sections keep their actual timeline width when zoomed out. zoom in
