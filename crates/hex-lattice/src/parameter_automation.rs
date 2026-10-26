@@ -4,8 +4,9 @@
 //! Missing content-origin clocks use base values (None), never performance beats.
 use crate::NativeInstrumentClock;
 use hex_lattice_contract::{
-    DeviceContractError as Error, ParameterAccess, ParameterAutomation, ParameterDescriptor,
-    ParameterId, ParameterKind, ParameterSemantics, ParameterStepping, ParameterValue,
+    DeviceAutomationTarget, DeviceContractError as Error, HostGain, ParameterAccess,
+    ParameterAutomation, ParameterDescriptor, ParameterId, ParameterKind, ParameterSemantics,
+    ParameterStepping, ParameterValue,
 };
 
 pub const MAX_AUTOMATION_LANES: usize = 256;
@@ -30,16 +31,24 @@ pub struct ParameterAutomationLane {
     pub semantics: ParameterSemantics,
     pub points: std::ops::Range<usize>,
 }
+/// Host gains use the same normalized point backing, with a fixed host-owned
+/// -60..24 dB, one-millidB canonical stepping law. No provider ID is forged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostAutomationLane {
+    pub target: DeviceAutomationTarget,
+    pub points: std::ops::Range<usize>,
+}
 /// Opaque, validated runtime mapping. Descriptor text is retained only for
 /// control admission; sample queries use this compiled scalar law exclusively.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedParameterAutomationLane {
-    descriptor: ParameterDescriptor,
+    descriptor: Option<ParameterDescriptor>,
     mapping: Mapping,
     points: std::ops::Range<usize>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mapping {
+    HostGain,
     Float {
         min: f64,
         max: f64,
@@ -91,8 +100,11 @@ impl Mapping {
     fn discrete(self) -> bool {
         matches!(self, Self::Bool | Self::Choice { .. })
     }
-    fn value(self, normalized: f32) -> ParameterValue {
-        match self {
+    // Provider queries never expose a host target as a ParameterValue. Host
+    // queries below decode the same borrowed normalized value through HostGain.
+    fn value(self, normalized: f32) -> Result<ParameterValue, Error> {
+        Ok(match self {
+            Self::HostGain => return Err(Error::InvalidDescriptor),
             Self::Bool => ParameterValue::Bool(normalized >= 0.5),
             Self::Choice { last } => {
                 ParameterValue::Choice((normalized * last as f32).round() as u32)
@@ -117,7 +129,7 @@ impl Mapping {
                 });
                 ParameterValue::Float(value as f32)
             }
-        }
+        })
     }
 }
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -125,13 +137,26 @@ pub struct PreparedParameterAutomation {
     ids: Vec<ParameterId>,
     lanes: Vec<PreparedParameterAutomationLane>,
     points: Vec<ParameterAutomationPoint>,
+    host_input: Option<usize>,
+    host_output: Option<usize>,
 }
 impl PreparedParameterAutomation {
     pub fn new(
         lanes: Vec<ParameterAutomationLane>,
         points: Vec<ParameterAutomationPoint>,
     ) -> Result<Self, Error> {
-        if lanes.len() > MAX_AUTOMATION_LANES || points.len() > MAX_AUTOMATION_POINTS {
+        Self::new_with_host(lanes, Vec::new(), points)
+    }
+    pub fn new_with_host(
+        lanes: Vec<ParameterAutomationLane>,
+        host: Vec<HostAutomationLane>,
+        points: Vec<ParameterAutomationPoint>,
+    ) -> Result<Self, Error> {
+        let count = lanes
+            .len()
+            .checked_add(host.len())
+            .ok_or(Error::RuntimeBudgetExceeded)?;
+        if count > MAX_AUTOMATION_LANES || points.len() > MAX_AUTOMATION_POINTS {
             return Err(Error::RuntimeBudgetExceeded);
         }
         let mut ids = Vec::new();
@@ -139,7 +164,7 @@ impl PreparedParameterAutomation {
             .map_err(|_| Error::RuntimeAllocation)?;
         let mut prepared = Vec::new();
         prepared
-            .try_reserve_exact(lanes.len())
+            .try_reserve_exact(count)
             .map_err(|_| Error::RuntimeAllocation)?;
         let mut end = 0;
         for lane in &lanes {
@@ -171,11 +196,47 @@ impl PreparedParameterAutomation {
             }
             ids.push(lane.descriptor.id);
             prepared.push(PreparedParameterAutomationLane {
-                descriptor: lane.descriptor,
+                descriptor: Some(lane.descriptor),
                 mapping: Mapping::prepare(lane.descriptor, lane.semantics)?,
                 points: lane.points.clone(),
             });
             end = lane.points.end;
+        }
+        let mut host_input = None;
+        let mut host_output = None;
+        let mut previous = None;
+        for lane in host {
+            if !lane.target.is_host()
+                || previous.is_some_and(|target| target >= lane.target)
+                || lane.points.start != end
+                || lane.points.is_empty()
+                || lane.points.len() > MAX_AUTOMATION_POINTS_PER_LANE
+            {
+                return Err(Error::InvalidDescriptor);
+            }
+            let values = points
+                .get(lane.points.clone())
+                .ok_or(Error::InvalidDescriptor)?;
+            if values.iter().any(|point| {
+                !point.normalized.is_finite() || !(0.0..=1.0).contains(&point.normalized)
+            }) || values
+                .windows(2)
+                .any(|pair| pair[0].beat_raw >= pair[1].beat_raw)
+            {
+                return Err(Error::InvalidParameterValue);
+            }
+            previous = Some(lane.target);
+            match lane.target {
+                DeviceAutomationTarget::HostInputGain => host_input = Some(prepared.len()),
+                DeviceAutomationTarget::HostOutputGain => host_output = Some(prepared.len()),
+                DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+            }
+            end = lane.points.end;
+            prepared.push(PreparedParameterAutomationLane {
+                descriptor: None,
+                mapping: Mapping::HostGain,
+                points: lane.points,
+            });
         }
         if end != points.len() {
             return Err(Error::InvalidDescriptor);
@@ -184,17 +245,29 @@ impl PreparedParameterAutomation {
             ids,
             lanes: prepared,
             points,
+            host_input,
+            host_output,
         })
     }
     pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+        self.lanes.is_empty()
+    }
+    pub fn has_host_target(&self, target: DeviceAutomationTarget) -> bool {
+        match target {
+            DeviceAutomationTarget::HostInputGain => self.host_input.is_some(),
+            DeviceAutomationTarget::HostOutputGain => self.host_output.is_some(),
+            DeviceAutomationTarget::Parameter(_) => false,
+        }
+    }
+    pub fn has_host_targets(&self) -> bool {
+        self.host_input.is_some() || self.host_output.is_some()
     }
     pub fn parameter_ids(&self) -> &[ParameterId] {
         &self.ids
     }
     pub fn descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
         let index = self.ids.binary_search(&id).ok()?;
-        self.lanes.get(index).map(|lane| lane.descriptor)
+        self.lanes.get(index).and_then(|lane| lane.descriptor)
     }
     /// Actual owned flat-vector observations for the existing control ledger.
     pub fn storage_vectors(
@@ -222,10 +295,19 @@ impl PreparedParameterAutomation {
             )
     }
     pub fn quoted_storage_bytes(lanes: usize, points: usize) -> Option<usize> {
-        lanes
-            .checked_mul(
-                std::mem::size_of::<ParameterId>()
-                    .checked_add(std::mem::size_of::<PreparedParameterAutomationLane>())?,
+        Self::quoted_storage_bytes_with_host(lanes, 0, points)
+    }
+    pub fn quoted_storage_bytes_with_host(
+        provider: usize,
+        host: usize,
+        points: usize,
+    ) -> Option<usize> {
+        provider
+            .checked_mul(std::mem::size_of::<ParameterId>())?
+            .checked_add(
+                provider
+                    .checked_add(host)?
+                    .checked_mul(std::mem::size_of::<PreparedParameterAutomationLane>())?,
             )?
             .checked_add(points.checked_mul(std::mem::size_of::<ParameterAutomationPoint>())?)
     }
@@ -251,15 +333,33 @@ pub struct ParameterAutomationBlock<'a> {
     clock: Option<&'a dyn NativeInstrumentClock>,
     frames: usize,
 }
-impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
-    fn parameter_ids(&self) -> &[ParameterId] {
-        self.program.parameter_ids()
+impl ParameterAutomationBlock<'_> {
+    /// Effective host trim in linear amplitude units. Missing clock falls back
+    /// to immutable base at the chain owner; no provider receives host targets.
+    /// Authored normalized values have already passed new_with_host validation;
+    /// this uses the same integer millidB decode and linear law as canonical state.
+    pub fn host_gain_at(&self, target: DeviceAutomationTarget, offset: usize) -> Option<f32> {
+        let index = match target {
+            DeviceAutomationTarget::HostInputGain => self.program.host_input?,
+            DeviceAutomationTarget::HostOutputGain => self.program.host_output?,
+            DeviceAutomationTarget::Parameter(_) => return None,
+        };
+        HostGain::from_normalized(self.normalized_at_index(index, offset)?)
+            .ok()
+            .map(HostGain::linear)
     }
-    fn value_at(&self, parameter: ParameterId, offset: usize) -> Option<ParameterValue> {
+    fn value_at_index(&self, index: usize, offset: usize) -> Option<ParameterValue> {
+        self.program
+            .lanes
+            .get(index)?
+            .mapping
+            .value(self.normalized_at_index(index, offset)?)
+            .ok()
+    }
+    fn normalized_at_index(&self, index: usize, offset: usize) -> Option<f32> {
         if offset >= self.frames {
             return None;
         }
-        let index = self.program.ids.binary_search(&parameter).ok()?;
         let beat = self.clock?.arrangement_beat_at_offset(offset)?;
         let lane = self.program.lanes.get(index)?;
         let points = self.program.points.get(lane.points.clone())?;
@@ -280,7 +380,16 @@ impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
                 _ => left.normalized,
             }
         };
-        Some(lane.mapping.value(normalized))
+        Some(normalized)
+    }
+}
+impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
+    fn parameter_ids(&self) -> &[ParameterId] {
+        self.program.parameter_ids()
+    }
+    fn value_at(&self, parameter: ParameterId, offset: usize) -> Option<ParameterValue> {
+        let index = self.program.ids.binary_search(&parameter).ok()?;
+        self.value_at_index(index, offset)
     }
 }
 

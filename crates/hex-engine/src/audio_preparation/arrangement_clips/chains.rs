@@ -66,7 +66,11 @@ impl ChainCustody {
                 let migrated = hex_devices::utility::UTILITY_DEFINITION
                     .migrate_state(state)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-                let processor = if device.automation().is_empty() {
+                let processor = if !device
+                    .automation()
+                    .iter()
+                    .any(|lane| lane.target.provider_parameter().is_some())
+                {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?
                         .is_some()
@@ -292,7 +296,11 @@ impl ChainCustody {
                     _ => return Err(AudioStorageError::UnsupportedGraph),
                 }
             };
-            let matrix = if device.bypassed() || !native || !automation.is_empty() || saturator {
+            let matrix = if device.bypassed()
+                || !native
+                || !automation.parameter_ids().is_empty()
+                || saturator
+            {
                 StereoMatrix::identity()
             } else if reverb {
                 hex_devices::reverb::REVERB_DEFINITION
@@ -327,7 +335,7 @@ impl ChainCustody {
                     .into_processor_parts_on_control(),
                 )
             } else if utility {
-                (if automation.is_empty() {
+                (if automation.parameter_ids().is_empty() {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                 } else {
                     hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter_for_parameters(
@@ -630,11 +638,13 @@ mod tests {
                     .push(hex_project::DeviceSnapshot {
                         automation: if automated {
                             vec![hex_project::DeviceAutomation {
-                                parameter: if saturator {
-                                    hex_devices::saturator::parameter::DRIVE
-                                } else {
-                                    hex_devices::utility::parameter::GAIN
-                                },
+                                target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
+                                    if saturator {
+                                        hex_devices::saturator::parameter::DRIVE
+                                    } else {
+                                        hex_devices::utility::parameter::GAIN
+                                    },
+                                ),
                                 points: vec![
                                     hex_project::AutomationPoint {
                                         beat: hex_project::BeatTime::ZERO,
@@ -666,6 +676,29 @@ mod tests {
                         bypassed: false,
                         state,
                     });
+                if automated {
+                    let device = snapshot.tracks[0].devices.last_mut().unwrap();
+                    for target in [
+                        hex_lattice_contract::DeviceAutomationTarget::HostInputGain,
+                        hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
+                    ] {
+                        device.automation.push(hex_project::DeviceAutomation {
+                            target,
+                            points: vec![
+                                hex_project::AutomationPoint {
+                                    beat: hex_project::BeatTime::ZERO,
+                                    value: hex_project::AutomationValue::new(0.65).unwrap(),
+                                    outgoing: hex_project::AutomationInterpolation::Linear,
+                                },
+                                hex_project::AutomationPoint {
+                                    beat: hex_project::BeatTime::from_raw(1 << 26),
+                                    value: hex_project::AutomationValue::new(0.75).unwrap(),
+                                    outgoing: hex_project::AutomationInterpolation::Step,
+                                },
+                            ],
+                        });
+                    }
+                }
                 snapshot.next_id += 1;
                 let project = hex_project::Project::from_snapshot(snapshot).unwrap();
                 let mut media = std::collections::BTreeMap::new();

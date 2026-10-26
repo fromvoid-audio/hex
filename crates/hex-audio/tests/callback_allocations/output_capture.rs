@@ -319,6 +319,29 @@ fn run_automated_native_allocation_probe(saturator: bool) -> Result<(), Box<dyn 
             })?;
         }
     }
+    for device in devices {
+        for target in [
+            hex_project::DeviceAutomationTarget::HostInputGain,
+            hex_project::DeviceAutomationTarget::HostOutputGain,
+        ] {
+            editor.execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: vec![
+                    AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(0.65)?,
+                        outgoing: AutomationInterpolation::Linear,
+                    },
+                    AutomationPoint {
+                        beat: BeatTime::from_raw(1 << 26),
+                        value: AutomationValue::new(0.75)?,
+                        outgoing: AutomationInterpolation::Step,
+                    },
+                ],
+            })?;
+        }
+    }
     let revision = prepare(editor.project())?;
     let mut runtime = SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision))?;
     runtime.apply(SessionPlaybackCommand::Play)?;

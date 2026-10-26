@@ -157,7 +157,7 @@ pub(in crate::editor) fn rows(
                             gpui::SharedString::from(format!(
                                 "automation-options-{}-{}",
                                 target.device.value(),
-                                target.parameter.value()
+                                target.key()
                             )),
                         )
                         .on_mouse_down(
@@ -175,7 +175,7 @@ pub(in crate::editor) fn rows(
                             gpui::SharedString::from(format!(
                                 "automation-hide-{}-{}",
                                 target.device.value(),
-                                target.parameter.value()
+                                target.key()
                             )),
                         )
                         .on_click(cx.listener(
@@ -193,11 +193,7 @@ pub(in crate::editor) fn rows(
                 .h(px(LANE_HEIGHT))
                 .flex()
                 .debug_selector(move || {
-                    format!(
-                        "automation-lane-{}-{}",
-                        target.device.value(),
-                        target.parameter.value()
-                    )
+                    format!("automation-lane-{}-{}", target.device.value(), target.key())
                 })
                 .border_t_1()
                 .border_color(rgb(theme::color(theme::PaletteRole::Border)))
@@ -250,13 +246,13 @@ fn plot(
         .id(gpui::SharedString::from(format!(
             "automation-plot-{}-{}-{main}",
             target.device.value(),
-            target.parameter.value()
+            target.key()
         )))
         .debug_selector(move || {
             format!(
                 "automation-plot-{}-{}-{main}",
                 target.device.value(),
-                target.parameter.value()
+                target.key()
             )
         })
         .relative()
@@ -314,11 +310,7 @@ fn plot(
                         for value in &points {
                             if let Some(position) = xy(value.beat, value.value.get()) {
                                 if let Some((old, shape)) = previous {
-                                    if shape == AutomationInterpolation::Step
-                                        || matches!(
-                                            entry.descriptor.kind,
-                                            ParameterKind::Bool | ParameterKind::Choice { .. }
-                                        )
+                                    if shape == AutomationInterpolation::Step || entry.is_discrete()
                                     {
                                         path.line_to(point(position.x, old));
                                     }
@@ -438,7 +430,7 @@ impl EditorView {
                 .automation_view
                 .devices
                 .entry(target)
-                .is_some_and(|entry| matches!(entry.descriptor.kind, ParameterKind::Float { .. }))
+                .is_some_and(|entry| !entry.is_discrete())
         {
             actions.push((
                 "linear segment",

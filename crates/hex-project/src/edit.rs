@@ -312,6 +312,12 @@ pub enum Command {
         before: Option<DeviceId>,
     },
     /// Replace one canonical Arrangement envelope; empty points clear it.
+    ReplaceDeviceAutomationTarget {
+        device: DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        points: Vec<crate::AutomationPoint>,
+    },
+    /// Provider-parameter convenience; host trims use the typed target command.
     ReplaceDeviceAutomation {
         device: DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -1875,6 +1881,11 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points,
+            } => self.replace_device_automation_target(device, target, points),
             Command::ReplaceDeviceAutomation {
                 device,
                 parameter,

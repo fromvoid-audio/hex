@@ -264,3 +264,183 @@ fn both_actual_runtime_twins_must_confirm_factory_parameter_support() {
         Err(DeviceContractError::UnsupportedProcessingClass)
     ));
 }
+
+fn host_program() -> PreparedParameterAutomation {
+    PreparedParameterAutomation::new_with_host(
+        Vec::new(),
+        vec![
+            HostAutomationLane {
+                target: DeviceAutomationTarget::HostInputGain,
+                points: 0..2,
+            },
+            HostAutomationLane {
+                target: DeviceAutomationTarget::HostOutputGain,
+                points: 2..3,
+            },
+        ],
+        vec![
+            ParameterAutomationPoint {
+                beat_raw: 10,
+                normalized: 0.0,
+                step: false,
+            },
+            ParameterAutomationPoint {
+                beat_raw: 20,
+                normalized: 1.0,
+                step: true,
+            },
+            ParameterAutomationPoint {
+                beat_raw: 0,
+                normalized: 0.5,
+                step: true,
+            },
+        ],
+    )
+    .unwrap()
+}
+#[test]
+fn host_lanes_are_not_provider_ids_and_use_content_clock_and_exact_physical_storage() {
+    let program = host_program();
+    assert!(!program.is_empty());
+    assert!(program.parameter_ids().is_empty());
+    let block = program.block(Some(&Clock), 32);
+    for (offset, db) in [(0, -60.0), (10, -60.0), (15, -18.0), (20, 24.0), (31, 24.0)] {
+        assert_eq!(
+            block.host_gain_at(DeviceAutomationTarget::HostInputGain, offset),
+            Some(10.0_f32.powf(db / 20.0))
+        );
+    }
+    assert_eq!(
+        block.host_gain_at(DeviceAutomationTarget::HostOutputGain, 15),
+        Some(10.0_f32.powf(-18.0 / 20.0))
+    );
+    assert_eq!(
+        block.host_gain_at(DeviceAutomationTarget::HostInputGain, 32),
+        None
+    );
+    assert_eq!(
+        program
+            .block(None, 32)
+            .host_gain_at(DeviceAutomationTarget::HostInputGain, 15),
+        None
+    );
+    assert_eq!(
+        program.storage_bytes(),
+        PreparedParameterAutomation::quoted_storage_bytes_with_host(0, 2, 3)
+    );
+    assert!(
+        PreparedParameterAutomation::new_with_host(
+            Vec::new(),
+            vec![HostAutomationLane {
+                target: DeviceAutomationTarget::Parameter(ParameterId::from_static(1)),
+                points: 0..1
+            }],
+            vec![ParameterAutomationPoint {
+                beat_raw: 0,
+                normalized: 0.5,
+                step: false
+            }]
+        )
+        .is_err()
+    );
+}
+fn host_chain(bypassed: bool) -> crate::NativeRuntimeChain {
+    use crate::*;
+    NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        automation: host_program(),
+        meter: Default::default(),
+        owner: ProcessorChainOwner::Track(1),
+        device_id: 1,
+        device_type: DeviceTypeId::from_static("test.host"),
+        matrix: StereoMatrix::new([[2.0, 0.0], [0.0, 2.0]]).unwrap(),
+        bypassed,
+        sample_rate: 48_000,
+        configuration: Some(std::sync::Arc::new(
+            NativeDeviceState::new(DeviceTypeId::from_static("test.host"), 1, vec![])
+                .unwrap()
+                .with_input_gain_db(-6.0)
+                .unwrap()
+                .with_output_gain_db(3.0)
+                .unwrap(),
+        )),
+        definition: None,
+    }])
+    .unwrap()
+}
+#[test]
+fn memoryless_host_chain_runs_without_provider_optin_and_freezes_only_committed_trim() {
+    let mut chain = host_chain(false);
+    assert!(chain.has_stateful_processors());
+    chain.begin_block();
+    let mut frame = [[1.0, 0.5]; 1];
+    chain
+        .process_range_with_clock(0..1, &mut frame, Some(&Clock))
+        .unwrap();
+    chain.commit_block();
+    let committed = frame[0];
+    chain.begin_block();
+    let mut speculative = [[1.0, 0.5]; 32];
+    chain
+        .process_range_with_clock(0..1, &mut speculative, Some(&Clock))
+        .unwrap();
+    chain.rollback_block();
+    chain.begin_output_tail();
+    chain.begin_block();
+    let mut tail = [[1.0, 0.5]; 32];
+    chain
+        .process_range_with_clock(0..1, &mut tail, Some(&Clock))
+        .unwrap();
+    assert!(tail.iter().all(|f| *f == committed));
+    let mut absent = host_chain(false);
+    absent.begin_block();
+    let mut dry = [[1.0, 0.5]];
+    absent.process_block(&mut dry).unwrap();
+    assert_eq!(
+        dry[0][0],
+        2.0 * 10.0_f32.powf(-6.0 / 20.0) * 10.0_f32.powf(3.0 / 20.0)
+    );
+    let mut bypass = host_chain(true);
+    bypass.begin_block();
+    let mut dry = [[1.0, 0.5]; 32];
+    bypass
+        .process_range_with_clock(0..1, &mut dry, Some(&Clock))
+        .unwrap();
+    assert_eq!(dry, [[1.0, 0.5]; 32]);
+}
+
+#[test]
+fn host_gain_uses_exact_integer_law_and_rejects_malformed_prepared_points() {
+    let target = DeviceAutomationTarget::HostInputGain;
+    let make = |normalized| {
+        PreparedParameterAutomation::new_with_host(
+            Vec::new(),
+            vec![HostAutomationLane {
+                target,
+                points: 0..1,
+            }],
+            vec![ParameterAutomationPoint {
+                beat_raw: 0,
+                normalized,
+                step: false,
+            }],
+        )
+    };
+    for millidb in [-60_000, -6_000, 0, 3_000, 24_000] {
+        let gain = HostGain::from_millidb(millidb).unwrap();
+        let program = make(gain.normalized()).unwrap();
+        assert_eq!(
+            program.block(Some(&Clock), 1).host_gain_at(target, 0),
+            Some(gain.linear())
+        );
+    }
+    assert_eq!(
+        make(HostGain::ZERO.normalized())
+            .unwrap()
+            .block(Some(&Clock), 1)
+            .host_gain_at(target, 0),
+        Some(1.0)
+    );
+    for value in [f32::NAN, f32::INFINITY, -0.001, 1.001] {
+        assert!(make(value).is_err());
+    }
+}

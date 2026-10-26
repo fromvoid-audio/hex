@@ -5,6 +5,7 @@
 //! replacement removes an authored envelope: lane visibility and dashed previews
 //! are transient UI state, and never override the device's base parameter value.
 use crate::{BeatTime, Created, Device, DeviceId, Invalid, Project};
+pub use hex_lattice_contract::DeviceAutomationTarget;
 use hex_lattice_contract::ParameterId;
 
 pub const MAX_DEVICE_AUTOMATION_LANES: usize = 256;
@@ -39,7 +40,7 @@ pub struct AutomationPoint {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceAutomation {
-    pub parameter: ParameterId,
+    pub target: DeviceAutomationTarget,
     pub points: Vec<AutomationPoint>,
 }
 impl DeviceAutomation {
@@ -79,14 +80,15 @@ pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Inva
     }
     let mut previous = None;
     for lane in lanes {
-        ParameterId::new(lane.parameter.value())
+        lane.target
+            .validate()
             .map_err(|_| Invalid("invalid automation parameter identity"))?;
-        if previous.is_some_and(|id| id >= lane.parameter) {
+        if previous.is_some_and(|target| target >= lane.target) {
             return Err(Invalid(
                 "device automation parameters must strictly increase",
             ));
         }
-        previous = Some(lane.parameter);
+        previous = Some(lane.target);
         validate_points(&lane.points)?;
     }
     Ok(())
@@ -105,7 +107,12 @@ impl Device {
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
     ) -> Result<(), Invalid> {
-        if !self.automation.is_empty() && self.state.type_id() != state.type_id() {
+        if self
+            .automation
+            .iter()
+            .any(|lane| matches!(lane.target, DeviceAutomationTarget::Parameter(_)))
+            && self.state.type_id() != state.type_id()
+        {
             return Err(Invalid(
                 "clear automation before replacing a device provider",
             ));
@@ -116,8 +123,11 @@ impl Device {
         &self.automation
     }
     pub fn automation_lane(&self, parameter: ParameterId) -> Option<&DeviceAutomation> {
+        self.automation_target(DeviceAutomationTarget::Parameter(parameter))
+    }
+    pub fn automation_target(&self, target: DeviceAutomationTarget) -> Option<&DeviceAutomation> {
         self.automation
-            .binary_search_by_key(&parameter, |lane| lane.parameter)
+            .binary_search_by_key(&target, |lane| lane.target)
             .ok()
             .map(|index| &self.automation[index])
     }
@@ -162,15 +172,28 @@ impl Project {
         parameter: ParameterId,
         points: Vec<AutomationPoint>,
     ) -> Result<Created, Invalid> {
-        ParameterId::new(parameter.value())
-            .map_err(|_| Invalid("invalid automation parameter identity"))?;
+        self.replace_device_automation_target(
+            device,
+            DeviceAutomationTarget::Parameter(parameter),
+            points,
+        )
+    }
+    pub(crate) fn replace_device_automation_target(
+        &mut self,
+        device: DeviceId,
+        target: DeviceAutomationTarget,
+        points: Vec<AutomationPoint>,
+    ) -> Result<Created, Invalid> {
+        target
+            .validate()
+            .map_err(|_| Invalid("invalid automation target identity"))?;
         if !points.is_empty() {
             validate_points(&points)?;
         }
         self.edit_device(device, move |device| {
             match device
                 .automation
-                .binary_search_by_key(&parameter, |lane| lane.parameter)
+                .binary_search_by_key(&target, |lane| lane.target)
             {
                 Ok(index) if points.is_empty() => {
                     device.automation.remove(index);
@@ -182,7 +205,7 @@ impl Project {
                     }
                     device
                         .automation
-                        .insert(index, DeviceAutomation { parameter, points });
+                        .insert(index, DeviceAutomation { target, points });
                 }
                 Err(_) => {}
             }
