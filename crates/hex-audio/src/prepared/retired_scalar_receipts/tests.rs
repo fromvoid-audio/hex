@@ -46,7 +46,7 @@ fn native_finished_or_late_cancellation_survives_both_guard_release_orders_once(
         client
             .native_parameter_begin(
                 target,
-                crate::device::native_parameter_input_tests::value(-6.0),
+                crate::device::native_parameter_input_tests::value(0.5),
             )
             .unwrap();
         let mut output = [[0.0; 2]; 16];
@@ -135,7 +135,7 @@ fn missing_actual_terminal_is_interrupted_and_failure_publication_is_once_only()
     client
         .native_parameter_begin(
             target,
-            crate::device::native_parameter_input_tests::value(-6.0),
+            crate::device::native_parameter_input_tests::value(0.5),
         )
         .unwrap();
     let mut token = client.close_retaining_native_parameter_receipts().unwrap();
