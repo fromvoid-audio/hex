@@ -113,6 +113,13 @@ class LocalCiRunnerTests(unittest.TestCase):
             "MAKE_TARGET": "0",
         }
         self.target_state_dir = self.base / "target-ownership"
+        # Storage probing has its own real-command/metadata tests. Keep cache,
+        # ownership and pipeline fixtures independent of the host filesystem.
+        storage = patch.object(local_ci.ci_target_storage, "inspect", return_value={
+            "platform": "darwin", "status": "identified", "filesystem_type": "apfs"})
+        storage.start()
+        self.addCleanup(storage.stop)
+
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -1221,6 +1228,68 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         calls = self.call_log.read_text()[len(calls_before_handoff):]
         self.assertIn("cargo clean", calls)
         self.assertNotIn("cargo build", calls)
+
+    def test_exfat_refusal_preserves_owned_target_and_skips_cleanup_and_build(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        self.assertEqual(self.runner("storage-owner").run(), 0)
+        sentinel = target / "preserve.me"
+        sentinel.write_bytes(b"accepted artifacts")
+        owner = next(self.target_state_dir.glob("*.owner.json"))
+        before = owner.read_bytes()
+        calls = self.call_log.read_text()
+        runner = self.runner("exfat", adopt_target=True)
+        with patch.object(local_ci.ci_target_storage, "inspect", return_value={
+                "platform": "darwin", "status": "identified", "filesystem_type": "exfat"}):
+            self.assertEqual(runner.run(), 1)
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "ExFAT.*unsupported"):
+                self.release_attempt("exfat-release", adopt=True)
+        self.assertIsNone(runner.target_lock)
+        self.assertFalse(runner.target_owner_claimed)
+        self.assertEqual(owner.read_bytes(), before)
+        self.assertEqual(sentinel.read_bytes(), b"accepted artifacts")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
+        new_calls = self.call_log.read_text()[len(calls):]
+        self.assertNotIn("cargo clean", new_calls)
+        self.assertNotIn("cargo build", new_calls)
+        report = self.summary("exfat")
+        self.assertEqual(report["target_filesystem"]["filesystem_type"], "exfat")
+        self.assertIn("fresh APFS", report["target_cache_error"])
+        self.assertEqual(report["steps"][0]["status"], "not_run")
+        # Refusal released the same cooperative lock; ordinary APFS use resumes.
+        self.assertEqual(self.runner("storage-retry").run(), 0)
+
+    def test_unidentified_macos_storage_refuses_before_owner_claim(self):
+        runner = self.runner("storage-unknown")
+        with patch.object(local_ci.ci_target_storage, "inspect", side_effect=ValueError("probe timed out")):
+            self.assertEqual(runner.run(), 1)
+        self.assertFalse(list(self.target_state_dir.glob("*.owner.json")))
+        self.assertIsNone(runner.target_lock)
+        self.assertIn("before cleanup", self.summary("storage-unknown")["target_cache_error"])
+        self.assertNotIn("cargo build", self.call_log.read_text())
+
+    def test_cleanup_refusal_after_passing_format_reports_actual_phase(self):
+        self.assertEqual(self.runner("phase-owner").run(), 0)
+        owner = next(self.target_state_dir.glob("*.owner.json"))
+        before = owner.read_bytes()
+        runner = self.runner("phase-failure", env={**self.env, "FAIL_MATCH": "clean"},
+                             adopt_target=True,
+                             steps=(local_ci.Step("format", ("first",)),
+                                    local_ci.Step("build", ("cargo", "build"))))
+        # Force the ordinary supported cleanup path, retaining a valid owner.
+        with patch.object(runner, "_provenance_cleanup", return_value=["fixture 0.1.0"]):
+            console = io.StringIO()
+            with redirect_stdout(console):
+                self.assertEqual(runner.run(), 1)
+        summary = self.summary("phase-failure")
+        self.assertEqual([s["status"] for s in summary["steps"]], ["passed", "not_run"])
+        self.assertEqual(owner.read_bytes(), before)
+        self.assertGreaterEqual(summary["target_cache"]["cleanup_duration_seconds"], 0)
+        output = console.getvalue()
+        self.assertIn("step: cargo-target-preparation", output)
+        self.assertNotIn("step: format", output)
+        self.assertIn("target-handoff-clean.log", output)
+        self.assertIn("workspace dev-artifact cleanup failed", output)
 
     def test_target_lock_contention_refuses_before_cargo_build(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
