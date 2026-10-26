@@ -666,6 +666,7 @@ pub(in crate::editor) fn view(
                     "drag ruler for time · drag event to move · cmd for free",
                 )),
         );
+    let body = body.children(view.time_selection_cursor_layer());
     let root = div()
         .id("audio-event-editor")
         .debug_selector(|| "audio-event-editor".into())
@@ -678,7 +679,7 @@ pub(in crate::editor) fn view(
         .flex_col()
         .child(toolbar)
         .children(view.audio_loop_ruler(cx))
-        .child(body.children(view.time_selection_cursor_layer()))
+        .child(body)
         .on_action(cx.trace(|view, _: &super::super::ToggleSnapGrid, _, cx| {
             view.audio_event_editor.grid = if view.audio_event_editor.grid == SnapGrid::Off {
                 SnapGrid::Adaptive
