@@ -3,6 +3,131 @@ use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext
 use hex_project::{AudioEventEdit, Command};
 
 #[gpui::test]
+fn play_start_marker_follows_clip_phase_and_viewport_without_editing(cx: &mut TestAppContext) {
+    use crate::theme;
+    struct Restore(hex_preferences::ThemePreferences);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            theme::apply_preferences(self.0);
+        }
+    }
+    let _restore = Restore(theme::preferences());
+
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let marker = visual
+        .debug_bounds("audio-play-start-marker")
+        .expect("plain audio play start");
+    assert!((marker.left() - body.left()).abs() < px(1.0));
+    editor.update(&mut visual, |v, cx| {
+        let prior = v.state.as_ref().unwrap();
+        let mut model = hex_project::Editor::new(prior.project.as_ref().clone(), 8).unwrap();
+        model
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: 24_000,
+                    end: 48_000,
+                    looping: true,
+                },
+            })
+            .unwrap();
+        model
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Left,
+                frame: 6_000,
+            })
+            .unwrap();
+        v.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
+            project: std::sync::Arc::new(model.project().clone()),
+            canonical_audio_source: prior.canonical_audio_source.clone(),
+            comparison_audio: prior.comparison_audio.clone(),
+            waveforms: prior.waveforms.clone(),
+            source_overviews: prior.source_overviews.clone(),
+            audio_clip_waveforms: prior.audio_clip_waveforms.clone(),
+            midi_preview: prior.midi_preview.clone(),
+            gain_preview: prior.gain_preview.clone(),
+            timeline_frames: prior.timeline_frames,
+            can_undo: prior.can_undo,
+            can_redo: prior.can_redo,
+            revision: prior.revision + 1,
+            unsaved: prior.unsaved,
+            document_path: prior.document_path.clone(),
+        }));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let original = editor.read_with(&visual, |v, _| {
+        (v.state.as_ref().unwrap().project.clone(), v.selected_clip)
+    });
+    for (index, (viewport, expected)) in [
+        (None, Some(30_000.0 / 96_000.0)),
+        (
+            Some(Viewport {
+                start: 24_000,
+                length: 24_000,
+            }),
+            Some(0.25),
+        ),
+        (
+            Some(Viewport {
+                start: 48_000,
+                length: 24_000,
+            }),
+            None,
+        ),
+        (None, Some(30_000.0 / 96_000.0)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        theme::apply_preferences(if index % 2 == 0 {
+            hex_preferences::ThemePreferences::default()
+        } else {
+            hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(240, 240, 240),
+                text: hex_preferences::RgbColor::new(16, 16, 16),
+                primary: hex_preferences::RgbColor::new(166, 65, 47),
+                secondary: hex_preferences::RgbColor::new(40, 88, 170),
+            }
+        });
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.cursor = 40_000;
+            v.audio_event_editor.viewport = viewport;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let marker = visual.debug_bounds("audio-play-start-marker");
+        if let Some(fraction) = expected {
+            let body = visual.debug_bounds("audio-events-waveform").unwrap();
+            let marker = marker.expect("visible playback-source cursor");
+            assert!((marker.left() - (body.left() + body.size.width * fraction)).abs() < px(1.0));
+            assert_eq!(
+                visual.rendered_background("audio-play-start-marker"),
+                Some(gpui::Hsla::from(gpui::rgb(theme::color(theme::PaletteRole::Text))).into())
+            );
+            assert_eq!(marker.size.width, px(1.0));
+            assert_eq!(marker.size.height, body.size.height);
+            assert!(
+                !visual
+                    .rendered_quad_paint_layers("audio-play-start-marker", false)
+                    .is_empty()
+            );
+        } else {
+            assert!(marker.is_none());
+        }
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(*v.state.as_ref().unwrap().project, *original.0);
+            assert_eq!(v.selected_clip, original.1);
+            assert!(v.last_enqueued_edit.is_none());
+        });
+    }
+}
+
+#[gpui::test]
 fn event_grid_paints_over_opaque_audio_at_full_and_zoomed_extents(cx: &mut TestAppContext) {
     let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1022,4 +1147,79 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
             "back preserves automatic full-view mode"
         )
     });
+}
+
+#[gpui::test]
+fn loop_brace_matches_retained_source_coordinates_during_zoom_and_pan(cx: &mut TestAppContext) {
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, cx| {
+        let mut model =
+            hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 1)
+                .unwrap();
+        model
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: 24000,
+                    end: 48000,
+                    looping: true,
+                },
+            })
+            .unwrap();
+        let prior = v.state.as_ref().unwrap();
+        v.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
+            project: std::sync::Arc::new(model.project().clone()),
+            canonical_audio_source: prior.canonical_audio_source.clone(),
+            comparison_audio: prior.comparison_audio.clone(),
+            waveforms: prior.waveforms.clone(),
+            source_overviews: prior.source_overviews.clone(),
+            audio_clip_waveforms: prior.audio_clip_waveforms.clone(),
+            midi_preview: prior.midi_preview.clone(),
+            gain_preview: prior.gain_preview.clone(),
+            timeline_frames: prior.timeline_frames,
+            can_undo: prior.can_undo,
+            can_redo: prior.can_redo,
+            revision: prior.revision,
+            unsaved: prior.unsaved,
+            document_path: prior.document_path.clone(),
+        }));
+        cx.notify();
+    });
+    for (viewport, first, last) in [
+        (None, 0.25, 0.5),
+        (
+            Some(Viewport {
+                start: 0,
+                length: 48000,
+            }),
+            0.5,
+            1.0,
+        ),
+        (
+            Some(Viewport {
+                start: 24000,
+                length: 48000,
+            }),
+            0.0,
+            0.5,
+        ),
+    ] {
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.viewport = viewport;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let body = visual.debug_bounds("audio-events-waveform").unwrap();
+        let bar = visual.debug_bounds("audio-loop-ruler").unwrap();
+        assert_eq!((body.left(), body.size.width), (bar.left(), bar.size.width));
+        let a = visual.debug_bounds("audio-loop-start-marker").unwrap();
+        let b = visual.debug_bounds("audio-loop-end-marker").unwrap();
+        assert!(
+            (f32::from(a.left() - bar.left()) - f32::from(bar.size.width) * first).abs() < 0.05
+        );
+        assert!(
+            (f32::from(b.right() - bar.left()) - f32::from(bar.size.width) * last).abs() < 0.05
+        );
+    }
 }

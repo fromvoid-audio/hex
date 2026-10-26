@@ -509,6 +509,8 @@ mod native {
         let (handle, entity, track) = window(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         entity.update(&mut visual, |view, cx| {
+            // This test exercises auto-fit before a canonical lane install.
+            view.viewport = None;
             let old = view.state.as_ref().unwrap();
             let mut project = Editor::new((*old.project).clone(), 8).unwrap();
             project
@@ -556,6 +558,8 @@ mod native {
         let (handle, entity, track) = window(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         entity.update(&mut visual, |view, cx| {
+            // This test exercises auto-fit before a canonical lane install.
+            view.viewport = None;
             let old = view.state.as_ref().unwrap();
             let mut snapshot = old.project.snapshot();
             let owner = snapshot

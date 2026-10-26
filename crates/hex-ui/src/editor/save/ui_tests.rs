@@ -122,6 +122,10 @@ fn fixture(
         old.as_object_mut().unwrap().remove("track_source_bindings"),
         Some(serde_json::json!([]))
     );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("session_audio_cycles"),
+        Some(serde_json::json!([]))
+    );
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();

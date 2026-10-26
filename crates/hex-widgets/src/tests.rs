@@ -1613,6 +1613,11 @@ fn value_cursor_preserves_click_editing_and_restores_after_outside_drag(cx: &mut
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert!(!visual.update(|window, _| window.has_hidden_cursor_override()));
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow),
+        "a stationary readout press retains its own cursor"
+    );
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert!(control.read_with(cx, |control, _| control.is_editing()));
@@ -2003,6 +2008,8 @@ fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut Te
             })
             .unwrap();
         assert!(fill.size.height > px(100.0));
+        // A native double click has a matching release between its downs.
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
         visual.simulate_event(MouseDownEvent {
             position,
             modifiers: Modifiers::default(),

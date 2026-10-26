@@ -41,8 +41,7 @@ impl EditorView {
         generation: u64,
         revision: u64,
     ) {
-        if self.mode != EditorMode::Arrangement
-            || generation != self.project_generation
+        if generation != self.project_generation
             || self.state.as_ref().is_none_or(|s| s.revision != revision)
         {
             return;
@@ -78,6 +77,13 @@ impl EditorView {
             || self.section_install_pending()
             || self.scrub_active()
             || self.bounce_control.is_some()
+            || self.midi_note_gesture.is_some()
+            || self.midi_group_gesture.is_some()
+            || self.midi_stroke.is_some()
+            || self.midi_ruler.held()
+            || self.midi_time_selection.gesture.is_some()
+            || self.audio_event_editor.gesture.is_some()
+            || self.clip_loop_held()
         {
             self.error = Some("finish or cancel the current edit before bouncing".into());
             return;
@@ -98,7 +104,7 @@ impl EditorView {
             control: control.clone(),
         }) {
             self.bounce_control = Some(control);
-            self.status = "bouncing arrangement · escape cancels".into();
+            self.status = "bouncing audio · escape cancels".into();
         }
     }
     pub(super) fn cancel_bounce(&mut self) -> bool {
@@ -258,16 +264,57 @@ mod tests {
     fn track_header_bounce_in_place_ignores_smaller_clip_and_time_selections(
         cx: &mut TestAppContext,
     ) {
+        for console in [false, true] {
+            check_track_header_console_bounce(cx, console);
+        }
+    }
+    fn check_track_header_console_bounce(cx: &mut TestAppContext, console: bool) {
         use hex_project::{Command, TimeRange};
         use hex_session::service::Request;
         let (handle, editor, audio, _, _files) = fixture_with_bounce_media(cx, true);
         let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(900.0)));
         visual.run_until_parked();
         editor.update(&mut visual, |v, _| {
             assert!(v.enqueue(Request::Edit(Command::DuplicateClip(audio))));
         });
         pump(&editor, &mut visual);
         click(&mut visual, audio, false);
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::AddScene {
+                name: "console".into()
+            })));
+        });
+        pump(&editor, &mut visual);
+        let scene = editor.read_with(&visual, |v, _| {
+            v.state.as_ref().unwrap().project.scenes()[0].id()
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(
+                v.enqueue(Request::Edit(Command::CopyArrangementAudioClipToSession {
+                    source: audio,
+                    scene
+                }))
+            );
+        });
+        pump(&editor, &mut visual);
+        let cell = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            let hex_project::SessionCellContent::Audio(c) =
+                p.session_cell(p.tracks()[0].id(), scene).unwrap()
+            else {
+                panic!("cell")
+            };
+            c.id()
+        });
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetSessionAudioClipLoop {
+                clip: cell,
+                loop_range: Some(hex_project::SessionAudioLoop::new(0, 24000).unwrap())
+            })));
+        });
+        pump(&editor, &mut visual);
+
         let (track, original) = editor.update(&mut visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
             let track = p.tracks()[0].id();
@@ -281,9 +328,27 @@ mod tests {
             });
             (track, original)
         });
+        editor.update(&mut visual, |v, cx| {
+            v.mode = if console {
+                crate::editor::EditorMode::Session
+            } else {
+                crate::editor::EditorMode::Arrangement
+            };
+            cx.notify();
+        });
+        visual.run_until_parked();
         let header = visual
             .debug_bounds(Box::leak(
-                format!("track-name-{}", track.value()).into_boxed_str(),
+                format!(
+                    "{}-{}",
+                    if console {
+                        "session-track"
+                    } else {
+                        "track-name"
+                    },
+                    track.value()
+                )
+                .into_boxed_str(),
             ))
             .unwrap();
         visual.simulate_mouse_down(header.center(), MouseButton::Right, Modifiers::default());
@@ -325,6 +390,13 @@ mod tests {
             assert_eq!((t.clips()[0].start(), t.clips()[0].duration()), (0, 96000));
             assert!(p.clip(audio).is_none());
             assert!(t.devices().is_empty() && t.instrument().is_none());
+            let c = p.session_audio_clip(cell).unwrap();
+            assert_eq!(
+                c.loop_range(),
+                Some(hex_project::SessionAudioLoop::new(24000, 48000).unwrap())
+            );
+            assert_eq!(c.id(), cell);
+
             p.snapshot()
         });
         visual.simulate_keystrokes("cmd-z");
@@ -333,6 +405,10 @@ mod tests {
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot().tracks,
                 original.tracks
+            );
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot().session,
+                original.session
             )
         });
         visual.simulate_keystrokes("cmd-shift-z");
@@ -341,6 +417,10 @@ mod tests {
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot().tracks,
                 bounced.tracks
+            );
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot().session,
+                bounced.session
             )
         });
     }

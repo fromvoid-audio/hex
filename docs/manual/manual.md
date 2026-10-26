@@ -19,6 +19,13 @@ build; it does not mean every workflow or device has completed native testing.
 shortcuts apply when the relevant workspace has focus. a text field, browser
 search, dialog or device editor can handle the same key differently.
 
+space starts from the beginning of the time selection, or from the arrange edit
+cursor when there is no time selection. effects start with fresh tails. native
+mutable instruments retrigger notes whose gates cross the cursor and keep their
+original note-off times; earlier voice history is reset. starting does not replay
+the song before the cursor. section launches and exact-history seeks have their
+own preparation behavior.
+
 # install and update
 
 the macos package includes `hex.app`, this manual in pdf and offline html,
@@ -130,13 +137,26 @@ with the same bounds toggles looping off or on, retaining the range. with no
 selection, these keys toggle the existing loop. **command+l** uses the same action.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
+setting new loop bounds from selected main sections also turns on section focus
+after the edit is accepted. focus shows tracks that intersect the selected
+sections, excluding gaps between them. repeated loop toggles leave focus unchanged;
+press **q** or use the section focus toggle to restore all tracks.
 
-drag a section header to move its musical content. hold **option** before or
-during the drag to adjust only its marker; the music stays in place. option-resize
-an edge to trim or remove overlapping section markers. grid snapping remains
-active when enabled; **command** temporarily inverts it. after entering option
-adjustment, releasing option keeps that drag marker-only. release outside the
-section lane to accept the last valid preview, or press **escape** to cancel.
+**shift-click** section blocks to add or remove them from the section selection,
+including clicks in their lower body. ordinary lower-body dragging still selects time.
+drag a section header to move its musical content; hold **option** to insert a copy
+before or after another section, or beside the source. changing option during the drag
+switches between moving and copying. the source stays in place when copying, and
+one undo restores the entire operation.
+
+some section edits involving sampler midi require stopped playback. if hex asks,
+stop playback and repeat the edit; the refused edit leaves the project and history unchanged.
+
+hold **command** before or during a drag to adjust only the marker; the music stays
+in place. command-resize an edge to trim or remove overlapping section markers, or
+use **command-delete** to remove the selected marker only. releasing command keeps
+that drag marker-only. **control** temporarily inverts section snapping. release
+outside the section lane to accept the last valid preview, or press **escape** to cancel.
 
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
@@ -214,6 +234,13 @@ connected. duplication preserves outside tracks' existing midi source choices.
 track and clip/time clipboards are separate and clear when another project opens.
 
 
+press **e** in arrange to split audio and midi clips at both edges of the selected
+time range, across its selected tracks. existing cuts inside the range remain;
+boundaries in gaps or at clip edges add no pieces. the range stays selected and
+one **command+z** undoes all cuts. without a time range, **e** splits at the edit
+cursor. main section focus keeps its section-split behavior; the audio event
+editor uses its own local selection. **command+e** is not assigned.
+
 drag the bottom edge of a track header to resize that row. hold **option** while
 resizing to give all ordinary tracks the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.
@@ -244,15 +271,20 @@ transport and audible result; a selected item is not evidence that it is playing
 
 ## arrangement automation view
 
-press **a** or use the toolbar's **a** control to show track-gain automation over
-faded clips. repeat to return to clip editing. switching views preserves clips,
-selection, automation and undo history. **c** and **0** toggle contextual
-activation outside automation view: the focused device, track, selected clips,
-or selected time span. a partial time span splits clips at its edges. text fields
-and the computer midi keyboard keep their own input.
+press **a** or use the toolbar's **a** control to show track-gain automation across
+the entire arranger, including unselected tracks. audio and midi clips fade into
+the background while the curves own editing. the toolbar control stays highlighted
+while this mode is on; the key and toolbar always switch the same view.
+repeat to return to clip editing. switching views preserves clips, selection,
+automation and undo history. **c** and **0** keep contextual activation for focused
+devices and track headers; in clip editing they affect the selected clips or time
+span. a partial time span splits clips at its edges. automation lanes prevent
+activation of the retained background clips. text fields and the computer midi
+keyboard keep their own input.
 
 click a gain curve to add a point, drag a point to change its time or value, and
-release to apply the edit. **command** gives free beat placement. **escape**
+release to apply the edit. editing another track's curve keeps the background
+clip selection. **command** gives free beat placement. **escape**
 cancels a held edit; **backspace** removes the selected automation point.
 one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.
@@ -270,7 +302,23 @@ clips have rounded bottom corners. drag the first repeat boundary to change the
 cycle while keeping the outer duration; directed clips retain only the outer
 repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
 
+clips and sections keep their actual timeline width when zoomed out. zoom in
+to resize very short clips when their edge handles no longer fit.
+
+shortening or deleting end material keeps your current arrange position and zoom.
+when you pan or zoom afterward, obsolete empty tail outside the new view retires;
+scrolling cannot return to that retired space. arrange keeps at least eight
+seconds of normal space beyond content. **command+0** fits the normal navigation
+extent; **z** fits the selection or content, and **x** explicitly restores the
+prior fitted view, including its former visible trailing space.
+
 ## audio event fades
+
+the audio event editor marks the clip's playback start with a fixed vertical
+line and a small right-pointing arrow at the top. it follows the clip's source
+crop and loop phase, independently of the edit cursor and loop brace. zooming
+or scrolling can move the marker out of view; it returns when that source
+position is visible again. the marker is a read-only guide.
 
 select an audio clip and choose **events** in its detail area. focus the event
 waveform and hold **f** to show its fade controls. release **f** to hide default
@@ -555,6 +603,7 @@ the complete edit.
 | action | shortcut |
 | --- | --- |
 | reverse selected arrangement clips | `r` |
+| split time-selection edges / edit cursor | e |
 | new project | command+n |
 | open project | command+o |
 | save / save as | command+s / command+shift+s |

@@ -23,16 +23,23 @@ pub enum Command {
         devices: Vec<hex_lattice_contract::NativeDeviceState>,
         instrument_index: usize,
     },
-    /// Assign an existing singleton source, or unlink without deleting it.
+    /// Link this track to a singleton source, or unlink without deleting it.
+    /// Additional linked tracks share the same immutable instrument instance.
     BindTrackSource {
         track: TrackId,
         source: Option<crate::SourceId>,
+    },
+    /// Select the sole track that emits a source's audio, or leave it unselected.
+    /// A selected track must already be linked to this source.
+    SetNativeSourceReceiver {
+        source: crate::SourceId,
+        track: Option<TrackId>,
     },
     RenameNativeSource {
         source: crate::SourceId,
         name: String,
     },
-    /// Explicit authored-state deletion. Track bindings are not admitted yet.
+    /// Explicit authored-state deletion. The source must be unlinked from every track.
     RemoveNativeSource(crate::SourceId),
     /// Create one effects-only group around normalized sibling subtrees.
     GroupTracks {
@@ -138,6 +145,14 @@ pub enum Command {
     DeleteArrangementSection(crate::SectionId),
     /// Insert a song-wide copy immediately after the source, allocating new IDs.
     DuplicateArrangementSection(crate::SectionId),
+    /// Copy a section's complete song interval before/after a stable target.
+    /// The source remains; one private candidate owns both copy and insertion,
+    /// fresh identities, publication and Undo/Redo. The target may be the source.
+    DuplicateArrangementSectionAt {
+        section: crate::SectionId,
+        target: crate::SectionId,
+        after: bool,
+    },
     /// Split marker metadata at a strict interior beat, preserving all music.
     /// The left marker retains its ID; the right gets a fresh ID and the same
     /// name/color. One validated command owns both adjoining positive ranges.
@@ -605,6 +620,11 @@ pub enum Command {
         tracks: Vec<TrackId>,
         frame: u64,
     },
+    /// Split both boundaries of a finite Arrangement range as one edit. Existing
+    /// boundaries and gaps are no-ops; authored material and global time stay put.
+    SplitTimeRange {
+        range: crate::TimeRange,
+    },
     /// Trim an absolute timeline edge, clamping to the nearest valid clip region.
     TrimClipEdge {
         clip: ClipId,
@@ -824,6 +844,11 @@ pub enum Command {
         track: TrackId,
         from_scene: crate::SceneId,
         to_scene: crate::SceneId,
+    },
+    /// Change a Console audio cycle without replacing its retained PCM.
+    SetSessionAudioClipLoop {
+        clip: ClipId,
+        loop_range: Option<crate::SessionAudioLoop>,
     },
     SetSessionAudioClipSource {
         clip: ClipId,
@@ -1657,6 +1682,7 @@ impl Project {
         match command {
             source_command @ (Command::CreateNativeSource { .. }
             | Command::BindTrackSource { .. }
+            | Command::SetNativeSourceReceiver { .. }
             | Command::RenameNativeSource { .. }
             | Command::RemoveNativeSource(_)) => crate::native_sources::apply(self, source_command),
             Command::CommitArrangementBounce {
@@ -1678,6 +1704,7 @@ impl Project {
             | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
+            | Command::DuplicateArrangementSectionAt { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
@@ -1911,6 +1938,7 @@ impl Project {
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }
+            | Command::SetSessionAudioClipLoop { .. }
             | Command::SetSessionAudioClipSource { .. }
             | Command::ClearSessionCell { .. }
             | Command::SetSessionStopCell { .. }
@@ -1976,6 +2004,7 @@ impl Project {
             Command::SplitTracksAtFrame { tracks, frame } => {
                 crate::split_tracks::apply(self, &tracks, frame)
             }
+            Command::SplitTimeRange { range } => crate::split_tracks::apply_range(self, &range),
             Command::NudgeClip { clip, frames } => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = if frames < 0 {
@@ -2881,6 +2910,7 @@ impl Command {
                 }
                 | Self::DeleteArrangementSection(_)
                 | Self::DuplicateArrangementSection(_)
+                | Self::DuplicateArrangementSectionAt { .. }
         )
     }
 }

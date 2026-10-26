@@ -1,5 +1,6 @@
 use super::*;
 use crate::MidiTiming;
+mod pause_analytic;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
@@ -41,7 +42,31 @@ impl SessionPlayback {
         }
         match command {
             SessionPlaybackCommand::Play => self.playing = true,
-            SessionPlaybackCommand::Pause => self.playing = false,
+            SessionPlaybackCommand::Pause => {
+                if self.playing {
+                    self.pause_analytic_sources()?;
+                    // A removed receiver may already own a detached release.
+                    // Only explicit discontinuities reset admitted monitoring.
+                    self.monitor_source_releases |=
+                        self.revision.arrangement().tracks().iter().any(|track| {
+                            track.source_id().is_some() && track.receives_source_audio()
+                        });
+                    for runtime in self
+                        .mutable_instruments
+                        .iter_mut()
+                        .flatten()
+                        .filter(|runtime| runtime.is_source_owner())
+                    {
+                        runtime.cut_gate_deadlines_at(self.performance_frame);
+                    }
+                    for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+                        if tail.runtime.is_source_owner() {
+                            tail.runtime.cut_gate_deadlines_at(self.performance_frame);
+                        }
+                    }
+                }
+                self.playing = false;
+            }
             SessionPlaybackCommand::Stop => {
                 self.clear_gain_recording_override();
                 if self.stop_transport() {
@@ -71,13 +96,41 @@ impl SessionPlayback {
         Ok(())
     }
 
+    /// A stopped preroll preserves authored state until an input actually needs
+    /// the source kernel. Its first live activation releases those clip gates
+    /// before monitoring; subsequent input replacement preserves source age.
+    pub(crate) fn activate_source_monitor_on_control(
+        &mut self,
+    ) -> Result<(), SessionPlaybackError> {
+        if !self.playing && !self.monitor_source_releases {
+            self.pause_analytic_sources()?;
+            for runtime in self
+                .mutable_instruments
+                .iter_mut()
+                .flatten()
+                .filter(|runtime| runtime.is_source_owner())
+            {
+                runtime.cut_gate_deadlines_at(self.performance_frame);
+            }
+            for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+                if tail.runtime.is_source_owner() {
+                    tail.runtime.cut_gate_deadlines_at(self.performance_frame);
+                }
+            }
+        }
+        self.monitor_source_releases = true;
+        Ok(())
+    }
+
     fn stop_transport(&mut self) -> bool {
         let mut changed = self.performance_frame != 0;
         self.playing = false;
+        self.monitor_source_releases = false;
         self.performance_frame = 0;
         self.arrangement_frame = 0;
         self.arrangement_loop_pass = 0;
         self.anchor = None;
+        self.interactive_start_frame = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
         self.analytic_continuations.fill(None);
@@ -162,6 +215,52 @@ impl SessionPlayback {
 
     fn seek(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
         let beat = self.seek_coordinates(frame)?;
+        self.install_seek(frame, beat);
+        Ok(())
+    }
+
+    /// Interactive discontinuity: reset old voices/effect tails, retrigger gate-active
+    /// Arrangement notes at the destination, and retain their authored note-offs.
+    /// No song-prefix replay, runtime construction or allocation occurs here.
+    /// Strict Seek and control-side exact-history preroll retain their own laws.
+    pub(crate) fn play_from(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
+        if self.linear_arrangement_export || self.revision.requires_control_sampler_sources() {
+            // Keep the independently admitted offline/private source policy.
+            self.apply(SessionPlaybackCommand::Seek(frame))?;
+            return self.apply(SessionPlaybackCommand::Play);
+        }
+        let beat = self.play_from_coordinates(frame)?;
+        let generation = self.route_state_generation;
+        self.install_seek(frame, beat);
+        if self.route_state_generation == generation {
+            self.advance_route_state_generation();
+        }
+        self.interactive_start_frame = Some(frame);
+        self.clear_gain_recording_override();
+        self.candidate_admission_open = false;
+        self.playing = true;
+        Ok(())
+    }
+
+    pub(super) fn play_from_coordinates(
+        &self,
+        frame: u64,
+    ) -> Result<BeatTime, SessionPlaybackError> {
+        // Private offline/CURRENT-only source owners keep their capability
+        // fences. Ordinary resource-backed samplers use the mutable event path.
+        if self.current_sampler_console || self.revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        frame
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        base_timing_for(self.revision.session(), self.periodic_tempo_at(frame, 0))
+            .frame_to_beat(frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)
+    }
+
+    fn install_seek(&mut self, frame: u64, beat: BeatTime) {
+        self.monitor_source_releases = false;
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
             changed |= route.pending.is_some();
@@ -176,6 +275,7 @@ impl SessionPlayback {
         self.arrangement_frame = frame;
         self.arrangement_loop_pass = 0;
         self.anchor = None;
+        self.interactive_start_frame = None;
         self.analytic_continuations.fill(None);
         self.analytic_continuation_scratch.fill(None);
         self.releases.clear();
@@ -223,7 +323,6 @@ impl SessionPlayback {
         if changed {
             self.advance_route_state_generation();
         }
-        Ok(())
     }
 
     pub(super) fn mutable_destination_has_active_occurrence(
@@ -315,7 +414,7 @@ impl SessionPlayback {
                 .filter(|entry| entry.until_frame > self.performance_frame),
         );
         self.release_scratch
-            .retain(|entry| entry.voice.end_frame() > self.performance_frame);
+            .retain(|entry| entry.end_frame() > self.performance_frame);
         let (target_frame, target_beat) = match command {
             SessionPlaybackCommand::LaunchClip { quantization, .. }
             | SessionPlaybackCommand::LaunchScene { quantization, .. }
@@ -487,6 +586,89 @@ impl SessionPlayback {
         Ok(moment)
     }
 
+    /// A MIDI contributor borrows its source's sole receiver runtime. Returning
+    /// an index does not transfer its DSP or resource lease to the contributor.
+    pub(super) fn shared_source_runtime_index(&self, contributor: usize) -> Option<usize> {
+        let routing = self.revision.source_routing();
+        let receiver = routing.receiver_index(contributor)?;
+        self.mutable_instruments
+            .get(receiver)
+            .and_then(Option::as_ref)
+            .filter(|runtime| routing.is_shared(contributor) || runtime.is_source_owner())
+            .map(|_| receiver)
+    }
+
+    /// Reserve the existing source ledger plus every prospective contributor's
+    /// full admitted voice envelope. Released voices stay charged through their
+    /// quiet deadline. Silence is always allowed to release notes, even when a
+    /// new launch would exceed the source's capacity.
+    pub(super) fn check_shared_transition_capacity(
+        &self,
+        root: usize,
+        next_owner: RouteOwner,
+        frame: u64,
+        speculative: bool,
+    ) -> Result<(), SessionPlaybackError> {
+        if matches!(
+            next_owner,
+            RouteOwner::Silence | RouteOwner::SessionAudio { .. }
+        ) {
+            return Ok(());
+        }
+        let routing = self.revision.source_routing();
+        for receiver in 0..self.route_scratch.len() {
+            let Some(runtime) = self.mutable_instruments[receiver].as_ref() else {
+                continue;
+            };
+            if !routing.is_shared(receiver) || routing.receiver_index(receiver) != Some(receiver) {
+                continue;
+            }
+            let contributors = routing.contributors(receiver);
+            let affected = contributors.iter().any(|&index| {
+                let index = usize::from(index);
+                self.revision.arrangement().tracks()[index]
+                    .midi_source_index
+                    .unwrap_or(index)
+                    == root
+            });
+            if !affected {
+                continue;
+            }
+            let mut charge = runtime
+                .transition_proofs(speculative)
+                .iter()
+                .filter(|occurrence| occurrence.quiet_deadline_frame > frame)
+                .count();
+            for &contributor in contributors {
+                let index = usize::from(contributor);
+                let track = &self.revision.arrangement().tracks()[index];
+                if !track.source_input_enabled() {
+                    continue;
+                }
+                let owner = if track.midi_source_index.unwrap_or(index) == root {
+                    next_owner
+                } else {
+                    effective_midi_route(&self.revision, &self.route_scratch, index)?.owner
+                };
+                if matches!(owner, RouteOwner::Arrangement | RouteOwner::Session { .. }) {
+                    charge = charge
+                        .checked_add(self.source_voice_envelope(index))
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                }
+            }
+            if charge
+                > runtime
+                    .max_active_occurrences()
+                    .min(runtime.transition_proof_capacity())
+            {
+                return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                    "shared source launch exceeds retained voice capacity",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn commit_route_scratch(&mut self) {
         // Entire command/scene has passed all fallible planning. Accepted cuts
         // change only committed deadlines; DSP receives NoteOff next segment.
@@ -503,6 +685,15 @@ impl SessionPlayback {
                         runtime.cut_gate_deadlines_at(self.performance_frame);
                     }
                 }
+            }
+        }
+        for contributor in 0..self.routes.len() {
+            if self.routes[contributor].current_incarnation
+                != self.route_scratch[contributor].current_incarnation
+                && let Some(receiver) = self.shared_source_runtime_index(contributor)
+                && let Some(runtime) = self.mutable_instruments[receiver].as_mut()
+            {
+                runtime.cut_contributor_at(self.routes[contributor].id, self.performance_frame);
             }
         }
         let route_changed = self.routes != self.route_scratch;
@@ -552,6 +743,9 @@ impl SessionPlayback {
             (owner, None) => owner,
             _ => return Err(SessionPlaybackError::InvalidCommand),
         };
+        if next_owner != owner || matches!(target, RouteTarget::Session(_)) {
+            self.check_shared_transition_capacity(index, next_owner, moment.target_frame, false)?;
+        }
         let proven_current = self.current_sampler_route_track(index);
         let current_reservation = if proven_current
             && (next_owner != owner || matches!(target, RouteTarget::Session(_)))
@@ -584,6 +778,7 @@ impl SessionPlayback {
                 continue;
             }
             if !proven_current
+                && self.shared_source_runtime_index(destination).is_none()
                 && self
                     .mutable_instruments
                     .get(destination)
@@ -619,12 +814,20 @@ impl SessionPlayback {
                         .unwrap_or(destination)
                         == index
                     {
-                        self.capture_outgoing(
-                            destination,
-                            owner,
-                            moment.source_frame,
-                            moment.performance_frame,
-                        )?;
+                        if self.shared_source_runtime_index(destination).is_some() {
+                            self.route_scratch[destination].current_incarnation = self
+                                .route_scratch[destination]
+                                .current_incarnation
+                                .checked_add(1)
+                                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        } else {
+                            self.capture_outgoing(
+                                destination,
+                                owner,
+                                moment.source_frame,
+                                moment.performance_frame,
+                            )?;
+                        }
                     }
                 }
             }
@@ -670,7 +873,37 @@ impl SessionPlayback {
         source_frame: u64,
         performance_frame: u64,
     ) -> Result<(), SessionPlaybackError> {
+        self.capture_outgoing_with_source_binding(
+            index,
+            owner,
+            source_frame,
+            performance_frame,
+            false,
+        )
+    }
+
+    pub(super) fn capture_outgoing_with_source_binding(
+        &mut self,
+        index: usize,
+        owner: RouteOwner,
+        source_frame: u64,
+        performance_frame: u64,
+        keep_current_source: bool,
+    ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
+        let source_origin = ReleaseSourceOrigin::capture(&self.revision, index);
+        let audio_index = self
+            .revision
+            .source_routing()
+            .receiver_index(index)
+            .unwrap_or(index);
+        let audio_track = arrangement
+            .tracks()
+            .get(audio_index)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        if source_origin.is_some() && !arrangement.tracks()[index].source_input_enabled() {
+            return Ok(());
+        }
         match owner {
             RouteOwner::Arrangement => {
                 let track = arrangement
@@ -685,14 +918,29 @@ impl SessionPlayback {
                         // owner. A note whose onset equals `source_frame` has
                         // not rendered yet and must not be carried as an
                         // outgoing tail.
-                        if span.start >= source_frame {
+                        if span.start >= source_frame
+                            || is_suppressed_in(
+                                &self.suppression_scratch,
+                                self.routes[index].id,
+                                ContinuationKey {
+                                    clip: span.clip,
+                                    note: span.note,
+                                    iteration: span.iteration,
+                                },
+                                performance_frame,
+                            )
+                        {
                             return;
                         }
                         let voice = match MidiReleaseVoice::from_finite_span(
                             span.start,
                             span.gate_end,
                             span.end,
-                            sampler.detach(&self.analytic_continuations),
+                            if keep_current_source {
+                                sampler
+                            } else {
+                                sampler.detach(&self.analytic_continuations)
+                            },
                             source_frame,
                             performance_frame,
                         ) {
@@ -724,7 +972,9 @@ impl SessionPlayback {
                                 self.release_capacity,
                                 &mut next_order,
                                 ReleaseEntry {
-                                    location: match ReleaseLocation::new(index, None) {
+                                    source_origin,
+                                    monitor_offset: 0,
+                                    location: match ReleaseLocation::new(audio_index, None) {
                                         Ok(location) => location,
                                         Err(error) => {
                                             failure = Some(error);
@@ -734,12 +984,25 @@ impl SessionPlayback {
                                     track_id: route.id,
                                     order: 0,
                                     mix: gain_recording::effective_mix(
-                                        track,
+                                        audio_track,
                                         source_frame,
                                         self.revision.gain_recording_track(),
                                         self.gain_recording_override,
                                     ),
-                                    continuation: None,
+                                    continuation: keep_current_source.then_some(
+                                        SessionContinuation {
+                                            key: ContinuationKey {
+                                                clip: span.clip,
+                                                note: span.note,
+                                                iteration: span.iteration,
+                                            },
+                                            onset_beat: span.onset_beat,
+                                            gate_end_beat: span.gate_end_beat,
+                                            pitch: span.pitch,
+                                            channel: span.channel,
+                                            velocity: span.velocity,
+                                        },
+                                    ),
                                     inline_tuning_owned: false,
                                     clip_gain,
                                     voice,
@@ -769,8 +1032,12 @@ impl SessionPlayback {
                         .reconcile_at(performance_frame, None)
                         .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                    entry.voice.detach(&self.analytic_continuations);
-                    entry.continuation = None;
+                    if !keep_current_source {
+                        entry.voice.detach(&self.analytic_continuations);
+                    }
+                    if !keep_current_source {
+                        entry.continuation = None;
+                    }
                 }
                 let prepared = crate::session_inventory::EffectiveSessionMidi::new(
                     self.revision.session(),
@@ -823,17 +1090,15 @@ impl SessionPlayback {
                         .release_at(performance_frame)
                         .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
                     {
-                        voice.detach(&self.analytic_continuations);
+                        if !keep_current_source {
+                            voice.detach(&self.analytic_continuations);
+                        }
                         let route = self
                             .routes
                             .get(index)
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
-                        let track = arrangement
-                            .tracks()
-                            .get(index)
-                            .ok_or(SessionPlaybackError::UnknownTrack)?;
                         let mix = gain_recording::effective_mix(
-                            track,
+                            audio_track,
                             source_frame,
                             self.revision.gain_recording_track(),
                             self.gain_recording_override,
@@ -852,11 +1117,24 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut self.release_order_scratch,
                             ReleaseEntry {
-                                location: ReleaseLocation::new(index, None)?,
+                                source_origin,
+                                monitor_offset: 0,
+                                location: ReleaseLocation::new(audio_index, None)?,
                                 track_id: route.id,
                                 order: 0,
                                 mix,
-                                continuation: None,
+                                continuation: keep_current_source.then_some(SessionContinuation {
+                                    key: ContinuationKey {
+                                        clip: span.clip,
+                                        note: span.note,
+                                        iteration: span.iteration,
+                                    },
+                                    onset_beat: span.onset_beat,
+                                    gate_end_beat: span.gate_end_beat,
+                                    pitch: span.pitch,
+                                    channel: span.channel,
+                                    velocity: span.velocity,
+                                }),
                                 inline_tuning_owned: false,
                                 clip_gain,
                                 voice,

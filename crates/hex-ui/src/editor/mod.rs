@@ -66,9 +66,13 @@ mod activation_ui_test;
 mod arrange_clip_range;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrange_clip_range_ui_tests;
+mod arranger_navigation;
 mod audio_import_settings;
 pub(crate) mod changelog;
 mod clip_detail_resize;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_editor_loop_ui_tests;
+mod clip_loop;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
@@ -490,8 +494,8 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-right", TrimRight, Some("hex_editor")),
         KeyBinding::new("backspace", DeleteClip, Some("hex_editor")),
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
-        KeyBinding::new("alt-backspace", DeleteSectionMarker, Some("hex_editor")),
-        KeyBinding::new("alt-delete", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("cmd-backspace", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("cmd-delete", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new(
             "g",
             GroupSelection,
@@ -752,6 +756,7 @@ pub(super) struct EditorView {
     midi_velocity_randomize: midi_velocity_randomize::State,
     midi_pan: midi_pan::State,
     midi_ruler: midi_ruler::State,
+    clip_loop: clip_loop::State,
     midi_time_selection: midi_ruler::TimeSelection,
     midi_audition: midi_audition::MidiAudition,
     pending_created_note_selection: Option<midi_created_selection::Pending>,
@@ -787,6 +792,7 @@ pub(super) struct EditorView {
     pending_metronome_ticket: Option<u64>,
     pending_session_ticket: Option<(u64, u64)>,
     viewport: Option<Viewport>,
+    arranger_navigation: arranger_navigation::Extent,
     zoom_fit: zoom_fit::State,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
@@ -1269,6 +1275,7 @@ impl EditorView {
         let audio_event_focus = cx.focus_handle();
         let audio_event_blur = cx.on_blur(&audio_event_focus, window, |view, _, cx| {
             view.audio_event_editor.gesture = None;
+            view.cancel_audio_loop_gesture();
             view.audio_event_editor.fade_key_held = false;
             cx.notify();
         });
@@ -1305,7 +1312,8 @@ impl EditorView {
                 view.audio_event_editor.fade_key_held = false;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
-                let paint_cancelled = view.cancel_clip_paint()
+                let paint_cancelled = view.cancel_audio_loop_gesture()
+                    | view.cancel_clip_paint()
                     | view.cancel_section_pointer()
                     | view.cancel_track_reorder();
                 if let Some(audio) = view.audio.as_mut() {
@@ -1334,6 +1342,7 @@ impl EditorView {
             view.audio_event_editor.gesture = None;
             view.audio_event_editor.fade_key_held = false;
             if view.cancel_midi_note_gesture()
+                | view.cancel_audio_loop_gesture()
                 | view.cancel_track_reorder()
                 | view.cancel_scrub()
                 | view.cancel_clip_paint()
@@ -1418,6 +1427,7 @@ impl EditorView {
             midi_velocity_randomize: midi_velocity_randomize::State::default(),
             midi_pan: midi_pan::State::default(),
             midi_ruler: midi_ruler::State::default(),
+            clip_loop: clip_loop::State::default(),
             midi_time_selection: midi_ruler::TimeSelection::default(),
             midi_audition: midi_audition::MidiAudition::default(),
             pending_created_note_selection: None,
@@ -1453,6 +1463,7 @@ impl EditorView {
             pending_metronome_ticket: None,
             pending_session_ticket: None,
             viewport: None,
+            arranger_navigation: arranger_navigation::Extent::default(),
             zoom_fit: zoom_fit::State::default(),
             playback_candidates: VecDeque::new(),
             audible_playback: None,
@@ -1700,10 +1711,6 @@ impl EditorView {
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
-            arrangement_seek::ToggleAction::PreparedPlayFrom(frame) => {
-                self.request_prepared_seek(frame, true);
-                return;
-            }
             arrangement_seek::ToggleAction::Unavailable => {
                 self.error = Some("playback source is unavailable · cannot seek safely".into());
                 return;
@@ -1837,7 +1844,9 @@ impl EditorView {
                 })
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
-        let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        let horizon = self
+            .retained_navigation_horizon(horizon)
+            .max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
         // Only a current resize owner may extend the transient display extent.
         horizon.max(self.trim_display_end().unwrap_or(0))
     }

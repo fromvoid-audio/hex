@@ -2,8 +2,10 @@
 //! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
 //! transactional history. Native source definitions retain complete authored
 //! device chains and media references independently of track/history lifetime.
-//! Tracks bind immutable singleton source views; engine admission still owns DSP.
-//! Concurrent source bindings are not admitted yet. Main-lane song sections are stable named/color/range
+//! Tracks bind immutable views of retained sources and may share one source.
+//! Each source names one optional bound audio receiver; other bindings contribute
+//! MIDI while keeping local processing separate. Engine admission owns DSP and
+//! enforces simultaneous playback capacity. Main-lane song sections are stable named/color/range
 //! objects, separate from DSP clips. Structural reorder permutes complete
 //! supported song content atomically through retained source/history contracts.
 //! Clip-local MIDI volume has independent immutable identity
@@ -69,7 +71,9 @@ mod appearance;
 mod bounce;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
-pub use bounce::{BounceFile, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES};
+pub use bounce::{
+    BounceFile, BounceSource, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES,
+};
 pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod track_clipboard;
 pub use track_clipboard::TrackClipboard;
@@ -148,8 +152,8 @@ mod session;
 mod snapshot;
 mod split_tracks;
 pub use session::{
-    Scene, SessionAudioClip, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
-    SessionSceneTarget,
+    Scene, SessionAudioClip, SessionAudioLoop, SessionCell, SessionCellContent, SessionGrid,
+    SessionMidiClip, SessionSceneTarget,
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
@@ -547,6 +551,12 @@ impl Track {
         self.instrument
             .as_ref()
             .map(native_sources::SourceBinding::source_id)
+    }
+    /// Whether this track is the selected audio receiver for its bound source.
+    pub fn receives_source_audio(&self) -> bool {
+        self.instrument
+            .as_ref()
+            .is_some_and(|source| source.receiver() == Some(self.id))
     }
     /// Number of track-local effects before the source/audio merge, if present.
     pub fn instrument_position(&self) -> Option<usize> {

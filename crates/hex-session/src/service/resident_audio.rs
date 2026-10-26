@@ -27,6 +27,8 @@ struct Inputs<'a> {
     shutdown: &'a AtomicBool,
     cancel: Option<&'a AtomicBool>,
     plugin_effect: Option<&'a PluginEffectControl>,
+    restoring_plugin_state: bool,
+    preparing_edit: bool,
     admission: sampler_export::Admission<'a>,
     current: Option<&'a Snapshot>,
     predecessor: Option<&'a Session>,
@@ -124,10 +126,38 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
         self.prepare_with_gain(
-            project, sink, media, table, transforms, waveforms, None, context,
+            project, sink, media, table, transforms, waveforms, None, None, context,
         )
     }
-    #[allow(clippy::too_many_arguments)] // Existing compile inputs plus one transient raw-fader target.
+    /// Validate a canonical tuning transition before Arc publication. Explicit
+    /// tuning previews/commits also retain the family when returning exactly to
+    /// the canonical value; document replacement never enters this path.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_transition(
+        &self,
+        source: &Project,
+        project: &Project,
+        explicit_tuning: bool,
+        sink: &mut dyn WorkerAudioSink,
+        media: &MediaBank,
+        table: Arc<hex_engine::SineTable>,
+        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+        waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<Snapshot, SessionError> {
+        self.prepare_with_gain(
+            project,
+            sink,
+            media,
+            table,
+            transforms,
+            waveforms,
+            None,
+            Some((source, explicit_tuning)),
+            context,
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // Compile inputs plus raw-fader and exact canonical tuning source.
     fn prepare_with_gain(
         &self,
         project: &Project,
@@ -137,6 +167,7 @@ impl Inputs<'_> {
         transforms: &hex_engine::audio_transform::AudioTransformPreparation,
         waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
         gain_recording: Option<hex_project::TrackId>,
+        tuning_source: Option<(&Project, bool)>,
         context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
@@ -220,15 +251,23 @@ impl Inputs<'_> {
         };
         let mut invoked = false;
         let hosted = sink
-            .prepare_resident_effects(ResidentEffectPreparation { project }, &mut |effects| {
-                if invoked {
-                    return Err(hex_engine::Invalid(
-                        "host effect compiler was invoked more than once",
-                    ));
-                }
-                invoked = true;
-                prepare(Some(effects))
-            })
+            .prepare_resident_effects(
+                ResidentEffectPreparation {
+                    project,
+                    context,
+                    restoring_plugin_state: self.restoring_plugin_state,
+                    preparing_edit: self.preparing_edit,
+                },
+                &mut |effects| {
+                    if invoked {
+                        return Err(hex_engine::Invalid(
+                            "host effect compiler was invoked more than once",
+                        ));
+                    }
+                    invoked = true;
+                    prepare(Some(effects))
+                },
+            )
             .map_err(SessionError::NativeAudio)?;
         let prepared = match (hosted, invoked) {
             (Some(prepared), true) => prepared,
@@ -238,6 +277,21 @@ impl Inputs<'_> {
                     "host effect compiler result differs from its invocation",
                 ));
             }
+        };
+        let prepared = if let Some((source, explicit)) = tuning_source {
+            match self.current {
+                Some(current) if explicit => {
+                    prepared.with_tuning_continuation_from(project, source, &current.prepared)?
+                }
+                previous => crate::tuning_prepared_transition(
+                    prepared,
+                    source,
+                    project,
+                    previous.map(|snapshot| snapshot.prepared.as_ref()),
+                )?,
+            }
+        } else {
+            prepared
         };
         let prepared = match gain_recording {
             Some(track) => prepared.arm_gain_recording(project, track)?,
@@ -535,7 +589,7 @@ impl Inputs<'_> {
 }
 
 fn runtime_allowance(prepared: &PreparedRevision, extra: usize) -> Result<usize, SessionError> {
-    hex_engine::SessionPlayback::linear_export_runtime_allowance(prepared)
+    hex_engine::SessionPlayback::interactive_runtime_allowance(prepared)
         .map_err(|error| SessionError::NativeAudio(error.to_string()))?
         .checked_add(extra)
         .map(|quote| quote.min(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES))
@@ -836,6 +890,8 @@ pub(super) fn prepare_bounce_import(
 ) -> Result<Snapshot, SessionError> {
     let inputs = Inputs {
         plugin_effect: None,
+        restoring_plugin_state: false,
+        preparing_edit: false,
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
         limits: input.limits.ok_or(SessionError::Invalid(
@@ -1075,6 +1131,8 @@ impl Session {
             |project, media, table, transforms, waveforms, stage, _| {
                 let inputs = Inputs {
                     plugin_effect: None,
+                    restoring_plugin_state: false,
+                    preparing_edit: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1101,6 +1159,8 @@ impl Session {
             |project, snapshot, stage| {
                 let inputs = Inputs {
                     plugin_effect: None,
+                    restoring_plugin_state: false,
+                    preparing_edit: false,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1326,6 +1386,8 @@ impl Session {
     ) -> Result<Inputs<'a>, SessionError> {
         Ok(Inputs {
             plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1356,6 +1418,8 @@ impl Session {
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
             plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
                 "resident resource reservation unavailable",
@@ -1412,6 +1476,8 @@ impl Session {
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
             plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1450,7 +1516,31 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
-        let inputs = self.resident_seek_inputs(admission, current, None)?;
+        self.restore_resident_snapshot_with_metadata(context, sink, admission, current, true)
+    }
+
+    /// Recompile only after the fresh output restored the same opaque plugin
+    /// state. This changes neither the canonical revision nor musical history.
+    pub(super) fn restore_plugin_state_snapshot(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Snapshot, SessionError> {
+        self.restore_resident_snapshot_with_metadata(context, sink, admission, current, false)
+    }
+
+    fn restore_resident_snapshot_with_metadata(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        stopped_restore: bool,
+    ) -> Result<Snapshot, SessionError> {
+        let mut inputs = self.resident_seek_inputs(admission, current, None)?;
+        inputs.restoring_plugin_state = !stopped_restore;
         let mut snapshot = inputs.prepare(
             self.project(),
             sink,
@@ -1465,7 +1555,7 @@ impl Session {
             device_preview: None,
             tuning_preview: None,
             seek_request: None,
-            stopped_restore: true,
+            stopped_restore,
             computer_keyboard_request: None,
             gain_recording_track: snapshot.prepared.gain_recording_track(),
             requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
@@ -1476,7 +1566,11 @@ impl Session {
             sink,
             admission,
             metadata,
-            ResidentPublicationPolicy::InstallFreshRuntime,
+            if stopped_restore {
+                ResidentPublicationPolicy::InstallFreshRuntime
+            } else {
+                ResidentPublicationPolicy::RestorePluginState
+            },
             selected,
             None,
         )?;
@@ -1494,9 +1588,11 @@ impl Session {
     ) -> Result<(Arc<Project>, Snapshot), SessionError> {
         let inputs = self.resident_seek_inputs(admission, Some(current), None)?;
         let mut editor = hex_project::Editor::new(self.project().clone(), 1)?;
-        let (_, prepared) = editor.execute_prepared_transition(command, |_, candidate| {
-            let mut snapshot = inputs.prepare(
+        let (_, prepared) = editor.execute_prepared_transition(command, |source, candidate| {
+            let mut snapshot = inputs.prepare_transition(
+                source,
                 candidate,
+                matches!(identity, resident_preview::Identity::Tuning(_)),
                 sink,
                 &self.media_bank(),
                 self.sine_table(),
@@ -1543,6 +1639,7 @@ impl Session {
             &self.audio_transforms,
             &self.audio_clip_waveforms,
             Some(track),
+            None,
             context,
         )?;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
@@ -1702,6 +1799,8 @@ impl Session {
         }
         let inputs = Inputs {
             plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1793,6 +1892,8 @@ impl Session {
         };
         let inputs = Inputs {
             plugin_effect: plugin_control.as_deref(),
+            restoring_plugin_state: false,
+            preparing_edit: !matches!(&transition, Transition::PluginEffect { .. }),
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1831,6 +1932,8 @@ impl Session {
             &transition,
             Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
         );
+        let explicit_tuning = matches!(&transition, Transition::Command(command)
+            if matches!(command.as_ref(), Command::SetTuning(..)));
         let prepare = |source: &Project, project: &Project| {
             let context = if source == project {
                 hex_engine::AudioSourceContext {
@@ -1840,8 +1943,17 @@ impl Session {
             } else {
                 context
             };
-            let mut snapshot =
-                inputs.prepare(project, sink, &media, table, transforms, waveforms, context)?;
+            let mut snapshot = inputs.prepare_transition(
+                source,
+                project,
+                explicit_tuning,
+                sink,
+                &media,
+                table,
+                transforms,
+                waveforms,
+                context,
+            )?;
             if let Some(frame) = stopped_bounce_frame {
                 inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
             } else if let Some(cursor) = stopped_cursor {
@@ -1853,6 +1965,17 @@ impl Session {
                 if !source.tempo_map().proves_same_clock(project.tempo_map()) {
                     return Err(SessionError::Invalid(
                         "live section edits that change the tempo map require stopped playback",
+                    ));
+                }
+                if current.map_or_else(
+                    || snapshot.prepared.has_arrangement_mutable_instruments(),
+                    |old| {
+                        old.prepared
+                            .section_midi_relocation_requires_stop(&snapshot.prepared)
+                    },
+                ) {
+                    return Err(SessionError::Invalid(
+                        "stop playback before relocating instrument midi with section edits or history",
                     ));
                 }
                 // Keep the launched loop at its musical timeline range. A section
@@ -1889,7 +2012,7 @@ impl Session {
             }
             Ok(snapshot)
         };
-        match transition {
+        let result = match transition {
             Transition::Command(command)
             | Transition::PluginEffect { command, .. }
             | Transition::SectionCommand { command, .. } => self
@@ -1907,10 +2030,12 @@ impl Session {
                     self.editor.redo_prepared_transition(prepare)
                 } else {
                     self.editor.undo_prepared_transition(prepare)
-                }?;
-                Ok(result.map(|snapshot| (Created::None, snapshot)))
+                };
+                result.map(|result| result.map(|snapshot| (Created::None, snapshot)))
             }
-        }
+        };
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        result
     }
 }
 
@@ -1923,6 +2048,22 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Duration;
+
+    // The private-export fixture's 20M budget intentionally excludes full
+    // interactive release/handoff banks. Resident callers use the same finite
+    // runtime reservation as the other interactive service fixtures.
+    fn interactive_sampler_session(files: &sampler_export::tests::Files) -> Session {
+        let (mut session, export) = sampler_export::tests::direct_sampler(files);
+        drop(export);
+        let storage = &mut session.native_reservation.as_mut().unwrap().storage;
+        storage.max_retained_bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(2)
+            .unwrap();
+        storage.max_construction_peak_bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(3)
+            .unwrap();
+        session
+    }
 
     #[derive(Default)]
     struct Observed {

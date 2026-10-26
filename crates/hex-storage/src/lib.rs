@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 47;
+pub const CURRENT_SCHEMA_VERSION: u32 = 49;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -148,12 +148,12 @@ impl From<serde_json::Error> for StorageError {
 
 /// Encode the current schema with complete hierarchy, audio roots, event fades,
 /// directed views, activation, MIDI, tuning, device state and retained native sources
-/// with explicit per-track source bindings.
+/// with explicit per-track source bindings and Console audio cycles.
 /// There is no blanket
 /// byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::native_sources::encode(project)?)
+    encode_document(&schema::session_audio_loops::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -169,6 +169,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::session_audio_loops::refuse_legacy(project)?;
     if !project.native_sources().is_empty() {
         return Err(StorageError::Invalid(
             "older schema cannot save retained native sources",
@@ -251,10 +252,13 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
-/// Schema47 allows retained processing projections on outer musical views and
-/// skips inaudible partial first cycles without rewriting their authored cursor;
-/// historical readers retain their prior validity contract. Schemas46/47 retain
-/// native source definitions and one binding row per track. Schema45 retains
+/// Schema47 retains its evidenced receiverless source layout while allowing
+/// retained processing projections on outer musical views and skipping inaudible
+/// partial first cycles without rewriting authored cursors. Schema48 adds Console
+/// audio cycles while retaining the receiverless singleton-source layout. Schema49
+/// adds a required nullable source receiver and shared contributor bindings;
+/// schemas46–48 infer a receiver only from their singleton binding.
+/// Schema45 retains
 /// independent sources. Schemas1–44 migrate inline instruments
 /// into retained singleton sources, preserving their device identities. Schema44
 /// retains track hierarchy.
@@ -286,7 +290,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::native_sources::decode47(bytes),
+        CURRENT_SCHEMA_VERSION => schema::session_audio_loops::decode49(bytes),
+        48 => schema::session_audio_loops::decode48(bytes),
+        47 => schema::native_sources::decode47(bytes),
         46 => schema::native_sources::decode46(bytes),
         45 => schema::native_sources::decode45(bytes),
         44 => schema::track_groups::decode(bytes),

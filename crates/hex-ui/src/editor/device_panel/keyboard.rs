@@ -1,5 +1,5 @@
 //! Device-selection keys own only the directly focused card, never its editors.
-//! A/zero read live canonical bypass and use the same terminal barrier as pointer
+//! C/zero read live canonical bypass and use the same terminal barrier as pointer
 //! bypass; rendered generation/owner/type identity refuses retired card handlers.
 use super::*;
 use gpui::{FocusHandle, KeyBinding};

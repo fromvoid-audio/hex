@@ -2,6 +2,7 @@ use super::*;
 use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
+mod interactive_start;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -359,6 +360,19 @@ fn continuity_sample(
 
 struct MutableFeedbackDefinition {
     metadata: ContinuityInstrumentDefinition,
+}
+
+// Reuse the finite source law in cross-owner playback dispatch tests.
+pub(super) fn finite_feedback_definition(
+    release_frames: u64,
+) -> impl hex_lattice::NativeInstrumentDefinition {
+    MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback"),
+            levels: [0.2, 0.4],
+            release_frames,
+        },
+    }
 }
 
 struct MutableFeedbackPrepared {
@@ -894,14 +908,14 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     );
     #[cfg(target_pointer_width = "64")]
     {
-        // Sampler authority and the frozen clip-volume scalar each add eight
-        // bytes; tuning custody uses padding. Admission ceilings stay unchanged.
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 496);
+        // Inline source origin and paused monitor age add 32 bounded bytes.
+        // No per-entry allocation; the 18/36 MiB scoped ceilings stay unchanged.
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 528);
         assert_eq!(span_buffer_bytes, 82_952 + 192 * 8);
-        assert_eq!(current_bytes, 16_337_416);
+        assert_eq!(current_bytes, 17_385_992);
         assert_eq!(shared_owner_slots, 131_072);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 16_861_704);
+        assert_eq!(scoped_bytes, 17_910_280);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)
@@ -922,7 +936,7 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         })
         .expect("fixed MIDI storage growth is bounded");
     assert_eq!(current_bytes - previous_bytes, expected_growth);
-    assert!(current_bytes < 16 * 1024 * 1024);
+    assert!(current_bytes < 17 * 1024 * 1024);
 }
 
 /// These hand-authored fixtures model the schema 1–14
@@ -1019,6 +1033,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
                 track: 1,
                 scene: 2,
                 content: SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                    loop_range: None,
                     active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
@@ -2563,6 +2578,9 @@ fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
             active.releases.push(grouped);
         }
         let mut current_chain_release = release;
+        // This extra voice belongs to the current source chain, unlike the
+        // detached historical group copied above. Give it explicit custody.
+        current_chain_release.source_origin = ReleaseSourceOrigin::capture(&active.revision, 0);
         current_chain_release.location = ReleaseLocation::new(0, None).unwrap();
         active.releases.push(current_chain_release);
         active
@@ -2594,7 +2612,7 @@ fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
 }
 
 #[test]
-fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_across_loop() {
+fn stateful_filter_releases_clip_history_on_pause_resets_on_seek_stop_and_continues_across_loop() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut base_snapshot = project(0.5, 0, 8 << 32).snapshot();
     base_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
@@ -2622,20 +2640,33 @@ fn stateful_filter_history_freezes_on_pause_resets_on_seek_stop_and_continues_ac
     let mut prefix = [[0.0; 2]; 32];
     paused.render(&mut prefix).unwrap();
     let frame = paused.performance_frame();
+    let mut released = start(Arc::clone(&prepared), clip);
+    released.render(&mut [[0.0; 2]; 32]).unwrap();
+    released
+        .apply(SessionPlaybackCommand::StopTrack {
+            track: base.tracks()[0].id(),
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
     paused.apply(SessionPlaybackCommand::Pause).unwrap();
-    let mut silence = [[1.0; 2]; 64];
-    paused.render(&mut silence).unwrap();
-    assert_eq!(silence, [[0.0; 2]; 64]);
+    let mut paused_release = [[0.0; 2]; 64];
+    let mut expected_release = paused_release;
+    paused.render(&mut paused_release).unwrap();
+    released.render(&mut expected_release).unwrap();
+    assert_eq!(
+        paused_release, expected_release,
+        "pause releases through the existing filter history"
+    );
     assert_eq!(paused.performance_frame(), frame);
     paused.apply(SessionPlaybackCommand::Play).unwrap();
     let mut after_pause = [[0.0; 2]; 64];
+    let mut expected_tail = after_pause;
     paused.render(&mut after_pause).unwrap();
-    let mut continuous = start(Arc::clone(&prepared), clip);
-    let mut continuous_prefix = [[0.0; 2]; 32];
-    continuous.render(&mut continuous_prefix).unwrap();
-    let mut continuous_tail = [[0.0; 2]; 64];
-    continuous.render(&mut continuous_tail).unwrap();
-    assert_eq!(after_pause, continuous_tail);
+    released.render(&mut expected_tail).unwrap();
+    assert_eq!(
+        after_pause, expected_tail,
+        "resume does not retrigger the paused clip note"
+    );
 
     let mut sought = start(Arc::clone(&prepared), clip);
     let mut pre_seek = [[0.0; 2]; 32];
@@ -3171,6 +3202,14 @@ fn mutable_checkpoint_fixture_with_release(
     note_duration: u64,
     release_frames: u64,
 ) -> (Arc<PreparedRevision>, hex_project::TrackId) {
+    mutable_checkpoint_fixture_at(0, note_duration, release_frames)
+}
+
+fn mutable_checkpoint_fixture_at(
+    note_start: u64,
+    note_duration: u64,
+    release_frames: u64,
+) -> (Arc<PreparedRevision>, hex_project::TrackId) {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -3182,7 +3221,7 @@ fn mutable_checkpoint_fixture_with_release(
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
     let table = Arc::new(hex_devices::SineTable::new());
-    let project = with_test_instrument(&project(1.0, 0, note_duration), id, 0);
+    let project = with_test_instrument(&project(1.0, note_start, note_duration), id, 0);
     let revision = revision_with_instrument_registry(&project, table, &registry);
     let track = revision.arrangement().tracks()[0]
         .canonical_track_id()
@@ -3224,13 +3263,18 @@ fn reset_checkpoint_track(playback: &mut SessionPlayback, track: hex_project::Tr
         .session()
         .mutable_instrument_factory(track)
         .unwrap();
-    playback.mutable_instruments[route] = Some(
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
-            factory,
-            playback.revision.arrangement().sample_rate(),
-        )
-        .unwrap(),
-    );
+    let source_live = playback.mutable_instruments[route]
+        .as_ref()
+        .is_some_and(MutableInstrumentTrackRuntime::is_source_owner);
+    let mut fresh = crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
+        factory,
+        playback.revision.arrangement().sample_rate(),
+    )
+    .unwrap();
+    if source_live {
+        fresh.enable_source_live();
+    }
+    playback.mutable_instruments[route] = Some(fresh);
 }
 
 #[test]
@@ -3280,8 +3324,8 @@ fn shared_context_table_is_common_to_arrangement_session_and_reuses_exact_config
         compatible.session().shared_contexts()
     ));
 
-    // Device IDs are global, but moving an immutable device state to a new
-    // track must not reuse the old track's context identity.
+    // Context identity belongs to the retained source. Moving its receiver
+    // while keeping the immutable configuration reuses the same context.
     let mut moved_snapshot = base.snapshot();
     moved_snapshot.tracks[0].id = moved_snapshot.next_id;
     moved_snapshot.next_id += 1;
@@ -3295,7 +3339,7 @@ fn shared_context_table_is_common_to_arrangement_session_and_reuses_exact_config
         &registry,
     )
     .unwrap();
-    assert_ne!(
+    assert_eq!(
         moved
             .arrangement()
             .shared_contexts()
@@ -4740,6 +4784,8 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
             >()
             + std::mem::size_of::<Vec<Option<crate::mutable_instrument::MutableInstrumentTail>>>()
             + std::mem::size_of::<Vec<hex_lattice::NativeInstrumentEvent>>()
+            + (hex_project::MAX_TRACKS + hex_lattice::MAX_STATEFUL_PROCESSORS)
+                * crate::mutable_instrument::MutableInstrumentTrackRuntime::source_live_storage_upper_bound()
     );
     assert!(
         crate::mutable_instrument::host_storage_upper_bound(hex_project::MAX_TRACKS + 1).is_none()
@@ -4804,13 +4850,18 @@ fn mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet() {
         revision_with_instrument_registry(&source_empty, Arc::clone(&table), &registry);
     let mut candidate = SessionPlayback::new(source_empty_prepared).unwrap();
     candidate.try_inherit_state_from(&mut active).unwrap();
-    assert!(active.mutable_instruments[0].is_none());
+    // Empty authoring does not replace the retained source or its live history.
     assert!(
         candidate
             .tail_mutable_instruments
             .iter()
-            .flatten()
-            .any(|tail| !tail.runtime.committed_is_quiescent())
+            .all(Option::is_none)
+    );
+    assert!(
+        !candidate.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
     );
     assert_eq!(
         candidate.apply(SessionPlaybackCommand::Seek(0)),
@@ -4825,14 +4876,13 @@ fn mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet() {
         candidate
             .tail_mutable_instruments
             .iter()
-            .any(Option::is_some)
+            .all(Option::is_none)
     );
     assert!(
-        candidate
-            .tail_mutable_instruments
-            .iter()
-            .flatten()
-            .all(|tail| tail.runtime.committed_is_quiescent())
+        candidate.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
     );
     candidate.apply(SessionPlaybackCommand::Seek(0)).unwrap();
 }
@@ -4915,6 +4965,10 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     // device identities; the old live mutable note and its suffix become a
     // release owner on the candidate graph.
     let mut candidate_snapshot = source_project.snapshot();
+    // A new device identity deliberately retires the old source. Clearing
+    // authored clips alone keeps the existing one-source kernel in place.
+    candidate_snapshot.tracks[0].instrument.as_mut().unwrap().id = candidate_snapshot.next_id;
+    candidate_snapshot.next_id += 1;
     candidate_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
     candidate_snapshot.session.cells.clear();
     let candidate_project = legacy_project_from_snapshot(candidate_snapshot).unwrap();
@@ -5049,7 +5103,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
 }
 
 #[test]
-fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_repeated_handoff() {
+fn mutable_device_replacement_suppresses_exact_candidate_occurrence_across_repeated_handoff() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -5085,6 +5139,16 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
     assert_eq!(proof.signature.key().note, note);
 
     let changed_source = with_test_instrument(&source, id, 1);
+    let mut replacement = changed_source.snapshot();
+    replacement.tracks[0].instrument.as_mut().unwrap().id = replacement.next_id;
+    replacement.next_id += 1;
+    let changed_source = legacy_project_from_snapshot(replacement).unwrap();
+    reference
+        .apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
     let changed_revision =
         revision_with_instrument_registry(&changed_source, Arc::clone(&table), &registry);
     let mut candidate = SessionPlayback::new(Arc::clone(&changed_revision)).unwrap();
@@ -5097,8 +5161,8 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
         .expect("exact pre-cut occurrence is suppressed for its full old/candidate tail");
     assert_eq!(suppression.track, track);
     assert!(suppression.until_frame >= proof.quiet_deadline_frame);
-    let mut actual = [[0.0; 2]; 32];
-    let mut expected = [[0.0; 2]; 32];
+    let mut actual = [[0.0; 2]; 4];
+    let mut expected = [[0.0; 2]; 4];
     candidate.render(&mut actual).unwrap();
     reference.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
@@ -5119,8 +5183,8 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
         entry.mutable_signature() == Some(proof.signature)
             && entry.until_frame >= suppression.until_frame
     }));
-    let mut repeated = [[0.0; 2]; 32];
-    let mut expected_repeated = [[0.0; 2]; 32];
+    let mut repeated = [[0.0; 2]; 4];
+    let mut expected_repeated = [[0.0; 2]; 4];
     next.render(&mut repeated).unwrap();
     reference.render(&mut expected_repeated).unwrap();
     assert_eq!(repeated, expected_repeated);
@@ -5225,6 +5289,13 @@ fn profile_mutable_occurrence_suppression_handoff() {
 
 #[test]
 fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_suffix() {
+    // Keep the seven independent oracle/candidate owners out of this test's
+    // debug frame. Production handoff still runs on the default test stack.
+    #[inline(never)]
+    fn boxed_playback(revision: Arc<PreparedRevision>) -> Box<SessionPlayback> {
+        Box::new(SessionPlayback::new(revision).unwrap())
+    }
+
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
@@ -5236,7 +5307,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         metadata: ContinuityInstrumentDefinition {
             id: mutable_id,
             levels: [0.2, 0.4],
-            release_frames: 8,
+            release_frames: 128,
         },
     };
     let analytic = ContinuityInstrumentDefinition {
@@ -5325,8 +5396,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         )
     };
     let old_revision = prepare(&old_project, Arc::clone(&table));
-    let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
-    let mut reference = SessionPlayback::new(old_revision).unwrap();
+    let mut previous = boxed_playback(Arc::clone(&old_revision));
+    let mut reference = boxed_playback(old_revision);
     for playback in [&mut previous, &mut reference] {
         playback.apply(SessionPlaybackCommand::Play).unwrap();
     }
@@ -5342,7 +5413,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     // atomically until mutable occurrence suppression is available.
     let changed_source = with_test_instrument(&old_project, analytic_id, 0);
     let changed_revision = prepare(&changed_source, Arc::clone(&table));
-    let mut refused = SessionPlayback::new(changed_revision).unwrap();
+    let mut refused = boxed_playback(changed_revision);
     let previous_frame = previous.performance_frame();
     assert_eq!(
         refused.try_inherit_state_from(&mut previous),
@@ -5371,8 +5442,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     }
     tail_snapshot.session.cells.clear();
     let tail_project = Project::from_legacy_snapshot(tail_snapshot).unwrap();
-    let mut tail_candidate =
-        SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
+    let mut tail_candidate = boxed_playback(prepare(&tail_project, Arc::clone(&table)));
     tail_candidate
         .try_inherit_state_from(&mut reference)
         .unwrap();
@@ -5391,16 +5461,25 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     candidate_snapshot.session.cells.clear();
     let candidate_source = Project::from_legacy_snapshot(candidate_snapshot).unwrap();
     let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
+    let mut replaced = empty_analytic.snapshot();
+    replaced.tracks[0].instrument.as_mut().unwrap().id = replaced.next_id;
+    replaced.next_id += 1;
+    let empty_analytic = legacy_project_from_snapshot(replaced).unwrap();
+    tail_candidate
+        .apply(SessionPlaybackCommand::StopTrack {
+            track: old_project.tracks()[0].id(),
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
     let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
-    let mut candidate = SessionPlayback::new(empty_revision).unwrap();
+    let mut candidate = boxed_playback(empty_revision);
     candidate.try_inherit_state_from(&mut previous).unwrap();
     let mut actual = [[0.0; 2]; 16];
     let mut old_tail_pcm = [[0.0; 2]; 16];
     let mut new_audio_pcm = [[0.0; 2]; 16];
     candidate.render(&mut actual).unwrap();
     tail_candidate.render(&mut old_tail_pcm).unwrap();
-    let mut fresh_audio =
-        SessionPlayback::new(prepare(&candidate_source, Arc::clone(&table))).unwrap();
+    let mut fresh_audio = boxed_playback(prepare(&candidate_source, Arc::clone(&table)));
     fresh_audio.apply(SessionPlaybackCommand::Seek(16)).unwrap();
     fresh_audio.apply(SessionPlaybackCommand::Play).unwrap();
     fresh_audio.render(&mut new_audio_pcm).unwrap();
@@ -5418,11 +5497,11 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     // reintroduce the still-sounding pre-cut occurrence.
     let later_active = with_test_instrument(&old_project, analytic_id, 0);
     let later_revision = prepare(&later_active, Arc::clone(&table));
-    let mut retained_tail_chase = SessionPlayback::new(later_revision).unwrap();
+    let mut retained_tail_chase = boxed_playback(later_revision);
     let tail_frame = candidate.performance_frame();
     assert_eq!(
         retained_tail_chase.try_inherit_state_from(&mut candidate),
-        Err(SessionPlaybackError::MutableInstrumentChase)
+        Err(SessionPlaybackError::MutableInstrumentActive)
     );
     assert_eq!(candidate.performance_frame(), tail_frame);
     assert!(
@@ -5444,7 +5523,7 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
         metadata: ContinuityInstrumentDefinition {
             id,
             levels: [0.2, 0.4],
-            release_frames: 8,
+            release_frames: 128,
         },
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
@@ -5499,6 +5578,10 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     // Keep the instrument enabled but remove candidate source occurrences.
     // Existing mutable voices must retain their original gate deadline.
     let mut candidate_snapshot = old_project.snapshot();
+    // A new device identity deliberately retires the old source. Clearing
+    // authored clips alone keeps the existing one-source kernel in place.
+    candidate_snapshot.tracks[0].instrument.as_mut().unwrap().id = candidate_snapshot.next_id;
+    candidate_snapshot.next_id += 1;
     candidate_snapshot.tracks[0].content = TrackContentSnapshot::Instrument(Vec::new());
     candidate_snapshot.session.cells.clear();
     let candidate_project = legacy_project_from_snapshot(candidate_snapshot).unwrap();
@@ -5562,6 +5645,14 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     for slot in &mut candidate.tail_groups {
         *slot = None;
     }
+    // Replacing the source releases the old clip gate. The independent
+    // stopped-track oracle retains the exact same original suffix history.
+    reference
+        .apply(SessionPlaybackCommand::StopTrack {
+            track: old_project.tracks()[0].id(),
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
     assert!(previous.mutable_instruments[0].is_none());
     let tail_group = candidate
@@ -5784,26 +5875,23 @@ fn activation_mute_cuts_held_mutable_gate_with_instrument_still_enabled() {
         ))
         .unwrap();
         candidate.try_inherit_state_from(&mut old).unwrap();
-        let tail = candidate
-            .tail_mutable_instruments
-            .iter()
-            .flatten()
-            .next()
-            .unwrap();
-        assert!(
-            tail.runtime
-                .proofs()
-                .all(|proof| proof.gate_end_frame == 16)
-        );
-        let mut actual = [[0.0; 2]; 16];
-        candidate.render(&mut actual).unwrap();
-        assert!(actual[..8].iter().any(|frame| frame[0] != 0.0));
+        // Clip activation changes the authored gate, not the source DSP owner.
         assert!(
             candidate
                 .tail_mutable_instruments
                 .iter()
-                .flatten()
-                .all(|tail| tail.runtime.committed_is_quiescent())
+                .all(Option::is_none)
+        );
+        let source = candidate.mutable_instruments[0].as_ref().unwrap();
+        assert!(source.proofs().all(|proof| proof.gate_end_frame == 16));
+        let mut actual = [[0.0; 2]; 16];
+        candidate.render(&mut actual).unwrap();
+        assert!(actual[..8].iter().any(|frame| frame[0] != 0.0));
+        assert!(
+            candidate.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .committed_is_quiescent()
         );
         assert!(candidate.revision.arrangement().tracks()[0].instrument_slot_enabled());
     }
@@ -5852,11 +5940,14 @@ fn activation_time_span_shortens_mutable_prefix_and_retriggers_right_window() {
             candidate
                 .tail_mutable_instruments
                 .iter()
-                .flatten()
-                .any(|tail| tail
-                    .runtime
-                    .proofs()
-                    .any(|proof| proof.gate_end_frame == expected_gate))
+                .all(Option::is_none)
+        );
+        assert!(
+            candidate.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .proofs()
+                .any(|proof| proof.gate_end_frame == expected_gate)
         );
         // A repeated publication retains the admitted shortened gate, including
         // the prospective proof carried under the new canonical signature.
@@ -5872,11 +5963,14 @@ fn activation_time_span_shortens_mutable_prefix_and_retriggers_right_window() {
                 .proofs()
                 .any(|proof| proof.onset_frame == 64)
         );
+        assert!(next.tail_mutable_instruments.iter().all(Option::is_none));
         assert!(
-            next.tail_mutable_instruments
-                .iter()
-                .flatten()
-                .all(|tail| tail.runtime.proofs().all(|proof| proof.note_off_sent))
+            next.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .proofs()
+                .filter(|proof| proof.onset_frame < 64)
+                .all(|proof| proof.note_off_sent)
         );
     }
 }
@@ -5929,11 +6023,16 @@ fn activation_of_other_clip_keeps_existing_mutable_gate_deadline() {
     ))
     .unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
-    let proof = candidate
-        .tail_mutable_instruments
-        .iter()
-        .flatten()
-        .flat_map(|tail| tail.runtime.proofs())
+    assert!(
+        candidate
+            .tail_mutable_instruments
+            .iter()
+            .all(Option::is_none)
+    );
+    let proof = candidate.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
         .find(|proof| proof.signature.key().clip == first)
         .unwrap();
     assert_eq!(proof.gate_end_frame, deadline);
@@ -5942,7 +6041,7 @@ fn activation_of_other_clip_keeps_existing_mutable_gate_deadline() {
 }
 
 #[test]
-fn mutable_session_route_switch_refuses_live_state_and_retries_after_quiet() {
+fn mutable_source_route_switch_releases_old_gate_without_resetting_kernel() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -5965,22 +6064,70 @@ fn mutable_session_route_switch_refuses_live_state_and_retries_after_quiet() {
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut onset = [[0.0; 2]; 1];
     playback.render(&mut onset).unwrap();
-    let frame_before_refusal = playback.performance_frame();
+    let cut = playback.performance_frame();
     assert_eq!(
         playback.apply(SessionPlaybackCommand::LaunchClip {
             clip,
             quantization: LaunchQuantization::Immediate,
         }),
-        Err(SessionPlaybackError::MutableInstrumentActive)
+        Ok(())
     );
-    assert_eq!(playback.performance_frame(), frame_before_refusal);
+    assert_eq!(playback.performance_frame(), cut);
     assert_eq!(
         playback.owner(track),
-        Some(SessionPlaybackOwner::Arrangement)
+        Some(SessionPlaybackOwner::Session { clip })
     );
+    let mut oracle = MutableFeedbackRuntime {
+        key: 0.2_f32.to_bits(),
+        level: 0.2,
+        release_frames: 8,
+        voices: [MutableFeedbackVoice::default(); 64],
+        feedback: 0.0,
+        tail_left: 0,
+        storage: Box::default(),
+    };
+    use hex_lattice::MutableInstrumentRuntime;
+    use hex_lattice::NativeInstrumentEvent::{NoteOff, NoteOn};
+    let mut oracle_prefix = [[0.0; 2]; 1];
+    oracle.process_block(
+        &[NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 100,
+        }],
+        &mut oracle_prefix,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    assert_eq!(onset, oracle_prefix);
 
     let mut release = [[0.0; 2]; 32];
     playback.render(&mut release).unwrap();
+    let mut expected = [[0.0; 2]; 32];
+    oracle.process_block(
+        &[
+            NoteOff {
+                frame_offset: 0,
+                occurrence_id: 1,
+            },
+            NoteOn {
+                frame_offset: 0,
+                occurrence_id: 2,
+                pitch: 60,
+                velocity: 100,
+            },
+            NoteOff {
+                frame_offset: 6,
+                occurrence_id: 2,
+            },
+        ],
+        &mut expected,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    assert_eq!(
+        release, expected,
+        "one uninterrupted DSP handles both route generations"
+    );
     assert!(
         playback.mutable_instruments[0]
             .as_ref()
@@ -6002,7 +6149,7 @@ fn mutable_session_route_switch_refuses_live_state_and_retries_after_quiet() {
 }
 
 #[test]
-fn mutable_back_to_arrangement_checks_destination_notes_after_quiet_session_tail() {
+fn mutable_source_back_to_arrangement_does_not_chase_pre_cut_notes() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -6055,18 +6202,25 @@ fn mutable_back_to_arrangement_checks_destination_notes_after_quiet_session_tail
     );
 
     let cut = playback.performance_frame();
-    let before_routes = playback.routes.clone();
     assert_eq!(
         playback.apply(SessionPlaybackCommand::BackToArrangement {
             quantization: LaunchQuantization::Immediate,
         }),
-        Err(SessionPlaybackError::MutableInstrumentChase)
+        Ok(())
     );
     assert_eq!(playback.performance_frame(), cut);
-    assert_eq!(playback.routes, before_routes);
     assert_eq!(
         playback.owner(track),
-        Some(SessionPlaybackOwner::Session { clip })
+        Some(SessionPlaybackOwner::Arrangement)
+    );
+    let mut no_chase = [[1.0; 2]; 64];
+    playback.render(&mut no_chase).unwrap();
+    assert_eq!(no_chase, [[0.0; 2]; 64]);
+    assert!(
+        playback.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
     );
 
     playback
@@ -8064,17 +8218,27 @@ fn seek_after_anchored_handoff_uses_base_clock_and_resets_history() {
 fn pause_and_stop_after_handoff_hold_then_reset_the_reanchored_clock() {
     let table = Arc::new(hex_devices::SineTable::new());
     let original = project(0.5, 0, 8 << 32);
-    let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
+    let prepared = revision(&original, Arc::clone(&table));
+    let mut old = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut oracle = SessionPlayback::new(prepared).unwrap();
     let track = old.routes[0].id;
     let clip = old.revision.session().midi_clips()[0].id;
-    old.apply(SessionPlaybackCommand::LaunchClip {
-        clip,
-        quantization: LaunchQuantization::Immediate,
-    })
-    .unwrap();
-    old.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut first = [[0.0; 2]; 64];
-    old.render(&mut first).unwrap();
+    for runtime in [&mut old, &mut oracle] {
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+    }
+    oracle
+        .apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
     let slower = project_at_tempo(0.5, 0, 8 << 32, Tempo::new(60_000_000).unwrap());
     let mut candidate = SessionPlayback::new(revision(&slower, table)).unwrap();
     candidate.try_inherit_state_from(&mut old).unwrap();
@@ -8083,7 +8247,12 @@ fn pause_and_stop_after_handoff_hold_then_reset_the_reanchored_clock() {
     candidate.apply(SessionPlaybackCommand::Pause).unwrap();
     let mut paused = [[7.0; 2]; 32];
     candidate.render(&mut paused).unwrap();
-    assert_eq!(paused, [[0.0; 2]; 32]);
+    let mut released = [[0.0; 2]; 32];
+    oracle.render(&mut released).unwrap();
+    assert_eq!(
+        paused, released,
+        "reanchored historical gates release once at their original source age"
+    );
     assert_eq!(candidate.performance_frame(), before);
 
     candidate.apply(SessionPlaybackCommand::Stop).unwrap();
@@ -11535,6 +11704,217 @@ fn arrangement_preroll_refuses_storage_preflight_before_runtime_factory() {
 }
 
 #[test]
+fn linear_audio_only_export_omits_unused_banks_preserves_pcm_and_refuses_console() {
+    let source: Vec<Frame> = (0..32)
+        .map(|i| [i as f32 / 64.0, -(i as f32) / 128.0])
+        .collect();
+    let audio = crate::Audio::new(48_000, source.clone()).unwrap();
+    let mut snapshot = audio_project(0, 32, 4).snapshot();
+    snapshot.next_id = 8;
+    snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        active: true,
+        name: "arrangement".into(),
+        flavor: hex_project::ClipFlavor::default(),
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
+        id: 7,
+        asset: 4,
+        start: 0,
+        duration: 32,
+        source_offset: 0,
+        source_length: 32,
+        looping: false,
+        source_phase: 0,
+        fade: ClipFade::neutral(32).unwrap(),
+    }]);
+    let project = Project::from_snapshot(snapshot).unwrap();
+    // Unlinked authoring retains its MIDI metadata wrapper, with no compiled
+    // note spans or generator. It must not spend interactive release storage.
+    let mut editor = Editor::new(project, 8).unwrap();
+    let Created::Track(unbound) = editor
+        .execute(Command::AddMidiTrack {
+            name: "unbound".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: unbound,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let project = editor.project();
+    let media = audio_media(project, &audio, &audio);
+    let revision = Arc::new(
+        PreparedRevision::prepare(project, &media, Arc::new(crate::SineTable::new()), None)
+            .unwrap(),
+    );
+    let interactive_quote =
+        super::preroll::arrangement_runtime_storage_preflight_bytes(&revision).unwrap();
+    assert_eq!(
+        SessionPlayback::interactive_runtime_allowance(&revision).unwrap(),
+        interactive_quote
+    );
+    let quote = SessionPlayback::linear_export_runtime_allowance(&revision).unwrap();
+    let omitted = 2
+        * SESSION_RELEASE_CAPACITY
+        * (std::mem::size_of::<ReleaseEntry>() + std::mem::size_of::<MidiOccurrenceSuppression>());
+    assert_eq!(interactive_quote - quote, omitted);
+    let mut interactive = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert_eq!(
+        interactive.release_storage_capacity(),
+        SESSION_RELEASE_CAPACITY
+    );
+    let mut export = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+    assert_eq!(export.release_storage_capacity(), 0);
+    assert_eq!(export.releases.capacity(), 0);
+    assert_eq!(export.release_scratch.capacity(), 0);
+    assert_eq!(export.suppressions.capacity(), 0);
+    assert_eq!(export.suppression_scratch.capacity(), 0);
+    assert_eq!(
+        export.accounted_runtime_storage_bytes().unwrap() + super::preroll::PREROLL_SCRATCH_BYTES,
+        quote
+    );
+    assert!(export.try_inherit_state_from(&mut interactive).is_err());
+    assert!(
+        export
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: export.revision.session().audio_clips()[0].id,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .is_err()
+    );
+    export.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 40];
+    export.render(&mut output).unwrap();
+    assert_eq!(output[..32], source);
+    assert_eq!(output[32..], [[0.0; 2]; 8]);
+
+    let prepare = |budget| {
+        SessionPlayback::prepare_arrangement_preroll_from_revision_checked(
+            Arc::clone(&interactive.revision),
+            4,
+            4,
+            true,
+            budget,
+            || false,
+        )
+    };
+    assert_eq!(
+        prepare(quote - 1).unwrap_err(),
+        ArrangementPrerollError::StorageBudgetExceeded
+    );
+    let mut replay = prepare(quote).unwrap();
+    let mut next = [[0.0; 2]; 4];
+    replay.render(&mut next).unwrap();
+    assert_eq!(next, source[4..8]);
+
+    let (midi, _) = mutable_checkpoint_fixture(8 << 32);
+    let midi_quote = super::preroll::arrangement_runtime_storage_preflight_bytes(&midi).unwrap();
+    assert_eq!(
+        SessionPlayback::linear_export_runtime_allowance(&midi).unwrap(),
+        midi_quote
+    );
+    let midi_export = SessionPlayback::new_linear_arrangement_export(midi).unwrap();
+    assert_eq!(
+        midi_export.release_storage_capacity(),
+        SESSION_RELEASE_CAPACITY
+    );
+}
+
+#[test]
+fn linear_receiverless_bound_source_uses_audio_only_quote_and_renders_silence() {
+    let mut editor = Editor::new(project(1.0, 0, 1 << 32), 8).unwrap();
+    let receiver = editor.project().tracks()[0].id();
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(sender) = editor
+        .execute(Command::AddMidiTrack {
+            name: "sender".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: sender,
+            source: Some(source),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    assert_eq!(editor.project().source_contributors(source).count(), 2);
+    assert!(
+        !editor.project().track(receiver).unwrap().midi_clips()[0]
+            .notes()
+            .is_empty()
+    );
+    let prepared = revision(editor.project(), Arc::new(crate::SineTable::new()));
+    assert!(
+        prepared
+            .arrangement()
+            .tracks()
+            .iter()
+            .all(|track| !track.receives_source_audio())
+    );
+    let quote = SessionPlayback::linear_export_runtime_allowance(&prepared).unwrap();
+    let mut export = SessionPlayback::new_linear_arrangement_export(prepared).unwrap();
+    assert_eq!(export.release_storage_capacity(), 0);
+    assert!(
+        export.accounted_runtime_storage_bytes().unwrap() + super::preroll::PREROLL_SCRATCH_BYTES
+            <= quote
+    );
+    export.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[1.0; 2]; 64];
+    export.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 64]);
+
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(receiver),
+        })
+        .unwrap();
+    let prepared = revision(editor.project(), Arc::new(crate::SineTable::new()));
+    let full = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
+    assert_eq!(
+        SessionPlayback::linear_export_runtime_allowance(&prepared).unwrap(),
+        full
+    );
+    assert_eq!(
+        SessionPlayback::new_linear_arrangement_export(prepared)
+            .unwrap()
+            .release_storage_capacity(),
+        SESSION_RELEASE_CAPACITY
+    );
+}
+
+#[test]
 fn arrangement_preroll_storage_preflight_covers_constructed_runtime() {
     let (prepared, _) = mutable_checkpoint_fixture(8 << 32);
     let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
@@ -11781,37 +12161,41 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
     assert_eq!(counter.load(Ordering::Relaxed), before_byte_refusal);
 
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
-    // Isolate the count ceiling with the existing tiny, truthful zero-tail
-    // factory. The larger occurrence ledger must not make this accidentally
-    // hit the independent byte ceiling before the sixteenth capture.
+    // Minimize processor charge with the truthful zero-tail factory. A source
+    // checkpoint also reserves its mandatory live ledger, so the byte ceiling
+    // may be reached before the independent entry-count ceiling.
     let (revision, track) = mutable_checkpoint_fixture_with_release(8 << 32, 0);
     let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut count_limited = MutableRuntimeCheckpointStore::new();
-    while count_limited.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS {
+    let mut source_bounded = MutableRuntimeCheckpointStore::new();
+    let byte_refusal_with_source_ledger = loop {
         render_checkpoint_prefix(&mut playback, 1);
-        count_limited.capture_track(&playback, track).unwrap();
-    }
-    assert_eq!(
-        count_limited.checkpoint_count(),
-        MAX_MUTABLE_RUNTIME_CHECKPOINTS
-    );
+        let before_attempt = counter.load(Ordering::Relaxed);
+        match source_bounded.capture_track(&playback, track) {
+            Ok(()) => {}
+            Err(error) => {
+                assert_eq!(
+                    error,
+                    MutableRuntimeCheckpointError::CheckpointBudgetExceeded
+                );
+                assert_eq!(counter.load(Ordering::Relaxed), before_attempt);
+                break error;
+            }
+        }
+    };
+    assert!(source_bounded.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS);
     let before_refusal = counter.load(Ordering::Relaxed);
     render_checkpoint_prefix(&mut playback, 1);
     assert_eq!(
-        count_limited.capture_track(&playback, track),
-        Err(MutableRuntimeCheckpointError::CheckpointCountExceeded)
+        source_bounded.capture_track(&playback, track),
+        Err(byte_refusal_with_source_ledger)
     );
-    assert_eq!(
-        count_limited.checkpoint_count(),
-        MAX_MUTABLE_RUNTIME_CHECKPOINTS
-    );
-    assert!(count_limited.declared_storage_bytes() <= MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES);
+    assert!(source_bounded.declared_storage_bytes() <= MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES);
     assert_eq!(counter.load(Ordering::Relaxed), before_refusal);
-    count_limited.clear();
-    assert_eq!(count_limited.checkpoint_count(), 0);
+    source_bounded.clear();
+    assert_eq!(source_bounded.checkpoint_count(), 0);
     assert_eq!(
-        count_limited.declared_storage_bytes(),
+        source_bounded.declared_storage_bytes(),
         MutableRuntimeCheckpointStore::new().declared_storage_bytes()
     );
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
@@ -11836,6 +12220,12 @@ mod silence_effect_tests;
 
 #[path = "source_loop_tests.rs"]
 mod source_loop_tests;
+
+#[path = "tests/shared_live_nonlinear.rs"]
+mod shared_live_nonlinear;
+
+#[path = "tests/checkpoint_sources.rs"]
+mod checkpoint_sources;
 
 #[path = "transport_loop_tests.rs"]
 mod transport_loop_tests;
@@ -12060,3 +12450,68 @@ fn analytic_clip_volume_survives_track_stop_and_removed_track_handoffs() {
 
 #[path = "delay_tests.rs"]
 mod delay_tests;
+
+#[test]
+fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
+    let source: Vec<Frame> = (0..32)
+        .map(|i| [i as f32 / 64.0, -(i as f32) / 64.0])
+        .collect();
+    let audio = crate::Audio::new(48_000, source.clone()).unwrap();
+    for (first, last) in [(7, 13), (7, 8)] {
+        let mut snapshot = audio_project(3, 29, 4).snapshot();
+        let SessionCellContentSnapshot::Audio(clip) = &mut snapshot.session.cells[0].content else {
+            panic!("audio")
+        };
+        clip.loop_range = Some(hex_project::SessionAudioLoop::new(first, last).unwrap());
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let media = audio_media(&project, &audio, &audio);
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                &project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let clip = revision.session().audio_clips()[0].id;
+        let expected: Vec<_> = (0..97)
+            .map(|i| {
+                source[if i < last - 3 {
+                    3 + i
+                } else {
+                    first + (i - (last - 3)) % (last - first)
+                } as usize]
+            })
+            .collect();
+        for block in [1, 7, 32, 97] {
+            let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            playback
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut actual = vec![[0.0; 2]; 97];
+            for chunk in actual.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(actual, expected, "cycle {first}..{last}, block {block}");
+            let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            candidate.try_inherit_state_from(&mut playback).unwrap();
+            let mut next = [[0.0; 2]; 3];
+            candidate.render(&mut next).unwrap();
+            for (j, frame) in next.iter().enumerate() {
+                assert_eq!(
+                    *frame,
+                    source[(first + (97 + j as u64 - (last - 3)) % (last - first)) as usize]
+                );
+            }
+            candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+            let mut stopped = [[1.0; 2]; 3];
+            candidate.render(&mut stopped).unwrap();
+            assert_eq!(stopped, [[0.0; 2]; 3]);
+        }
+    }
+}

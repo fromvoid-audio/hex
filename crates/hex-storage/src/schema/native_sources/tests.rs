@@ -106,11 +106,24 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        47
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut schema46: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     schema46["version"] = 46.into();
+    for source in schema46["native_sources"].as_array_mut().unwrap() {
+        source.as_object_mut().unwrap().remove("receiver");
+    }
+    assert!(
+        schema46
+            .as_object_mut()
+            .unwrap()
+            .remove("session_audio_cycles")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         decode(&serde_json::to_vec(&schema46).unwrap()).unwrap(),
         project,
@@ -140,7 +153,7 @@ fn schema44_promotes_legacy_instrument_and_preserves_original_bytes() {
         source.instrument().state(),
         track.instrument().unwrap().state()
     );
-    assert_eq!(bytes, original);
+    assert_eq!(bytes.as_slice(), original.as_slice());
     assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
 
     let mut schema45: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -445,8 +458,18 @@ fn current_binding_inventory_is_mandatory_ordered_and_resolves_source_projection
             10 => {
                 bad["track_source_bindings"][1]["source"] =
                     bad["track_source_bindings"][0]["source"].clone();
-                bad["track_source_bindings"][1]["instrument_position"] =
-                    bad["track_source_bindings"][0]["instrument_position"].clone();
+                bad["track_source_bindings"][1]["instrument_position"] = 0.into();
+                let source_id = bad["track_source_bindings"][0]["source"].as_u64().unwrap();
+                let receiver = bad["track_source_bindings"][1]["track"].clone();
+                let source = bad["native_sources"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|source| source["id"].as_u64() == Some(source_id))
+                    .unwrap();
+                source["receiver"] = receiver;
+                assert!(decode(&serde_json::to_vec(&bad).unwrap()).is_ok());
+                continue;
             }
             _ => {
                 bad["track_source_bindings"][1]["source"] =
@@ -459,6 +482,105 @@ fn current_binding_inventory_is_mandatory_ordered_and_resolves_source_projection
             "case {case}"
         );
     }
+}
+
+#[test]
+fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_only() {
+    let project = fixture();
+    let mut snapshot = project.snapshot();
+    let source_id = snapshot.tracks[0].instrument.as_ref().unwrap().id;
+    snapshot.tracks[1].instrument = snapshot.tracks[0].instrument.clone();
+    snapshot.tracks[1].instrument_position = Some(0);
+    let shared = Project::from_snapshot(snapshot).unwrap();
+    assert_eq!(
+        shared
+            .source_contributors(shared.tracks()[0].source_id().unwrap())
+            .count(),
+        2
+    );
+    assert_eq!(
+        decode(&encode(&shared).unwrap()).unwrap(),
+        shared,
+        "schema49 preserves one source shared by two contributors"
+    );
+    let mut no_receiver_snapshot = shared.snapshot();
+    let shared_source = shared.tracks()[0].source_id().unwrap().value();
+    no_receiver_snapshot
+        .native_sources
+        .iter_mut()
+        .find(|source| source.id == shared_source)
+        .unwrap()
+        .receiver = None;
+    let no_receiver = Project::from_snapshot(no_receiver_snapshot).unwrap();
+    assert_eq!(decode(&encode(&no_receiver).unwrap()).unwrap(), no_receiver);
+
+    let mut old46: serde_json::Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
+    old46["version"] = 46.into();
+    old46
+        .as_object_mut()
+        .unwrap()
+        .remove("session_audio_cycles");
+    for source in old46["native_sources"].as_array_mut().unwrap() {
+        source.as_object_mut().unwrap().remove("receiver");
+    }
+    let migrated = decode(&serde_json::to_vec(&old46).unwrap()).unwrap();
+    assert_eq!(
+        migrated.native_sources()[1].instrument().id().value(),
+        source_id
+    );
+    assert_eq!(migrated.native_sources()[0].receiver(), None);
+    assert_eq!(
+        migrated.native_sources()[1].receiver(),
+        Some(migrated.tracks()[0].id())
+    );
+
+    let mut malformed46 = old46;
+    malformed46["track_source_bindings"][1]["source"] =
+        malformed46["track_source_bindings"][0]["source"].clone();
+    malformed46["track_source_bindings"][1]["instrument_position"] =
+        malformed46["track_source_bindings"][0]["instrument_position"].clone();
+    assert!(decode(&serde_json::to_vec(&malformed46).unwrap()).is_err());
+
+    let mut missing_receiver: serde_json::Value =
+        serde_json::from_slice(&encode(&project).unwrap()).unwrap();
+    missing_receiver["native_sources"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("receiver");
+    assert!(decode(&serde_json::to_vec(&missing_receiver).unwrap()).is_err());
+
+    let mut missing_contributor: serde_json::Value =
+        serde_json::from_slice(&encode(&project).unwrap()).unwrap();
+    missing_contributor["native_sources"][1]["receiver"] = 999_999.into();
+    assert!(decode(&serde_json::to_vec(&missing_contributor).unwrap()).is_err());
+}
+
+#[test]
+fn authentic_schema46_receiverless_migration_preserves_sources_tracks_assets_and_routes() {
+    // Captured by the unmodified schema46 codec at 68b27451d.
+    // SHA-256: 1c99667964bbf040c14ac9611c4b7a5d8bd016aee89efef1c06127e7e22eae2f.
+    // Contains retained and bound source definitions, source media references,
+    // track-local effects on both sides of the instrument, and a MIDI route.
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/native-sources/schema46-source-receiver-predecessor-68b27451d.json"
+    );
+    let original = bytes.to_vec();
+    let wire: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(wire["version"], 46);
+    assert_eq!(wire["native_sources"].as_array().unwrap().len(), 2);
+    assert_eq!(wire["midi_routes"].as_array().unwrap().len(), 1);
+    let migrated = decode(bytes).unwrap();
+    assert_eq!(migrated.native_sources().len(), 2);
+    assert_eq!(migrated.native_sources()[0].receiver(), None);
+    assert_eq!(
+        migrated.native_sources()[1].receiver(),
+        Some(migrated.tracks()[0].id())
+    );
+    assert_eq!(migrated.tracks()[0].instrument_position(), Some(1));
+    assert_eq!(migrated.tracks()[0].devices().len(), 2);
+    assert_eq!(migrated.midi_routes().len(), 1);
+    assert_eq!(bytes.as_slice(), original.as_slice());
+    assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
 }
 
 #[test]
@@ -524,8 +646,116 @@ fn saved_unassigned_source_reopens_without_history_and_failed_publication_preser
     assert!(editor.undo());
     assert_eq!(editor.project().native_sources(), project.native_sources());
     assert!(editor.redo());
+    let first = editor.project().tracks()[0].id();
+    let second = editor.project().tracks()[1].id();
+    let shared = editor.project().track(first).unwrap().source_id().unwrap();
+    editor
+        .execute(Command::BindTrackSource {
+            track: second,
+            source: Some(shared),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source: shared,
+            track: Some(second),
+        })
+        .unwrap();
+    let after = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(
+        editor.project().native_source(shared).unwrap().receiver(),
+        Some(first)
+    );
+    assert_eq!(editor.project().source_contributors(shared).count(), 2);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
     let copy = dir.join("edited.hex");
     save_new(&copy, editor.project()).unwrap();
     assert_eq!(&load(&copy).unwrap(), editor.project());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn authentic_schema47_audio_and_source_migration_preserves_complete_state_and_bytes() {
+    // Captured by the unmodified schema47 writer at main 1b6095688b40722e20554e463c466026caa3c057.
+    // SHA-256: ce5b8fbe5670ad30669370bf9273d47a7456c3e7342889c87c5010a35b3c162e.
+    // Includes two retained source definitions, one singleton track binding with local effects,
+    // an unbound track, an audio clip with pitch and musical timing, and its media manifests.
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/native-sources/schema47-audio-and-sources-1b6095688b4.json"
+    );
+    let original = bytes.to_vec();
+    let wire: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(wire["version"], 47);
+    assert!(wire["native_sources"][0].get("receiver").is_none());
+    assert!(wire["native_sources"][1].get("receiver").is_none());
+
+    let migrated = decode(bytes).unwrap();
+    assert_eq!(migrated.native_sources().len(), 2);
+    assert_eq!(
+        migrated
+            .native_sources()
+            .iter()
+            .map(|source| source.id().value())
+            .collect::<Vec<_>>(),
+        vec![2, 7]
+    );
+    assert_eq!(migrated.native_sources()[0].receiver(), None);
+    assert_eq!(
+        migrated.native_sources()[0]
+            .devices()
+            .map(|device| device.id().value())
+            .collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    let bound = &migrated.native_sources()[1];
+    assert_eq!(
+        bound
+            .devices()
+            .map(|device| device.id().value())
+            .collect::<Vec<_>>(),
+        vec![6]
+    );
+    assert_eq!(bound.receiver().map(|track| track.value()), Some(5));
+    assert_eq!(migrated.tracks()[0].source_id(), Some(bound.id()));
+    assert_eq!(migrated.tracks()[0].instrument_position(), Some(1));
+    assert_eq!(migrated.tracks()[0].devices().len(), 2);
+    assert!(
+        migrated
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .any(|clip| {
+                clip.audio_edit()
+                    .is_some_and(|edit| edit.domain.pitch_cents == 137)
+            })
+    );
+    let mut shared_legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    shared_legacy["track_source_bindings"][1]["source"] = 7.into();
+    shared_legacy["track_source_bindings"][1]["instrument_position"] = 0.into();
+    assert!(
+        decode(&serde_json::to_vec(&shared_legacy).unwrap()).is_err(),
+        "historical schema47 remains one-binding-per-source"
+    );
+    let mut receiver_forgery: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    receiver_forgery["native_sources"][0]["receiver"] = serde_json::Value::Null;
+    assert!(
+        decode(&serde_json::to_vec(&receiver_forgery).unwrap()).is_err(),
+        "schema47's frozen source DTO has no receiver field"
+    );
+    let current: serde_json::Value = serde_json::from_slice(&encode(&migrated).unwrap()).unwrap();
+    assert_eq!(current["version"], 49);
+    assert_eq!(current["audio_clip_state"], wire["audio_clip_state"]);
+    assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
+    assert_eq!(bytes, original.as_slice());
+
+    let path = std::env::temp_dir().join(format!("hex-schema47-upgrade-{}", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    let (loaded, token) = load_with_token(&path).unwrap();
+    assert_eq!(loaded, migrated);
+    assert!(token.requires_format_upgrade());
+    assert!(token.requires_save_confirmation(&loaded).unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    std::fs::remove_file(path).unwrap();
 }

@@ -60,6 +60,20 @@ impl Default for BrowserLayout {
 }
 
 impl BrowserLayout {
+    pub(super) fn begin_sidebar_resize(&mut self, x: f32, initial: f32) {
+        self.sidebar_drag = Some((x, initial, initial == PICKER_MIN_WIDTH));
+    }
+    pub(super) fn update_sidebar_resize(&mut self, x: f32, width: f32) {
+        if let Some((start, initial, locked)) = self.sidebar_drag {
+            let (next, locked) = picker_resize_width(
+                initial + x - start,
+                (width - 124.0).max(PICKER_MIN_WIDTH),
+                locked,
+            );
+            self.sidebar_width = next;
+            self.sidebar_drag = Some((start, initial, locked));
+        }
+    }
     pub(super) fn history_source_available(&self, source: &BrowserSection) -> bool {
         SECTIONS
             .iter()
@@ -818,61 +832,27 @@ impl EditorView {
                 "browser-sidebar-resize-line",
                 self.browser.layout.sidebar_drag.is_some(),
             ))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event, window, cx| {
+                    view.begin_browser_resize(
+                        super::resize::Divider::Sidebar,
+                        event,
+                        sidebar_width,
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |bounds, _, window, _| {
-                        let down_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
-                            if phase.bubble()
-                                && event.button == MouseButton::Left
-                                && bounds.contains(&event.position)
-                            {
-                                down_entity.update(cx, |view, cx| {
-                                    view.browser.layout.sidebar_drag = Some((
-                                        f32::from(event.position.x),
-                                        sidebar_width,
-                                        sidebar_width == PICKER_MIN_WIDTH,
-                                    ));
-                                    cx.notify();
-                                });
-                            }
-                        });
-                        let move_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                            if !phase.bubble() {
-                                return;
-                            }
-                            move_entity.update(cx, |view, cx| {
-                                if !event.dragging() {
-                                    if view.browser.layout.sidebar_drag.take().is_some() {
-                                        cx.notify();
-                                    }
-                                } else if let Some((start, initial, locked)) =
-                                    view.browser.layout.sidebar_drag
-                                {
-                                    let (next, locked) = picker_resize_width(
-                                        initial + f32::from(event.position.x) - start,
-                                        (width - 124.0).max(PICKER_MIN_WIDTH),
-                                        locked,
-                                    );
-                                    view.browser.layout.sidebar_width = next;
-                                    view.browser.layout.sidebar_drag =
-                                        Some((start, initial, locked));
-                                    cx.notify();
-                                }
-                            });
-                        });
-                        let up_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if phase.bubble() && event.button == MouseButton::Left {
-                                up_entity.update(cx, |view, cx| {
-                                    if view.browser.layout.sidebar_drag.take().is_some() {
-                                        cx.notify();
-                                    }
-                                });
-                            }
-                        });
+                    move |_, _, window, cx| {
+                        entity.read(cx).renew_browser_resize(
+                            super::resize::Divider::Sidebar,
+                            window,
+                            entity.entity_id(),
+                        );
                     },
                 )
                 .size_full(),
@@ -995,17 +975,15 @@ impl EditorView {
                 || "no item selected".into(),
                 |name| name.to_string_lossy().into_owned(),
             ),
-            _ => self
+            Some(BrowserItemKey::Device(class, id)) => self
                 .browser_visible_devices(cx)
-                .get(
-                    self.browser
-                        .selected_index
-                        .saturating_sub(self.browser_visible_entries(cx).len()),
-                )
+                .iter()
+                .find(|(candidate, entry)| *candidate == class && entry.type_id == id)
                 .map_or_else(
                     || "no item selected".into(),
                     |(_, entry)| entry.name.to_string(),
                 ),
+            None => "no item selected".into(),
         }
     }
 
@@ -1013,9 +991,7 @@ impl EditorView {
         let entry = if self.browser.section == BrowserSection::Instruments {
             None
         } else {
-            self.browser_visible_entries(cx)
-                .get(self.browser.selected_index)
-                .cloned()
+            self.browser_selected_entry(cx)
         };
         browser_divider()
             .h(px(50.0))

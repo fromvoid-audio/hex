@@ -65,6 +65,7 @@ pub struct SessionAudioClipSnapshot {
     pub asset: u64,
     pub source_start: u64,
     pub source_end: u64,
+    pub loop_range: Option<crate::SessionAudioLoop>,
     pub gain: crate::ClipGain,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -470,6 +471,7 @@ impl Project {
                                     asset: clip.asset().value(),
                                     source_start: clip.source_start(),
                                     source_end: clip.source_end(),
+                                    loop_range: clip.loop_range(),
                                     gain: clip.gain(),
                                 })
                             }
@@ -577,6 +579,13 @@ impl Project {
         if snapshot.next_id <= max_id {
             return Err(Invalid("next project id must exceed all existing ids"));
         }
+        // Historical inline formats did not carry a receiver. Reconstruct it
+        // from their authoritative singleton binding, including removed/moved
+        // inline instruments between frozen migration layers.
+        for source in &mut snapshot.native_sources {
+            source.receiver = None;
+        }
+        let mut legacy_bindings = BTreeSet::new();
         for track in &snapshot.tracks {
             let Some(instrument) = &track.instrument else {
                 continue;
@@ -586,12 +595,18 @@ impl Project {
                 .iter_mut()
                 .find(|s| s.devices.iter().any(|d| d.id == instrument.id))
             {
+                if !legacy_bindings.insert(source.id) {
+                    return Err(Invalid("legacy snapshots cannot share source bindings"));
+                }
                 if source.devices.len() != 1 || source.instrument_index != 0 {
                     return Err(Invalid(
                         "legacy instrument does not identify a singleton source",
                     ));
                 }
                 source.devices[0] = instrument.clone();
+                if source.receiver.is_none() {
+                    source.receiver = Some(track.id);
+                }
             } else {
                 if snapshot.native_sources.len() >= crate::MAX_NATIVE_SOURCES {
                     return Err(Invalid("native source limit reached"));
@@ -605,7 +620,9 @@ impl Project {
                     name: track.name.clone(),
                     devices: vec![instrument.clone()],
                     instrument_index: 0,
+                    receiver: Some(track.id),
                 });
+                legacy_bindings.insert(id);
             }
         }
         Self::from_snapshot(snapshot)
@@ -737,6 +754,7 @@ impl Project {
                 source.name,
                 devices,
                 source.instrument_index,
+                source.receiver.map(TrackId),
             )?);
         }
         let mut total_notes = 0_usize;
@@ -1132,6 +1150,9 @@ impl Project {
                     if total_clips > MAX_CLIPS {
                         return Err(Invalid("clip limit reached"));
                     }
+                    if let Some(range) = clip.loop_range {
+                        range.validate_source(clip.source_start, clip.source_end)?;
+                    }
                     crate::SessionCellContent::Audio(crate::SessionAudioClip {
                         active: clip.active,
                         flavor: clip.flavor,
@@ -1140,6 +1161,7 @@ impl Project {
                         asset: AssetId(clip.asset),
                         source_start: clip.source_start,
                         source_end: clip.source_end,
+                        loop_range: clip.loop_range,
                         gain: clip.gain,
                     })
                 }

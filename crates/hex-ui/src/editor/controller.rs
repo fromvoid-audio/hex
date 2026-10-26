@@ -4,7 +4,6 @@ use super::play_intent::AdmissionError;
 use super::refresh::AudioFrame;
 use super::seek::seek_is_pending;
 use super::selection;
-use super::viewport::Viewport;
 use super::{
     EditorView, PendingEditorAudioResult, PendingEditorPublicationObservation, PendingPlayback,
     PendingPlaybackAction, PendingResidentPublication, Playback, PlaybackCandidate,
@@ -1054,6 +1053,8 @@ impl EditorView {
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_audio_events();
+                    visible_change |= self.retire_pending_clip_loop();
+                    visible_change |= self.cancel_audio_loop_gesture();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_track_reorder();
@@ -1080,6 +1081,7 @@ impl EditorView {
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_detail_request = self.audio_clip_controls.matches(&request);
                 let audio_events_request = self.pending_audio_events_matches(&request);
+                let clip_loop_request = self.pending_clip_loop_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
                 let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -1111,6 +1113,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             self.audio_events_submitted();
+                        }
+                        if clip_loop_request {
+                            self.clip_loop_submitted();
                         }
                         if clip_move_request {
                             self.clip_move_submitted();
@@ -1158,6 +1163,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             visible_change |= self.retire_pending_audio_events();
+                        }
+                        if clip_loop_request {
+                            visible_change |= self.retire_pending_clip_loop();
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
@@ -1229,6 +1237,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             visible_change |= self.retire_pending_audio_events();
+                        }
+                        if clip_loop_request {
+                            visible_change |= self.retire_pending_clip_loop();
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
@@ -2008,6 +2019,7 @@ impl EditorView {
             self.retire_sample_bpm_control();
         }
         self.audio_events_request_complete(&event);
+        self.clip_loop_request_complete(&event);
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
@@ -2261,17 +2273,17 @@ impl EditorView {
             self.invalidate_prepared_seek();
             self.cancel_active_browser_audio_drag();
         }
-        if !event.project_replaced
-            && self.viewport.is_none()
-            && let Some(previous_horizon) = self.state.as_ref().map(|state| state.timeline_frames)
-            && previous_horizon > 0
-            && event_state.timeline_frames > previous_horizon
-        {
-            // Auto-fit is a one-time view choice. Once content extends the
-            // project, keep the previously visible frame span so edits do not
-            // make the Arrangement appear to zoom out unexpectedly.
-            self.viewport = Some(Viewport::fit(previous_horizon));
-        }
+        // Resize previews retain their own captured viewport through the exact
+        // terminal below. Never adopt that private extent as canonical tail.
+        let resize_owns_viewport = retired_trim.is_some()
+            || self.pending_trim.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some();
+        self.reconcile_arranger_navigation(
+            &event_state,
+            event.project_replaced,
+            resize_owns_viewport,
+        );
         if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
@@ -2318,7 +2330,7 @@ impl EditorView {
         }
         self.observe_midi_take_completion(event.midi_take_complete);
         if loop_complete {
-            self.pending_loop = None;
+            self.loop_state_installed(event.error.is_none());
         }
         if event.project_replaced {
             self.loop_rail_gesture = None;
@@ -3222,6 +3234,7 @@ impl EditorView {
         let group_copy_request = self.pending_group_copy_matches(&request);
         let clip_detail_request = self.audio_clip_controls.matches(&request);
         let audio_events_request = self.pending_audio_events_matches(&request);
+        let clip_loop_request = self.pending_clip_loop_matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
         let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -3248,6 +3261,9 @@ impl EditorView {
                 }
                 if audio_events_request {
                     self.audio_events_submitted();
+                }
+                if clip_loop_request {
+                    self.clip_loop_submitted();
                 }
                 if clip_move_request {
                     self.clip_move_submitted();
@@ -3407,16 +3423,12 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let playhead = self.cursor_position();
         let viewport = self
             .visible_viewport(horizon)
             .zoom(horizon, playhead, inward);
-        self.viewport = if viewport == Viewport::fit(horizon) {
-            None
-        } else {
-            Some(viewport)
-        };
+        self.install_arranger_navigation(viewport);
     }
 
     pub(super) fn zoom_timeline_wheel_at(
@@ -3442,7 +3454,7 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let current = self.visible_viewport(horizon);
         let Some(anchor) = super::seek::pointer_to_frame(
             f32::from(pointer_x),
@@ -3459,11 +3471,12 @@ impl EditorView {
         if next == current {
             return false;
         }
-        self.viewport = (next != Viewport::fit(horizon)).then_some(next);
+        self.install_arranger_navigation(next);
         true
     }
 
     pub(super) fn fit_timeline(&mut self) {
+        self.clear_retained_navigation();
         self.viewport = None;
     }
 
@@ -3471,14 +3484,10 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let current = self.visible_viewport(horizon);
         let panned = current.pan_half(horizon, right);
-        self.viewport = if self.viewport.is_none() && panned == current {
-            None
-        } else {
-            Some(panned)
-        };
+        self.install_arranger_navigation(panned);
     }
 
     pub(super) fn queue_audio_command(&mut self, command: PlaybackCommand) {

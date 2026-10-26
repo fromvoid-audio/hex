@@ -1,7 +1,10 @@
 //! Clip-local waveform editing. Only selection, viewport and previews live here.
+//! A shared Window lease owns held event/selection/fade input; pending receipts
+//! retain frozen release geometry independently until the canonical terminal.
 mod fades;
 mod paint;
 mod pending;
+mod pointer;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
 mod view;
@@ -14,6 +17,16 @@ use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
 use hex_session::service::Request;
 pub(super) use view::view;
 
+/// Source editing exposes the complete retained root for a placed cycle,
+/// preserving the viewport while loop markers move in either direction.
+/// Bounds use the root's declared AudioDomainClock units.
+pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
+    if root.placement.is_some() {
+        (0, root.domain.clock.length())
+    } else {
+        (root.view_start, root.view_end)
+    }
+}
 #[derive(Default)]
 pub(super) struct State {
     owner: Option<(ClipId, u64)>,
@@ -80,6 +93,17 @@ impl EditorView {
             self.audio_event_editor.owner == Some((clip, self.project_generation))
                 && self.audio_event_editor.revision == revision
         })
+    }
+    pub(in crate::editor) fn audio_loop_current(&self) -> bool {
+        self.event_context_current()
+    }
+    pub(in crate::editor) fn audio_loop_grid(&self) -> SnapGrid {
+        self.audio_event_editor.grid
+    }
+    pub(in crate::editor) fn audio_loop_time_selection(&self) -> Option<(u64, u64)> {
+        self.event_context_current()
+            .then_some(self.audio_event_editor.range)
+            .flatten()
     }
     fn event_range(&self) -> Option<(u64, u64)> {
         if let Some(range) = self.audio_event_editor.range.filter(|(a, b)| a < b) {
@@ -195,7 +219,7 @@ impl EditorView {
         if insert
             && last_event_end
                 .checked_add(clipboard.length)
-                .is_none_or(|end| end > root.view_end)
+                .is_none_or(|end| end > editor_bounds(&root).1)
         {
             self.error = Some("audio event insert needs free time inside the visible clip".into());
             return;
@@ -242,7 +266,7 @@ impl EditorView {
             return;
         }
         let at = self.audio_event_editor.cursor;
-        if at > root.view_start && at < root.view_end {
+        if at > editor_bounds(&root).0 && at < editor_bounds(&root).1 {
             self.event_commit(AudioEventEdit::Split { at });
         }
     }
@@ -251,10 +275,10 @@ impl EditorView {
             return Viewport::fit(0);
         };
         let first = root
-            .root_frame_at(root.view_start, state.project.tempo_map())
+            .root_frame_at(editor_bounds(root).0, state.project.tempo_map())
             .unwrap_or(0);
         let end = root
-            .root_frame_at(root.view_end, state.project.tempo_map())
+            .root_frame_at(editor_bounds(root).1, state.project.tempo_map())
             .unwrap_or(first);
         self.audio_event_editor
             .viewport
@@ -296,9 +320,14 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
-            .root_frame_at(root.view_start, state.project.tempo_map())
+            .root_frame_at(editor_bounds(root).0, state.project.tempo_map())
             .ok()?;
-        let local = frame.saturating_sub(clip.start()).min(clip.duration());
+        let end = root
+            .root_frame_at(editor_bounds(root).1, state.project.tempo_map())
+            .ok()?;
+        let local = frame
+            .saturating_sub(clip.start())
+            .min(end.checked_sub(first)?);
         root.root_position_at(first.checked_add(local)?, state.project.tempo_map())
             .ok()
     }
@@ -307,7 +336,7 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
-            .root_frame_at(root.view_start, state.project.tempo_map())
+            .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
             .ok()?;
         let frame = clip.start().checked_add(
             root.root_frame_at(position, state.project.tempo_map())
@@ -372,21 +401,23 @@ impl EditorView {
             Kind::RangeMove { start, end } => {
                 let candidate = (i128::from(start) + i128::from(raw) - i128::from(gesture.anchor))
                     .clamp(
-                        i128::from(root.view_start),
+                        i128::from(editor_bounds(&root).0),
                         i128::from(
-                            root.view_end
+                            editor_bounds(&root)
+                                .1
                                 .saturating_sub(end - start)
-                                .max(root.view_start),
+                                .max(editor_bounds(&root).0),
                         ),
                     ) as u64;
                 let destination = self
                     .event_snap_position(candidate, platform)
                     .unwrap_or(candidate)
                     .clamp(
-                        root.view_start,
-                        root.view_end
+                        editor_bounds(&root).0,
+                        editor_bounds(&root)
+                            .1
                             .saturating_sub(end - start)
-                            .max(root.view_start),
+                            .max(editor_bounds(&root).0),
                     );
                 gesture.operation = Some(AudioEventEdit::MoveRange {
                     start,
@@ -397,21 +428,23 @@ impl EditorView {
             Kind::Move(event) => {
                 let candidate =
                     (i128::from(event.start) + i128::from(raw) - i128::from(gesture.anchor)).clamp(
-                        i128::from(root.view_start),
+                        i128::from(editor_bounds(&root).0),
                         i128::from(
-                            root.view_end
+                            editor_bounds(&root)
+                                .1
                                 .saturating_sub(event.length())
-                                .max(root.view_start),
+                                .max(editor_bounds(&root).0),
                         ),
                     ) as u64;
                 let start = self
                     .event_snap_position(candidate, platform)
                     .unwrap_or(candidate)
                     .clamp(
-                        root.view_start,
-                        root.view_end
+                        editor_bounds(&root).0,
+                        editor_bounds(&root)
+                            .1
                             .saturating_sub(event.length())
-                            .max(root.view_start),
+                            .max(editor_bounds(&root).0),
                     );
                 gesture.operation = Some(AudioEventEdit::Move {
                     event: event.id,
@@ -419,7 +452,8 @@ impl EditorView {
                 });
             }
             Kind::Leading(event) => {
-                let start = position.clamp(root.view_start.min(event.end - 1), event.end - 1);
+                let start =
+                    position.clamp(editor_bounds(&root).0.min(event.end - 1), event.end - 1);
                 gesture.operation = Some(AudioEventEdit::Trim {
                     event: event.id,
                     start,
@@ -428,7 +462,8 @@ impl EditorView {
             }
             Kind::Fade(_) => return,
             Kind::Trailing(event) => {
-                let end = position.clamp(event.start + 1, root.view_end.max(event.start + 1));
+                let end =
+                    position.clamp(event.start + 1, editor_bounds(&root).1.max(event.start + 1));
                 gesture.operation = Some(AudioEventEdit::Trim {
                     event: event.id,
                     start: event.start,
@@ -461,7 +496,7 @@ impl EditorView {
         };
         let position = if trim { event.end } else { event.start };
         let first = root
-            .root_frame_at(root.view_start, state.project.tempo_map())
+            .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
             .unwrap_or(0);
         let frame = clip.start().saturating_add(
             root.root_frame_at(position, state.project.tempo_map())
@@ -503,10 +538,11 @@ impl EditorView {
             }
         } else {
             let start = next.clamp(
-                root.view_start,
-                root.view_end
+                editor_bounds(&root).0,
+                editor_bounds(&root)
+                    .1
                     .saturating_sub(event.length())
-                    .max(root.view_start),
+                    .max(editor_bounds(&root).0),
             );
             self.event_commit(AudioEventEdit::Move {
                 event: event.id,
@@ -517,8 +553,8 @@ impl EditorView {
     fn event_select_all(&mut self) {
         if let Some((_, root, _)) = self.event_context() {
             self.advance_selection_intent();
-            self.audio_event_editor.range = Some((root.view_start, root.view_end));
-            self.audio_event_editor.cursor = root.view_start;
+            self.audio_event_editor.range = Some((editor_bounds(&root).0, editor_bounds(&root).1));
+            self.audio_event_editor.cursor = editor_bounds(&root).0;
         }
     }
     fn event_duplicate(&mut self) {
@@ -596,16 +632,24 @@ impl EditorView {
             return false;
         };
         let frame = |position| root.root_frame_at(position, state.project.tempo_map()).ok();
-        let Some(first) = frame(root.view_start) else {
+        let Some(first) = frame(editor_bounds(&root).0) else {
             return false;
         };
-        let Some(end) = frame(root.view_end) else {
+        let Some(end) = frame(editor_bounds(&root).1) else {
             return false;
         };
-        let Some(a) = frame(range.0.clamp(root.view_start, root.view_end)) else {
+        let Some(a) = frame(
+            range
+                .0
+                .clamp(editor_bounds(&root).0, editor_bounds(&root).1),
+        ) else {
             return false;
         };
-        let Some(b) = frame(range.1.clamp(root.view_start, root.view_end)) else {
+        let Some(b) = frame(
+            range
+                .1
+                .clamp(editor_bounds(&root).0, editor_bounds(&root).1),
+        ) else {
             return false;
         };
         let Some(next) = super::zoom_fit::interval(
@@ -639,10 +683,11 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let Ok(first) = root.root_frame_at(root.view_start, state.project.tempo_map()) else {
+        let Ok(first) = root.root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
+        else {
             return false;
         };
-        let Ok(end) = root.root_frame_at(root.view_end, state.project.tempo_map()) else {
+        let Ok(end) = root.root_frame_at(editor_bounds(&root).1, state.project.tempo_map()) else {
             return false;
         };
         let horizon = end.saturating_sub(first);
@@ -656,12 +701,18 @@ impl EditorView {
             prior.map(|viewport| viewport.clamp(horizon))
         } else {
             let range = self.audio_event_editor.range.and_then(|(a, b)| {
-                let first = a.min(b).clamp(root.view_start, root.view_end);
-                let last = a.max(b).clamp(root.view_start, root.view_end);
+                let first = a
+                    .min(b)
+                    .clamp(editor_bounds(&root).0, editor_bounds(&root).1);
+                let last = a
+                    .max(b)
+                    .clamp(editor_bounds(&root).0, editor_bounds(&root).1);
                 (first < last).then_some((first, last))
             });
-            return self
-                .fit_audio_interval(range.unwrap_or((root.view_start, root.view_end)), true);
+            return self.fit_audio_interval(
+                range.unwrap_or((editor_bounds(&root).0, editor_bounds(&root).1)),
+                true,
+            );
         };
         self.audio_event_editor.gesture = None;
         self.audio_event_editor.viewport = next;
@@ -675,10 +726,10 @@ impl EditorView {
             return;
         };
         let first = root
-            .root_frame_at(root.view_start, state.project.tempo_map())
+            .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
             .unwrap_or(0);
         let horizon = root
-            .root_frame_at(root.view_end, state.project.tempo_map())
+            .root_frame_at(editor_bounds(&root).1, state.project.tempo_map())
             .unwrap_or(first)
             .saturating_sub(first);
         let cursor = root
@@ -697,10 +748,10 @@ impl EditorView {
             return;
         };
         let first = root
-            .root_frame_at(root.view_start, state.project.tempo_map())
+            .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
             .unwrap_or(0);
         let end = root
-            .root_frame_at(root.view_end, state.project.tempo_map())
+            .root_frame_at(editor_bounds(&root).1, state.project.tempo_map())
             .unwrap_or(first);
         self.audio_event_editor.viewport =
             Some(self.event_viewport(&root).pan_half(end - first, right));
@@ -710,8 +761,8 @@ impl EditorView {
 
 fn event_paste_fits_view(root: &AudioClipEdit, at: u64, length: u64) -> bool {
     length > 0
-        && at >= root.view_start
+        && at >= editor_bounds(root).0
         && at
             .checked_add(length)
-            .is_some_and(|end| end <= root.view_end)
+            .is_some_and(|end| end <= editor_bounds(root).1)
 }

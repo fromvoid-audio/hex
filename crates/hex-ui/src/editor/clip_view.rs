@@ -185,6 +185,7 @@ impl EditorView {
         self.reconcile_clip_detail_resize(window, cx);
         self.reconcile_piano_pan();
         self.reconcile_midi_ruler();
+        self.reconcile_audio_loop();
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.detail_clip_id()

@@ -110,11 +110,7 @@ pub(super) fn prepare_clip(
     cached: Option<&PreparedSessionMidiClip>,
 ) -> Result<PreparedSessionMidiClip, crate::Invalid> {
     let source_identity = clip.source_identity();
-    let mutable_limits = config
-        .mutable_runtime
-        .as_deref()
-        .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
-        .transpose()?;
+    let mutable_limits = config.mutable_limits;
     if !clip.volume().points().is_empty()
         && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume)
     {

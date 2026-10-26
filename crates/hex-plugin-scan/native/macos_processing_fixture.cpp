@@ -27,8 +27,8 @@
 
 namespace {
 struct Observation {
-    int violations=0, created=0, initialized=0, terminated=0;
-    int arrangements=0, setups=0, activations=0, starts=0, stops=0, blocks=0, flushes=0;
+    std::atomic<int> violations{0}, created{0}, initialized{0}, terminated{0};
+    std::atomic<int> arrangements{0}, setups{0}, activations{0}, starts{0}, stops{0}, blocks{0}, flushes{0};
 } observed;
 int next_mode=0,next_fault=HEX_INSTANCE_VARIANT;
 bool control() { const bool valid=pthread_main_np()!=0; if (!valid) ++observed.violations; return valid; }
@@ -166,9 +166,11 @@ public:
 };
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int mode=next_mode,fault=next_fault;
-    bool initialized=false, arranged=false, setup=false, active=false, processing=false;
+    bool initialized=false, arranged=false, setup=false, active=false;
+    std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
-    int32 inputs=2,outputs=2,maximum=0,block=0,precision=kSample32;
+    int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
+    std::atomic<int32> block{0};
     double sample_rate=0;
     float gain=1;
     uint32 input_latency=0,output_latency=0,restored_latency=0;
@@ -244,8 +246,14 @@ public:
         trace(16);return kResultOk;
     }
     tresult PLUGIN_API getState(IBStream* stream) override {
-        if (!control() || !active || processing || !stream) return kResultFalse;
+        if (!control() || !active || !stream) return kResultFalse;
         ++restoration.component_get;
+        // Original current-state capture fault controls leave startup valid.
+        if(restoration.component_get>1) {
+            if(fault==69) return kResultFalse;
+            if(fault==70) throw std::runtime_error("original SDK current capture exception");
+            if(fault==71) fault_hang(22);
+        }
         if (fault==35) arm_main_thread_tail();
         if (fault==34) fault_hang(12);
         if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
@@ -342,7 +350,7 @@ public:
         active=enabled;return kResultOk;
     }
     tresult PLUGIN_API setProcessing(TBool enabled) override {
-        if (!active || (enabled?processing:(!processing || !same_worker()))) return kResultFalse;
+        if (!active || (enabled?processing.load():(!processing || !same_worker()))) return kResultFalse;
         if (pthread_main_np()) { ++observed.violations;return kResultFalse; }
         if (enabled && fault==18) return kResultFalse;
         if(!enabled) {
@@ -483,7 +491,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>68) return false;next_fault=value;
+        if (value>71) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
