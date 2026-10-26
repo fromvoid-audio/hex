@@ -1,8 +1,29 @@
 //! Control-side event forwarding; filesystem ownership stays in hex-diagnostics.
+//!
+//! Coverage: existing action handlers (no new dispatch listeners), pre-dispatch
+//! editor keys including consumed shortcuts, root pointer down/up, and changes
+//! observed at the existing 16 ms poll in track/clip/scene selection, mode,
+//! viewport and browser query length. Semantic widget edits use exhaustive
+//! session request/command projections; transport attempts retain actual tickets.
+//! This is a causal aid, not lossless input replay: intermediate view states,
+//! pointer moves/scroll deltas, OS file dialogs, text contents, and deferred-work
+//! UI parents are not captured. Unknown parents remain None. Callback application
+//! is a separate audio trace joined by output, context, revision and ticket.
+//! Existing general status/error logs may include source-provided text/paths;
+//! the new action projections exclude them. Loss counters and bounded retention
+//! apply to every category; handlers never wait for file I/O.
 use gpui::{App, AppContext, BorrowAppContext, Global, PromptLevel, Window};
 use hex_audio::audio_diagnostics::{AudioDiagnosticsFlags, MAX_DRAIN_PER_POLL};
 use hex_diagnostics::DiagnosticsHandle;
-use std::sync::atomic::Ordering::Acquire;
+use hex_session::service::diagnostics::DiagnosticObserver;
+use std::sync::{
+    Arc,
+    atomic::{
+        AtomicU64,
+        Ordering::{Acquire, Relaxed},
+    },
+};
+static NEXT_ACTION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AudioSnapshot {
@@ -19,9 +40,11 @@ struct AudioSnapshot {
 
 struct SessionDiagnostics {
     audio_flags: AudioDiagnosticsFlags,
+    action_observer: Option<Arc<DiagnosticObserver>>,
     audio_snapshot: Option<AudioSnapshot>,
     audio_losses: Option<(u64, u64, u64)>,
     handle: Result<DiagnosticsHandle, String>,
+    last_view: String,
     last_status: String,
     last_error: Option<String>,
     reported_failure: bool,
@@ -33,9 +56,11 @@ impl Global for SessionDiagnostics {}
 pub fn install_session_log(cx: &mut App, handle: Result<DiagnosticsHandle, String>) {
     cx.set_global(SessionDiagnostics {
         audio_flags: AudioDiagnosticsFlags::OFF,
+        action_observer: None,
         audio_snapshot: None,
         audio_losses: None,
         handle,
+        last_view: String::new(),
         last_status: String::new(),
         last_error: None,
         reported_failure: false,
@@ -57,6 +82,156 @@ pub fn install_audio_diagnostics(cx: &mut App, flags: AudioDiagnosticsFlags) {
     {
         let _ = handle.record(&format!("audio_diag v=1 stage=configuration build={:?} flags={flags:?} capacity={} drain_budget={} receipt_time=control", crate::build_info::LABEL,
             hex_audio::audio_diagnostics::TRACE_CAPACITY, MAX_DRAIN_PER_POLL));
+    }
+}
+
+/// Opt-in action intent and canonical service outcomes. No user text, paths or
+/// clipboard content is captured. Direct widgets still produce canonical requests;
+/// this wrapper observes existing handlers without changing action availability.
+pub fn install_action_diagnostics(cx: &mut App, enabled: bool) {
+    let Some(config) = cx.try_global::<SessionDiagnostics>() else {
+        return;
+    };
+    let observer = enabled.then(|| config.handle.as_ref().ok().cloned()).flatten().map(|handle| {
+        Arc::new(DiagnosticObserver::new(move |event| {
+            let _ = handle.record(&format!("action_diag v=1 stage=session service={} request={:?} observation={:?} details_truncated={}{}",
+                event.service_id, event.request, event.stage, event.details_truncated, event.details));
+        }))
+    });
+    cx.global_mut::<SessionDiagnostics>().action_observer = observer;
+}
+
+pub(crate) fn attach_service(cx: &App, service: &hex_session::service::Service) {
+    if let Some(observer) = cx
+        .try_global::<SessionDiagnostics>()
+        .and_then(|d| d.action_observer.clone())
+    {
+        let _ = service.set_diagnostic_observer(observer);
+    }
+}
+
+pub(crate) trait ActionTraceContext<T> {
+    fn trace<A: gpui::Action>(
+        &self,
+        handler: impl Fn(&mut T, &A, &mut Window, &mut gpui::Context<T>) + 'static,
+    ) -> impl Fn(&A, &mut Window, &mut App) + 'static;
+}
+impl<T: 'static> ActionTraceContext<T> for gpui::Context<'_, T> {
+    fn trace<A: gpui::Action>(
+        &self,
+        handler: impl Fn(&mut T, &A, &mut Window, &mut gpui::Context<T>) + 'static,
+    ) -> impl Fn(&A, &mut Window, &mut App) + 'static {
+        self.listener(move |view, action: &A, window, cx| {
+            let _scope = action_scope(cx, action.name());
+            handler(view, action, window, cx);
+        })
+    }
+}
+
+pub(crate) fn action_scope(
+    cx: &App,
+    name: &'static str,
+) -> Option<hex_session::service::diagnostics::DiagnosticActionScope> {
+    let config = cx.try_global::<SessionDiagnostics>()?;
+    let observer = config.action_observer.as_ref()?;
+    let id = NEXT_ACTION
+        .fetch_update(Relaxed, Relaxed, |n| n.checked_add(1))
+        .ok()?
+        .checked_add(1)?;
+    if let Ok(handle) = &config.handle {
+        let _ = handle.record(&format!(
+            "action_diag v=1 stage=handler action_id={id} action={name:?}"
+        ));
+    }
+    Some(observer.enter_ui_action(id))
+}
+
+/// Called by the pre-dispatch interceptor, including keys consumed by custom
+/// editors. Ordinary text is counted, never recorded; action names are static.
+pub(crate) fn record_key(cx: &App, event: &gpui::KeystrokeEvent) {
+    let Some(config) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+    else {
+        return;
+    };
+    if let Ok(handle) = &config.handle {
+        let key = match event.keystroke.key.as_str() {
+            "space" | "enter" | "escape" | "tab" | "backspace" | "delete" | "left" | "right"
+            | "up" | "down" => event.keystroke.key.as_str(),
+            _ => "redacted",
+        };
+        let _ = handle.record(&format!("action_diag v=1 stage=key key={key:?} key_bytes={} modifiers={:?} resolved_action={:?} context_depth={}",
+            event.keystroke.key.len(), event.keystroke.modifiers, event.action.as_ref().map(|a| a.name()), event.context_stack.len()));
+    }
+}
+
+pub(crate) fn actions_enabled(cx: &App) -> bool {
+    cx.try_global::<SessionDiagnostics>()
+        .is_some_and(|d| d.action_observer.is_some())
+}
+
+pub(crate) fn record_view(cx: &mut App, snapshot: String) {
+    let Some(config) = cx.try_global::<SessionDiagnostics>() else {
+        return;
+    };
+    if !actions_enabled(cx) || config.last_view == snapshot {
+        return;
+    }
+    if let Ok(handle) = &config.handle
+        && handle
+            .record(&format!("action_diag v=1 stage=view_observed{snapshot}"))
+            .is_ok()
+    {
+        cx.global_mut::<SessionDiagnostics>().last_view = snapshot;
+    }
+}
+
+pub(crate) fn record_pointer(
+    cx: &App,
+    stage: &str,
+    button: gpui::MouseButton,
+    position: gpui::Point<gpui::Pixels>,
+    modifiers: gpui::Modifiers,
+) {
+    if !actions_enabled(cx) {
+        return;
+    }
+    if let Some(config) = cx.try_global::<SessionDiagnostics>()
+        && let Ok(handle) = &config.handle
+    {
+        let _ = handle.record(&format!("action_diag v=1 stage={stage} button={button:?} position={position:?} modifiers={modifiers:?}"));
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TransportTrace(DiagnosticsHandle, Arc<DiagnosticObserver>);
+impl TransportTrace {
+    pub(crate) fn from_app(cx: &App) -> Option<Self> {
+        let config = cx.try_global::<SessionDiagnostics>()?;
+        let observer = config.action_observer.as_ref()?;
+        config
+            .handle
+            .as_ref()
+            .ok()
+            .cloned()
+            .map(|handle| Self(handle, Arc::clone(observer)))
+    }
+    pub(crate) fn attempt(
+        &self,
+        audio: &mut crate::EditorAudio,
+        action: hex_engine::PlaybackAction,
+    ) -> Result<u64, hex_engine::PlaybackAction> {
+        let result = audio.control.action_with_ticket(action);
+        let _ = self.0.record(&format!("action_diag v=1 stage=transport_attempt ui_action_id={:?} output={:?} action={action:?} ticket={:?} accepted={}", self.1.current_ui_action(), audio.control.output_identity(), result.as_ref().ok(), result.is_ok()));
+        result
+    }
+    pub(crate) fn stop(&self, audio: &crate::EditorAudio) {
+        let _ = self.0.record(&format!(
+            "action_diag v=1 stage=priority_stop_requested ui_action_id={:?} output={:?}",
+            self.1.current_ui_action(),
+            audio.control.output_identity()
+        ));
     }
 }
 

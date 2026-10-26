@@ -3,6 +3,7 @@ use super::{
     ControlPresentation, DeviceControlIdentity, EditorView, ParameterKey,
     effective_parameter_value, finalize_controls, parameter_control_with_presentation,
 };
+use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView};
@@ -388,7 +389,7 @@ fn operator_label(
             cx.notify();
         }
     }))
-    .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+    .on_action(cx.trace(move |view, _: &ActivateSection, _, cx| {
         if owner.is_some_and(|owner| owner.is_current(view)) {
             if finalize_controls(view, cx) {
                 let state = view.device_panel.operator_pages.entry(device).or_default();
@@ -479,7 +480,7 @@ fn page_tab(
                 cx.notify();
             }
         }))
-        .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+        .on_action(cx.trace(move |view, _: &ActivateSection, _, cx| {
             if owner.is_some_and(|owner| owner.is_current(view)) {
                 if finalize_controls(view, cx) {
                     view.device_panel

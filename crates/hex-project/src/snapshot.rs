@@ -1321,6 +1321,53 @@ pub(crate) fn insert_id(
 }
 
 impl Snapshot {
+    /// Keep alias references aligned after an intentional render projection of
+    /// a snapshot captured from a validated Project. Removed placements release
+    /// membership; a surviving source keeps its original identity and payload.
+    /// This is not a decoder repair or validation substitute. Admit the resulting
+    /// snapshot through Project::from_snapshot before preparing playback.
+    pub fn retain_clip_aliases_after_projection(&mut self) {
+        if self.aliases.members.is_empty() {
+            return;
+        }
+        let mut live = BTreeSet::new();
+        for track in &self.tracks {
+            match &track.content {
+                TrackContentSnapshot::Audio(clips) => live.extend(clips.iter().map(|c| c.id)),
+                TrackContentSnapshot::Instrument(clips) => live.extend(clips.iter().map(|c| c.id)),
+                TrackContentSnapshot::Hybrid {
+                    audio_clips,
+                    midi_clips,
+                } => {
+                    live.extend(audio_clips.iter().map(|c| c.id));
+                    live.extend(midi_clips.iter().map(|c| c.id));
+                }
+            }
+        }
+        live.extend(
+            self.session
+                .cells
+                .iter()
+                .filter_map(|cell| match &cell.content {
+                    SessionCellContentSnapshot::Audio(clip) => Some(clip.id),
+                    SessionCellContentSnapshot::Midi(clip) => Some(clip.id),
+                    SessionCellContentSnapshot::Stop => None,
+                }),
+        );
+        self.aliases
+            .members
+            .retain(|member| live.contains(&member.clip));
+        let sources: BTreeSet<_> = self
+            .aliases
+            .members
+            .iter()
+            .map(|member| member.source)
+            .collect();
+        self.aliases
+            .sources
+            .retain(|source| sources.contains(&source.id));
+    }
+
     /// Structural proposal validation is separate from live Project admission.
     pub fn validate_gain_lanes(&self) -> Result<(), Invalid> {
         let mut units = 0_usize;

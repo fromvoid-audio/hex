@@ -63,6 +63,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         focus.focus(window);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             position,
             icon_grid: Some(ICONS.iter().map(|(_, glyph, _)| *glyph).collect()),
             selected,
@@ -253,6 +254,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         focus.focus(window);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             position,
             icon_grid: None,
             selected: 0,
