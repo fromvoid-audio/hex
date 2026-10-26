@@ -198,6 +198,8 @@ notes or velocity bars, even with midi draw mode enabled. release **2** to retur
 to ordinary editing. a range already being dragged continues until mouse release.
 an i-beam cursor marks the time-selection tool while **2** is held.
 text and numeric fields keep normal number entry.
+the clip editor shows the selected clip. clicking away or making an arrange time
+selection clears its contents until a clip is selected again.
 
 a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
@@ -355,24 +357,43 @@ to the base value, or **hide lane** to keep the curve while hiding its display.
 point edits and clearing support undo and redo; authored curves survive saving
 and reopening.
 
+editing a supported parameter manually overrides its curve while retaining the
+points. right-click the parameter or its lane and choose **re-enable automation**
+to resume that curve at the current position. the transport's re-enable control
+restores all overridden device curves. override selections support undo and redo
+and are retained when saving, reopening and rendering the project. clicking a
+control without editing it leaves automation running.
+
 supported device controls are utility's parameters, saturator's four parameters,
 and auto pan's amount, rate, phase and waveform. native effects on tracks, main
 and returns also offer host **input gain** and **output gain** lanes. instrument
 and source-owned effect lanes, other device controls and vst lanes are not yet
-available. recording device movements, manual automation override and shared
-modulator assignments are not implemented.
+available. recording device movements and shared modulator assignments are not
+implemented.
 
 recorded track-gain touch spans are displayed but read-only: leave automation
 view and use the track's gain editor to clear the lane before editing its base
 curve.
 
+## audio clip pitch
+
+for an ordinary audio clip, drag the **pitch** dial beside the warp controls.
+its readout is in cents; 100 cents is one semitone. click the readout to type a
+value between -4800 and +4800 cents. **up/down** steps by 100 cents;
+**shift+up/down** steps by one cent. double-click the dial to reset to zero.
+**escape** cancels a held draft; one undo restores a completed change.
+
+with several clips selected, pitch changes remain relative to each clip's
+existing value. in **re-pitch** mode the dial is unavailable: tempo determines
+the audible pitch while the stored transpose value is retained.
+
 ## clip loop resizing
 
-hover the lower part of a clip's right edge to show the loop cursor, then drag
+hover the lower part of a clip's right edge to show the circular-arrow cursor, then drag
 to repeat its source. the rest of the edge keeps ordinary trimming. audio and
 midi clips use the same gesture; no loop icon is painted inside the clip. looped
-clips have rounded bottom corners. drag the first repeat boundary to change the
-cycle while keeping the outer duration; directed clips retain only the outer
+clips have rounded bottom corners. the first repeat boundary uses left/right
+arrows; drag it to change the cycle while keeping the outer duration; directed clips retain only the outer
 repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
 
 clips and sections keep their actual timeline width when zoomed out. zoom in

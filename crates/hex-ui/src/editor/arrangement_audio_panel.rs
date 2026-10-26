@@ -15,6 +15,7 @@ enum Field {
     PlayStart,
     Looping,
     Gain,
+    Pitch,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,7 @@ struct ClipWindow {
     source_looping: bool,
     placement_mode: Option<AudioViewMode>,
     gain: hex_project::ClipGain,
+    pitch_cents: i16,
     asset_frames: u64,
     sample_rate: u32,
     revision: u64,
@@ -87,6 +89,7 @@ pub(super) fn view(
             .and_then(|edit| edit.placement)
             .map(|p| p.mode),
         gain: clip.gain(),
+        pitch_cents: clip.audio_edit().map_or(0, |e| e.domain.pitch_cents),
         asset_frames: asset.playback_frames(),
         sample_rate: state.project.sample_rate(),
         revision: state.revision,
@@ -138,6 +141,16 @@ pub(super) fn view(
         controls = controls.child(super::musical_audio_controls::warp_header(
             view, clip_id, cx,
         ));
+        let pitch = controls::number(view, window, Field::Pitch, "pitch", cx);
+        let gain = controls::number(view, window, Field::Gain, "gain", cx);
+        controls = controls.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .flex_shrink_0()
+                .children([pitch, gain.flex_1().min_w_0()]),
+        );
     }
     for (field, label) in [
         (Field::Position, "pos"),
@@ -147,6 +160,9 @@ pub(super) fn view(
         (Field::SourceEnd, "src end"),
         (Field::Gain, "gain"),
     ] {
+        if field == Field::Gain && !grouped_audio {
+            continue; // Already beside the pitch dial; grouped sources retain their gain row.
+        }
         if !grouped_audio || matches!(field, Field::Position | Field::Length | Field::Gain) {
             controls = controls.child(controls::number(view, window, field, label, cx));
         }
@@ -511,6 +527,7 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
                 millidb,
             })
         }
+        Field::Pitch => None, // Signed pitch uses its musical-command owner.
         Field::Looping => Some(Command::SetClipLooping {
             clip: window.clip,
             looping: !window.looping(),
@@ -536,6 +553,7 @@ fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
                     && clip.source_offset() == captured.source_start
                     && clip.source_length() == captured.source_length
                     && clip.gain() == captured.gain
+                    && clip.audio_edit().map_or(0, |e| e.domain.pitch_cents) == captured.pitch_cents
                     && clip.looping() == captured.source_looping
                     && clip
                         .audio_edit()
@@ -787,6 +805,7 @@ mod tests {
                     .and_then(|edit| edit.placement)
                     .map(|p| p.mode),
                 gain: clip.gain(),
+                pitch_cents: clip.audio_edit().map_or(0, |e| e.domain.pitch_cents),
                 asset_frames: state.project.asset(clip.asset()).unwrap().playback_frames(),
                 sample_rate: state.project.sample_rate(),
                 revision: state.revision,
@@ -962,6 +981,7 @@ mod tests {
             source_looping: true,
             placement_mode: None,
             gain: hex_project::ClipGain::UNITY,
+            pitch_cents: 0,
             asset_frames: 1_000,
             sample_rate: 48_000,
             revision: 7,

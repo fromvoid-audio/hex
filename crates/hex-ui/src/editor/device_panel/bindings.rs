@@ -31,8 +31,9 @@ pub(super) struct BindingPresentation {
     pub(super) compact_toggle_width: f32,
 }
 
-// This is the sole edge translating view-only host control keys into neutral
-// authored targets. Reserved widget IDs never enter provider/model persistence.
+// Translate view-only host control keys into neutral lane targets. The Session
+// adapter also normalizes legacy parameter-gesture keys before canonical edits;
+// reserved widget IDs never enter provider/model persistence.
 fn automation_target(
     parameter: hex_lattice_contract::ParameterId,
 ) -> hex_lattice_contract::DeviceAutomationTarget {
@@ -648,6 +649,7 @@ fn create_parameter_control(
                 },
             );
             let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
+            entity.update(cx, |control, _| control.set_commit_unchanged_text(true));
             let target = GestureTarget::DeviceParameter {
                 device: key.device,
                 parameter: key.parameter,
@@ -684,6 +686,20 @@ fn create_parameter_control(
                         );
                     }
                     let value = ParameterValue::Float(event.value as f32);
+                    if event.phase == NumericEventPhase::Commit
+                        && event_lease.get().is_none()
+                        && view.device_gesture.snapshot().is_none()
+                    {
+                        let result = view
+                            .begin_device_gesture(target, value)
+                            .and_then(|_| view.change_device_gesture(value))
+                            .and_then(|_| view.finish_device_gesture(value));
+                        if let Err(error) = result {
+                            view.error = Some(error.into());
+                        }
+                        cx.notify();
+                        return;
+                    }
                     if let Err(error) = dispatch_bound_numeric_gesture(
                         view,
                         target,
@@ -760,11 +776,8 @@ fn create_parameter_control(
                 view.remember_automation_parameter(key.device, automation_target(key.parameter));
                 let value = ParameterValue::Bool(event.checked);
                 view.device_panel.pending_values.insert(target, value);
-                if !view.enqueue_device_barrier(Request::SetDeviceParameter {
-                    device: target.device,
-                    parameter: target.parameter,
-                    value,
-                }) {
+                if !view.manual_device_parameter_request(target.device, target.parameter, value)
+                        .is_ok_and(|request| view.enqueue_device_barrier(request)) {
                     view.device_panel.pending_values.remove(&target);
                 }
                 cx.notify();
@@ -829,11 +842,8 @@ fn create_parameter_control(
                     view.remember_automation_parameter(key.device, automation_target(key.parameter));
                     let value = ParameterValue::Choice(value);
                     view.device_panel.pending_values.insert(target, value);
-                    if !view.enqueue_device_barrier(Request::SetDeviceParameter {
-                        device: target.device,
-                        parameter: target.parameter,
-                        value,
-                    }) {
+                    if !view.manual_device_parameter_request(target.device, target.parameter, value)
+                        .is_ok_and(|request| view.enqueue_device_barrier(request)) {
                         view.device_panel.pending_values.remove(&target);
                     }
                     cx.notify();

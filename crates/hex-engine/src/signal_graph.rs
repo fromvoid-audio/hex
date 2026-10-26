@@ -527,7 +527,46 @@ impl SignalGraph {
     fn clock_only_compatible(&self, other: &Self) -> bool {
         !self.needs_upstream_frame_routing()
             && !other.needs_upstream_frame_routing()
-            && self.tracks.len() == other.tracks.len()
+            && self.same_routing(other)
+    }
+    /// A first compensated epoch may start with empty rings only when the old
+    /// graph owns no delay history and semantic routes have not changed. DSP
+    /// quiescence and source/clock continuity are independently checked by Session.
+    pub(crate) fn can_start_compensation_from(&self, other: &Self) -> bool {
+        !other.needs_runtime()
+            && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
+            && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
+            && self.same_routing(other)
+    }
+    /// Existing output may enter fresh delay rings unchanged. Only processors
+    /// moved behind a new latency (or removed from this owner) need to be quiet:
+    /// their old residual output has no corresponding new origin during fill.
+    pub(crate) fn can_start_chain_from(
+        &self,
+        nodes: &[usize],
+        old: &Self,
+        old_nodes: &[usize],
+        chain: &hex_lattice::NativeRuntimeChain,
+    ) -> bool {
+        if chain.is_empty() {
+            return true; // Fused stateless matrices own no residual output.
+        }
+        old_nodes.len() == chain.len()
+            && old_nodes.iter().enumerate().all(|(index, &old_node)| {
+                let unchanged_origin = old
+                    .typed
+                    .get(old_node)
+                    .and_then(|id| self.typed.binary_search(id).ok())
+                    .filter(|node| nodes.contains(node))
+                    .and_then(|node| self.plan.nodes().get(node))
+                    .is_some_and(|node| {
+                        node.input_arrival_frames == 0 && node.output_arrival_frames == 0
+                    });
+                unchanged_origin || chain.committed_range_is_quiescent(index..index + 1)
+            })
+    }
+    fn same_routing(&self, other: &Self) -> bool {
+        self.tracks.len() == other.tracks.len()
             && self.returns.len() == other.returns.len()
             && self.tracks.iter().zip(&other.tracks).all(|(a, b)| {
                 a.id == b.id

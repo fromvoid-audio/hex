@@ -33,11 +33,6 @@ fn bounded_piano_view(prior: PianoView, length: u64) -> PianoView {
         ..prior
     }
 }
-pub(super) struct MidiFitBaseline {
-    owner: (u64, ClipId),
-    current: PianoView,
-    back: Option<((u64, ClipId), PianoView)>,
-}
 struct ArrangeFit {
     generation: u64,
     viewport: Option<Viewport>,
@@ -65,38 +60,19 @@ pub(super) fn interval(a: u64, b: u64, horizon: u64, minimum: u64) -> Option<Vie
     })
 }
 impl EditorView {
-    pub(super) fn begin_midi_range_fit(&mut self) -> Option<MidiFitBaseline> {
-        let owner = (self.project_generation, self.detail_clip_id()?);
+    fn remember_midi_fit(&mut self) {
+        let Some(clip) = self.detail_clip_id() else {
+            return;
+        };
         let current = PianoView {
             start: self.piano_beat_start,
             span: self.piano_beat_span,
             low: self.piano_pitch_low,
             rows: self.piano_pitch_rows,
         };
-        let baseline = MidiFitBaseline {
-            owner,
-            current,
-            back: self.zoom_fit.midi,
-        };
-        self.zoom_fit.midi = Some((owner, current));
-        Some(baseline)
+        self.zoom_fit.midi = Some(((self.project_generation, clip), current));
     }
-    pub(super) fn restore_midi_range_fit(&mut self, baseline: MidiFitBaseline) {
-        if self.project_generation == baseline.owner.0
-            && self.detail_clip_id() == Some(baseline.owner.1)
-        {
-            let Some(length) = self.midi_clip().map(|clip| clip.source_length().raw()) else {
-                return;
-            };
-            let current = bounded_piano_view(baseline.current, length);
-            self.piano_beat_start = current.start;
-            self.piano_beat_span = current.span;
-            self.piano_pitch_low = baseline.current.low;
-            self.piano_pitch_rows = baseline.current.rows;
-            self.zoom_fit.midi = baseline.back;
-        }
-    }
-    /// Shared manual/Arrange fit calculation; the caller owns when to retain back state.
+    /// Manual fit calculation; the caller owns when to retain back state.
     pub(super) fn fit_midi_interval(&mut self, range: (u64, u64), remember: bool) -> bool {
         let Some(length) = self.midi_clip().map(|clip| clip.source_length().raw()) else {
             return false;
@@ -116,7 +92,7 @@ impl EditorView {
             return false;
         }
         if remember {
-            let _ = self.begin_midi_range_fit();
+            self.remember_midi_fit();
         }
         self.cancel_midi_note_gesture();
         self.piano_zoom_wheel_accum = 0.0;
