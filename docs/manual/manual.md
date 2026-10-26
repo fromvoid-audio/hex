@@ -334,8 +334,10 @@ shortening or deleting end material keeps your current arrange position and zoom
 when you pan or zoom afterward, obsolete empty tail outside the new view retires;
 scrolling cannot return to that retired space. arrange keeps at least eight
 seconds of normal space beyond content. **command+0** fits the normal navigation
-extent; **z** fits the selection or content, and **x** explicitly restores the
-prior fitted view, including its former visible trailing space.
+extent. **z** fits the selection or content in time and the selected track span
+vertically in arrange. **x** restores the prior time view, track heights and
+vertical scroll, including former visible trailing space. minimum row heights
+can leave a large selection scrollable.
 
 ## create fades from a time selection
 

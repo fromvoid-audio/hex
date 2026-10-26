@@ -50,6 +50,17 @@ pub(super) struct TrackLayout {
     revision: Option<u64>,
     focus_ranges: std::rc::Rc<[(u64, u64)]>,
 }
+/// View-only custody of row heights and a stable scroll anchor for Zoom Back.
+/// The layout owner alone captures/restores these private maps; no musical or
+/// native playback resources are retained.
+pub(super) struct VerticalFitSnapshot {
+    generation: u64,
+    heights: BTreeMap<Row, f32>,
+    overview: Option<BTreeMap<Row, f32>>,
+    anchor: Option<TrackId>,
+    scroll: gpui::ListOffset,
+}
+
 impl TrackLayout {
     fn active_heights(&self) -> &BTreeMap<Row, f32> {
         self.overview.as_ref().unwrap_or(&self.heights)
@@ -219,6 +230,134 @@ impl EditorView {
                 (width - MIN_LANE_WIDTH).clamp(TRACK_HEADER_WIDTH, MAX_HEADER_WIDTH)
             })
     }
+    pub(super) fn capture_vertical_fit(&mut self) -> Option<VerticalFitSnapshot> {
+        let state = self.state.clone()?;
+        self.sync_track_layout(state.project.tracks());
+        if self.track_layout.generation != self.project_generation
+            || !self
+                .arrangement_bounds
+                .is_some_and(|area| area.height.is_finite() && area.height > 0.0)
+        {
+            return None;
+        }
+        let scroll = self.track_scroll.list.logical_scroll_top();
+        Some(VerticalFitSnapshot {
+            generation: self.project_generation,
+            heights: self.track_layout.heights.clone(),
+            overview: self.track_layout.overview.clone(),
+            anchor: self.track_layout.tracks.get(scroll.item_ix).copied(),
+            scroll,
+        })
+    }
+
+    /// Fit the inclusive visible row span, accounting for fixed automation lanes.
+    /// Minimum operable row height wins when a large selection cannot fully fit.
+    pub(super) fn fit_tracks_vertically(&mut self, members: &[TrackId]) -> bool {
+        if self.track_resize_active()
+            || self.track_layout.generation != self.project_generation
+            || self.track_layout.revision != self.state.as_ref().map(|state| state.revision)
+        {
+            return false;
+        }
+        let Some(area) = self
+            .arrangement_bounds
+            .filter(|area| area.height.is_finite() && area.height > 0.0)
+        else {
+            return false;
+        };
+        let mut rows = self
+            .track_layout
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| members.contains(id))
+            .map(|(index, _)| index);
+        let Some(first) = rows.next() else {
+            return false;
+        };
+        let last = rows.next_back().unwrap_or(first);
+        let tracks = &self.track_layout.tracks[first..=last];
+        let extra: f32 = tracks
+            .iter()
+            .map(|id| self.track_height(*id) - self.track_body_height(*id))
+            .sum();
+        let height = ((area.height - extra) / tracks.len() as f32)
+            .clamp(HEADER_ONLY_HEIGHT, area.height.max(TRACK_ROW_HEIGHT));
+        let scroll = self.track_scroll.list.logical_scroll_top();
+        if tracks
+            .iter()
+            .all(|id| (self.track_body_height(*id) - height).abs() < 0.01)
+            && scroll.item_ix == first
+            && scroll.offset_in_item == px(0.0)
+        {
+            return false;
+        }
+        let layout = &mut self.track_layout;
+        for id in &layout.tracks[first..=last] {
+            layout
+                .overview
+                .as_mut()
+                .unwrap_or(&mut layout.heights)
+                .insert(Row::Track(*id), height);
+        }
+        self.track_scroll.remeasure();
+        self.track_scroll
+            .scroll_to_item(first, gpui::ScrollStrategy::Top);
+        true
+    }
+
+    pub(super) fn restore_vertical_fit(&mut self, mut prior: VerticalFitSnapshot) {
+        if prior.generation != self.project_generation {
+            return;
+        }
+        let Some(state) = self.state.clone() else {
+            return;
+        };
+        self.sync_track_layout(state.project.tracks());
+        let maximum = self
+            .arrangement_bounds
+            .filter(|area| area.height.is_finite())
+            .map(|area| area.height.max(TRACK_ROW_HEIGHT));
+        let retain = |row: &Row, height: &mut f32| match row {
+            Row::Main => true,
+            Row::Track(id) => {
+                if let Some(maximum) = maximum {
+                    *height = height.clamp(HEADER_ONLY_HEIGHT, maximum);
+                }
+                state.project.track(*id).is_some()
+            }
+        };
+        prior.heights.retain(retain);
+        if let Some(overview) = prior.overview.as_mut() {
+            overview.retain(retain);
+        }
+        self.track_layout.heights = prior.heights;
+        self.track_layout.overview = prior.overview;
+        self.track_scroll.remeasure();
+        let index = prior
+            .anchor
+            .and_then(|id| self.track_layout.tracks.iter().position(|item| *item == id))
+            .unwrap_or(
+                prior
+                    .scroll
+                    .item_ix
+                    .min(self.track_layout.tracks.len().saturating_sub(1)),
+            );
+        let height = self
+            .track_layout
+            .tracks
+            .get(index)
+            .map_or(0.0, |id| self.track_height(*id));
+        self.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: if f32::from(prior.scroll.offset_in_item).is_finite() {
+                prior.scroll.offset_in_item.clamp(px(0.0), px(height))
+            } else {
+                px(0.0)
+            },
+        });
+    }
+
     pub(super) fn track_header_width(&self) -> f32 {
         self.track_layout
             .width
