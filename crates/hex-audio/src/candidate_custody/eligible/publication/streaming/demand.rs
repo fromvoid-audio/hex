@@ -74,7 +74,7 @@ impl StateView<'_> {
     }
     pub(super) fn prepare_stream_window_at(
         &mut self,
-        previous: Option<&mut StateView<'_>>,
+        mut previous: Option<&mut StateView<'_>>,
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
         due: Option<u64>,
@@ -104,14 +104,20 @@ impl StateView<'_> {
         } else {
             workspace.predecessor
         };
-        for rows in &mut workspace.extents {
-            rows.clear();
-        }
-        let window = {
+        // A larger transaction may cover more distinct pages than the fixed
+        // readiness reservation. At most nine pure attempts halve the 256-frame
+        // maximum to one, without allocating or publishing a partial intent.
+        // Failure at one frame retains the existing refusal.
+        let mut frames = request.frames.min(256);
+        let window = loop {
+            for rows in &mut workspace.extents {
+                rows.clear();
+            }
             let domains = &*request.domains;
             let staged = workspace.pending_action.as_ref();
             let extents = &mut workspace.extents;
             let limit = workspace.limit;
+            let overflow = std::cell::Cell::new(false);
             let mut visit = |extent: StreamPageExtent| {
                 let index = refs
                     .iter()
@@ -128,21 +134,28 @@ impl StateView<'_> {
                     .ok_or(hex_engine::Invalid(
                         "stream demand source lacks actual domain",
                     ))?;
-                Workspace::insert(extents, limit, index, extent)
+                let result = Workspace::insert(extents, limit, index, extent);
+                if result.is_err() {
+                    overflow.set(true);
+                }
+                result
             };
-            if let Some(due) = due {
-                runtime.visit_pending_stream_chunk(due, request.frames, &mut visit)?
-            } else if let Some(previous) = previous {
+            let planned = if let Some(due) = due {
+                runtime.visit_pending_stream_chunk(due, frames, &mut visit)
+            } else if let Some(previous) = previous.as_deref_mut() {
                 match runtime.preview_stream_handoff(
                     previous
                         .runtime
                         .as_mut()
                         .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?,
-                    request.frames,
+                    frames,
                     request.pending_play.then_some(true),
                     &mut visit,
                 ) {
-                    Ok(window) => window,
+                    Ok(window) => Ok(window),
+                    Err(_) if overflow.get() => {
+                        Err(hex_engine::Invalid("exact stream demand capacity exceeded"))
+                    }
                     Err(error)
                         if error.is_transient()
                             || matches!(
@@ -165,18 +178,19 @@ impl StateView<'_> {
                     }
                 }
             } else if let Some(staged) = staged.filter(|_| role == ProtectionRole::Transition) {
-                runtime.visit_prepared_stream_action(
-                    &staged.prepared,
-                    request.frames,
-                    &mut visit,
-                )?
+                runtime.visit_prepared_stream_action(&staged.prepared, frames, &mut visit)
             } else {
                 runtime.visit_next_stream_chunk(
-                    request.frames,
+                    frames,
                     request.pending_play.then_some(true),
                     &mut visit,
-                )?
+                )
+            };
+            if overflow.get() && frames > 1 {
+                frames = frames.div_ceil(2);
+                continue;
             }
+            break planned?;
         };
         if request.frames == 0
             && (request.pending_play
