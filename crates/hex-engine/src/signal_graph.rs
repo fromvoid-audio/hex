@@ -517,6 +517,36 @@ impl SignalGraph {
                 .any(|track| !track.audio_feeds.is_empty())
             || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
     }
+    /// With no pre-Main latency or typed feeds, these graphs retain transport
+    /// stamps only: every pre-Main edge has zero delay and owns no pending PCM.
+    /// Inserting/removing zero-latency effects may change node/edge indices, but
+    /// cannot invalidate those stamps. DSP history still follows device owners
+    /// in the Session handoff; this is only compensation-history compatibility.
+    /// Independent owners may also acquire different topological ranks when a
+    /// serial node is added. Compare semantic routing, not those generated ranks.
+    fn clock_only_compatible(&self, other: &Self) -> bool {
+        !self.needs_upstream_frame_routing()
+            && !other.needs_upstream_frame_routing()
+            && self.tracks.len() == other.tracks.len()
+            && self.returns.len() == other.returns.len()
+            && self.tracks.iter().zip(&other.tracks).all(|(a, b)| {
+                a.id == b.id
+                    && a.sends
+                        .iter()
+                        .map(|send| send.target)
+                        .eq(b.sends.iter().map(|send| send.target))
+            })
+            && self.returns.iter().zip(&other.returns).all(|(a, b)| {
+                a.id == b.id
+                    && a.feeds
+                        .iter()
+                        .map(|send| send.target)
+                        .eq(b.feeds.iter().map(|send| send.target))
+            })
+    }
+    fn history_compatible(&self, other: &Self) -> bool {
+        self.clock_only_compatible(other) || self.pre_main_compatible(other)
+    }
     pub(crate) fn pre_main_compatible(&self, other: &Self) -> bool {
         if self.tracks.len() != other.tracks.len()
             || self.returns.len() != other.returns.len()
@@ -724,11 +754,11 @@ impl SignalRuntime {
         self.delays.visit_owned_candidate_storage(ledger)
     }
     pub(crate) fn can_continue_pre_main(&self, other: &Self) -> bool {
-        self.graph.pre_main_compatible(&other.graph)
+        self.graph.history_compatible(&other.graph)
             && self.delays.is_closed()
             && other.delays.is_closed()
-            && self.delay_graph.pre_main_compatible(&self.graph)
-            && other.delay_graph.pre_main_compatible(&other.graph)
+            && self.delay_graph.history_compatible(&self.graph)
+            && other.delay_graph.history_compatible(&other.graph)
     }
     pub(crate) fn horizon(&self) -> u32 {
         self.delays.history_horizon()
@@ -736,29 +766,32 @@ impl SignalRuntime {
     pub(crate) fn can_copy_from(&self, other: &Self) -> bool {
         self.can_continue_pre_main(other)
             && self.horizon() >= other.horizon()
-            && self
-                .delay_graph
-                .pre_main_edges
-                .iter()
-                .zip(&other.delay_graph.pre_main_edges)
-                .all(|(to, from)| {
-                    self.delays
-                        .can_copy_edge_history_from(*to, &other.delays, *from)
-                })
+            && (self.delay_graph.clock_only_compatible(&other.delay_graph)
+                || self
+                    .delay_graph
+                    .pre_main_edges
+                    .iter()
+                    .zip(&other.delay_graph.pre_main_edges)
+                    .all(|(to, from)| {
+                        self.delays
+                            .can_copy_edge_history_from(*to, &other.delays, *from)
+                    }))
     }
     pub(crate) fn copy_from(&mut self, other: &Self) -> Result<(), Invalid> {
         if !self.can_copy_from(other) {
             return Err(Invalid("signal history mapping is incompatible"));
         }
-        for (to, from) in self
-            .delay_graph
-            .pre_main_edges
-            .iter()
-            .zip(&other.delay_graph.pre_main_edges)
-        {
-            self.delays
-                .copy_edge_history_from(*to, &other.delays, *from)
-                .map_err(error)?;
+        if !self.delay_graph.clock_only_compatible(&other.delay_graph) {
+            for (to, from) in self
+                .delay_graph
+                .pre_main_edges
+                .iter()
+                .zip(&other.delay_graph.pre_main_edges)
+            {
+                self.delays
+                    .copy_edge_history_from(*to, &other.delays, *from)
+                    .map_err(error)?;
+            }
         }
         self.delays
             .copy_stamp_history_from(&other.delays)
@@ -766,8 +799,8 @@ impl SignalRuntime {
     }
     pub(crate) fn can_rebind_graph(&self, graph: &Arc<SignalGraph>) -> bool {
         self.delays.is_closed()
-            && self.graph.pre_main_compatible(graph)
-            && self.delay_graph.pre_main_compatible(graph)
+            && self.graph.history_compatible(graph)
+            && self.delay_graph.history_compatible(graph)
             && graph.plan.max_latency_frames() <= self.horizon()
     }
     pub(crate) fn storage_bytes_with_graph(&self, graph: &Arc<SignalGraph>) -> Option<usize> {
