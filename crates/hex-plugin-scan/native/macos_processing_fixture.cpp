@@ -798,6 +798,7 @@ public:
             }
         }
         ++observed.blocks; // count attempted foreign DSP, including a refusal
+        if (fault==95) fault_hang(27); // controlled in-flight host-input barrier
         if (fault==28) fault_hang(9);
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;

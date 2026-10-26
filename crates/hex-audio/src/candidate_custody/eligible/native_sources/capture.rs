@@ -119,6 +119,40 @@ impl Custody {
             _ => Err("native parameter owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn begin_native_parameter_change(
+        &self,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.begin_parameter_change(id, normalized),
+            Owner::Loaned(owner) => owner.begin_parameter_change(id, normalized),
+            _ => Err("native parameter input owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn withdraw_native_parameter_change(
+        &self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<bool, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.withdraw_parameter_change(request),
+            Owner::Loaned(owner) => owner.withdraw_parameter_change(request),
+            _ => Err("native parameter input owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn poll_native_parameter_change(
+        &self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_parameter_change(request),
+            Owner::Loaned(owner) => owner.poll_parameter_change(request),
+            _ => Err("native parameter input owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn begin_native_controller_query(
         &self,
         binding: Binding,
@@ -369,6 +403,46 @@ impl CandidateRoot {
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
         self.require_native_source_control_open()?;
         let result = self.0.eligible.native_parameter_values(binding)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn begin_native_parameter_change(
+        &self,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .begin_native_parameter_change(binding, id, normalized)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn withdraw_native_parameter_change(
+        &self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<bool, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .withdraw_native_parameter_change(binding, request)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn poll_native_parameter_change(
+        &self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .poll_native_parameter_change(binding, request)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }

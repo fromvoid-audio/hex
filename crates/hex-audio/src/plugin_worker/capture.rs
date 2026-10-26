@@ -32,6 +32,7 @@ enum Phase {
 pub(super) const MAX_RETAINED_PAYLOAD_BYTES: usize = hex_plugin_state::MAX_ENVELOPE_BYTES;
 
 pub(super) struct Slot {
+    pub(super) parameter_change: super::parameter_change::Slot,
     pub(super) controller: super::controller::Slot,
     pub(super) parameters: super::parameters::NativeParameterValues,
     pub(super) edits_pending: bool,
@@ -46,6 +47,7 @@ pub(super) struct Slot {
 impl Default for Slot {
     fn default() -> Self {
         Self {
+            parameter_change: super::parameter_change::Slot::default(),
             controller: super::controller::Slot::default(),
             parameters: super::parameters::NativeParameterValues::default(),
             edits_pending: false,

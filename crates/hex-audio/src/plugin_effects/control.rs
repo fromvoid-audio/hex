@@ -13,6 +13,26 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn begin_parameter_change(
+        &mut self,
+        id: u32,
+        normalized: f64,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        self.worker
+            .begin_parameter_change_on_control(id, normalized)
+    }
+    pub(crate) fn withdraw_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<bool, &'static str> {
+        self.worker.withdraw_parameter_change_on_control(request)
+    }
+    pub(crate) fn poll_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.worker.poll_parameter_change_on_control(request)
+    }
     pub(crate) fn begin_controller_query(
         &mut self,
         query: hex_plugin_host::protocol::ControllerRequest,
@@ -73,6 +93,26 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn begin_parameter_change(
+        &mut self,
+        id: u32,
+        normalized: f64,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        self.worker
+            .begin_parameter_change_on_control(id, normalized)
+    }
+    pub(crate) fn withdraw_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<bool, &'static str> {
+        self.worker.withdraw_parameter_change_on_control(request)
+    }
+    pub(crate) fn poll_parameter_change(
+        &mut self,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        self.worker.poll_parameter_change_on_control(request)
+    }
     pub(crate) fn begin_controller_query(
         &mut self,
         query: hex_plugin_host::protocol::ControllerRequest,
