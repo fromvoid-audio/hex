@@ -596,3 +596,6 @@ mod creation_capture_tests;
 
 #[path = "midi_note_capture_tests.rs"]
 mod note_capture_tests;
+
+#[path = "midi_draw_preview_ui_tests.rs"]
+mod stroke_preview_tests;
