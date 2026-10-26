@@ -77,11 +77,34 @@ fn track_meter_uses_own_peak_and_stays_inside_compact_header(cx: &mut TestAppCon
     assert!(meter.left() >= header.left() && meter.right() <= header.right());
     assert!(meter.top() >= header.top() && meter.bottom() <= header.bottom());
     assert!(first_fill.size.height > other_fill.size.height);
-    let handle = bounds(&mut visual, "track-width-resize", tracks[0]).center();
-    drag(&mut visual, handle, point(handle.x - px(64.0), handle.y));
-    let header = bounds(&mut visual, "arrangement-track-header", tracks[0]);
-    let meter = bounds(&mut visual, "track-output-meter", tracks[0]);
-    assert!(meter.left() >= header.left() && meter.right() <= header.right());
+    for width in [176.0, 320.0, 256.0] {
+        let header = bounds(&mut visual, "arrangement-track-header", tracks[0]);
+        let handle = bounds(&mut visual, "track-width-resize", tracks[0]).center();
+        drag(
+            &mut visual,
+            handle,
+            point(handle.x + px(width) - header.size.width, handle.y),
+        );
+        let header = bounds(&mut visual, "arrangement-track-header", tracks[0]);
+        let meter = bounds(&mut visual, "track-output-meter", tracks[0]);
+        assert!(meter.left() >= header.left() && meter.right() <= header.right());
+        for prefix in [
+            "track-volume",
+            "track-pan",
+            "track-mute",
+            "track-solo",
+            "track-arm-unavailable",
+        ] {
+            let control = bounds(&mut visual, prefix, tracks[0]);
+            assert!(
+                control.right() <= meter.left(),
+                "{prefix} {control:?} overlaps {meter:?}"
+            );
+        }
+        let arm = bounds(&mut visual, "track-arm-unavailable", tracks[0]);
+        let pan = bounds(&mut visual, "track-pan", tracks[0]);
+        assert_eq!(arm.right(), pan.right());
+    }
 }
 
 fn drag(visual: &mut VisualTestContext, from: gpui::Point<Pixels>, to: gpui::Point<Pixels>) {
@@ -535,6 +558,11 @@ fn minimum_track_height_keeps_only_readable_title_and_resize_hit(cx: &mut TestAp
     let resize = bounds(&mut visual, "track-height-resize", track);
     assert_eq!(header.size.height, px(23.0));
     assert_eq!(title.size.height, px(18.0));
+    let meter = bounds(&mut visual, "track-output-meter", track);
+    assert!(
+        title.right() <= meter.left(),
+        "compact title must leave the meter visible"
+    );
     assert!(title.top() >= header.top() && title.bottom() <= resize.top());
     for prefix in [
         "track-controls",
