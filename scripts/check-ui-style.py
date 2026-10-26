@@ -142,6 +142,8 @@ widgets = (
     'gain_meters::render(', 'super::gain_meters::render(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    # Retained recording controls route all captions through theme::text internally.
+    'super::gain_recording::retained_controls(',
     # Fit/back controls delegate labels to the existing themed waveform button.
     'self.zoom_fit_button(', 'view.zoom_fit_button(',
     # Audio-event editor components keep their text at the themed boundary.
