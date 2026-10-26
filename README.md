@@ -31,15 +31,19 @@ cargo run -r --locked
 cargo run -r --locked -- --demo
 ```
 
-For an instrumented production test, save and quit hex, then use
-`./launch --open --diagnostics` on a qualified installed build advertising diagnostic support; older bundles are
-refused with rebuild guidance. When building a
-new user-test candidate, use `./launch --test --diagnostics`. The recommended
-`--diagnostics` preset records semantic actions, requests/outcomes, pointer/key
-intent and observed view changes together with audio publication/readiness and
-transport. `--diagnostics=off` disables both; `--diagnostics=all` additionally
-records every callback timing sample and can overflow sooner. Raw source runs
-accept the same options after `--`.
+Current development builds enable action and audio failure diagnostics by default,
+including optimized builds. The recommended preset records semantic actions,
+requests/outcomes, pointer/key intent and observed view changes together with
+audio publication/readiness and transport. Raw callback timing remains off.
+
+Use `./launch --open --diagnostics=off` to turn detailed tracing off for the next
+launch, or `./launch --open --diagnostics` to select the recommended preset
+explicitly. Save and quit an existing process before changing launch options.
+`./launch --test --diagnostics=off` also preserves the opt-out after building.
+`--diagnostics=all` additionally records every callback timing sample and can
+overflow sooner. Explicit modes require a verified installed build advertising
+diagnostic support; older bundles need rebuilding. Raw source runs accept the
+same options after `--`.
 
 When a failure occurs, note what you heard and the approximate time. Keep the
 session's current log and its `.1.log` through `.3.log` siblings together; the
@@ -51,7 +55,7 @@ review a capture before sharing it. Input tracing is not complete replay: rapid
 intermediate view changes, pointer movements, OS dialogs and text contents are
 excluded. Native listening and device stress still require testing.
 
-Detailed audio diagnostics are opt-in and written to the existing session log
+Detailed audio diagnostics are written to the existing session log
 (**open session log** in the app):
 
 ```sh
@@ -60,8 +64,9 @@ cargo run -r --locked -- --audio-diagnostics=publication,readiness,transport
 ```
 
 Categories are `publication`, `readiness`, `transport` and `timing`; `all` enables
-all four. Omit the flag or use `--audio-diagnostics=off` to disable it on the next
-launch. Save and quit an existing process before starting a diagnostic run.
+all four. Use `--audio-diagnostics=off` to disable audio tracing on the next launch
+while leaving action diagnostics enabled, or `--diagnostics=off` to disable both.
+Save and quit an existing process before starting a diagnostic run.
 Records correlate worker submission, ordinary and eligible callback
 preflight/application, command dequeue, priority stop and applied/rejected status
 using output/revision/context identities. Dequeue is distinct from application. Timing

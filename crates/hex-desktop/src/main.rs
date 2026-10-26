@@ -105,17 +105,20 @@ fn main() {
     }
 }
 
-/// Startup-only flag; repeated options deliberately use the last value.
+/// Current development default: recommended failure/action tracing, including
+/// optimized builds. Startup-only overrides deliberately use the last value;
+/// audio-only flags retain their separate category scope.
 fn diagnostic_options(
     arguments: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<(hex_audio::audio_diagnostics::AudioDiagnosticsFlags, bool), &'static str> {
     use hex_audio::audio_diagnostics::AudioDiagnosticsFlags;
-    let mut flags = AudioDiagnosticsFlags::OFF;
-    let mut actions = false;
+    let recommended = "publication,transport,readiness".parse::<AudioDiagnosticsFlags>()?;
+    let mut flags = recommended;
+    let mut actions = true;
     for argument in arguments {
         if argument == "--diagnostics" {
             // Raw timing floods the bounded trace on every callback; request it explicitly.
-            flags = "publication,transport,readiness".parse()?;
+            flags = recommended;
             actions = true;
         } else if argument == "--diagnostics=off" {
             flags = AudioDiagnosticsFlags::OFF;
@@ -145,12 +148,24 @@ mod diagnostics_flag_tests {
     use super::*;
     use hex_audio::audio_diagnostics::AudioDiagnosticsFlags as Flags;
     #[test]
-    fn tracing_is_opt_in_and_categories_or_explicit_off_survive_other_flags() {
+    fn ordinary_development_startup_enables_failure_and_action_diagnostics() {
+        for args in [vec![], vec!["--demo"]] {
+            let (flags, actions) =
+                diagnostic_options(args.into_iter().map(std::ffi::OsString::from)).unwrap();
+            assert!(actions);
+            assert!(flags.contains(Flags::PUBLICATION));
+            assert!(flags.contains(Flags::TRANSPORT));
+            assert!(flags.contains(Flags::READINESS));
+            assert!(!flags.contains(Flags::TIMING));
+        }
+    }
+
+    #[test]
+    fn audio_categories_and_explicit_off_survive_other_flags() {
         let parse = |args: &[&str]| {
             diagnostic_options(args.iter().map(|arg| std::ffi::OsString::from(*arg)))
                 .map(|options| options.0)
         };
-        assert_eq!(parse(&["--demo"]), Ok(Flags::OFF));
         assert_eq!(parse(&["--audio-diagnostics"]), Ok(Flags::ALL));
         assert_eq!(
             parse(&["--audio-diagnostics", "--audio-diagnostics=off"]),
@@ -167,6 +182,18 @@ mod diagnostics_flag_tests {
         assert_eq!(
             diagnostic_options(["--diagnostics".into(), "--diagnostics=off".into()].into_iter()),
             Ok((Flags::OFF, false))
+        );
+        assert_eq!(
+            diagnostic_options(["--diagnostics=off".into()].into_iter()),
+            Ok((Flags::OFF, false))
+        );
+        assert_eq!(
+            diagnostic_options(["--audio-diagnostics=off".into()].into_iter()),
+            Ok((Flags::OFF, true))
+        );
+        assert_eq!(
+            diagnostic_options(["--diagnostics=off".into(), "--diagnostics".into()].into_iter()),
+            Ok(("publication,transport,readiness".parse().unwrap(), true))
         );
         assert!(diagnostic_options(["--diagnostics=wat".into()].into_iter()).is_err());
     }

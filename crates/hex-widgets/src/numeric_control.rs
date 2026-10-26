@@ -105,6 +105,8 @@ pub enum NumericControlPresentation {
     FilledSlider,
     VerticalSlider,
     DeviceMeters,
+    /// Input-level well with a ceiling triangle and editable numeric readout.
+    MeterFader,
 }
 impl NumericControlPresentation {
     pub fn kind(self) -> NumericControlKind {
@@ -117,7 +119,9 @@ impl NumericControlPresentation {
             | Self::CompactSlider
             | Self::LabeledSlider
             | Self::FilledSlider => NumericControlKind::HorizontalSlider,
-            Self::VerticalSlider | Self::DeviceMeters => NumericControlKind::VerticalSlider,
+            Self::VerticalSlider | Self::DeviceMeters | Self::MeterFader => {
+                NumericControlKind::VerticalSlider
+            }
         }
     }
     fn appearance(self) -> NumericControlAppearance {
@@ -133,6 +137,7 @@ impl NumericControlPresentation {
             Self::LabeledSlider => NumericControlAppearance::LabeledSlider,
             Self::FilledSlider => NumericControlAppearance::FilledSlider,
             Self::DeviceMeters => NumericControlAppearance::DeviceMeters,
+            Self::MeterFader => NumericControlAppearance::MeterFader,
         }
     }
 }
@@ -164,6 +169,7 @@ enum NumericControlAppearance {
     /// Bipolar specs fill from the marked center; other scales fill from the left.
     FilledSlider,
     DeviceMeters,
+    MeterFader,
 }
 
 #[cfg(test)]
@@ -1846,7 +1852,13 @@ impl gpui::Render for NumericControl {
                 .flex()
                 .flex_col()
                 .w(px(60.0))
-                .h(px(86.0))
+                .h(px(
+                    if self.appearance == NumericControlAppearance::MeterFader {
+                        154.0
+                    } else {
+                        86.0
+                    },
+                ))
                 .gap(px(2.0))
                 .items_center()
                 .track_focus(&self.focus)

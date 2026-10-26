@@ -292,6 +292,9 @@ pub(super) fn midi_trim_note_shapes(
 
 pub(super) const TRACK_ROW_HEIGHT: f32 = 44.0;
 pub(super) const TRACK_HEADER_WIDTH: f32 = 176.0;
+/// Default leaves a readable name column beside the fixed compact mixer;
+/// the existing workspace budget may still clamp down to the normal minimum.
+pub(super) const DEFAULT_TRACK_HEADER_WIDTH: f32 = 256.0;
 
 /// Visible occupied spans under a landing preview. Merge overlapping victims so
 /// the translucent accent has the same intensity everywhere.
@@ -1177,7 +1180,14 @@ impl EditorView {
                 }),
             );
         let track_name = track.name().to_owned();
+        let name_colors = theme::element_colors(track.color());
+        let (name_fill, name_text) = if track_selected {
+            (name_colors.accent, name_colors.accent_text)
+        } else {
+            (name_colors.muted, name_colors.muted_text)
+        };
         let track_name_view = super::track_header::name()
+            .text_color(rgb(name_text))
             .id(("track-name", track_id.value()))
             .on_mouse_down(
                 MouseButton::Left,
@@ -1193,8 +1203,8 @@ impl EditorView {
                     .absolute()
                     .inset_0()
                     .debug_selector(move || format!("selected-track-{}", track_id.value()))
-                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                    .opacity(0.2)
+                    .border_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
             }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
             .child(self.track_name_label(
@@ -1209,6 +1219,17 @@ impl EditorView {
                 })
                 .into()
             });
+        let name_area = div()
+            .id(("track-name-area", track_id.value()))
+            .cursor_pointer()
+            .debug_selector(move || format!("track-name-area-{}", track_id.value()))
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .px(px(2.))
+            .bg(rgb(name_fill))
+            .text_color(rgb(name_text))
+            .child(track_name_view);
         let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         // Empty header gutters bubble to the shared selection/focus owner.
         // Only actual control hit regions stop clicks; row-wide stops make the
@@ -1219,7 +1240,7 @@ impl EditorView {
             div()
                 .id(("compact-track-title", track_id.value()))
                 .w_full()
-                .child(track_name_view)
+                .children([name_area.w_full()])
         } else if resident_layout {
             let (active_background, active_text) =
                 super::track_gain::activator_colors(!track.muted());
@@ -1329,16 +1350,7 @@ impl EditorView {
                 .flex()
                 .items_center()
                 .gap(px(2.0))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(track_name_view)
-                        .child(utilities),
-                )
+                .children([name_area.flex_1().gap(px(2.)).child(utilities)])
                 .child(
                     div()
                         .id(("track-header-mixer", track_id.value()))
@@ -1472,7 +1484,7 @@ impl EditorView {
                 .w_full()
                 .flex()
                 .flex_col()
-                .child(track_name_view)
+                .children([name_area.w_full()])
                 .child(track_controls)
         };
         let header_focus = self.track_header_focus(track_id, cx);
@@ -1569,6 +1581,11 @@ impl EditorView {
             cx,
         );
         div()
+            .on_scroll_wheel(
+                cx.listener(move |view, event: &gpui::ScrollWheelEvent, _, cx| {
+                    view.resize_row_wheel(Some(track_id), event, cx);
+                }),
+            )
             .w_full()
             .h(px(self.track_height(track_id)))
             .flex_shrink_0()

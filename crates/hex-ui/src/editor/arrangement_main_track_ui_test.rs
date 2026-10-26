@@ -641,6 +641,13 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                     // Give the shared width owner room for a real resize.
                     visual.simulate_resize(size(px(1280.0), px(800.0)));
                     visual.run_until_parked();
+                    let initial_width = visual
+                        .debug_bounds(Box::leak(
+                            format!("return-track-header-{}", id.value()).into_boxed_str(),
+                        ))
+                        .unwrap()
+                        .size
+                        .width;
                     let handle = visual
                         .debug_bounds(Box::leak(
                             format!("track-width-resize-{}", track.value()).into_boxed_str(),
@@ -662,7 +669,7 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                             format!("return-track-header-{}", id.value()).into_boxed_str(),
                         ))
                         .unwrap();
-                    assert_eq!(resized.size.width, header.size.width + px(64.0));
+                    assert_eq!(resized.size.width, initial_width + px(64.0));
                     assert_eq!(resized.size, ordinary.size);
                     assert_eq!(resized.right(), ordinary.right());
                 }

@@ -127,7 +127,6 @@ fn lane_size_loss_keeps_last_height_without_leaking_release(cx: &mut TestAppCont
             }),
             "source" => editor.update(&mut visual, |v, cx| {
                 v.selected_clip = None;
-                v.retained_clip_detail = None;
                 cx.notify();
             }),
             "generation" => editor.update(&mut visual, |v, cx| {
