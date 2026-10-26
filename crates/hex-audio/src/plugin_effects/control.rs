@@ -1,13 +1,24 @@
 //! Original worker custody while its unique callback is loaned through Root's
 //! existing carrier. There is no public constructor, clone or worker extraction.
 use super::*;
+use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
 
 pub(crate) struct NativeEffectControl {
     worker: NativeWorker,
     configuration: Configuration,
     storage: NativeEffectStorage,
+    source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker.begin_state_capture_on_control()
+    }
+    pub(crate) fn poll_state_capture(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        self.worker.poll_state_capture_on_control(request)
+    }
     #[allow(clippy::result_large_err)] // Refusal retains the entire original pair, without an error-path allocation.
     pub(crate) fn loan_on_control(
         self,
@@ -25,11 +36,21 @@ impl NativeEffect {
             configuration: self.callback.configuration.clone(),
             worker: self.worker,
             storage,
+            source_metadata: self.source_metadata,
         };
         Ok((control, self.callback))
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
+        self.worker.begin_state_capture_on_control()
+    }
+    pub(crate) fn poll_state_capture(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        self.worker.poll_state_capture_on_control(request)
+    }
     pub(crate) fn transport_is_live_on_control(&self) -> bool {
         self.worker.transport_is_live_on_control()
     }
@@ -77,6 +98,7 @@ impl NativeEffectControl {
         Ok(NativeEffect {
             worker: self.worker,
             callback,
+            source_metadata: self.source_metadata,
         })
     }
 }
@@ -86,6 +108,12 @@ pub(crate) enum NativeEffectReference<'a> {
     Loaned(&'a NativeEffectControl),
 }
 impl NativeEffectReference<'_> {
+    pub(crate) fn source_metadata(&self) -> &EffectSourceMetadata {
+        match self {
+            Self::Unsplit(effect) => &effect.source_metadata,
+            Self::Loaned(control) => &control.source_metadata,
+        }
+    }
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn completed_blocks_on_control(&self) -> u64 {
         match self {

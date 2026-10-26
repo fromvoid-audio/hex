@@ -19,7 +19,10 @@ class Session:
     def __init__(self, binary, bundle, trace, *, variant=0, channels=(2, 2), maximum=256,
                  rate=48000, cid=CID, corrupt_hash=False, precision=0, config_frame=None, auto_present=True, startup_state=None, startup_frame=None, tail_frames=None):
         self.socket, peer = socket.socketpair()
-        self.socket.settimeout(10)  # deadlock guard, not a sample/timing oracle
+        # Fresh copied macOS modules can spend over10s in dyld's code-signature
+        # validation before their first reply (see native test failure samples).
+        # This is a loader deadlock guard, never a plugin/callback deadline.
+        self.socket.settimeout(60)
         env = {**os.environ, "HEX_ORIGINAL_INSTANCE_VARIANT": str(variant),
                "HEX_ORIGINAL_INSTANCE_TRACE": str(trace)}
         self.tail_frames = tail_frames if tail_frames is not None else 0
@@ -72,6 +75,9 @@ class Session:
         if length > 8192:
             raise AssertionError("unbounded helper control reply")
         body = self.exact(length)
+        # Loading has replied. Keep all processing/capture/retirement protocol
+        # waits at their existing bound; only first-response startup differs.
+        self.socket.settimeout(10)
         if magic == b"HXVIFA03" and self.auto_present:
             if len(body) != 135 + len(self.restore_suffix) or body[:126] != self.facts_prefix or body[134] not in (0, 1) or body[135:] != self.restore_suffix:
                 raise AssertionError("wrong source/configuration preparation facts")
@@ -467,6 +473,84 @@ class NativeInstanceTests(unittest.TestCase):
                 self.error(session, 8)
                 self.terminal(session, 8)
                 self.assertEqual(self.observation()[10], 0)
+
+    def test_current_capture_requires_quiescence_exact_prefix_and_new_operation(self):
+        base = struct.pack("<4sHHH6x7Q", b"HXVC", 1, 0, 0, *BINDING, 0, 0, 1)
+        for mode in ("live", "ordinal", "duplicate", "prefix", "binding", "zero"):
+            with self.subTest(mode=mode):
+                session = self.session()
+                self.ready(session)
+                if mode != "live":
+                    session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0, *BINDING, 0, 0))
+                    self.assertEqual(session.message()[0], b"HXVIQF02")
+                packet = bytearray(base)
+                if mode == "duplicate":
+                    session.socket.sendall(packet)
+                    magic, body = session.message()
+                    self.assertEqual(magic, b"HXVICS01")
+                    self.assertEqual(struct.unpack_from("<H7Q", body), (1, *BINDING, 0, 0, 1))
+                elif mode == "ordinal":
+                    struct.pack_into("<Q", packet, 64, 2)
+                elif mode == "zero":
+                    struct.pack_into("<Q", packet, 64, 0)
+                elif mode == "prefix":
+                    struct.pack_into("<Q", packet, 48, 1)
+                elif mode == "binding":
+                    struct.pack_into("<Q", packet, 40, BINDING[3] + 1)
+                session.socket.sendall(packet)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
+    def test_live_capture_poll_keeps_pcm_prefix_and_rejects_consumed_operation(self):
+        session = self.session()
+        self.ready(session)
+
+        def capture(magic, operation):
+            session.socket.sendall(struct.pack("<4sHHH6x7Q", magic, 1, 0, 0,
+                                              *BINDING, session.sequence, session.frames, operation))
+            return session.message()
+
+        magic, body = capture(b"HXVL", 1)
+        self.assertEqual(magic, b"HXVLCA01")
+        self.assertEqual(body, struct.pack("<H7QBH", 1, *BINDING, 0, 0, 1, 0, 0))
+        header, _, (magic, pcm) = session.render(8)
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(pcm[:64], header)
+        for _ in range(10000):
+            magic, body = capture(b"HXVP", 1)
+            self.assertEqual(magic, b"HXVLCA01")
+            self.assertEqual(body[:58], struct.pack("<H7Q", 1, *BINDING, 1, 8, 1))
+            if body[58]:
+                break
+        else:
+            self.fail("actual SDK live capture did not complete")
+        self.assertEqual(body[58], 1)
+        self.assertEqual(struct.unpack_from("<H", body, 59)[0], len(body) - 61)
+        self.assertEqual(body[61:65], b"HXVS")
+        self.assertEqual(body[69:85], CID)
+        self.assertEqual(capture(b"HXVP", 1), (b"HXVIER01", struct.pack("<HB4QI", 1, 1, *BINDING, 8)))
+        self.assertEqual(session.process.wait(timeout=10), 8)
+
+    def test_live_capture_rejects_stale_or_overlapping_control(self):
+        for bad in ("zero", "skipped", "prefix", "binding", "overlap", "poll_without_start"):
+            with self.subTest(bad=bad):
+                session = self.session()
+                self.ready(session)
+
+                def packet(magic, operation, binding=BINDING, sequence=0):
+                    return struct.pack("<4sHHH6x7Q", magic, 1, 0, 0, *binding, sequence, 0, operation)
+
+                if bad == "overlap":
+                    session.socket.sendall(packet(b"HXVL", 1))
+                    self.assertEqual(session.message()[0], b"HXVLCA01")
+                request = packet(b"HXVP" if bad == "poll_without_start" else b"HXVL",
+                                 0 if bad == "zero" else 2 if bad in ("skipped", "overlap") else 1,
+                                 (1, 2, 3, 99) if bad == "binding" else BINDING,
+                                 1 if bad == "prefix" else 0)
+                session.socket.sendall(request)
+                self.assertEqual(session.message(), (b"HXVIER01", struct.pack("<HB4QI", 1, 1, *BINDING, 8)))
+                self.assertEqual(session.process.wait(timeout=10), 8)
 
     def test_epoch_control_rejects_bad_prefix_and_resume_before_quiescence(self):
         base = bytearray(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0, *BINDING, 0, 0))

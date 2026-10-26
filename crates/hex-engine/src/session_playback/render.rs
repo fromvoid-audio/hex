@@ -357,10 +357,23 @@ impl SessionPlayback {
             ));
         }
         output.fill([0.0; 2]);
+        // An edit at the stopped origin may have retained an original bus/Main
+        // endpoint. Drain its actual zero-input tail before it can return. A
+        // paused transport away from the origin retains its existing freeze;
+        // explicit Stop has already reset the tail bank in the command owner.
+        let stopped_edit_tails = self.performance_frame == 0
+            && self.arrangement_frame == 0
+            && self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active);
         if output.is_empty()
             || (!self.playing
                 && self.computer_keyboard.is_none()
-                && self.current_sampler_keyboards.is_empty())
+                && self.current_sampler_keyboards.is_empty()
+                && !stopped_edit_tails)
         {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
@@ -417,6 +430,20 @@ impl SessionPlayback {
         }
         let result = if self.playing {
             self.render_playing(output, pages, &mut observer, &mut capture, sources, foreign)
+        } else if stopped_edit_tails
+            && self.computer_keyboard.is_none()
+            && self.current_sampler_keyboards.is_empty()
+            && !self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active && tail.return_id().is_some())
+        {
+            // Detached Main output has no input for the new current chain.
+            // Drain only its original owners; do not advance a newly restored
+            // plugin's DSP clock by feeding it invented monitoring callbacks.
+            self.render_stopped_main_tails(output, foreign)
         } else {
             self.render_keyboard_monitor(output, &mut observer, &mut capture, sources, foreign)
         };
