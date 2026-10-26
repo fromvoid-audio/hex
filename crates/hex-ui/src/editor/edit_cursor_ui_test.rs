@@ -326,6 +326,23 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
     })
     .expect("range drag restores arrangement focus");
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert_eq!(view.selected_track_ids(), ids));
+    for id in &ids {
+        let selector = Box::leak(format!("selected-track-lane-{}", id.value()).into_boxed_str());
+        assert!(
+            visual.rendered_background(selector).is_some(),
+            "crossed lane highlights before release"
+        );
+    }
+    let second = lane(&mut visual, ids[1]);
+    let shrink = point(end.x, second.center().y);
+    visual.simulate_mouse_move(shrink, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_track_ids(), ids[..2])
+    });
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -335,8 +352,8 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(view.selected_track, Some(ids[3]));
         assert_eq!(
             view.selected_track_ids(),
-            [ids[3]],
-            "lane highlight follows the active endpoint, independent of the time range"
+            ids,
+            "painted time span selects every crossed track"
         );
         assert!(view.selected_clip.is_none());
         assert_eq!(
@@ -387,6 +404,13 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         );
     });
     visual.simulate_mouse_move(reselect_end, MouseButton::Left, Modifiers::default());
+    let across_anchor = point(reselect_end.x, first_lane.center().y);
+    visual.simulate_mouse_move(across_anchor, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_track_ids(), ids[..3])
+    });
+    visual.simulate_mouse_move(reselect_end, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(reselect_end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -395,8 +419,8 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(view.selected_track, Some(ids[3]));
         assert_eq!(
             view.selected_track_ids(),
-            [ids[3]],
-            "lane highlight follows the active endpoint, independent of the time range"
+            ids[2..],
+            "repainting shrinks explicit track membership"
         );
         assert!(
             view.last_enqueued_edit.is_none(),
@@ -421,10 +445,29 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(selection.tracks(), ids);
         assert!(selection.start() < selection.end());
         assert_eq!(view.selected_track, Some(ids[0]));
+        assert_eq!(view.selected_track_ids(), ids);
         assert_eq!(
             view.time_selection_paste_target(),
             Some((ids[0], selection.start()))
         );
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.cancel_time_selection_gesture());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.normalized_time_selection().is_none());
+        assert_eq!(
+            view.selected_track_ids(),
+            ids,
+            "clearing time does not discard explicit track selection"
+        );
+        assert_eq!(
+            view.state.as_ref().unwrap().project.as_ref(),
+            model.project()
+        );
+        assert!(view.last_enqueued_edit.is_none());
     });
 }
 
