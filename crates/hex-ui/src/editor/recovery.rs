@@ -30,7 +30,7 @@ impl EditorView {
                 return;
             }
         };
-        self.gain_recorder.discard();
+        self.gain_recorder.audio_lost();
         self.offline_cursor = position;
         if let Some(audio) = self.audio.take() {
             let mut audio = audio;

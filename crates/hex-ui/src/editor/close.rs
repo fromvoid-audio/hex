@@ -26,7 +26,11 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> bool {
         if self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits() {
-            self.error = Some("finish or cancel gain recording before closing".into());
+            self.error = Some(if self.gain_recorder.has_sealed_take() {
+                "retry or explicitly discard the retained gain take before closing".into()
+            } else {
+                "finish or cancel gain recording before closing".into()
+            });
             cx.notify();
             return false;
         }
@@ -57,7 +61,11 @@ impl EditorView {
 
     pub(super) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits() {
-            self.error = Some("finish or cancel gain recording before quitting".into());
+            self.error = Some(if self.gain_recorder.has_sealed_take() {
+                "retry or explicitly discard the retained gain take before quitting".into()
+            } else {
+                "finish or cancel gain recording before quitting".into()
+            });
             cx.notify();
             return;
         }
