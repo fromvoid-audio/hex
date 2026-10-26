@@ -340,6 +340,11 @@ mod tests {
         else {
             panic!("track")
         };
+        e.execute(Command::SetTrackColor {
+            track,
+            color: hex_project::ElementColor::Gray,
+        })
+        .unwrap();
         let Created::Device(device) = e
             .execute(Command::InsertDevice {
                 track,
@@ -350,8 +355,8 @@ mod tests {
         else {
             panic!("device")
         };
-        assert!(crate::encode_schema20(e.project()).is_ok());
-        assert!(crate::encode_schema22(e.project()).is_ok());
+        crate::encode_schema20(e.project()).unwrap();
+        crate::encode_schema22(e.project()).unwrap();
         e.execute(Command::ReplaceDeviceAutomation {
             device,
             parameter: ParameterId::from_static(1),
@@ -362,8 +367,15 @@ mod tests {
             }],
         })
         .unwrap();
-        assert!(crate::encode_schema20(e.project()).is_err());
-        assert!(crate::encode_schema22(e.project()).is_err());
+        for result in [
+            crate::encode_schema20(e.project()),
+            crate::encode_schema22(e.project()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(StorageError::Invalid("older schema cannot save device automation"))
+            ));
+        }
     }
     #[test]
     fn schema49_migrates_without_inventing_authored_envelopes() {
