@@ -59,6 +59,7 @@ fn acknowledge_begin(view: &mut EditorView) {
                 sequence: 0,
                 accepted: true,
                 preview_retained: false,
+                source_lost: false,
                 reason: None
             })
     );

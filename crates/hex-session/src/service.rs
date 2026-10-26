@@ -38,10 +38,12 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
-    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, PluginParameterGestureError, PluginParameterGestureInput,
+    PluginParameterGestureResult, ResidentEffectPreparation, ResidentFileInput,
+    ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
+    ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
+    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -3065,12 +3067,14 @@ fn run_worker(
                         && matches!(
                             gesture,
                             GestureRequest::Begin { .. }
+                                | GestureRequest::BeginPlugin { .. }
                                 | GestureRequest::BeginSnapshot { .. }
                                 | GestureRequest::BeginEqCreation { .. }
                         ) {
                         crate::device_gesture::GestureOutcome {
                             ack: GestureAck {
                                 preview_retained: false,
+                                source_lost: false,
                                 key: gesture.key(),
                                 phase: gesture.phase(),
                                 sequence: gesture.sequence(),
@@ -3144,6 +3148,7 @@ fn run_worker(
                         } else if matches!(
                             gesture,
                             GestureRequest::Change { .. }
+                                | GestureRequest::ChangePlugin { .. }
                                 | GestureRequest::ChangePair { .. }
                                 | GestureRequest::ChangeSnapshot { .. }
                                 | GestureRequest::ChangeEqCreation { .. }

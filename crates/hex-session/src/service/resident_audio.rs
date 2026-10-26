@@ -3227,6 +3227,7 @@ mod tests {
             secondary_value: None,
             parameters: None,
             creation: None,
+            plugin_value: None,
         };
         resident_preview::device_operation(
             &mut session,

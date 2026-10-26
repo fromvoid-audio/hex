@@ -195,12 +195,14 @@ impl GestureMachine {
                         secondary_value: None,
                         parameters: None,
                         creation: Some(snapshot),
+                        plugin_value: None,
                     },
                     kind: ActiveKind::Device {
                         class,
                         type_id: entry.state().type_id(),
                     },
-                    creation_origin: Some(entry.state().clone()),
+                    state_origin: Some(entry.state().clone()),
+                    plugin_initial: None,
                 });
                 self.last_key = Some(key);
             }
@@ -229,6 +231,7 @@ impl GestureMachine {
                 let draft = GestureSnapshot {
                     sequence,
                     creation: Some(snapshot),
+                    plugin_value: None,
                     ..active
                 };
                 let before = session.project().clone();
@@ -258,7 +261,7 @@ impl GestureMachine {
         }
         Ok(())
     }
-    pub(super) fn validate_creation_origin(
+    pub(super) fn validate_state_origin(
         &self,
         session: &Session,
         snapshot: GestureSnapshot,
@@ -267,7 +270,7 @@ impl GestureMachine {
         let origin: &NativeDeviceState = self
             .active
             .as_ref()
-            .and_then(|active| active.creation_origin.as_ref())
+            .and_then(|active| active.state_origin.as_ref())
             .ok_or(SessionError::Invalid("eq creation origin is missing"))?;
         let entry = session
             .project()
