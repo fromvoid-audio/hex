@@ -89,6 +89,7 @@ impl EditorView {
         let previous_focus = window.focused(cx);
         focus.focus(window);
         self.context_menu = Some(crate::context_menu::PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             position,
             icon_grid: None,
             selected: InputQuantization::CHOICES

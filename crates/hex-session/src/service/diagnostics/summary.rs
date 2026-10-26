@@ -1282,6 +1282,15 @@ pub(super) fn request(value: &Request) -> Description {
             description.nested("edit", self::gain_lane(edit));
             description
         }
+        Request::DeviceAutomation {
+            project_generation,
+            revision,
+            device,
+            parameter,
+            points,
+        } => {
+            describe!("device_automation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "parameter" => parameter.value(), "points_count" => points.len()]; omitted="")
+        }
         Request::DeviceGesture(value0) => {
             let mut description = describe!("device_gesture"; []; omitted="");
             description.nested("value0", self::gesture(value0));
