@@ -326,7 +326,9 @@ fn variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_id
         let total = tracks.iter().map(|id| view.track_height(*id)).sum::<f32>();
         let height = view.arrangement_bounds.unwrap().height;
         assert!(
-            (f32::from(view.track_scroll.max_offset().height) - (total - height).max(0.0)).abs()
+            (f32::from(view.track_scroll.max_offset().height)
+                - (total + height * 0.2 - height).max(0.0))
+            .abs()
                 <= 1.0,
             "viewport width changes must retain measured nonuniform scroll extent"
         );
@@ -1008,3 +1010,51 @@ fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut Test
 
 #[path = "track_wheel_ui_tests.rs"]
 mod wheel_tests;
+
+#[gpui::test]
+fn bottom_scroll_keeps_empty_track_space_without_synthetic_tracks(cx: &mut TestAppContext) {
+    for count in [2, 30] {
+        let (mut visual, editor, tracks) = fixture(cx, count);
+        let original = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        for compact in [false, true] {
+            if compact {
+                focus_workspace(&mut visual, &editor);
+                visual.simulate_keystrokes("h");
+            }
+            for (width, height) in [(1200., 800.), (800., 480.)] {
+                visual.simulate_resize(size(px(width), px(height)));
+                visual.run_until_parked();
+                editor.update(&mut visual, |view, cx| {
+                    let maximum = view.track_scroll.max_offset();
+                    view.track_scroll.set_offset(point(px(0.), -maximum.height));
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                let last = bounds(
+                    &mut visual,
+                    "arrangement-track-header",
+                    *tracks.last().unwrap(),
+                );
+                editor.read_with(&visual, |view, _| {
+                    let viewport = view.track_scroll.list.viewport_bounds();
+                    let gap = f32::from(viewport.bottom() - last.bottom());
+                    let reserve = f32::from(viewport.size.height) * 0.2;
+                    assert!(
+                        gap >= reserve - 1.,
+                        "bottom gap {gap} must retain at least {reserve} pixels"
+                    );
+                    if view.track_scroll.max_offset().height > px(0.) {
+                        assert!(
+                            (gap - reserve).abs() <= 1.,
+                            "scrollable bottom gap must match viewport reserve: {gap} vs {reserve}"
+                        );
+                    }
+                    assert_eq!(view.track_scroll.list.item_count(), tracks.len());
+                    assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
+                });
+            }
+        }
+    }
+}

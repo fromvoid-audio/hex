@@ -71,6 +71,9 @@ impl TrackLayout {
         self.overview.as_mut().unwrap_or(&mut self.heights)
     }
 }
+/// Empty trailing track space as a fraction of the actual scroll viewport.
+pub(super) const BOTTOM_SCROLL_SPACE_RATIO: f32 = 0.2;
+
 struct ResizeDrag {
     track: Option<Row>,
     pointer: f32,
@@ -97,7 +100,24 @@ impl TrackScroll {
         self.list.scroll_px_offset_for_scrollbar()
     }
     pub(super) fn max_offset(&self) -> gpui::Size<gpui::Pixels> {
-        self.list.max_offset_for_scrollbar()
+        let native = self.list.max_offset_for_scrollbar();
+        let Some(last) = self
+            .list
+            .item_count()
+            .checked_sub(1)
+            .and_then(|index| self.list.bounds_for_item(index))
+        else {
+            return native;
+        };
+        // GPUI's wheel/set-offset path includes padding but its maximum query
+        // omits it. Use its measured final row and actual offset, not a second
+        // track-height inventory, so pan/autoscroll share the wheel's endpoint.
+        let viewport = self.list.viewport_bounds();
+        let content_height = last.bottom() - viewport.top() - self.offset().y;
+        let maximum = (content_height + viewport.size.height * BOTTOM_SCROLL_SPACE_RATIO
+            - viewport.size.height)
+            .max(px(0.));
+        gpui::size(native.width, maximum)
     }
     pub(super) fn set_offset(&self, offset: gpui::Point<gpui::Pixels>) {
         self.list.set_offset_from_scrollbar(offset);
