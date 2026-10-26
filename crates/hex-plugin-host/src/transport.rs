@@ -191,15 +191,23 @@ impl Drop for Control {
 }
 
 #[derive(Clone, Copy)]
+struct InputRequest {
+    block: Block,
+    // Minimum spare capacity of every physical callback contributing to this
+    // quantum. Control-originated input may consume it only after acceptance.
+    parameter_capacity: usize,
+}
+#[derive(Clone, Copy)]
 struct State {
     position: u64,
     input: Block,
     output: Block,
+    parameter_capacity: usize,
 }
 #[derive(Clone, Copy)]
 struct Stage {
     state: State,
-    request: Option<Block>,
+    request: Option<InputRequest>,
     expected_frames: usize,
     staged_frames: usize,
     input_events: usize,
@@ -222,7 +230,7 @@ pub struct Callback {
     binding: Binding,
     quantum: u16,
     first_reply_sequence: u64,
-    requests: Producer<Block>,
+    requests: Producer<InputRequest>,
     replies: Consumer<Block>,
     revoked: Arc<AtomicBool>,
     state: State,
@@ -235,7 +243,7 @@ pub struct Callback {
 pub struct Worker {
     binding: Binding,
     quantum: u16,
-    requests: Consumer<Block>,
+    requests: Consumer<InputRequest>,
     replies: Producer<Block>,
     revoked: Arc<AtomicBool>,
     sequence: u64,
@@ -283,6 +291,7 @@ pub fn channel_from_completed_prefix(
                 position,
                 input: empty,
                 output: empty,
+                parameter_capacity: MAX_PARAMETER_POINTS,
             },
             staged: None,
             fault: None,
@@ -487,6 +496,7 @@ impl Callback {
                 stage.state.input = Block::empty(self.binding, self.quantum);
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
+                stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
                 if sequence >= self.first_reply_sequence {
                     let reply = self.replies.pop().map_err(|_| Fault::MissingOutput)?;
                     reply.valid(self.binding, self.quantum, sequence - 2)?;
@@ -543,7 +553,10 @@ impl Callback {
             }
             stage.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
             if offset + 1 == usize::from(self.quantum) {
-                stage.request = Some(stage.state.input);
+                stage.request = Some(InputRequest {
+                    block: stage.state.input,
+                    parameter_capacity: stage.state.parameter_capacity,
+                });
             }
         }
         if result.events.as_slice().len() > MAX_EVENTS - stage.output_events {
@@ -568,16 +581,23 @@ impl Callback {
         if self.revoked.load(Acquire) {
             return self.fail(Fault::Revoked);
         }
-        let Some(stage) = self.staged.take() else {
+        let Some(mut stage) = self.staged.take() else {
             return self.fail(Fault::Protocol);
         };
         if stage.staged_frames != stage.expected_frames {
             return self.fail(Fault::Protocol);
         }
-        if let Some(request) = stage.request {
+        let remaining = MAX_PARAMETER_POINTS - stage.input_parameters;
+        if let Some(mut request) = stage.request {
+            request.parameter_capacity = request.parameter_capacity.min(remaining);
             if self.requests.push(request).is_err() {
                 return self.fail(Fault::Saturated);
             }
+        }
+        if stage.state.position % u64::from(self.quantum) != 0 {
+            stage.state.parameter_capacity = stage.state.parameter_capacity.min(remaining);
+        } else {
+            stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
         }
         self.state = stage.state;
         Ok(())
@@ -604,20 +624,33 @@ impl Worker {
     }
     /// One nonblocking receive. A revoked lease wins even under queue pressure.
     pub fn receive(&mut self) -> Result<Option<Block>, Fault> {
+        self.receive_with_parameter_capacity()
+            .map(|request| request.map(|(block, _)| block))
+    }
+    /// Same original accepted request, with conservative spare input capacity
+    /// across its contributing physical callbacks. This budget permits bounded
+    /// control input only; it grants no source/publication/canonical authority.
+    /// The quantum's Parameters capacity is an independent bound and must
+    /// still be checked before adding input.
+    pub fn receive_with_parameter_capacity(&mut self) -> Result<Option<(Block, usize)>, Fault> {
         if self.revoked.load(Acquire) {
             return Err(Fault::Revoked);
         }
         if self.in_flight {
             return self.fail(Fault::Protocol);
         }
-        let Ok(block) = self.requests.pop() else {
+        let Ok(request) = self.requests.pop() else {
             return Ok(None);
         };
+        if request.parameter_capacity > MAX_PARAMETER_POINTS {
+            return self.fail(Fault::InvalidParameters);
+        }
+        let block = request.block;
         if let Err(fault) = block.valid(self.binding, self.quantum, self.sequence) {
             return self.fail(fault);
         }
         self.in_flight = true;
-        Ok(Some(block))
+        Ok(Some((block, request.parameter_capacity)))
     }
     /// Publish exactly one matching reply after the isolated processor finishes.
     /// Revocation discards a late completion; it cannot undo DSP already run.

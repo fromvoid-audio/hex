@@ -9,6 +9,85 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn control_input_capacity_follows_whole_physical_callback_across_quantum_and_segment_boundaries() {
+    let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    callback
+        .stage(&[[0.25; 2]; 3], &[], &mut [[0.0; 2]; 3])
+        .unwrap();
+    callback.finish(true).unwrap();
+    assert!(worker.receive_with_parameter_capacity().unwrap().is_none());
+    // This physical callback fills one old quantum and starts a new partial
+    // one. Its64 points split63/1 across them. Counting only the completed
+    // block would wrongly permit a65th physical-callback point.
+    let first: Vec<_> = (1..=63)
+        .map(|id| ParameterPoint {
+            frame: 0,
+            id,
+            normalized: 0.25,
+        })
+        .collect();
+    callback.begin_physical_callback(8).unwrap();
+    callback
+        .stage_segment_with_parameters(0, &[[0.25; 2]; 4], &[], &first, &mut [[0.0; 2]; 4])
+        .unwrap();
+    callback
+        .stage_segment_with_parameters(
+            4,
+            &[[0.25; 2]; 4],
+            &[],
+            &[ParameterPoint {
+                frame: 3,
+                id: 64,
+                normalized: 0.25,
+            }],
+            &mut [[0.0; 2]; 4],
+        )
+        .unwrap();
+    assert!(
+        worker.receive_with_parameter_capacity().unwrap().is_none(),
+        "staging is not host acceptance"
+    );
+    callback.finish(true).unwrap();
+    let (mut block, capacity) = worker.receive_with_parameter_capacity().unwrap().unwrap();
+    assert_eq!(
+        (block.sequence, block.parameters.as_slice().len(), capacity),
+        (0, 63, 0)
+    );
+    assert!(
+        block
+            .parameters
+            .as_slice()
+            .iter()
+            .all(|point| point.frame == 3)
+    );
+    block.parameters = Parameters::default();
+    worker.complete(block).unwrap();
+    callback
+        .stage(&[[0.25; 2]; 5], &[], &mut [[0.0; 2]; 5])
+        .unwrap();
+    callback.finish(true).unwrap();
+    let (mut block, capacity) = worker.receive_with_parameter_capacity().unwrap().unwrap();
+    assert_eq!(
+        (block.sequence, block.parameters.as_slice().len(), capacity),
+        (1, 1, 0),
+        "partial quantum retains its contributor's exhausted budget"
+    );
+    block.parameters = Parameters::default();
+    worker.complete(block).unwrap();
+    callback
+        .stage(&[[0.25; 2]; 8], &[], &mut [[0.0; 2]; 8])
+        .unwrap();
+    callback.finish(true).unwrap();
+    let (block, capacity) = worker.receive_with_parameter_capacity().unwrap().unwrap();
+    assert_eq!(
+        (block.sequence, block.parameters.as_slice().len(), capacity),
+        (2, 0, 64),
+        "fresh quantum gets fresh physical budget"
+    );
+    worker.complete(block).unwrap();
+}
+
+#[test]
 fn variable_callbacks_and_segments_keep_parameter_pcm_and_feedback_at_exact_pipeline_offsets() {
     let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
     let timeline = [

@@ -39,6 +39,7 @@ impl Default for Payload {
     }
 }
 pub(super) struct Slot {
+    pub(super) parameter_change: super::parameter_change::Slot,
     pub(super) controller: super::controller::Slot,
     pub(super) parameters: super::parameters::NativeParameterValues,
     pub(super) edits_pending: bool,
@@ -51,6 +52,7 @@ pub(super) struct Slot {
 impl Default for Slot {
     fn default() -> Self {
         Self {
+            parameter_change: super::parameter_change::Slot::default(),
             controller: super::controller::Slot::default(),
             parameters: super::parameters::NativeParameterValues::default(),
             edits_pending: false,

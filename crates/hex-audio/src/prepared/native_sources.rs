@@ -14,6 +14,66 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Queue one validated raw SDK parameter input on the original live source.
+    /// Only an actual accepted PCM quantum can consume it; no process/flush or
+    /// graph replacement is invented. Validate current metadata/writability at
+    /// the caller; the SDK path still enforces its actual parameter contract.
+    /// Processing progress below grants no canonical/state installation.
+    pub fn begin_native_source_parameter_change_on_control(
+        &mut self,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        let result = self
+            .candidate_root
+            .begin_native_parameter_change(binding, id, normalized)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
+    /// True only if the exact queued input was withdrawn before processing.
+    /// An in-flight operation must reach its real terminal; this does not roll
+    /// back third-party DSP or acknowledge canonical gesture cancellation.
+    pub fn withdraw_native_source_parameter_change_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        let result = self
+            .candidate_root
+            .withdraw_native_parameter_change(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
+    /// Actual SDK input exchange progress, not controller readback, final host
+    /// delivery or canonical authority. Exact source/token/context checks and
+    /// captured-state validation remain required before a project/history edit.
+    pub fn poll_native_source_parameter_change_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerParameterChange,
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_native_parameter_change(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
     /// Query actual SDK controller metadata through the original Root effect
     /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
     /// replacing them. Normally stopped transport uses its joined original
