@@ -714,3 +714,45 @@ fn actual_sdk_edit_during_capture_defers_snapshot_until_real_processing() {
             .success()
     );
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
+    let case = Case::new();
+    let instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(90),
+    )
+    .unwrap();
+    let initial = instance.ready().initial_state.clone();
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let mut failure = match stopped.capture_state_retained_on_control() {
+        Ok(_) => panic!("stopped capture changed during SDK read must refuse its snapshot"),
+        Err(failure) => failure,
+    };
+    assert!(matches!(failure.cause(), Error::Worker(6)));
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(PreparationDisposal::Reaped(retired)) =
+            failure.poll_disposal_on_control().unwrap()
+        {
+            assert!(!retired.status.success());
+            break;
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert_eq!(
+        &decode(&initial).unwrap().component.unwrap()[8..12],
+        &1.0_f32.to_le_bytes()
+    );
+    let observed = case.observation().unwrap();
+    assert_eq!(
+        (observed[10], observed[11]),
+        (0, 0),
+        "capture must not invent PCM or flush work"
+    );
+}

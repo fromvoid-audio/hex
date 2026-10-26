@@ -595,11 +595,16 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);epoch_stage=FlushSent;startup_changed.notify_all();
                     } else if(stage==CaptureRequested) {
                         hex_instance::CapturedState current{};
+                        const auto admission_revision=instance.host_callback_revision_on_control();
                         if(instance.pending_parameter_edits() || !instance.capture_current_state_on_control(current)) { error(channel,&*config,Capture);std::_Exit(Capture); }
                         instance.dispatch_host_callbacks();
                         const auto current_latency=instance.reported_latency_on_control();
                         const auto current_tail=instance.reported_tail_on_control();
-                        if(instance.host_refusals() || !current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail) {
+                        // A stopped read cannot silently process a newly
+                        // admitted gesture. Keep the established refusal path
+                        // rather than publish a mixed component/controller cut.
+                        if(instance.pending_parameter_edits() || instance.host_callback_revision_on_control()!=admission_revision ||
+                            instance.host_refusals() || !current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail) {
                             error(channel,&*config,Capture);std::_Exit(Capture);
                         }
                         wire::Bytes body;config->stamp(body);

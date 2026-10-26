@@ -91,6 +91,9 @@ impl Quiescent {
     /// nor publication; startup/canonical envelopes are not replaced. Failure
     /// retains the cancelled original lease for independent disposal, so callers
     /// must keep their last confirmed state and never substitute defaults.
+    /// Flush admitted parameter edits first. An edit admitted during this SDK
+    /// read refuses its staged snapshot through that same failure custody;
+    /// capture never invents a processing/flush call to accept changed state.
     pub fn capture_state_retained_on_control(
         self,
     ) -> std::result::Result<(Self, NativeDeviceState), PreparationFailure> {
