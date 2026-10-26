@@ -336,3 +336,17 @@ consumers retain those contracts. Completed-scene regressions check consumed
 movement and repeated repaint, tooltip eligibility, release/button-loss/escape/
 deactivation recovery, and retained typed drop feedback/delivery. Native pointer
 and OS tooltip acceptance remain separate from these headless scene checks.
+
+26 October explicit pointer ownership: Window admits one pressed-button lease
+before a control mutates its gesture. Captured mouse input bypasses ordinary/raw
+listeners after the initiating press; that press retains gesture-owned ancestor
+selection. Keyboard dispatch and the existing typed drag path stay independent.
+The owner supplies its mouse handler, cancellation and cursor. Paint records only
+a live-held witness, including cached/deferred replay ranges. Missing witnesses,
+escape, button loss, deactivation and control-side window removal cancel once
+outside paint; normal matching release commits through the owner without cancel.
+Cancelled buttons retain bounded inline tombstones until their old release or
+next press, preventing trailing actions. Numeric controls use weak entity handlers
+and retain their existing typed events, drafts and owner-acknowledgement contracts.
+Selection-anchor loss preserves newer text/IME drafts. No native API/FFI or new
+unsafe code is added; actual OS interaction acceptance remains separate.

@@ -137,3 +137,6 @@ pub use waveform_plot::{
 
 #[cfg(test)]
 mod pointer_hover_tests;
+
+#[cfg(test)]
+mod pointer_capture_tests;
