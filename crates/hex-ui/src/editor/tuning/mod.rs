@@ -816,9 +816,16 @@ impl EditorView {
             cx.entity_id(),
             MouseButton::Left,
             gpui::CursorStyle::ResizeLeftRight,
-            move |event, _, cx| {
+            move |event, window, cx| {
                 let _ = owner.update(cx, |view, cx| {
                     if view.project_generation != generation || view.tuning.drag.is_none() {
+                        return;
+                    }
+                    // Focus may change before the next completed paint/blur.
+                    // Do not let that press finish a now-unfocused edit.
+                    if !view.tuning.open || !view.tuning.focus.is_focused(window) {
+                        view.tuning_change(view.tuning.value, NumericEventPhase::Cancel);
+                        cx.notify();
                         return;
                     }
                     if let Some(event) = event.downcast_ref::<MouseMoveEvent>() {

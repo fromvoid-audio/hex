@@ -123,7 +123,14 @@ fn pitch_pointer_isolates_input_and_releases_before_canonical_ack(cx: &mut TestA
 }
 #[gpui::test]
 fn pitch_capture_loss_cancels_without_late_commit_or_new_source_edit(cx: &mut TestAppContext) {
-    for loss in ["button", "focus", "generation", "close", "escape"] {
+    for loss in [
+        "button",
+        "focus",
+        "focus-before-paint",
+        "generation",
+        "close",
+        "escape",
+    ] {
         let Fixture {
             mut visual,
             editor,
@@ -138,6 +145,20 @@ fn pitch_capture_loss_cancels_without_late_commit_or_new_source_edit(cx: &mut Te
         match loss {
             "button" => visual.simulate_mouse_move(moved, None, gpui::Modifiers::default()),
             "focus" => visual.update(|w, cx| editor.update(cx, |v, _| v.focus.focus(w))),
+            "focus-before-paint" => visual.update(|w, cx| {
+                // Keep both operations in one update: simulator helpers may
+                // otherwise complete a repaint between focus and mouse-up.
+                editor.update(cx, |v, _| v.focus.focus(w));
+                w.dispatch_input(
+                    gpui::PlatformInput::MouseUp(MouseUpEvent {
+                        position: outside,
+                        button: MouseButton::Left,
+                        modifiers: gpui::Modifiers::default(),
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+            }),
             "generation" => editor.update(&mut visual, |v, cx| {
                 v.project_generation += 1;
                 cx.notify();
@@ -147,7 +168,9 @@ fn pitch_capture_loss_cancels_without_late_commit_or_new_source_edit(cx: &mut Te
             _ => unreachable!(),
         }
         visual.run_until_parked();
-        visual.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
+        if loss != "focus-before-paint" {
+            visual.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
+        }
         visual.run_until_parked();
         assert_eq!(
             actions.get(),
