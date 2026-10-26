@@ -459,7 +459,10 @@ pub(in crate::editor) fn view(
                 if let Some(gesture) = view.audio_event_editor.gesture.as_ref()
                     && view.audio_event_focus.is_focused(window)
                 {
-                    window.renew_pointer_capture(entity.entity_id(), gesture.kind.pointer_cursor());
+                    window.renew_pointer_capture(
+                        entity.entity_id(),
+                        view.audio_event_pointer_cursor(gesture.kind),
+                    );
                 }
             },
         )
@@ -679,6 +682,7 @@ pub(in crate::editor) fn view(
                     "drag ruler for time · drag event to move · cmd for free",
                 )),
         );
+    let body = body.children(view.time_selection_cursor_layer());
     let root = div()
         .id("audio-event-editor")
         .debug_selector(|| "audio-event-editor".into())

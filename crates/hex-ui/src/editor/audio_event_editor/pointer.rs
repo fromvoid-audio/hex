@@ -18,6 +18,14 @@ impl Kind {
 }
 
 impl EditorView {
+    pub(super) fn audio_event_pointer_cursor(&self, kind: Kind) -> CursorStyle {
+        if matches!(kind, Kind::Select) {
+            self.time_selection_pointer_cursor(kind.pointer_cursor())
+        } else {
+            kind.pointer_cursor()
+        }
+    }
+
     pub(super) fn capture_audio_event_pointer(
         &self,
         kind: Kind,
@@ -33,7 +41,7 @@ impl EditorView {
         window.capture_pointer(
             cx.entity_id(),
             MouseButton::Left,
-            kind.pointer_cursor(),
+            self.audio_event_pointer_cursor(kind),
             move |event, window, cx| {
                 let moved = event.downcast_ref::<MouseMoveEvent>();
                 let released = event
