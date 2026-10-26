@@ -12,6 +12,7 @@ pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
 }
 pub(crate) struct ClientEndpoints {
+    diagnostics: audio_diagnostics::TraceReader,
     pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
@@ -36,6 +37,7 @@ impl Control {
         spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
     ) -> (Client, WorkerControl, EndpointTerminals) {
         let Self {
+            diagnostics,
             sample_preview,
             commands,
             spectrum_target,
@@ -55,6 +57,7 @@ impl Control {
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
         publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
         let (endpoints, client) = reserve(ClientEndpoints {
+            diagnostics,
             output_identity,
             sample_preview,
             resident_forwarding,
@@ -153,6 +156,16 @@ impl Client {
     }
     pub(crate) fn owner_ref(&self) -> Option<&ClientEndpoints> {
         self.endpoints.owner_ref()
+    }
+    /// Control/UI configuration only; trace data is never an audio ACK.
+    pub fn set_audio_diagnostics(&self, flags: AudioDiagnosticsFlags) {
+        if let Some(status) = self.status() {
+            status.diagnostics_flags.store(flags.bits(), Relaxed);
+        }
+    }
+    /// Take one Copy record without a wait. Callers must bound each poll.
+    pub fn take_audio_diagnostic(&mut self) -> Option<AudioDiagnosticEvent> {
+        self.endpoints.owner_mut()?.diagnostics.pop()
     }
     /// A borrowed observation, with no cloneable Status/endpoint owner escape.
     pub fn status(&self) -> Option<&Status> {

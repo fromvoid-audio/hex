@@ -252,6 +252,7 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
         editor_revision: 3,
     };
     let (mut control, mut data, errors, mut retirement) = anchored();
+    control.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
     control
         .configure_device_resource_publication_on_control(resource_limits())
         .unwrap();
@@ -357,6 +358,11 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
         std::thread::yield_now();
     };
     assert_eq!(output, expected);
+    if !keyboard {
+        assert!(std::iter::from_fn(|| control.take_audio_diagnostic()).any(|event|
+            matches!(event.kind, AudioDiagnosticKind::CommandDequeued { ticket, action: PlaybackAction::Transport(PlaybackCommand::Play), .. } if ticket == play)));
+    }
+
     if sampler {
         assert!(control.outstanding_device_resource_leases() > 0);
     }

@@ -19,7 +19,7 @@ mod controller_input;
 mod device_composition;
 mod diagnostics;
 pub use controller_input::install_controller_input;
-pub use diagnostics::install_session_log;
+pub use diagnostics::{install_audio_diagnostics, install_session_log};
 mod editor;
 mod editor_backend;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
