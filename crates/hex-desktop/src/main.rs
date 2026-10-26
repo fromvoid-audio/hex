@@ -33,16 +33,26 @@ fn main() {
         return;
     }
 
-    let audio_diagnostics = match audio_diagnostics_flags(std::env::args_os().skip(1)) {
-        Ok(flags) => flags,
-        Err(error) => {
-            let _ = writeln!(std::io::stderr().lock(), "{error}");
-            std::process::exit(1);
-        }
-    };
+    let (audio_diagnostics, action_diagnostics) =
+        match diagnostic_options(std::env::args_os().skip(1)) {
+            Ok(flags) => flags,
+            Err(error) => {
+                let _ = writeln!(std::io::stderr().lock(), "{error}");
+                std::process::exit(1);
+            }
+        };
 
-    let mut session_log =
-        hex_diagnostics::default_directory().and_then(hex_diagnostics::SessionLog::start);
+    let mut session_log = hex_diagnostics::default_directory().and_then(|directory| {
+        hex_diagnostics::SessionLog::start_with_context(
+            directory,
+            &format!(
+                "build={} platform={}-{} audio={audio_diagnostics:?} actions={action_diagnostics}",
+                hex_ui::diagnostic_build_identity(),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ),
+        )
+    });
     let log_handle = session_log
         .as_ref()
         .map(|log| log.handle())
@@ -67,6 +77,7 @@ fn main() {
         }
         hex_ui::install_session_log(cx, log_handle.clone());
         hex_ui::install_audio_diagnostics(cx, audio_diagnostics);
+        hex_ui::install_action_diagnostics(cx, action_diagnostics);
         let demo = std::env::args_os()
             .skip(1)
             .any(|argument| argument == "--demo");
@@ -95,13 +106,29 @@ fn main() {
 }
 
 /// Startup-only flag; repeated options deliberately use the last value.
-fn audio_diagnostics_flags(
+fn diagnostic_options(
     arguments: impl Iterator<Item = std::ffi::OsString>,
-) -> Result<hex_audio::audio_diagnostics::AudioDiagnosticsFlags, &'static str> {
+) -> Result<(hex_audio::audio_diagnostics::AudioDiagnosticsFlags, bool), &'static str> {
     use hex_audio::audio_diagnostics::AudioDiagnosticsFlags;
     let mut flags = AudioDiagnosticsFlags::OFF;
+    let mut actions = false;
     for argument in arguments {
-        if argument == "--audio-diagnostics" {
+        if argument == "--diagnostics" {
+            // Raw timing floods the bounded trace on every callback; request it explicitly.
+            flags = "publication,transport,readiness".parse()?;
+            actions = true;
+        } else if argument == "--diagnostics=off" {
+            flags = AudioDiagnosticsFlags::OFF;
+            actions = false;
+        } else if argument == "--diagnostics=all" {
+            flags = AudioDiagnosticsFlags::ALL;
+            actions = true;
+        } else if argument
+            .to_str()
+            .is_some_and(|arg| arg.starts_with("--diagnostics="))
+        {
+            return Err("use --diagnostics, --diagnostics=all or --diagnostics=off");
+        } else if argument == "--audio-diagnostics" {
             flags = AudioDiagnosticsFlags::ALL;
         } else if let Some(value) = argument
             .to_str()
@@ -110,7 +137,7 @@ fn audio_diagnostics_flags(
             flags = value.parse()?;
         }
     }
-    Ok(flags)
+    Ok((flags, actions))
 }
 
 #[cfg(test)]
@@ -120,7 +147,8 @@ mod diagnostics_flag_tests {
     #[test]
     fn tracing_is_opt_in_and_categories_or_explicit_off_survive_other_flags() {
         let parse = |args: &[&str]| {
-            audio_diagnostics_flags(args.iter().map(|arg| std::ffi::OsString::from(*arg)))
+            diagnostic_options(args.iter().map(|arg| std::ffi::OsString::from(*arg)))
+                .map(|options| options.0)
         };
         assert_eq!(parse(&["--demo"]), Ok(Flags::OFF));
         assert_eq!(parse(&["--audio-diagnostics"]), Ok(Flags::ALL));
@@ -132,5 +160,14 @@ mod diagnostics_flag_tests {
         assert!(flags.contains(Flags::PUBLICATION));
         assert!(!flags.contains(Flags::TIMING));
         assert!(parse(&["--audio-diagnostics=wat"]).is_err());
+        let options = diagnostic_options(["--diagnostics".into()].into_iter()).unwrap();
+        assert!(options.1);
+        assert!(options.0.contains(Flags::READINESS));
+        assert!(!options.0.contains(Flags::TIMING));
+        assert_eq!(
+            diagnostic_options(["--diagnostics".into(), "--diagnostics=off".into()].into_iter()),
+            Ok((Flags::OFF, false))
+        );
+        assert!(diagnostic_options(["--diagnostics=wat".into()].into_iter()).is_err());
     }
 }

@@ -235,7 +235,7 @@ impl EditorView {
             .midi_stroke
             .as_ref()
             .map(|stroke| stroke.shared_preview());
-        let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
+        let draw_creation = self.displayed_midi_creation();
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
         let draw_step = self.midi_step_preview();
@@ -314,12 +314,34 @@ impl EditorView {
         let canvas_scene_events = std::sync::Arc::clone(&scene);
         roll = roll.children([canvas(
             |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-            move |bounds, hitbox, window, _| {
+            move |bounds, hitbox, window, cx| {
                 let width = f32::from(bounds.size.width);
                 let height = f32::from(bounds.size.height);
                 if width <= 0.0 || height <= 0.0 {
                     return;
                 }
+                entity.read(cx).renew_midi_time_selection_capture(
+                    super::midi_stroke::CanvasBounds {
+                        x: f32::from(bounds.origin.x),
+                        y: f32::from(bounds.origin.y),
+                        width,
+                        height,
+                    },
+                    clip_id,
+                    entity.entity_id(),
+                    window,
+                );
+                entity.read(cx).renew_piano_pan_capture(
+                    super::midi_stroke::CanvasBounds {
+                        x: f32::from(bounds.origin.x),
+                        y: f32::from(bounds.origin.y),
+                        width,
+                        height,
+                    },
+                    clip_id,
+                    entity.entity_id(),
+                    window,
+                );
                 let marquee_context = super::midi_selection::MarqueeContext {
                     scene: canvas_scene.key(),
                     bounds: super::midi_stroke::CanvasBounds {
@@ -859,6 +881,8 @@ impl EditorView {
                                 rendered_context.bounds,
                                 [f32::from(event.position.x), f32::from(event.position.y)],
                                 event.button,
+                                window,
+                                view_cx,
                             ) {
                                 view_cx.notify();
                             }
@@ -1060,6 +1084,8 @@ impl EditorView {
                                     rendered_context.bounds,
                                     f32::from(event.position.x),
                                     event.modifiers.platform,
+                                    window,
+                                    view_cx,
                                 );
                             }
                             view_cx.notify();
@@ -1123,9 +1149,6 @@ impl EditorView {
                             if view.cancel_all_midi_marquees() {
                                 view_cx.notify();
                             }
-                            if view.midi_pan.gesture.take().is_some() {
-                                view_cx.notify();
-                            }
                             let target = if hover_allowed
                                 && hitbox.is_hovered(window)
                                 && view.project_generation == generation
@@ -1155,16 +1178,6 @@ impl EditorView {
                         return;
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
-                        if view.midi_pan.gesture.is_some() {
-                            if view.update_piano_pan(
-                                rendered_context.bounds,
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                event.pressed_button,
-                            ) {
-                                view_cx.notify();
-                            }
-                            return;
-                        }
                         if event.pressed_button == Some(MouseButton::Middle) {
                             return;
                         }
@@ -1173,16 +1186,6 @@ impl EditorView {
                                 gesture_bounds_from(bounds),
                                 f32::from(event.position.x),
                                 StrokeModifiers::from_platform(event.modifiers),
-                            ) {
-                                view_cx.notify();
-                            }
-                            return;
-                        }
-                        if view.midi_grid_time_selection_active() {
-                            if view.update_midi_time_selection(
-                                rendered_context.bounds,
-                                f32::from(event.position.x),
-                                event.modifiers.platform,
                             ) {
                                 view_cx.notify();
                             }
@@ -1315,14 +1318,6 @@ impl EditorView {
                         return;
                     }
                     mouse_up_entity.update(cx, |view, view_cx| {
-                        if view.finish_piano_pan(
-                            rendered_context.bounds,
-                            [f32::from(event.position.x), f32::from(event.position.y)],
-                            event.button,
-                        ) {
-                            view_cx.notify();
-                            return;
-                        }
                         if event.button != MouseButton::Left {
                             return;
                         }
@@ -1332,15 +1327,6 @@ impl EditorView {
                                 f32::from(event.position.x),
                                 bounds.contains(&event.position),
                                 StrokeModifiers::from_platform(event.modifiers),
-                            );
-                            view_cx.notify();
-                            return;
-                        }
-                        if view.midi_grid_time_selection_active() {
-                            view.finish_midi_time_selection(
-                                rendered_context.bounds,
-                                f32::from(event.position.x),
-                                event.modifiers.platform,
                             );
                             view_cx.notify();
                             return;

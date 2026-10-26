@@ -7,12 +7,16 @@ use std::sync::atomic::AtomicU64;
 pub(super) struct QueuedRequest {
     pub request: Request,
     pub document_intent: u64,
+    pub diagnostic: Option<super::diagnostics::DiagnosticRequest>,
+    pub diagnostic_origin: super::diagnostics::DiagnosticOrigin,
 }
 impl QueuedRequest {
     pub(super) fn continuation(request: Request, intent: &AtomicU64) -> Self {
         Self {
             request,
             document_intent: intent.load(Ordering::Acquire),
+            diagnostic: None,
+            diagnostic_origin: super::diagnostics::DiagnosticOrigin::Continuation,
         }
     }
 }
@@ -61,7 +65,16 @@ impl Sender {
         }
     }
     #[allow(clippy::result_large_err)] // Exact original request on bounded admission refusal.
+    #[cfg(test)]
     pub(super) fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        self.submit_traced(request, None)
+    }
+    #[allow(clippy::result_large_err)] // Exact request custody is unchanged by diagnostic metadata.
+    pub(super) fn submit_traced(
+        &self,
+        request: Request,
+        diagnostic: Option<super::diagnostics::DiagnosticRequest>,
+    ) -> Result<(), SubmitError> {
         let replaces_document = matches!(
             request,
             Request::NewWithAudioMode { .. }
@@ -82,6 +95,8 @@ impl Sender {
         match self.channel.try_send(QueuedRequest {
             request,
             document_intent: intent,
+            diagnostic,
+            diagnostic_origin: super::diagnostics::DiagnosticOrigin::Submitted,
         }) {
             Ok(()) => {
                 if let Some(next) = next {

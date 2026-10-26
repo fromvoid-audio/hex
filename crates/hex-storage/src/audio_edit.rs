@@ -449,33 +449,35 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
             placement_start_offset: dto.placement_start_offset,
             placement_end_offset: dto.placement_end_offset,
             domain: Arc::new(AudioClipDomain {
-                events: None,
-                source_offset: d.source_offset,
-                source_length: d.source_length,
+                content: Arc::new(hex_project::AudioClipContent {
+                    events: None,
+                    source_offset: d.source_offset,
+                    source_length: d.source_length,
+                    clock: match d.clock {
+                        Clock::Frames { length } => AudioDomainClock::Frames(length),
+                        Clock::Beats { length_raw } => {
+                            AudioDomainClock::Beats(BeatTime::from_raw(length_raw))
+                        }
+                    },
+                    pitch_cents: d.pitch_cents,
+                    sample_bpm: d
+                        .sample_micro_bpm
+                        .map(Tempo::new)
+                        .transpose()
+                        .map_err(|e| StorageError::Invalid(e.0))?,
+                    warp_enabled: d.warp_enabled,
+                    warp,
+                    source_gain: d
+                        .source_gain
+                        .into_iter()
+                        .map(|p| SourceGainPoint {
+                            frame: p.frame,
+                            gain_q16: p.gain_q16,
+                        })
+                        .collect(),
+                }),
                 source_phase: d.source_phase,
                 looping: d.looping,
-                clock: match d.clock {
-                    Clock::Frames { length } => AudioDomainClock::Frames(length),
-                    Clock::Beats { length_raw } => {
-                        AudioDomainClock::Beats(BeatTime::from_raw(length_raw))
-                    }
-                },
-                pitch_cents: d.pitch_cents,
-                sample_bpm: d
-                    .sample_micro_bpm
-                    .map(Tempo::new)
-                    .transpose()
-                    .map_err(|e| StorageError::Invalid(e.0))?,
-                warp_enabled: d.warp_enabled,
-                warp,
-                source_gain: d
-                    .source_gain
-                    .into_iter()
-                    .map(|p| SourceGainPoint {
-                        frame: p.frame,
-                        gain_q16: p.gain_q16,
-                    })
-                    .collect(),
                 fade,
                 fade_start: d.fade_start,
                 fade_projection,

@@ -393,6 +393,8 @@ actions!(
         PasteTimeSelection,
         InsertTimeSelection,
         DuplicateClip,
+        DuplicateAliasClip,
+        MakeClipUnique,
         SplitClip,
         SetLoopFromClip,
         LoopSelection,
@@ -508,7 +510,10 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-v", PasteTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-shift-v", InsertTimeSelection, Some("hex_editor")),
-        KeyBinding::new("cmd-d", DuplicateClip, Some("hex_editor")),
+        KeyBinding::new("cmd-d", DuplicateAliasClip, Some("hex_editor")),
+        KeyBinding::new("cmd-d", DuplicateClip, Some("hex_audio_events")),
+        KeyBinding::new("d", DuplicateClip, Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection")),
+        KeyBinding::new("i", MakeClipUnique, Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection")),
         KeyBinding::new("cmd-alt-up", MoveSceneUp, Some("hex_editor")),
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
@@ -569,6 +574,8 @@ fn bind_editor_keys(cx: &mut App) {
             "cmd-shift-m",
             "cmd-r",
             "cmd-d",
+            "d",
+            "i",
             "e",
             "b",
             "cmd-b",
@@ -588,6 +595,7 @@ fn bind_editor_keys(cx: &mut App) {
             "cmd-shift-m",
             "b",
             "cmd-b",
+            "i",
         ]
         .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_automation_track_header"))),
     );
@@ -703,6 +711,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 
 pub(super) struct EditorView {
     service: Service,
+    transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
     audio_events: std::sync::mpsc::Receiver<crate::EditorAudioEvent>,
     source_reservation: Option<hex_session::SourcePlanReservation>,
@@ -1187,6 +1196,7 @@ impl EditorView {
         #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
+        crate::diagnostics::attach_service(cx, &service);
         #[cfg(test)]
         let test_environment = test_paths.existing_environment.unwrap_or_else(|| {
             test_environment::Environment::new()
@@ -1232,6 +1242,10 @@ impl EditorView {
         let keyboard_window_id = window.window_handle().window_id();
         let keyboard_entity = cx.entity().downgrade();
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle().window_id() != keyboard_window_id {
+                return;
+            }
+            crate::diagnostics::record_key(cx, event);
             if window.window_handle().window_id() == keyboard_window_id
                 && let Some(entity) = keyboard_entity.upgrade()
                 && (entity.read(cx).tuning_audition_accepts(
@@ -1375,6 +1389,7 @@ impl EditorView {
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
+            transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
             audio,
             audio_events: std::sync::mpsc::channel().1,

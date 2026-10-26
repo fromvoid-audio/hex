@@ -23,6 +23,7 @@ fn chain(rate: u32, count: u64) -> Result<NativeRuntimeChain, Box<dyn Error>> {
     let mut entries = Vec::new();
     for id in 1..=count {
         entries.push(PreparedRuntimeInstance {
+            automation: Default::default(),
             meter: Default::default(),
             owner: ProcessorChainOwner::Track(1),
             device_id: id,

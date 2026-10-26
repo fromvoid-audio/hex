@@ -60,10 +60,8 @@ impl EditorView {
                 .preview_note_overwrite(&preview.removed, &preview.inserted)
                 .map(Some);
         }
-        if let Some(creation) = &self.midi_creation {
-            return source
-                .preview_note_overwrite(&[], &[creation.preview])
-                .map(Some);
+        if let Some(note) = self.displayed_midi_creation() {
+            return source.preview_note_overwrite(&[], &[note]).map(Some);
         }
         Ok(None)
     }

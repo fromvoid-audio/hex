@@ -85,6 +85,26 @@ impl Custody {
         }
         Ok(result)
     }
+    pub(in crate::candidate_custody) fn native_parameter_edits(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_parameter_edits(),
+            Owner::Loaned(owner) => owner.poll_parameter_edits(),
+            _ => Err("native edit owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn native_parameter_values(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.parameter_values(),
+            Owner::Loaned(owner) => owner.parameter_values(),
+            _ => Err("native parameter owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn begin_live_native_capture(
         &self,
         binding: Binding,
@@ -111,6 +131,30 @@ impl Custody {
         binding: Binding,
         is_cancelled: &mut dyn FnMut() -> bool,
     ) -> Result<Option<NativeDeviceState>, &'static str> {
+        self.with_quiescent_native_source(binding, |owner| {
+            owner.capture_state_retained_while_on_control(is_cancelled)
+        })
+    }
+    pub(in crate::candidate_custody) fn flush_native_parameters(
+        &self,
+        binding: Binding,
+        parameters: &hex_plugin_host::transport::Parameters,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<hex_plugin_host::protocol::FlushedParameters>, &'static str> {
+        self.with_quiescent_native_source(binding, |owner| {
+            owner.flush_parameters_retained_while_on_control(parameters, is_cancelled)
+        })
+    }
+    // Capture and parameter flush use the same original quiescent-owner
+    // admission/terminal path. Only Work spans SDK I/O; close keeps its existing
+    // exact cancellation token, and neither operation grants resume/publication.
+    fn with_quiescent_native_source<T>(
+        &self,
+        binding: Binding,
+        run: impl FnOnce(
+            native::Quiescent,
+        ) -> Result<(native::Quiescent, T), native::PreparationFailure>,
+    ) -> Result<Option<T>, &'static str> {
         let mut work = self
             .work
             .try_lock()
@@ -166,18 +210,16 @@ impl Custody {
         // close may cancel this exact source through its original token.
         let mut captured = None;
         let result = catch_unwind(AssertUnwindSafe(|| match cell.owner.take() {
-            Some(Owner::Quiescent(owner)) => {
-                match owner.capture_state_retained_while_on_control(is_cancelled) {
-                    Ok((owner, state)) => {
-                        cell.owner = Some(Owner::Quiescent(owner));
-                        captured = Some(state);
-                    }
-                    Err(owner) => {
-                        cell.constructor_refused = true;
-                        cell.owner = Some(Owner::Refused(owner));
-                    }
+            Some(Owner::Quiescent(owner)) => match run(owner) {
+                Ok((owner, state)) => {
+                    cell.owner = Some(Owner::Quiescent(owner));
+                    captured = Some(state);
                 }
-            }
+                Err(owner) => {
+                    cell.constructor_refused = true;
+                    cell.owner = Some(Owner::Refused(owner));
+                }
+            },
             other => cell.owner = other,
         }));
         if let Err(payload) = result {
@@ -203,6 +245,24 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    pub(crate) fn native_source_parameter_edits(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.native_parameter_edits(binding)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn native_source_parameter_values(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.native_parameter_values(binding)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
     pub(crate) fn begin_live_native_capture(
         &self,
         binding: Binding,
@@ -221,6 +281,21 @@ impl CandidateRoot {
         // gate too; copied result destruction occurs after its lock is gone.
         self.require_native_source_control_open()?;
         Ok(result)
+    }
+    pub(crate) fn flush_native_source_parameters(
+        &self,
+        binding: Binding,
+        parameters: &hex_plugin_host::transport::Parameters,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<hex_plugin_host::protocol::FlushedParameters>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .flush_native_parameters(binding, parameters, is_cancelled);
+        crate::lifecycle::request_candidate_cleanup(self);
+        self.require_native_source_control_open()?;
+        result
     }
     pub(crate) fn capture_native_source_state(
         &self,

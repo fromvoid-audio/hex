@@ -44,6 +44,64 @@ fn warm(old: &mut SessionPlayback, selected_session: bool) {
 }
 
 #[test]
+fn make_alias_unique_and_undo_preserve_held_voice_history_and_note_off() {
+    registry_test(|registry, id| {
+        for selected_session in [false, true] {
+            let base = with_test_instrument(&project(1.0, 0, 1 << 26), id, 0);
+            let mut editor = Editor::new(base, 16).unwrap();
+            let original = if selected_session {
+                let cell = &editor.project().session_cells()[0];
+                let (track, scene) = (cell.track(), cell.scene());
+                let hex_project::SessionCellContent::Midi(clip) = cell.content() else {
+                    panic!("midi cell")
+                };
+                let original = clip.id();
+                editor
+                    .execute(Command::DuplicateSessionCell {
+                        track,
+                        scene,
+                        alias: true,
+                    })
+                    .unwrap();
+                original
+            } else {
+                let original = editor.project().tracks()[0].midi_clips()[0].id();
+                editor
+                    .execute(Command::DuplicateAliasClips(vec![original]))
+                    .unwrap();
+                original
+            };
+            let mut active = ordinary_mutable_playback(editor.project(), registry);
+            let mut reference = ordinary_mutable_playback(editor.project(), registry);
+            warm(&mut active, selected_session);
+            warm(&mut reference, selected_session);
+            editor
+                .execute(Command::MakeClipsUnique(vec![original]))
+                .unwrap();
+            let mut unique = ordinary_mutable_playback(editor.project(), registry);
+            unique.try_inherit_state_from(&mut active).unwrap();
+            let mut actual = [[0.0; 2]; 127];
+            let mut expected = actual;
+            unique.render(&mut actual).unwrap();
+            reference.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.01));
+            assert!(editor.undo());
+            let mut restored = ordinary_mutable_playback(editor.project(), registry);
+            restored.try_inherit_state_from(&mut unique).unwrap();
+            let mut actual = vec![[0.0; 2]; 2_048];
+            let mut expected = actual.clone();
+            for chunk in actual.chunks_mut(17) {
+                restored.render(chunk).unwrap();
+            }
+            reference.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual[1_984..].iter().all(|frame| *frame == [0.0; 2]));
+        }
+    });
+}
+
+#[test]
 fn ordinary_restored_or_added_authored_notes_suppress_past_and_admit_future_atomically() {
     registry_test(|registry, id| {
         let full = with_test_instrument(
