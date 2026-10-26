@@ -347,6 +347,10 @@ class InterruptedRun(Exception):
     """Raised when a user or supervisor interrupts the pipeline."""
 
 
+class ReportPublicationError(OSError):
+    """The durable report is unavailable; never a successful qualification."""
+
+
 class TargetCacheError(Exception):
     """Raised when Cargo target ownership is unknown or already in use."""
 
@@ -530,8 +534,25 @@ class LocalCiRunner:
 
     def _write_summary(self) -> None:
         temporary = self.summary_path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(self.summary, indent=2, sort_keys=True) + "\n")
-        temporary.replace(self.summary_path)
+        phase = "writing temporary report"
+        try:
+            temporary.write_text(json.dumps(self.summary, indent=2, sort_keys=True) + "\n")
+            phase = "publishing report"
+            temporary.replace(self.summary_path)
+        except OSError as error:
+            # Preserve the last published bytes and the actual command result.
+            # A later successful diagnostic write must still record this failure.
+            self.summary["report_publication_error"] = f"{phase}: {error}"
+            raise ReportPublicationError(error.errno, str(error)) from error
+
+    def _fail_report_publication(self) -> None:
+        self.summary["verification_status"] = "failed"
+        if self.summary.get("exit_code") not in (None, 0):
+            return  # Keep an existing command/refusal/interruption/stale result.
+        if any(step["status"] == "failed" for step in self.summary["steps"]):
+            self.summary.update(status="failed", exit_code=1)
+        else:
+            self.summary.update(status="incomplete", exit_code=2)
 
     def _capture_repository_state(self, key: str) -> bool:
         try:
@@ -1612,7 +1633,12 @@ class LocalCiRunner:
         steps = self.summary["steps"]
         assert isinstance(steps, list)
         steps.append(entry)
-        self._write_summary()
+        try:
+            self._write_summary()
+        except ReportPublicationError:
+            entry.update(status="not_run", started_at=None, start_offset_seconds=None,
+                         log=None, error="report publication failed before command admission")
+            raise
         print(f"[{index}/{len(self.steps)}] {step.step_id}: running", flush=True)
         if step.step_id == "runner-tests" and self.summary.get("plan") and "python_tests" in self.summary["plan"]:
             selection = self.summary["plan"]["python_tests"]
@@ -1705,6 +1731,11 @@ class LocalCiRunner:
         status = self.summary.get("status")
         if status not in {"failed", "interrupted", "stale", "incomplete"}:
             return
+        publication = self.summary.get("report_publication_error")
+        stream = sys.stderr if publication else sys.stdout
+        report_note = (["report publication failed: " + self._diagnostic_text(str(publication))[:2000],
+                        "durable summary is unavailable or incomplete; this run does not qualify"]
+                       if publication else [])
         preparation = self.summary.get("target_preparation_failure")
         if preparation:
             cache = self.summary.get("target_cache", {})
@@ -1718,7 +1749,7 @@ class LocalCiRunner:
             if cache.get("cleanup_argv"):
                 details.append("cleanup command: " + shlex.join(cache["cleanup_argv"])[:2000])
             details.append("rerun the original local CI invocation after resolving the refusal; prior passing stages are not a complete check set")
-            print(self._diagnostic_text("\n".join(details)), flush=True)
+            print(self._diagnostic_text("\n".join(details + report_note)), file=stream, flush=True)
             return
         executed = [s for s in self.summary["steps"] if s["status"] != "not_run"]
         step = next((s for s in executed if s["status"] in {"failed", "interrupted"}),
@@ -1750,6 +1781,8 @@ class LocalCiRunner:
                         "compiler failure" if re.search(r"error\[E\d+\]|error:.*could not compile|--> .*:\d+:\d+", excerpt) else
                         "test failure" if re.search(r"panicked at|stdout ----|FAIL:|ERROR:|Traceback", excerpt) else
                         "command failure")
+        if publication and (step is None or step["status"] not in {"failed", "interrupted"}):
+            category = "report publication failure"
         result = "stale (source changed; prior results do not qualify)" if status == "stale" else status
         details = [f"local ci diagnostic: {result}", f"profile: {self.mode}",
                    f"step: {step['step_id'] if step else 'not started'} ({category})",
@@ -1760,6 +1793,8 @@ class LocalCiRunner:
             if truncated:
                 command = command[:2000] + " ... [truncated; exact argv retained in summary]"
             details.extend((f"command: {command}", f"cwd: {self.root}"))
+            if publication:
+                details.append(f"command result: {step['status']}; exit code: {step['exit_code']}")
             if step.get("error"):
                 details.append(self._diagnostic_text(str(step["error"]))[:2000])
             if excerpt:
@@ -1773,13 +1808,21 @@ class LocalCiRunner:
                            for key, value in self.summary.items() if key.endswith("_error"))
         if status == "stale":
             details.append("freeze the intended candidate and rerun its required plan before qualification")
-        print(self._diagnostic_text("\n".join(details)), flush=True)
+        print(self._diagnostic_text("\n".join(details + report_note)), file=stream, flush=True)
 
     def run(self) -> int:
         self.summary["native_acceptance_opt_in"] = bool(
             ci_plan.python_tests.native_acceptance_inputs(self.env))
         self.output_dir.mkdir(parents=True, exist_ok=False)
-        self._write_summary()
+        try:
+            self._write_summary()
+        except ReportPublicationError:
+            self._fail_report_publication()
+            try:
+                self._print_failure_details()
+            except (OSError, ValueError):
+                pass  # An unavailable console cannot turn missing evidence into success.
+            return int(self.summary["exit_code"])
         previous_handlers: dict[int, object] = {}
 
         def interrupt_handler(_signum: int, _frame: object) -> None:
@@ -1886,6 +1929,8 @@ class LocalCiRunner:
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
                 self.summary["exit_code"] = (2 if "disk_error" in self.summary else 1) if failed else 0
+        except ReportPublicationError:
+            self._fail_report_publication()
         except InterruptedRun:
             self.summary["status"] = "interrupted"
             self.summary["exit_code"] = 130
@@ -1978,7 +2023,12 @@ class LocalCiRunner:
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         if self.summary.get("disk_refusal"):
                             self.summary["checkpoint_unavailable"] = str(error)
-                self._write_summary()
+                if self.summary.get("report_publication_error"):
+                    self._fail_report_publication()
+                try:
+                    self._write_summary()
+                except ReportPublicationError:
+                    self._fail_report_publication()
             finally:
                 # Even an end-snapshot or summary-write exception must restore
                 # the caller's process-wide signal handlers.

@@ -686,6 +686,14 @@ impl Render for EditorView {
             .capture_action(cx.listener(|view, _: &super::SearchBrowser, window, cx| {
                 view.search_browser(window, cx);
             }))
+            .capture_action(
+                cx.listener(|view, _: &super::CreateFadesOrSearch, window, cx| {
+                    if !view.create_selection_fades(window, cx) {
+                        view.search_browser(window, cx);
+                    }
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::RenameTrack, window, cx| {
                 view.begin_track_name(window, cx);
             }))

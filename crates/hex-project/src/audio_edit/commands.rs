@@ -372,7 +372,7 @@ pub(crate) fn apply(
     validate_clip(project, &clip)?;
     crate::clip_group::replace_audio(project, clip)
 }
-fn validate_clip(project: &crate::Project, clip: &Clip) -> Result<(), Invalid> {
+pub(crate) fn validate_clip(project: &crate::Project, clip: &Clip) -> Result<(), Invalid> {
     let frames = project
         .asset(clip.asset)
         .ok_or(Invalid("audio domain media is missing"))?

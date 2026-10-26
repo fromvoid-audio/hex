@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import errno
+import signal
 import ast
 import hashlib
 import json
@@ -865,6 +867,107 @@ fi
         self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
         self.assertIsNone(summary["steps"][1]["duration_seconds"])
         self.assertIn("intentional failure", (self.repo / summary["steps"][0]["log"]).read_text())
+
+    def test_report_enospc_preserves_failed_command_and_cleanup(self):
+        self._report_enospc_cases("command", failed_command=True)
+
+    def test_report_enospc_before_command_admission_releases_target(self):
+        self._report_enospc_cases("admission", failed_command=False)
+
+    def test_transient_report_failure_stops_commands_and_records_incomplete_evidence(self):
+        runner = self.runner("transient-report", steps=(local_ci.Step("first", ("first",)), local_ci.Step("later", ("second",))))
+        original = Path.replace
+        faulted = False
+        def replace(path, target):
+            nonlocal faulted
+            if Path(target) == runner.summary_path and not faulted and any(e["status"] == "passed" for e in runner.summary["steps"]):
+                faulted = True
+                raise OSError(errno.ENOSPC, "one-off report publication refusal")
+            return original(path, target)
+        output = io.StringIO()
+        with patch.object(Path, "replace", replace), redirect_stderr(output):
+            self.assertEqual(runner.run(), 2)
+        saved = self.summary("transient-report")
+        self.assertEqual((saved["status"], saved["verification_status"]), ("incomplete", "failed"))
+        self.assertEqual([e["status"] for e in saved["steps"]], ["passed", "not_run"])
+        self.assertIn("one-off report publication refusal", saved["report_publication_error"])
+        self.assertIn("report publication failed", output.getvalue())
+        self.assertNotIn("second", self.call_log.read_text())
+
+    def test_initial_report_enospc_runs_no_commands(self):
+        self._report_enospc_cases("initial", failed_command=False)
+
+    def test_final_report_enospc_cannot_qualify_successful_commands(self):
+        self._report_enospc_cases("final", failed_command=False)
+
+    def _report_enospc_cases(self, stage, *, failed_command):
+        for operation in ("write", "replace"):
+            with self.subTest(stage=stage, operation=operation):
+                name = f"report-{stage}-{operation}"
+                runner = self.runner(name, env={**self.env, "FAIL_MATCH": "cargo build" if failed_command else "never-match"},
+                    steps=(local_ci.Step("build", ("cargo", "build")), local_ci.Step("later", ("second",))))
+                original_write, original_replace = Path.write_text, Path.replace
+                faulted = False
+                durable = None
+                def should_fail():
+                    nonlocal faulted
+                    entries = runner.summary["steps"]
+                    triggered = (stage == "initial" or
+                        stage == "admission" and any(e["status"] == "running" for e in entries) or
+                        stage == "command" and any(e["status"] == "failed" for e in entries) or
+                        stage == "final" and runner.summary.get("ended_at") is not None)
+                    faulted = faulted or triggered
+                    return faulted
+                def write(path, *args, **kwargs):
+                    if path == runner.summary_path.with_suffix(".json.tmp") and operation == "write" and should_fail():
+                        raise OSError(errno.ENOSPC, "injected report storage exhaustion")
+                    return original_write(path, *args, **kwargs)
+                def replace(path, target):
+                    nonlocal durable
+                    if Path(target) == runner.summary_path:
+                        if operation == "replace" and should_fail():
+                            raise OSError(errno.ENOSPC, "injected report storage exhaustion")
+                        result = original_replace(path, target)
+                        durable = runner.summary_path.read_bytes()
+                        return result
+                    return original_replace(path, target)
+                previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+                calls_before = self.call_log.read_bytes() if self.call_log.exists() else None
+                output = io.StringIO()
+                with patch.object(Path, "write_text", write), patch.object(Path, "replace", replace), redirect_stderr(output):
+                    result = runner.run()
+                self.assertTrue(faulted)
+                self.assertEqual(result, 1 if failed_command else 2)
+                self.assertEqual({sig: signal.getsignal(sig) for sig in previous_handlers}, previous_handlers)
+                self.assertIsNone(runner.target_lock)
+                self.assertNotIn(runner.summary["status"], {"passed", "partial"})
+                self.assertEqual(runner.summary["verification_status"], "failed")
+                self.assertIn("report publication failed", output.getvalue())
+                self.assertIn(str(runner.summary_path), output.getvalue())
+                self.assertNotIn("Traceback", output.getvalue())
+                if durable is None:
+                    self.assertFalse(runner.summary_path.exists())
+                else:
+                    self.assertEqual(runner.summary_path.read_bytes(), durable)
+                    self.assertNotIn(json.loads(durable)["status"], {"passed", "partial"})
+                if failed_command:
+                    step = runner.summary["steps"][0]
+                    self.assertEqual((step["status"], step["exit_code"]), ("failed", 7))
+                    log = runner.root / step["log"]
+                    self.assertIn("intentional failure", log.read_text())
+                    self.assertIn("command: cargo build", output.getvalue())
+                    self.assertIn("exit code: 7", output.getvalue())
+                    self.assertIn(str(log), output.getvalue())
+                    self.assertEqual(runner.summary["steps"][1]["status"], "not_run")
+                elif stage == "initial":
+                    self.assertEqual(self.call_log.read_bytes() if self.call_log.exists() else None, calls_before)
+                elif stage == "admission":
+                    self.assertTrue(all(e["status"] == "not_run" for e in runner.summary["steps"]))
+                    self.assertNotIn(b"cargo build", self.call_log.read_bytes()[len(calls_before or b""):])
+                else:
+                    self.assertTrue(all(e["status"] == "passed" for e in runner.summary["steps"]))
+                # The report failure cannot strand the shared target lease.
+                self.assertEqual(self.runner("after-" + name).run(), 0)
 
     def test_missing_executable_is_logged_as_failure(self) -> None:
         runner = local_ci.LocalCiRunner(
