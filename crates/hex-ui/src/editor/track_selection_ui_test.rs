@@ -466,6 +466,11 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
         );
         visual.simulate_mouse_down(position, MouseButton::Left, modifiers);
         visual.run_until_parked();
+        let selected = if modifiers.shift {
+            vec![source, empty]
+        } else {
+            vec![target]
+        };
         for released in [false, true] {
             if released {
                 visual.simulate_mouse_up(position, MouseButton::Left, modifiers);
@@ -473,7 +478,7 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
             }
             editor.read_with(&visual, |view, _| {
                 assert_eq!(view.selected_track, Some(target));
-                assert_eq!(view.selected_track_ids(), [target]);
+                assert_eq!(view.selected_track_ids(), selected);
                 assert_eq!(
                     view.cursor_position(),
                     0,
@@ -494,10 +499,10 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
                     let name = selector(prefix, id);
                     assert_eq!(
                         visual.debug_bounds(name).is_some(),
-                        id == target,
+                        selected.contains(&id),
                         "{prefix} after release={released}"
                     );
-                    if id == target && prefix != "selected-track" {
+                    if selected.contains(&id) && prefix != "selected-track" {
                         assert!(
                             visual.rendered_background(name).is_some(),
                             "completed lane paint"
