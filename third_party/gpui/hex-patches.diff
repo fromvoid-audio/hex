@@ -4753,15 +4753,7 @@ diff --git a/src/window.rs b/src/window.rs
                          window.modifiers = window.platform_window.modifiers();
                          window.capslock = window.platform_window.capslock();
                          window
-@@ -1102,6 +1178,7 @@
-                             .clone()
-                             .retain(&(), |callback| callback(window, cx));
- 
-+                        window.dispatch_pointer_hover(cx);
-                         window.bounds_changed(cx);
-                         window.refresh();
- 
-@@ -1121,6 +1198,16 @@
+@@ -1121,6 +1197,16 @@
                      .log_err();
              }
          }));
@@ -4778,7 +4770,7 @@ diff --git a/src/window.rs b/src/window.rs
          platform_window.on_input({
              let mut cx = cx.to_async();
              Box::new(move |event| {
-@@ -1208,6 +1295,7 @@
+@@ -1208,6 +1294,7 @@
              handle,
              invalidator,
              removed: false,
@@ -4786,7 +4778,7 @@ diff --git a/src/window.rs b/src/window.rs
              platform_window,
              display_id,
              sprite_atlas,
-@@ -1236,6 +1324,8 @@
+@@ -1236,6 +1323,8 @@
              default_prevented: true,
              mouse_position,
              mouse_hit_test: HitTest::default(),
@@ -4795,7 +4787,7 @@ diff --git a/src/window.rs b/src/window.rs
              modifiers,
              capslock,
              scale_factor,
-@@ -1371,8 +1461,17 @@
+@@ -1371,8 +1460,17 @@
          }
      }
  
@@ -4813,7 +4805,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.removed = true;
      }
  
-@@ -1908,6 +2007,61 @@
+@@ -1908,6 +2006,61 @@
          self.platform_window.completed_frame();
      }
  
@@ -4875,7 +4867,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Produces a new frame and assigns it to `rendered_frame`. To actually show
      /// the contents of the new [`Scene`], use [`Self::present`].
      #[profiling::function]
-@@ -1941,6 +2095,10 @@
+@@ -1941,6 +2094,10 @@
          let previous_window_active = self.rendered_frame.window_active;
          mem::swap(&mut self.rendered_frame, &mut self.next_frame);
          self.next_frame.clear();
@@ -4886,7 +4878,7 @@ diff --git a/src/window.rs b/src/window.rs
          let current_focus_path = self.rendered_frame.focus_path();
          let current_window_active = self.rendered_frame.window_active;
  
-@@ -2086,6 +2244,11 @@
+@@ -2086,6 +2243,11 @@
      }
  
      fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
@@ -4898,7 +4890,7 @@ diff --git a/src/window.rs b/src/window.rs
          // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
          for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
              let Some(Some(tooltip_request)) = self
-@@ -2220,6 +2383,7 @@
+@@ -2220,6 +2382,7 @@
  
      pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
          PrepaintStateIndex {
@@ -4906,7 +4898,7 @@ diff --git a/src/window.rs b/src/window.rs
              hitboxes_index: self.next_frame.hitboxes.len(),
              tooltips_index: self.next_frame.tooltip_requests.len(),
              deferred_draws_index: self.next_frame.deferred_draws.len(),
-@@ -2230,6 +2394,14 @@
+@@ -2230,6 +2393,14 @@
      }
  
      pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
@@ -4921,7 +4913,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.hitboxes.extend(
              self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                  .iter()
-@@ -2284,13 +2456,33 @@
+@@ -2284,13 +2455,33 @@
              mouse_listeners_index: self.next_frame.mouse_listeners.len(),
              input_handlers_index: self.next_frame.input_handlers.len(),
              cursor_styles_index: self.next_frame.cursor_styles.len(),
@@ -4955,7 +4947,7 @@ diff --git a/src/window.rs b/src/window.rs
          self.next_frame.cursor_styles.extend(
              self.rendered_frame.cursor_styles
                  [range.start.cursor_styles_index..range.end.cursor_styles_index]
-@@ -3524,14 +3716,28 @@
+@@ -3524,14 +3715,28 @@
          subscription
      }
  
@@ -4991,7 +4983,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3782,98 @@
+@@ -3576,6 +3781,98 @@
              .unwrap_or_else(|| action.name().to_string())
      }
  
@@ -5090,7 +5082,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3585,6 +3883,28 @@
+@@ -3585,6 +3882,28 @@
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
  
@@ -5119,7 +5111,7 @@ diff --git a/src/window.rs b/src/window.rs
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
              // API for the mouse position can only occur on the main thread.
-@@ -3662,10 +3982,33 @@
+@@ -3662,10 +3981,33 @@
              PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
          };
  
@@ -5154,7 +5146,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
  
          DispatchEventResult {
-@@ -3674,11 +4017,17 @@
+@@ -3674,11 +4016,17 @@
          }
      }
  
@@ -5173,7 +5165,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
  
          #[cfg(any(feature = "inspector", debug_assertions))]
-@@ -3686,6 +4035,10 @@
+@@ -3686,6 +4034,10 @@
              self.handle_inspector_mouse_event(event, cx);
              // When inspector is picking, all other mouse handling is skipped.
              return;

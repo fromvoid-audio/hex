@@ -320,7 +320,8 @@ replay with cached/deferred paint; group dependencies retain clipped bounds rath
 than an external parent's transient hitbox ID. Unrelated clip scenes and ordinary
 clicks retain their caches. Div suppresses ordinary/group hover styles and tooltip eligibility
 while this state is active. Stored hover callbacks run before mouse dispatch,
-independently of propagation, and reconcile at drag termination. They never
+independently of propagation, and reconcile at pointer/key terminals. Focus
+changes clear drag state without synthesizing hover entry. Callbacks never
 mutate view state during paint. Already visible hoverable
 tooltips are hidden immediately, and pending tooltip builders do not run during
 the drag even when capture swallowed their cancellation event. Typed drag-over styles and

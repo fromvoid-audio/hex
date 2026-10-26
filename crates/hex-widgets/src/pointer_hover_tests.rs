@@ -426,3 +426,37 @@ fn cached_group_hover_recovers_after_parent_only_repaint_during_drag(cx: &mut Te
 
 #[path = "pointer_hover_profile.rs"]
 mod profile;
+
+#[gpui::test]
+fn deactivation_clears_drag_without_synthesizing_hover_entry(cx: &mut TestAppContext) {
+    let hovered = std::rc::Rc::new(std::cell::Cell::new(false));
+    let handle = cx.add_window(|_, _| Fixture {
+        hovered: hovered.clone(),
+        ..Default::default()
+    });
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.simulate_resize(size(px(320.), px(120.)));
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_mouse_down(
+        point(px(20.), px(40.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(
+        point(px(120.), px(40.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(!hovered.get());
+    visual.deactivate_window();
+    visual.run_until_parked();
+    assert!(
+        !hovered.get(),
+        "focus loss must not trigger hover-driven file preparation"
+    );
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_mouse_move(point(px(120.), px(40.)), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(hovered.get());
+}

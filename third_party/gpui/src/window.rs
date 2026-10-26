@@ -1178,7 +1178,6 @@ impl Window {
                             .clone()
                             .retain(&(), |callback| callback(window, cx));
 
-                        window.dispatch_pointer_hover(cx);
                         window.bounds_changed(cx);
                         window.refresh();
 
