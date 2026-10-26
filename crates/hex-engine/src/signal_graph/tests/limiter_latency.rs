@@ -16,6 +16,157 @@ fn prepare_native(f: &Fixture) -> Arc<PreparedRevision> {
 }
 
 #[test]
+fn first_track_limiter_after_play_or_pause_becomes_audible() {
+    for paused in [false, true] {
+        let mut f = fixture(&[&[], &[]], 8192);
+        for (index, audio) in f.media.values_mut().enumerate() {
+            let frame = if index == 0 {
+                [0.5, -0.25]
+            } else {
+                [0.0625; 2]
+            };
+            *audio = Audio::new(48_000, vec![frame; 8192]).unwrap();
+        }
+        let mut donor = SessionPlayback::new(prepare_native(&f)).unwrap();
+        donor.apply(SessionPlaybackCommand::Play).unwrap();
+        donor.render(&mut [[0.0; 2]; 257]).unwrap();
+        if paused {
+            donor.apply(SessionPlaybackCommand::Pause).unwrap();
+        }
+        let mut state = hex_devices::limiter::DEFINITION.default_state().unwrap();
+        state = hex_devices::limiter::DEFINITION
+            .patch_parameter(
+                &state,
+                hex_devices::limiter::parameter::CEILING,
+                ParameterValue::Float(-12.0),
+            )
+            .unwrap();
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state,
+            })
+            .unwrap();
+        let prepared = prepare_native(&f);
+        let delay = prepared.arrangement().main_latency_frames() as usize;
+        let mut candidate = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        candidate.try_inherit_state_from(&mut donor).unwrap();
+        assert_eq!(candidate.playing(), !paused);
+        assert_eq!(candidate.performance_frame(), donor.performance_frame());
+        assert_eq!(candidate.arrangement_frame(), donor.arrangement_frame());
+        candidate.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut oracle = SessionPlayback::new(prepared).unwrap();
+        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut actual = vec![[0.0; 2]; delay + 513];
+        let mut expected = actual.clone();
+        for block in actual.chunks_mut(63) {
+            candidate.render(block).unwrap();
+        }
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(actual, expected, "paused={paused}");
+        assert!(actual[..delay].iter().all(|f| *f == [0.0; 2]));
+        assert!(actual[delay..].iter().all(|f| f[0] > 0.3 && f[0] < 0.315));
+    }
+}
+
+#[test]
+fn first_track_limiter_delays_existing_upstream_and_other_track_reverb_without_loss() {
+    for reverb_track in [0, 1] {
+        let mut f = fixture(&[&[], &[]], 8192);
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[reverb_track],
+                before: None,
+                state: crate::default_native_device_state_for_class(
+                    crate::NativeDeviceClass::Effect,
+                    DeviceTypeId::from_static("hex.reverb"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let prepared = prepare_native(&f);
+        let mut donor = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        let mut oracle = SessionPlayback::new(prepared).unwrap();
+        for runtime in [&mut donor, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 257]).unwrap();
+        }
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        let prepared = prepare_native(&f);
+        let delay = prepared.arrangement().main_latency_frames() as usize;
+        let mut candidate = SessionPlayback::new(prepared).unwrap();
+        candidate.try_inherit_state_from(&mut donor).unwrap();
+        let mut actual = vec![[0.0; 2]; delay + 2048];
+        let mut expected = actual.clone();
+        oracle.render(&mut expected[delay..]).unwrap();
+        assert!(expected.iter().flatten().any(|v| *v != 0.0));
+        for block in actual.chunks_mut(63) {
+            candidate.render(block).unwrap();
+        }
+        assert_eq!(actual, expected, "reverb track {reverb_track}");
+    }
+}
+
+#[test]
+fn first_track_limiter_does_not_discard_existing_reverb_or_change_routing() {
+    for active_reverb in [false, true] {
+        let mut f = fixture(&[&[], &[]], 8192);
+        if active_reverb {
+            f.editor
+                .execute(Command::InsertDevice {
+                    track: f.tracks[0],
+                    before: None,
+                    state: crate::default_native_device_state_for_class(
+                        crate::NativeDeviceClass::Effect,
+                        DeviceTypeId::from_static("hex.reverb"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        let prepared = prepare_native(&f);
+        let mut donor = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        let mut oracle = SessionPlayback::new(prepared).unwrap();
+        for runtime in [&mut donor, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 1]).unwrap();
+        }
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: active_reverb
+                    .then(|| f.editor.project().track(f.tracks[0]).unwrap().devices()[0].id()),
+                state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        if !active_reverb {
+            f.editor
+                .execute(Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(f.tracks[1]),
+                    destination: f.tracks[0],
+                    gain: 0.5,
+                })
+                .unwrap();
+        }
+        let mut candidate = SessionPlayback::new(prepare_native(&f)).unwrap();
+        assert!(candidate.try_inherit_state_from(&mut donor).is_err());
+        assert_eq!(donor.performance_frame(), oracle.performance_frame());
+        let mut actual = [[0.0; 2]; 513];
+        let mut expected = actual;
+        donor.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
 fn live_flat_eq_insertion_under_main_limiter_preserves_pending_pcm_and_clock() {
     for (warm, remove_main) in [(1, false), (63, false), (257, false), (1, true)] {
         let mut f = fixture(&[&[]], 1024);
