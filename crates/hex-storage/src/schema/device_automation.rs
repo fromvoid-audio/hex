@@ -373,7 +373,9 @@ mod tests {
         ] {
             assert!(matches!(
                 result,
-                Err(StorageError::Invalid("older schema cannot save device automation"))
+                Err(StorageError::Invalid(
+                    "older schema cannot save device automation"
+                ))
             ));
         }
     }
