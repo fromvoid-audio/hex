@@ -52,7 +52,7 @@ fn native_late_finished_survives_close_and_both_guard_release_orders_once() {
             data.owner_mut().unwrap().run(|c, _| {
                 c.begin_block();
                 c.render(&mut output).unwrap();
-                c.finish_gain_recording_quantum(true);
+                c.finish_native_parameter_quantum(true);
             })
         });
         client.native_parameter_release().unwrap();
@@ -72,7 +72,7 @@ fn native_late_finished_survives_close_and_both_guard_release_orders_once() {
         counted(|| {
             data.owner_mut()
                 .unwrap()
-                .run(|c, _| c.finish_gain_recording_quantum(true))
+                .run(|c, _| c.finish_native_parameter_quantum(true))
         });
         if errors_first {
             drop(errors);
