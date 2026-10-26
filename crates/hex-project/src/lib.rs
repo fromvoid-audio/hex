@@ -102,7 +102,7 @@ mod device;
 mod device_automation;
 pub use device_automation::{
     AutomationInterpolation, AutomationPoint, AutomationValue, DeviceAutomation,
-    MAX_DEVICE_AUTOMATION_LANES, MAX_DEVICE_AUTOMATION_POINTS,
+    DeviceAutomationTarget, MAX_DEVICE_AUTOMATION_LANES, MAX_DEVICE_AUTOMATION_POINTS,
     MAX_DEVICE_AUTOMATION_POINTS_PER_LANE, validate_device_automation,
 };
 mod device_comparison;

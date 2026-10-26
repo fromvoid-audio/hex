@@ -9,7 +9,9 @@
 //! # Does not own
 //! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
 //! Opaque payloads and asset references require provider and host validation before processing.
+mod automation_target;
 mod device_assets;
+pub use automation_target::DeviceAutomationTarget;
 mod foreign_binding;
 mod foreign_parameter;
 pub use foreign_binding::ForeignProcessorBinding;
