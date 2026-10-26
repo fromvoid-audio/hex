@@ -567,3 +567,62 @@ fn overridden_limiter_output_lane_keeps_points_and_reenables_at_delayed_content_
         3000
     );
 }
+
+#[test]
+fn boolean_and_choice_overrides_preserve_typed_base_values_and_resume_authored_audio() {
+    let definition = &hex_devices::utility::UTILITY_DEFINITION;
+    for (parameter, automated, base, expected) in [
+        (
+            hex_devices::utility::parameter::INVERT_LEFT,
+            ParameterValue::Bool(true),
+            ParameterValue::Bool(false),
+            [-SIGNAL[0], SIGNAL[1]],
+        ),
+        (
+            hex_devices::utility::parameter::CHANNEL,
+            ParameterValue::Choice(1),
+            ParameterValue::Choice(0),
+            [SIGNAL[0]; 2],
+        ),
+    ] {
+        let mut f = fixture(definition, RATE, BLOCK);
+        provider_lane(&mut f, definition, parameter, automated);
+        let retained = f
+            .editor
+            .project()
+            .device(f.device)
+            .unwrap()
+            .automation()
+            .to_vec();
+        for prepared in [false, true] {
+            close(&fresh(&f, prepared, BLOCK), &[expected; BLOCK]);
+        }
+        // An explicit write of the unchanged typed base still overrides the
+        // different authored value; neither its normalization nor DSP is baked.
+        let state = definition
+            .patch_parameter(
+                f.editor.project().device(f.device).unwrap().state(),
+                parameter,
+                base,
+            )
+            .unwrap();
+        f.editor
+            .execute(Command::ManualDeviceEdit {
+                device: f.device,
+                state,
+                targets: vec![Target::Parameter(parameter)],
+            })
+            .unwrap();
+        for prepared in [false, true] {
+            close(&fresh(&f, prepared, BLOCK), &[SIGNAL; BLOCK]);
+        }
+        f.editor.execute(Command::ReenableDeviceAutomation).unwrap();
+        assert_eq!(
+            f.editor.project().device(f.device).unwrap().automation(),
+            retained
+        );
+        for prepared in [false, true] {
+            close(&fresh(&f, prepared, BLOCK), &[expected; BLOCK]);
+        }
+    }
+}
