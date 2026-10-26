@@ -24,6 +24,7 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    Automation(super::device_automation::Action),
     Section(super::arrangement_sections::MenuAction),
     BounceTrack {
         generation: u64,
@@ -114,6 +115,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -152,6 +154,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -251,6 +254,9 @@ impl EditorView {
                 },
             });
         }
+        if let Some(track) = after_track {
+            self.append_automation_menu(device_panel::DevicePanelOwner::Track(track));
+        }
         self.append_adaptive_grid_choices();
         cx.notify();
     }
@@ -322,6 +328,7 @@ impl EditorView {
         }
         let revision = state.revision;
         self.open_track_context_menu(position, None, window, cx);
+        self.append_automation_menu(device_panel::DevicePanelOwner::Return(id));
         if let Some(menu) = &mut self.context_menu {
             menu.items.push(MenuItem {
                 label: "rename track · cmd+r",
@@ -366,6 +373,7 @@ impl EditorView {
         window.focus(&focus);
         let target = flavor.toggled();
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -397,6 +405,29 @@ impl EditorView {
         cx.notify();
     }
 
+    pub(super) fn append_utility_mode_choice(&mut self, device: DeviceId, mid_side: bool) {
+        let Some(owner) = self.device_panel.owner else {
+            return;
+        };
+        if let Some(menu) = &mut self.context_menu {
+            menu.items.push(MenuItem {
+                label: if mid_side {
+                    "switch to width"
+                } else {
+                    "switch to mid/side"
+                },
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::UtilityMode(UtilityModeAction {
+                    generation: self.project_generation,
+                    owner,
+                    device,
+                    mid_side: !mid_side,
+                }),
+            });
+        }
+    }
+
     pub(super) fn open_utility_mode_context_menu(
         &mut self,
         position: Point<Pixels>,
@@ -425,6 +456,7 @@ impl EditorView {
             ("switch to mid/side", true)
         };
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             items: vec![MenuItem {
@@ -460,6 +492,9 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::Automation(action) => {
+                self.automation_menu_action(action, window, cx)
+            }
             EditorContextAction::InputQuantization { generation, policy } => {
                 if generation == self.project_generation {
                     self.set_input_quantization(policy);
@@ -639,6 +674,9 @@ impl EditorView {
                 } else {
                     (menu.selected + count - 1) % count
                 };
+                if menu.icon_grid.is_none() {
+                    menu.scroll.scroll_to_item(menu.selected);
+                }
             }
             cx.notify();
         }
@@ -651,6 +689,7 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::Automation(action) => self.automation_action_stale(action),
                 EditorContextAction::Section(action) => self.section_menu_stale(action),
                 EditorContextAction::LoadFirstSampler(target) => {
                     !self.first_sampler_target_current(target)
@@ -753,15 +792,30 @@ impl EditorView {
             return None;
         }
         self.context_menu.as_ref().map(|menu| {
-            crate::context_menu::popup(
+            crate::context_menu::popup_with_labels(
                 menu,
                 window,
                 cx,
                 Self::select_context_item,
                 Self::dismiss_context_menu,
                 Self::navigate_context_menu,
+                context_item_label,
             )
         })
+    }
+}
+
+pub(super) fn context_item_label(item: &MenuItem<EditorContextAction>) -> gpui::SharedString {
+    match &item.action {
+        EditorContextAction::Automation(super::device_automation::Action::Show(entry, _))
+            if item.label == "parameter" =>
+        {
+            entry.label.clone()
+        }
+        EditorContextAction::Automation(super::device_automation::Action::Device {
+            label, ..
+        }) => label.clone(),
+        _ => item.label.into(),
     }
 }
 

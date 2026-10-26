@@ -580,6 +580,14 @@ pub enum Request {
         track: hex_project::TrackId,
         edit: GainLaneEdit,
     },
+    /// Resolve source stamps before any gesture barrier or canonical edit.
+    DeviceAutomation {
+        project_generation: u64,
+        revision: u64,
+        device: hex_project::DeviceId,
+        parameter: hex_lattice_contract::ParameterId,
+        points: Vec<hex_project::AutomationPoint>,
+    },
     DeviceGesture(GestureRequest),
     TuningGesture(TuningGestureRequest),
     TuningLibrary {
@@ -2145,6 +2153,43 @@ fn run_worker(
         // including Created selection and keyboard/tuning preparation.
         let mut cut_clipboard = None;
         let resolved_edit = match &request {
+            Request::DeviceAutomation {
+                project_generation: generation,
+                revision: source_revision,
+                device,
+                parameter,
+                points,
+            } => {
+                Some(
+                    if *generation != project_generation || *source_revision != revision {
+                        Err("automation edit refused · project changed".into())
+                    } else if session
+                        .project()
+                        .device(*device)
+                        .zip(session.native_device_class(*device).ok())
+                        .is_none_or(|(source, class)| {
+                            !hex_engine::native_parameter_automation_supported(
+                                class,
+                                source.state(),
+                                *parameter,
+                            )
+                        })
+                    {
+                        Err("automation edit refused · parameter no longer available".into())
+                    } else if pending_sampler_parameter.is_some()
+                        || device_gesture.snapshot().is_some()
+                        || tuning_gesture.snapshot().is_some()
+                    {
+                        Err("finish or cancel the active parameter gesture before editing automation".into())
+                    } else {
+                        Ok(Command::ReplaceDeviceAutomation {
+                            device: *device,
+                            parameter: *parameter,
+                            points: points.clone(),
+                        })
+                    },
+                )
+            }
             Request::TrackClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -3298,6 +3343,9 @@ fn run_worker(
                 }
                 Request::GroupClips { .. } | Request::GroupTimeRange { .. } => {
                     error = Some("clip grouping target was not resolved".into());
+                }
+                Request::DeviceAutomation { .. } => {
+                    error = Some("automation target was not resolved".into());
                 }
                 Request::GroupAudioEvents { .. } => {
                     error = Some("audio event grouping target was not resolved".into());

@@ -35,6 +35,7 @@ mod clip_name;
 mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
+mod device_automation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
@@ -1846,9 +1847,14 @@ impl EditorView {
                 })
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
+        let device_end = self
+            .state
+            .as_ref()
+            .and_then(|state| self.automation_view.devices.display_end(&state.project));
         let horizon = self
             .retained_navigation_horizon(horizon)
-            .max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+            .max(gain_end.map_or(0, |frame| frame.saturating_add(1)))
+            .max(device_end.map_or(0, |frame| frame.saturating_add(1)));
         // Only a current resize owner may extend the transient display extent.
         horizon.max(self.trim_display_end().unwrap_or(0))
     }

@@ -429,7 +429,7 @@ impl EditorView {
         } = timeline;
         let track_id = track.id();
         let Some(viewport_end) = viewport.end() else {
-            return div().w_full().h(px(self.track_height(track_id)));
+            return div().w_full().h(px(self.track_body_height(track_id)));
         };
         let mut clip_area = div()
             .id(("track-lane", track_id.value()))
@@ -437,7 +437,7 @@ impl EditorView {
             .relative()
             .flex_1()
             .min_w_0()
-            .h(px(self.track_height(track_id)))
+            .h(px(self.track_body_height(track_id)))
             .overflow_hidden()
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
@@ -613,7 +613,7 @@ impl EditorView {
                             );
                     let looping = preview.looping(&clip);
                     overlay = loop_handles::surface(overlay, looping);
-                    if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
+                    if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
                         let shapes = midi_trim_note_shapes(
                             &state.project,
                             &clip,
@@ -694,7 +694,7 @@ impl EditorView {
                             ));
                     let looping = loop_handles::audio_repeats(&preview_clip);
                     preview = loop_handles::surface(preview, looping);
-                    if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
+                    if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
                         if let Some(waveform) = super::waveform::preview_waveform_view_cached(
                             super::waveform::WaveformPreview {
                                 original: &original_clip,
@@ -799,7 +799,8 @@ impl EditorView {
                             (start, end),
                             theme::clip_activity_fill(track.color(), flavor, false, active),
                             &mut shape_budget,
-                            self.track_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT,
+                            self.track_body_height(track_id)
+                                <= super::track_layout::HEADER_ONLY_HEIGHT,
                         )
                     {
                         overlay = overlay.child(content);
@@ -924,7 +925,8 @@ impl EditorView {
                             (visible_start, visible_end),
                             fill,
                             &mut note_budget,
-                            self.track_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT,
+                            self.track_body_height(track_id)
+                                <= super::track_layout::HEADER_ONLY_HEIGHT,
                         ) {
                             drop_preview = drop_preview.child(content);
                         }
@@ -1076,8 +1078,8 @@ impl EditorView {
                         track_id.value(),
                         clip.id().value()
                     ),
-                    (self.track_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT).then(
-                        || {
+                    (self.track_body_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT)
+                        .then(|| {
                             self.clip_name_drag_header(
                                 fragment.id(),
                                 fragment.name(),
@@ -1089,8 +1091,7 @@ impl EditorView {
                                 ),
                             )
                             .into_any_element()
-                        },
-                    ),
+                        }),
                 ) {
                     clip_area = clip_area.children([fragment_view]);
                 }
@@ -1129,8 +1130,8 @@ impl EditorView {
                     grid,
                     "time-move-midi-fragment".to_owned(),
                     move_preview_shape_budget,
-                    (self.track_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT).then(
-                        || {
+                    (self.track_body_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT)
+                        .then(|| {
                             self.clip_name_drag_header(
                                 clip.id(),
                                 clip.name(),
@@ -1142,8 +1143,7 @@ impl EditorView {
                                 ),
                             )
                             .into_any_element()
-                        },
-                    ),
+                        }),
                 );
                 move_preview_shape_budget = move_preview_shape_budget.saturating_sub(shown);
                 if let Some(fragment) = fragment {
@@ -1205,7 +1205,7 @@ impl EditorView {
         // Empty header gutters bubble to the shared selection/focus owner.
         // Only actual control hit regions stop clicks; row-wide stops make the
         // lower header background unreachable for ordinary/modifier selection.
-        let header_content = if self.track_height(track_id) < TRACK_ROW_HEIGHT {
+        let header_content = if self.track_body_height(track_id) < TRACK_ROW_HEIGHT {
             // A compact header must not mount hidden numeric controls or their
             // hit targets beneath its readable title and resize gutter.
             div()
@@ -1472,7 +1472,7 @@ impl EditorView {
         let header = super::track_header::surface(
             ("arrangement-track-header", track_id.value()),
             self.track_header_width(),
-            self.track_height(track_id),
+            self.track_body_height(track_id),
             selected,
         )
         .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
@@ -1521,13 +1521,27 @@ impl EditorView {
                 .drag_lanes
                 .get(&track_id)
                 .map_or(0.0, |lane| lane.width);
-            clip_area = clip_area.children(super::gain_lane::inline(
-                self, state, track_id, viewport, width, cx,
+            if self.gain_lane.track == Some(track_id)
+                && !self
+                    .automation_view
+                    .devices
+                    .has_main(super::device_panel::DevicePanelOwner::Track(track_id))
+            {
+                clip_area = clip_area.children(super::gain_lane::inline(
+                    self, state, track_id, viewport, width, cx,
+                ));
+            }
+            clip_area = clip_area.children(super::device_automation::overlay(
+                self,
+                state,
+                super::device_panel::DevicePanelOwner::Track(track_id),
+                viewport,
+                cx,
             ));
         }
-        div()
+        let base = div()
             .w_full()
-            .h(px(self.track_height(track_id)))
+            .h(px(self.track_body_height(track_id)))
             .flex_shrink_0()
             .flex()
             .child(clip_area)
@@ -1538,7 +1552,21 @@ impl EditorView {
                     cx.stop_propagation();
                     view.open_track_context_menu(event.position, Some(track_id), window, cx);
                 }),
-            )
+            );
+        div()
+            .w_full()
+            .h(px(self.track_height(track_id)))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .child(base)
+            .child(super::device_automation::rows(
+                self,
+                state,
+                super::device_panel::DevicePanelOwner::Track(track_id),
+                viewport,
+                cx,
+            ))
     }
 
     pub(super) fn build_clip_contents(
@@ -1613,7 +1641,8 @@ impl EditorView {
                             track_id.value(),
                             fragment.start()
                         ),
-                        (self.track_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT)
+                        (self.track_body_height(track_id)
+                            <= super::track_layout::HEADER_ONLY_HEIGHT)
                             .then(|| {
                                 self.clip_name_drag_header(
                                     fragment.id(),
@@ -1700,7 +1729,8 @@ impl EditorView {
                         grid,
                         format!("time-move-midi-residual-{fragment_index}"),
                         midi_shape_budget,
-                        (self.track_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT)
+                        (self.track_body_height(track_id)
+                            <= super::track_layout::HEADER_ONLY_HEIGHT)
                             .then(|| {
                                 self.clip_name_drag_header(
                                     clip.id(),
@@ -1800,7 +1830,7 @@ impl EditorView {
                     }),
                 );
             midi = loop_handles::surface(midi, clip.looping());
-            if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
+            if self.track_body_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
                 midi = midi.children(
                     clip_grid_layer(grid, visible_start, visible_end)
                         .map(|grid| loop_handles::body(grid, clip.looping())),
