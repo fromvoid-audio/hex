@@ -1,5 +1,4 @@
 use super::drag::BrowserAudioDrag;
-use super::tracks::TRACK_ROW_HEIGHT;
 use super::viewport::Viewport;
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -802,8 +801,9 @@ impl EditorView {
             );
         let row = div()
             .debug_selector(|| "pinned-main-track".to_owned())
-            .h(px(TRACK_ROW_HEIGHT))
-            .flex_shrink_0()
+            .h(px(self.main_track_height()))
+            .min_h(px(super::track_layout::HEADER_ONLY_HEIGHT))
+            .flex_shrink()
             .flex()
             .border_t_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
@@ -828,13 +828,14 @@ impl EditorView {
                         super::device_panel::select_main(view, window, cx)
                     }))
                     .relative()
-                    .child(self.track_width_resize_handle(None, cx))
+                    .children(self.main_track_resize_handles(cx))
                     .debug_selector(|| "main-track-header".to_owned())
                     .w(px(self.track_header_width()))
                     .h_full()
                     .flex_shrink_0()
                     .flex()
                     .items_center()
+                    .pt(px(3.))
                     .gap_1()
                     .px_1()
                     .border_l_1()
@@ -842,9 +843,16 @@ impl EditorView {
                     .bg(rgb(theme::color(theme::PaletteRole::Raised)))
                     .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                     .text_xs()
-                    .child(theme::text("main"))
+                    .child(
+                        div()
+                            .debug_selector(|| "main-track-name".into())
+                            .child(theme::text("main")),
+                    )
                     .child(div().flex_1())
-                    .children([self.main_track_controls(cx)]),
+                    .children(
+                        (self.main_track_height() > super::track_layout::HEADER_ONLY_HEIGHT)
+                            .then(|| self.main_track_controls(cx)),
+                    ),
             );
         let extra = state.as_ref().map(|state| {
             super::device_automation::rows(
@@ -858,7 +866,8 @@ impl EditorView {
         div()
             .flex()
             .flex_col()
-            .flex_shrink_0()
+            .flex_shrink()
+            .min_h(px(super::track_layout::HEADER_ONLY_HEIGHT))
             .child(row)
             .children(extra.map(|rows| {
                 div()

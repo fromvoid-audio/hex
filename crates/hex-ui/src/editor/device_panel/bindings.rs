@@ -201,6 +201,8 @@ pub(super) enum ControlPresentation {
     MicroDial,
     InlineValue,
     DeviceMeters,
+    MeterFader,
+    ChoiceDial,
     CompactButton,
     CompactSelector,
     CompactWideSelector,
@@ -410,6 +412,7 @@ pub(super) fn render_parameter(
                     hex_widgets::INLINE_VALUE_HEIGHT,
                 ),
                 ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
+                ControlPresentation::MeterFader => (60.0, 154.0),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -512,6 +515,7 @@ pub(super) fn render_parameter(
                 });
             }
             let (width, height) = match presentation {
+                ControlPresentation::ChoiceDial => (64.0, 52.0),
                 ControlPresentation::CompactSelector => (64.0, 14.0),
                 ControlPresentation::CompactWideSelector => (120.0, 14.0),
                 ControlPresentation::CompactSegments { columns } => (
@@ -624,6 +628,7 @@ fn create_parameter_control(
                 ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
                 ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
                 ControlPresentation::DeviceMeters => NumericControlPresentation::DeviceMeters,
+                ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
                 _ => NumericControlPresentation::HorizontalSlider,
             };
             let config = NumericControlConfig::new(
@@ -794,6 +799,8 @@ fn create_parameter_control(
                 ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
             ) {
                 SelectorAppearance::CompactSelector
+            } else if presentation == ControlPresentation::ChoiceDial {
+                SelectorAppearance::CompactDial
             } else {
                 SelectorAppearance::Standard
             };
