@@ -401,7 +401,6 @@ actions!(
         SplitClip,
         SetLoopFromClip,
         LoopSelection,
-        BounceInPlace,
         BounceToNewTracks,
         ToggleLoop,
         ZoomIn,
@@ -521,11 +520,6 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
-        KeyBinding::new(
-            "b",
-            BounceInPlace,
-            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
-        ),
         KeyBinding::new(
             "cmd-b",
             BounceToNewTracks,
