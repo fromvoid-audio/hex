@@ -12343,6 +12343,107 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
 }
 
 #[test]
+fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_blocks() {
+    use super::capture::{CaptureSink, OutputCaptureId};
+    use super::meter_capture::{Cell, MeterCapture};
+
+    let mut editor = Editor::new(project(1.0, 0, 8 << 32), 8).unwrap();
+    let first = editor.project().tracks()[0].id();
+    let Created::Track(second) = editor
+        .execute(Command::AddTrack {
+            name: "second".into(),
+        })
+        .unwrap()
+    else {
+        panic!("fixture track");
+    };
+    let prepared = revision(editor.project(), Arc::new(hex_devices::SineTable::new()));
+    let observation = crate::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
+    let mut cells = vec![
+        Cell::new(OutputCaptureId::Track(first)),
+        Cell::new(OutputCaptureId::Track(second)),
+    ];
+    super::meter_capture::sort(&mut cells);
+    let mut capture = MeterCapture {
+        revision: &prepared,
+        cells: &mut cells,
+        downstream: None,
+        invalidated: false,
+    };
+    // Owners can be interleaved; two contributions to the first owner at the
+    // same offset cancel before the peak is measured.
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.5, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(second), 1, &[[0.9, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[-0.25, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 1, &[[0.1, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.25
+    );
+    assert_eq!(
+        observation
+            .track_output_meter(second)
+            .unwrap()
+            .take_track_output(),
+        0.9
+    );
+
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.3, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.3, 0.0], [0.7, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.7
+    );
+
+    capture
+        .add(OutputCaptureId::Track(first), 5, &[[0.8, 0.0]])
+        .unwrap();
+    // Out-of-order telemetry is discarded without interrupting audio.
+    capture
+        .add(OutputCaptureId::Track(first), 4, &[[0.1, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.0
+    );
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.7, 0.0]])
+        .unwrap();
+    capture.invalidate();
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.0
+    );
+}
+
+#[test]
 fn track_metering_preserves_multiple_track_audio() {
     let original = project(0.758_499_15, 0, 8 << 32);
     let mut snapshot = original.snapshot();
