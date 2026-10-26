@@ -126,7 +126,7 @@ impl EditorView {
                 .flex_1()
                 .min_h_0()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
-            let main = self.main_track_row(viewport, &[], &[], cx);
+            let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), cx);
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         };
@@ -189,6 +189,7 @@ impl EditorView {
                             &grid,
                             empty_viewport,
                             self.track_header_width(),
+                            window.scale_factor(),
                         )])
                         .child(
                             div()
@@ -207,7 +208,8 @@ impl EditorView {
                         ),
                     cx,
                 )]);
-            let main = self.main_track_row(empty_viewport, &bands, &grid, cx);
+            let main =
+                self.main_track_row(empty_viewport, &bands, &grid, window.scale_factor(), cx);
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         }
@@ -284,6 +286,7 @@ impl EditorView {
                 &grid,
                 viewport,
                 self.track_header_width(),
+                window.scale_factor(),
             )])
             .child(rows);
         if let Some(position) = viewport.fraction(playhead) {
@@ -323,7 +326,7 @@ impl EditorView {
                 ruler_width,
                 cx,
             ));
-        let main = self.main_track_row(viewport, &bands, &grid, cx);
+        let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), cx);
         let returns = self.return_tracks_view(cx);
         self.arrangement_surface(upper, returns, main, cx)
     }
@@ -766,6 +769,7 @@ impl EditorView {
         viewport: Viewport,
         bands: &[super::musical_time::GridBand],
         lines: &[super::musical_time::GridLine],
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Div {
         let state = self.state.clone();
@@ -786,9 +790,9 @@ impl EditorView {
             .flex_1()
             .min_w_0()
             .h_full()
-            .children([main_track_grid_layer(bands, lines, viewport)])
+            .children([main_track_grid_layer(bands, lines, viewport, scale)])
             .children(self.main_time_selection_overlay(viewport))
-            .children(self.section_elements(viewport, cx))
+            .children(self.section_elements(viewport, scale, cx))
             .children([self.section_pointer_events(cx)])
             .children(automation)
             .child(
@@ -1052,6 +1056,7 @@ impl EditorView {
 pub(super) fn timeline_grid_elements(
     lines: &[super::musical_time::GridLine],
     viewport: super::viewport::Viewport,
+    scale: f32,
 ) -> Vec<Div> {
     if viewport.length == 0 {
         return Vec::new();
@@ -1078,11 +1083,7 @@ pub(super) fn timeline_grid_elements(
                     .top_0()
                     .bottom_0()
                     .left(relative(position.clamp(0.0, 1.0)))
-                    .w(px(if line.meter_marker || line.bar_start {
-                        1.5
-                    } else {
-                        1.0
-                    }))
+                    .w(px(1.0 / scale.max(1.0)))
                     .bg(rgb(color))
                     .opacity(opacity),
             )
@@ -1095,6 +1096,7 @@ fn timeline_grid_layer(
     lines: &[super::musical_time::GridLine],
     viewport: super::viewport::Viewport,
     header_width: f32,
+    scale: f32,
 ) -> Div {
     div()
         .debug_selector(|| "arrangement-grid".to_owned())
@@ -1104,20 +1106,21 @@ fn timeline_grid_layer(
         .left_0()
         .right(px(header_width))
         .children(timeline_band_elements(bands, viewport))
-        .children(timeline_grid_elements(lines, viewport))
+        .children(timeline_grid_elements(lines, viewport, scale))
 }
 
 fn main_track_grid_layer(
     bands: &[super::musical_time::GridBand],
     lines: &[super::musical_time::GridLine],
     viewport: Viewport,
+    scale: f32,
 ) -> Div {
     div()
         .debug_selector(|| "main-track-grid".to_owned())
         .absolute()
         .inset_0()
         .children(timeline_band_elements(bands, viewport))
-        .children(timeline_grid_elements(lines, viewport))
+        .children(timeline_grid_elements(lines, viewport, scale))
 }
 
 fn timeline_band_elements(
