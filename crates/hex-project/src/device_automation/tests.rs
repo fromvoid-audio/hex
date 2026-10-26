@@ -49,7 +49,9 @@ fn normalized_values_and_envelope_evaluation_have_explicit_boundaries() {
         AutomationValue::new(0.0).unwrap()
     );
     let mut lane = DeviceAutomation {
-        parameter: ParameterId::from_static(1),
+        target: hex_lattice_contract::DeviceAutomationTarget::Parameter(ParameterId::from_static(
+            1,
+        )),
         points: points(),
     };
     for (beat, expected) in [(0, 0.25), (1, 0.25), (2, 0.5), (3, 0.75), (4, 0.75)] {
@@ -355,7 +357,9 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     let mut snapshot = initial.clone();
     snapshot.tracks[0].devices[0].automation = (1..=257)
         .map(|id| DeviceAutomation {
-            parameter: ParameterId::new(id).unwrap(),
+            target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
+                ParameterId::new(id).unwrap(),
+            ),
             points: vec![one],
         })
         .collect();
@@ -369,7 +373,9 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     let mut snapshot = initial.clone();
     snapshot.tracks[0].devices[0].automation = (1..=65)
         .map(|id| DeviceAutomation {
-            parameter: ParameterId::new(id).unwrap(),
+            target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
+                ParameterId::new(id).unwrap(),
+            ),
             points: dense.clone(),
         })
         .collect();
@@ -384,7 +390,9 @@ fn malformed_snapshot_limits_are_checked_at_the_canonical_boundary() {
     });
     let mut snapshot = initial;
     snapshot.tracks[0].devices[0].automation = vec![DeviceAutomation {
-        parameter: ParameterId::new(1).unwrap(),
+        target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
+            ParameterId::new(1).unwrap(),
+        ),
         points: too_many,
     }];
     assert!(Project::from_snapshot(snapshot).is_err());
@@ -471,5 +479,68 @@ fn shared_source_snapshots_keep_only_one_canonical_envelope_copy() {
     assert!(
         Project::from_snapshot(injected).is_err(),
         "even an identical envelope is not a valid binding projection"
+    );
+}
+
+#[test]
+fn typed_host_targets_share_history_bounds_and_keep_identity_across_provider_replacement() {
+    let (mut e, _, device) = fixture();
+    let initial = e.project().clone();
+    for target in [
+        DeviceAutomationTarget::HostInputGain,
+        DeviceAutomationTarget::HostOutputGain,
+    ] {
+        e.execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: points(),
+        })
+        .unwrap();
+    }
+    let authored = e.project().clone();
+    assert_eq!(authored.device(device).unwrap().automation().len(), 2);
+    assert!(
+        authored
+            .device(device)
+            .unwrap()
+            .automation_lane(ParameterId::from_static(1))
+            .is_none()
+    );
+    assert_eq!(
+        Project::from_snapshot(authored.snapshot()).unwrap(),
+        authored
+    );
+    let replacement =
+        NativeDeviceState::new(DeviceTypeId::from_static("test.other-provider"), 1, vec![3])
+            .unwrap();
+    e.execute(Command::ReplaceDeviceState {
+        device,
+        state: replacement,
+    })
+    .unwrap();
+    assert_eq!(
+        e.project().device(device).unwrap().automation(),
+        authored.device(device).unwrap().automation()
+    );
+    assert!(e.undo());
+    assert_eq!(*e.project(), authored);
+    assert!(e.undo());
+    assert!(e.undo());
+    assert_eq!(*e.project(), initial);
+    assert!(e.redo());
+    assert!(e.redo());
+    assert_eq!(*e.project(), authored);
+    e.execute(Command::ReplaceDeviceAutomationTarget {
+        device,
+        target: DeviceAutomationTarget::HostInputGain,
+        points: Vec::new(),
+    })
+    .unwrap();
+    assert!(
+        e.project()
+            .device(device)
+            .unwrap()
+            .automation_target(DeviceAutomationTarget::HostInputGain)
+            .is_none()
     );
 }

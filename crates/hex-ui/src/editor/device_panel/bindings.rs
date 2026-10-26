@@ -31,6 +31,21 @@ pub(super) struct BindingPresentation {
     pub(super) compact_toggle_width: f32,
 }
 
+// This is the sole edge translating view-only host control keys into neutral
+// authored targets. Reserved widget IDs never enter provider/model persistence.
+fn automation_target(
+    parameter: hex_lattice_contract::ParameterId,
+) -> hex_lattice_contract::DeviceAutomationTarget {
+    use hex_lattice_contract::DeviceAutomationTarget as Target;
+    if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
+        Target::HostInputGain
+    } else if parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
+        Target::HostOutputGain
+    } else {
+        Target::Parameter(parameter)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct CapturedBinding {
     generation: u64,
@@ -527,7 +542,7 @@ pub(super) fn render_parameter(
                 && view.open_parameter_automation_menu(
                     event.position,
                     key.device,
-                    key.parameter,
+                    automation_target(key.parameter),
                     window,
                     cx,
                 )
@@ -658,7 +673,10 @@ fn create_parameter_control(
                         return;
                     }
                     if event.phase == NumericEventPhase::Begin {
-                        view.remember_automation_parameter(key.device, key.parameter);
+                        view.remember_automation_parameter(
+                            key.device,
+                            automation_target(key.parameter),
+                        );
                     }
                     let value = ParameterValue::Float(event.value as f32);
                     if let Err(error) = dispatch_bound_numeric_gesture(
@@ -734,7 +752,7 @@ fn create_parameter_control(
                     }
                     return;
                 }
-                view.remember_automation_parameter(key.device, key.parameter);
+                view.remember_automation_parameter(key.device, automation_target(key.parameter));
                 let value = ParameterValue::Bool(event.checked);
                 view.device_panel.pending_values.insert(target, value);
                 if !view.enqueue_device_barrier(Request::SetDeviceParameter {
@@ -801,7 +819,7 @@ fn create_parameter_control(
                     if !finalize_controls(view, cx) {
                         return;
                     }
-                    view.remember_automation_parameter(key.device, key.parameter);
+                    view.remember_automation_parameter(key.device, automation_target(key.parameter));
                     let value = ParameterValue::Choice(value);
                     view.device_panel.pending_values.insert(target, value);
                     if !view.enqueue_device_barrier(Request::SetDeviceParameter {
