@@ -593,3 +593,6 @@ fn new_note_creation_repaint_latency(cx: &mut TestAppContext) {
 
 #[path = "midi_creation_capture_tests.rs"]
 mod creation_capture_tests;
+
+#[path = "midi_note_capture_tests.rs"]
+mod note_capture_tests;
