@@ -110,11 +110,9 @@ impl AutoPanTargets {
         let _: (&f64, &f64, &f64, &Waveform) = (amount, rate_hz, right_phase_degrees, waveform);
     }
 }
-impl AutoPanRuntime {
-    pub(super) fn check_inline_ownership(&self) {
+impl AutoPanDspState {
+    fn check_inline(&self) {
         let Self {
-            base,
-            controls,
             sample_rate,
             ramp_frames,
             phase_cycles,
@@ -124,8 +122,6 @@ impl AutoPanRuntime {
             waveform_weights,
             targets,
         } = self;
-        base.check_inline_ownership();
-        controls.check_inline(AutoPanSettings::check_inline);
         let _: (&u32, &u32, &f64) = (sample_rate, ramp_frames, phase_cycles);
         amount.check_inline();
         rate_hz.check_inline();
@@ -135,6 +131,18 @@ impl AutoPanRuntime {
             ramp.check_inline();
         }
         targets.check_inline();
+    }
+}
+impl AutoPanRuntime {
+    pub(super) fn check_inline_ownership(&self) {
+        let Self {
+            base,
+            controls,
+            dsp,
+        } = self;
+        base.check_inline_ownership();
+        controls.check_inline(AutoPanSettings::check_inline);
+        dsp.check_inline();
     }
     pub(super) fn process_automated(
         &mut self,
@@ -150,11 +158,11 @@ impl AutoPanRuntime {
             {
                 let targets = AutoPanTargets::from(next.effective());
                 // No fallible DSP derivation follows validated typed values.
-                self.retarget(targets);
+                self.dsp.retarget(targets);
                 self.controls.install(next);
             }
             let original = *frame;
-            self.process_frame(frame);
+            self.dsp.process_frame(frame);
             if bypassed {
                 *frame = original;
             }

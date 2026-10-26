@@ -381,18 +381,20 @@ impl PreparedNativeProcessor for PreparedAutoPan {
                 self.settings,
                 std::array::from_fn(|index| self.automation_mask & (1u8 << index) != 0),
             ),
-            sample_rate: self.sample_rate,
-            ramp_frames: self.ramp_frames,
-            phase_cycles: 0.0,
-            amount: ScalarRamp::steady(f64::from(self.settings.amount)),
-            rate_hz: ScalarRamp::steady(f64::from(self.settings.rate_hz)),
-            right_phase_degrees: ScalarRamp::steady(normalize_degrees(f64::from(
-                self.settings.right_phase_degrees,
-            ))),
-            waveform_weights: std::array::from_fn(|i| {
-                ScalarRamp::steady(f64::from(i == self.settings.waveform as usize))
-            }),
-            targets: AutoPanTargets::from(self.settings),
+            dsp: AutoPanDspState {
+                sample_rate: self.sample_rate,
+                ramp_frames: self.ramp_frames,
+                phase_cycles: 0.0,
+                amount: ScalarRamp::steady(f64::from(self.settings.amount)),
+                rate_hz: ScalarRamp::steady(f64::from(self.settings.rate_hz)),
+                right_phase_degrees: ScalarRamp::steady(normalize_degrees(f64::from(
+                    self.settings.right_phase_degrees,
+                ))),
+                waveform_weights: std::array::from_fn(|i| {
+                    ScalarRamp::steady(f64::from(i == self.settings.waveform as usize))
+                }),
+                targets: AutoPanTargets::from(self.settings),
+            },
         };
         runtime.check_inline_ownership();
         Box::new(runtime)
@@ -474,6 +476,14 @@ impl ScalarRamp {
 pub struct AutoPanRuntime {
     base: PreparedAutoPan,
     controls: crate::parameter_binding::Controls<AutoPanSettings, 4>,
+    dsp: AutoPanDspState,
+}
+
+// Keep the original frequently accessed DSP history together. The shared
+// effective-control cache is sampled only by automated processing and must not
+// interleave the ramp/oscillator fields used by ordinary processing.
+#[derive(Clone, Copy, Debug)]
+struct AutoPanDspState {
     sample_rate: u32,
     ramp_frames: u32,
     phase_cycles: f64,
@@ -484,7 +494,7 @@ pub struct AutoPanRuntime {
     targets: AutoPanTargets,
 }
 
-impl AutoPanRuntime {
+impl AutoPanDspState {
     fn reset_history(&mut self) {
         self.phase_cycles = 0.0;
         self.waveform_weights = std::array::from_fn(|i| {
@@ -495,7 +505,6 @@ impl AutoPanRuntime {
         self.right_phase_degrees = ScalarRamp::steady(self.targets.right_phase_degrees);
     }
 
-    #[inline]
     fn process_frame(&mut self, frame: &mut StereoFrame) {
         let left = f64::from(frame[0]);
         let right = f64::from(frame[1]);
@@ -624,7 +633,7 @@ impl NativeProcessorRuntime for AutoPanRuntime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         for frame in frames {
-            self.process_frame(frame);
+            self.dsp.process_frame(frame);
         }
     }
     fn process_bypassed_block(
@@ -634,14 +643,14 @@ impl NativeProcessorRuntime for AutoPanRuntime {
     ) {
         for frame in frames {
             let original = *frame;
-            self.process_frame(frame);
+            self.dsp.process_frame(frame);
             *frame = original;
         }
     }
     fn reset(&mut self) {
         self.controls.reset();
-        self.targets = AutoPanTargets::from(self.base.settings);
-        self.reset_history();
+        self.dsp.targets = AutoPanTargets::from(self.base.settings);
+        self.dsp.reset_history();
     }
     fn is_quiescent(&self) -> bool {
         true
@@ -650,13 +659,13 @@ impl NativeProcessorRuntime for AutoPanRuntime {
         previous
             .as_any()
             .downcast_ref::<Self>()
-            .is_some_and(|previous| self.sample_rate == previous.sample_rate)
+            .is_some_and(|previous| self.dsp.sample_rate == previous.dsp.sample_rate)
     }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
         let Some(previous) = previous
             .as_any()
             .downcast_ref::<Self>()
-            .filter(|previous| self.sample_rate == previous.sample_rate)
+            .filter(|previous| self.dsp.sample_rate == previous.dsp.sample_rate)
         else {
             return;
         };
@@ -664,15 +673,15 @@ impl NativeProcessorRuntime for AutoPanRuntime {
             self.controls.inherit(&previous.controls);
             // Keep the candidate base/admission, but continue the actual effective
             // target and in-flight ramps until the next producer sample.
-            self.targets = previous.targets;
+            self.dsp.targets = previous.dsp.targets;
         }
-        self.copy_history_and_retarget(previous);
+        self.dsp.copy_history_and_retarget(&previous.dsp);
     }
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()
             .downcast_ref::<Self>()
-            .is_some_and(|previous| self.sample_rate == previous.sample_rate)
+            .is_some_and(|previous| self.dsp.sample_rate == previous.dsp.sample_rate)
     }
     fn as_any(&self) -> &dyn Any {
         self
