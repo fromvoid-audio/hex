@@ -131,7 +131,7 @@ pub struct DraftError {
     pub progress: DraftProgress,
     /// True only after create-new publication has exposed the destination.
     pub published: bool,
-    pub source: StorageError,
+    pub source: Box<StorageError>,
 }
 impl fmt::Display for DraftError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -146,7 +146,7 @@ impl fmt::Display for DraftError {
 }
 impl std::error::Error for DraftError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
+        Some(self.source.as_ref())
     }
 }
 
@@ -262,7 +262,7 @@ impl DraftWriter {
             path: path.to_path_buf(),
             progress: DraftProgress::default(),
             published,
-            source,
+            source: Box::new(source),
         })
     }
 
@@ -376,7 +376,7 @@ impl DraftWriter {
             path: self.path.clone(),
             progress: self.progress,
             published: true,
-            source,
+            source: Box::new(source),
         }
     }
 }
@@ -404,7 +404,7 @@ impl DraftReader {
             path: path.to_path_buf(),
             progress: DraftProgress::default(),
             published: true,
-            source,
+            source: Box::new(source),
         })
     }
     fn open_inner(path: &Path, limits: DraftReadLimits) -> Result<Self, StorageError> {
@@ -633,7 +633,7 @@ impl DraftReader {
             path: self.path.clone(),
             progress: self.progress,
             published: true,
-            source,
+            source: Box::new(source),
         }
     }
 }
