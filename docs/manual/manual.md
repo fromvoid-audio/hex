@@ -312,6 +312,29 @@ seconds of normal space beyond content. **command+0** fits the normal navigation
 extent; **z** fits the selection or content, and **x** explicitly restores the
 prior fitted view, including its former visible trailing space.
 
+## create fades from a time selection
+
+select a positive time range at the beginning or end of an audio clip and press
+**command+f**. the selected portion becomes a linear fade-in or fade-out; the
+opposite authored ramp stays unchanged. a range entirely inside a clip, or one
+covering both ends, is refused with a message.
+
+across a join between two ordinary audio clips, **command+f** extends the source
+handles into the selected interval and creates a complementary outgoing/incoming
+crossfade. the existing sound stays at its original song time. clips need enough
+source material; loops can supply their repeated source. gaps, more than two
+clips, midi material and retained or warped crossfade joins are unsupported and
+leave the project unchanged. individual edge fades support ordinary retained and
+warped views; directed outer views are currently unsupported.
+
+one undo restores the whole command, including both crossfade clips. source files
+remain intact. a crossfade permits at most two overlapping audio voices, with
+opposing fades covering their intersection. removing a required fade while the
+clips still overlap is refused; undo the creation or separate the clips first.
+
+outside a focused audio time-selection context, **command+f** keeps browser search.
+plain **f** keeps its momentary fade-handle behavior.
+
 ## audio event fades
 
 the audio event editor marks the clip's playback start with a fixed vertical
@@ -332,12 +355,19 @@ to reset that event's fades. one undo restores each completed gesture.
 the preview becomes prepared audio after release. **escape** or leaving the
 editor cancels a held gesture. splitting retains the source fade, moving keeps
 it attached to the sound, and an explicit trim fits it to the new event window.
+select one event edge and press **command+f** to fit that source fade to the
+selected interval. this uses the retained source clock, including cropped loops
+and warp. joins between source events are unsupported; use eligible arranger
+clips for a crossfade.
+
 event fades use the same supported resident clips as event editing; a refused
 preparation leaves the project unchanged. original media files stay intact.
 
 # find, preview and import audio
 
-open the browser with **command+option+b**. press **command+f** to search.
+open the browser with **command+option+b**. press **command+f** to search when
+focus is outside a selected audio time range; click the search field to search
+while retaining an arrangement selection.
 use the browser's categories and locations to narrow the results. when a search
 is entered, click **×** inside the field to clear it and type a replacement.
 clearing keeps the selected category or location.
@@ -612,7 +642,8 @@ the complete edit.
 | add track | command+t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
-| toggle browser / search | command+option+b / command+f |
+| toggle browser | command+option+b |
+| selection fades / browser search outside audio selection | command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | bounce in place / to a new track | b / command+b |

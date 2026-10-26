@@ -6,6 +6,7 @@ pub(crate) mod clip_activation;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
 pub(crate) mod content_views;
+pub(crate) mod crossfades;
 pub(crate) mod device_assets;
 pub(crate) mod event_fades;
 pub(crate) mod fade_curve_positions;

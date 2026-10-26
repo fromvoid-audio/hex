@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 49;
+pub const CURRENT_SCHEMA_VERSION: u32 = 50;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -148,12 +148,13 @@ impl From<serde_json::Error> for StorageError {
 
 /// Encode the current schema with complete hierarchy, audio roots, event fades,
 /// directed views, activation, MIDI, tuning, device state and retained native sources
-/// with explicit per-track source bindings and Console audio cycles.
+/// with explicit per-track source bindings, Console audio cycles and bounded
+/// faded Arrangement overlaps (schema50).
 /// There is no blanket
 /// byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::session_audio_loops::encode(project)?)
+    encode_document(&schema::crossfades::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -169,6 +170,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::crossfades::require_legacy_disjoint(project)?;
     schema::session_audio_loops::refuse_legacy(project)?;
     if !project.native_sources().is_empty() {
         return Err(StorageError::Invalid(
@@ -290,7 +292,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::session_audio_loops::decode49(bytes),
+        CURRENT_SCHEMA_VERSION => schema::crossfades::decode(bytes),
+        49 => schema::session_audio_loops::decode49(bytes),
         48 => schema::session_audio_loops::decode48(bytes),
         47 => schema::native_sources::decode47(bytes),
         46 => schema::native_sources::decode46(bytes),
@@ -312,6 +315,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if header.version < 50 {
+        schema::crossfades::require_legacy_disjoint(&project)?;
+    }
     if header.version < 47 && requires_schema47_audio_placement(&project)? {
         return Err(StorageError::Invalid(
             "historical project schema contains unsupported audio placement; open a copy with the hex build that saved it; original file unchanged",

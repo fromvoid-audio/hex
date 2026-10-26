@@ -10,12 +10,14 @@
 //! supported song content atomically through retained source/history contracts.
 //! Clip-local MIDI volume has independent immutable identity
 //! from note/source data, with bounded current-format and history fidelity.
-//! Arrangement clips sharing a hybrid TrackId have disjoint
-//! half-open occupancy. Newly placed/extended material replaces older occupancy;
-//! retained fragments preserve their processing/source domains. Group edits resolve
-//! all incoming members together. Current-format loading refuses overlap without
-//! normalizing or rewriting the source document. Source events and DSP tails have
-//! their own owners and are not top-level Arrangement occupancy.
+//! Ordinary Arrangement placement on a hybrid TrackId replaces occupied
+//! half-open intervals; retained fragments preserve their processing/source domains.
+//! A selection-fitted crossfade may admit at most two overlapping audio voices
+//! when opposing authored ramps cover their full intersection. MIDI and unfaded
+//! or triple-voice overlaps refuse. Group edits resolve all incoming members
+//! together. Loading validates this law without normalizing source documents;
+//! storage retains older schemas' strictly disjoint contract. Source events and
+//! DSP tails retain their own owners and are not top-level occupancy.
 //!
 //! Track hierarchy is one bounded preorder inventory with typed kind/parent IDs.
 //! Group subtrees are indivisible for structural edits and clipboard membership;
@@ -55,6 +57,7 @@ mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
 mod content_window;
+mod selection_fades;
 mod source_ranges;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioContentView, AudioDomainClock,
