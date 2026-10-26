@@ -316,6 +316,14 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     instance.definition = Some(PreparedProcessorFactory::Foreign(facts));
     let mut foreign = endpoint(&instance);
     let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    let mut next = declaration(ProcessorChainOwner::Main, false);
+    next.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(8, 4, 16)
+            .unwrap()
+            .with_output_tail(crate::OutputTail::Finite { max_tail_frames: 3 }),
+    ));
+    let successor = NativeRuntimeChain::new_prepared(vec![next]).unwrap();
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
     assert_eq!(
         chain.zero_input_drain_for_range(0..1),
         Some(crate::OutputTail::Finite {
@@ -339,6 +347,7 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
         .unwrap();
     assert!(chain.speculative_range_is_quiescent(0..1));
     assert!(!chain.committed_range_is_quiescent(0..1));
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
     chain.rollback_block();
     assert!(!chain.speculative_range_is_quiescent(0..1));
     chain.begin_block();
@@ -347,6 +356,8 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
         .unwrap();
     chain.commit_block();
     assert!(chain.committed_range_is_quiescent(0..1));
+    assert!(successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
+    assert!(!successor.can_inherit_from(&chain));
     foreign.drained = false;
     chain.begin_block();
     chain
@@ -355,4 +366,5 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     assert!(!chain.speculative_range_is_quiescent(0..1));
     chain.commit_block();
     assert!(!chain.committed_range_is_quiescent(0..1));
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
 }

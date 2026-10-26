@@ -14,6 +14,41 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Admit one capture through the original Root-held effect/control,
+    /// including an active callback loan or normally ended transport. Stopped
+    /// capture requires the original worker's joined healthy terminal and leaves
+    /// transport revoked. No graph/endpoint is returned or
+    /// replaced. The caller owns/accounting for its correlation token and must
+    /// retire it on the exact terminal, including source close/refusal.
+    pub fn begin_native_source_state_capture_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<crate::plugin_worker::NativeWorkerCapture, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root.begin_live_native_capture(binding)
+    }
+    /// Current state is copied data only, never canonical/source installation.
+    /// Root binding/token checks do not prove the latest document/editor or
+    /// applied graph context when a source is reused. Recheck that owning
+    /// context before using data in a save; preserve confirmed state on error.
+    pub fn poll_native_source_state_capture_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerCaptureProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_live_native_capture(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
     #[cfg(feature = "allocation-probe")]
@@ -204,6 +239,24 @@ impl PublicationControl {
         self.candidate_root
             .quiesce_native_source_preparation(previous, graph)
     }
+    /// Capture the original quiescent owner after actual graph/endpoint return.
+    /// `binding` names Root's renewed reservation; the helper still acknowledges
+    /// its old physical binding until the normal completion/resume transaction.
+    /// Some is fresh bounded data only; None means native failure/close retained
+    /// for normal progress/error/disposal recovery. Err is synchronous refusal.
+    /// Keep last confirmed state on either refusal. Caller owns/accounting for
+    /// the copied envelope; this does not install it or grant publication.
+    pub fn capture_native_source_state_on_control(
+        &mut self,
+        binding: Binding,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<NativeDeviceState>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        self.candidate_root
+            .capture_native_source_state(binding, is_cancelled)
+    }
     /// Reserve fixed cells and per-cell variable DATA allowances before exposing
     /// the output. The whole pool's allowances remain charged, including vacant
     /// cells, so other admissions cannot spend that capacity. This is not actual
@@ -326,6 +379,19 @@ impl PublicationControl {
     /// fresh source. Read-only state is never Root/graph admission authority.
     pub fn native_source_prepared_state(&self, binding: Binding) -> Option<NativeDeviceState> {
         self.candidate_root.native_source_prepared_state(binding)
+    }
+    /// Copy bounded original source metadata on control. This borrows the exact
+    /// constructed worker owner even while its endpoint is loaned; no native
+    /// resource, state capture or permission is returned. New preparation still
+    /// revalidates files and constructs an independent source through this Root.
+    pub fn native_source_metadata(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_effects::EffectSourceMetadata, String> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native source control is closing".into());
+        }
+        self.candidate_root.native_source_metadata(binding)
     }
     pub fn native_source_preparation_progress(
         &self,

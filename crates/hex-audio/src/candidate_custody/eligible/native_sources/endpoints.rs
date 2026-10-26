@@ -492,13 +492,20 @@ mod tests {
             first.native_source_prepared_state(a),
             second.native_source_prepared_state(b)
         );
+        let copied = first.native_source_metadata(a).unwrap();
         let endpoint_a = first.loan_native_endpoint(a).unwrap();
         let endpoint_b = second.loan_native_endpoint(b).unwrap();
+        assert_eq!(
+            copied,
+            first.native_source_metadata(a).unwrap(),
+            "metadata stays with original control custody while its actual endpoint is loaned"
+        );
         let endpoint_a = second
             .ingest_native_endpoint(endpoint_a)
             .expect_err("different original source");
         assert!(second.ingest_native_endpoint(endpoint_b).is_ok());
         assert!(first.ingest_native_endpoint(endpoint_a).is_ok());
+        assert_eq!(copied, first.native_source_metadata(a).unwrap());
         for owner in [&first, &second] {
             assert!(owner.retire_native_source(a));
             dispose(owner, a);

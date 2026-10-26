@@ -407,12 +407,12 @@ impl SessionPlayback {
             && !previous.playing
             && previous.performance_frame == 0
             && previous.arrangement_frame == 0
+            && self.main_chain.can_inherit_from(&previous.main_chain)
         {
-            if !self.main_chain.can_inherit_from(&previous.main_chain) {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
             // Stop/explicit reset removed every in-flight sample. Adopt fresh
             // processor/delay owners instead of copying incompatible histories.
+            // A changed foreign binding needs the full tail/source planner
+            // below; the fast reset cannot inherit that original endpoint.
             let recipient_epoch = self
                 .capture_epoch
                 .checked_add(1)
@@ -2522,10 +2522,7 @@ impl SessionPlayback {
         // Live replacement can leave the incompatible original suffix with a
         // preflighted tail owner. Validate only the histories actually carried
         // into the candidate; an unchanged incompatible prefix still refuses.
-        if !self.main_chain.can_inherit_from_excluding_old_range(
-            &previous.main_chain,
-            return_tail_plan.main_excluded(previous.main_chain.len()),
-        ) {
+        if !return_tail_plan.can_inherit_main(&self.main_chain, &previous.main_chain) {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
         return_tail_plan.validate_main(&self.return_effect_tails, &previous.main_chain)?;
