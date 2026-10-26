@@ -220,7 +220,12 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let horizon = self.viewport_horizon(state.timeline_frames);
+        let current = self.visible_viewport(state.timeline_frames);
+        let horizon = if back {
+            self.viewport_horizon(state.timeline_frames)
+        } else {
+            self.normal_navigation_horizon(state.timeline_frames)
+        };
         let next = if back {
             let Some((generation, prior)) = self.zoom_fit.arrange.take() else {
                 return false;
@@ -228,7 +233,9 @@ impl EditorView {
             if generation != self.project_generation {
                 return false;
             }
-            prior.map(|viewport| viewport.clamp(horizon))
+            // Back is an explicit restoration, rather than scrolling into a
+            // retired tail. Retain exactly the saved view when content shrank.
+            prior.map(|viewport| viewport.clamp(horizon.max(viewport.end().unwrap_or(horizon))))
         } else {
             let project = &state.project;
             let audio_range = |c: &hex_project::Clip| {
@@ -286,16 +293,24 @@ impl EditorView {
                         })
                 });
             let (a, b) = range.unwrap_or((0, horizon));
-            let Some(next) = interval(a, b, horizon, 1) else {
+            // Explicit fitting can restore an empty selected interval beyond
+            // shortened content. Ordinary scrolling still obeys retired bounds.
+            let target_horizon = horizon.max(a).max(b);
+            let Some(next) = interval(a, b, target_horizon, 1) else {
                 return false;
             };
-            if next == self.visible_viewport(horizon) {
+            if next == current && target_horizon == self.viewport_horizon(state.timeline_frames) {
                 return false;
             }
-            self.zoom_fit.arrange = Some((self.project_generation, self.viewport));
+            self.zoom_fit.arrange = Some((self.project_generation, Some(current)));
             Some(next)
         };
-        self.viewport = next;
+        if let Some(next) = next {
+            self.install_arranger_navigation(next);
+        } else {
+            self.clear_retained_navigation();
+            self.viewport = None;
+        }
         self.zoom_wheel_accum = 0.0;
         true
     }

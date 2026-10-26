@@ -146,6 +146,7 @@ impl EditorView {
         let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames) else {
             return false;
         };
+        let horizon = self.viewport_horizon(horizon);
         let viewport = self.visible_viewport(horizon);
         if let Some(drag) = self.active_clip_drag.clone() {
             if !self.drag_start_is_current(&drag) {

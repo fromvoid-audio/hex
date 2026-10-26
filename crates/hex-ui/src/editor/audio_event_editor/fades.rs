@@ -44,17 +44,64 @@ fn source_window(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> O
         .ok()?;
     (start < end).then_some((start, end))
 }
-fn local_shape(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> Option<ClipFade> {
-    let (start, end) = source_window(root, event, tempo)?;
+// Cropping retains the authored envelope domain. F only exposes controls; it
+// must not implicitly reanchor the envelope or use a different drag baseline.
+fn projected_fade(
+    root: &AudioClipEdit,
+    event: AudioEvent,
+    tempo: &TempoMap,
+) -> Option<AudioEventFade> {
     if let Some(fade) = event.fade {
         fade.reproject(|at| root.event_source_frame_at(event.source, at, tempo))
-            .ok()?
-            .shape()
-            .reanchor(end - start)
             .ok()
     } else {
-        ClipFade::neutral(end - start).ok()
+        let (start, end) = source_window(root, event, tempo)?;
+        AudioEventFade::new(start, ClipFade::neutral(end - start).ok()?).ok()
     }
+}
+// Frame projection is lossy for fractional beats. Editing one endpoint must
+// not quantize the other authored knots (or a bend-only edit quantize all four).
+fn retain_unchanged_knots(
+    original: ClipFade,
+    projected: ClipFade,
+    edited: ClipFade,
+    canonical: ClipFade,
+) -> Option<ClipFade> {
+    let knots = |shape: ClipFade| {
+        [
+            shape.in_start(),
+            shape.in_start() + shape.fade_in(),
+            shape.span() - shape.out_end_offset() - shape.fade_out(),
+            shape.span() - shape.out_end_offset(),
+        ]
+    };
+    let mut result = knots(canonical);
+    for ((result, original), (before, after)) in result
+        .iter_mut()
+        .zip(knots(original))
+        .zip(knots(projected).into_iter().zip(knots(edited)))
+    {
+        if before == after {
+            *result = original;
+        }
+    }
+    let [in_start, in_end, out_start, out_end] = result;
+    ClipFade::new(
+        canonical.span(),
+        0,
+        in_end.checked_sub(in_start)?,
+        out_end.checked_sub(out_start)?,
+    )
+    .ok()?
+    .with_shape(
+        in_start,
+        canonical.span().checked_sub(out_end)?,
+        edited.in_curve(),
+        edited.out_curve(),
+    )
+    .ok()?
+    .with_curve_positions(edited.in_position(), edited.out_position())
+    .ok()
 }
 fn destination_frame(
     root: &AudioClipEdit,
@@ -312,25 +359,48 @@ impl EditorView {
         } else {
             let next = fade_handles::edited_fade(fade.original, fade.handle, delta, bend);
             next.filter(|next| *next != fade.original).and_then(|next| {
-                let (first, end) = source_window(&root, fade.event, state.project.tempo_map())?;
-                let source_end = fade.event.source_start.checked_add(fade.event.length())?;
-                let canonical = AudioEventFade::new(first, next)
+                let tempo = state.project.tempo_map();
+                let (first, end) = if let Some(original) = fade.event.fade {
+                    (
+                        original.source_start(),
+                        original
+                            .source_start()
+                            .checked_add(original.shape().span())?,
+                    )
+                } else {
+                    (
+                        fade.event.source_start,
+                        fade.event.source_start.checked_add(fade.event.length())?,
+                    )
+                };
+                let frame_end = fade.source_frame_start.checked_add(next.span())?;
+                let canonical = AudioEventFade::new(fade.source_frame_start, next)
                     .ok()?
                     .reproject(|at| {
-                        if at == first {
-                            Ok(fade.event.source_start)
-                        } else if at == end {
-                            Ok(source_end)
+                        if at == fade.source_frame_start {
+                            Ok(first)
+                        } else if at == frame_end {
+                            Ok(end)
                         } else {
-                            root.event_source_position_at(
-                                fade.event.source,
-                                at,
-                                state.project.tempo_map(),
-                            )
-                            .map(|p| p.clamp(fade.event.source_start, source_end))
+                            root.event_source_position_at(fade.event.source, at, tempo)
+                                .map(|p| p.clamp(first, end))
                         }
                     })
                     .ok()?;
+                let canonical = if let Some(original) = fade.event.fade {
+                    AudioEventFade::new(
+                        canonical.source_start(),
+                        retain_unchanged_knots(
+                            original.shape(),
+                            fade.original,
+                            next,
+                            canonical.shape(),
+                        )?,
+                    )
+                    .ok()?
+                } else {
+                    canonical
+                };
                 Some(AudioEventEdit::SetFade {
                     event: fade.event.id,
                     fade: (!canonical.shape().is_neutral()).then_some(canonical),
@@ -410,7 +480,7 @@ impl EditorView {
         let Some(bounds) = self.audio_event_editor.bounds else {
             return Vec::new();
         };
-        let Some(original) = local_shape(root, event, state.project.tempo_map()) else {
+        let Some(geometry) = projected_fade(root, event, state.project.tempo_map()) else {
             return Vec::new();
         };
         let Some((source_start, source_end)) =
@@ -424,17 +494,9 @@ impl EditorView {
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 16.0 {
             return Vec::new();
         }
-        let projected = event.fade.and_then(|f| {
-            f.reproject(|at| {
-                root.event_source_frame_at(event.source, at, state.project.tempo_map())
-            })
-            .ok()
-        });
-        let (controls, origin) = if held || active {
-            (original, source_start)
-        } else {
-            projected.map_or((original, source_start), |f| (f.shape(), f.source_start()))
-        };
+        let projected = event.fade.map(|_| geometry);
+        let controls = geometry.shape();
+        let origin = geometry.source_start();
         // Capture only a bounded curve for paint, never a project clone per event.
         let count = (width.ceil() as usize).clamp(2, 96);
         let mut gains = [1.0; 96];
@@ -589,8 +651,8 @@ impl EditorView {
                                     let fade = FadeGesture {
                                         event,
                                         handle,
-                                        original,
-                                        source_frame_start: source_start,
+                                        original: controls,
+                                        source_frame_start: origin,
                                         pointer_source_frame: anchor,
                                         origin_y: f32::from(e.position.y),
                                         last_y: f32::from(e.position.y),

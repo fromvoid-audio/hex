@@ -4,7 +4,6 @@ use super::play_intent::AdmissionError;
 use super::refresh::AudioFrame;
 use super::seek::seek_is_pending;
 use super::selection;
-use super::viewport::Viewport;
 use super::{
     EditorView, PendingEditorAudioResult, PendingEditorPublicationObservation, PendingPlayback,
     PendingPlaybackAction, PendingResidentPublication, Playback, PlaybackCandidate,
@@ -2274,17 +2273,17 @@ impl EditorView {
             self.invalidate_prepared_seek();
             self.cancel_active_browser_audio_drag();
         }
-        if !event.project_replaced
-            && self.viewport.is_none()
-            && let Some(previous_horizon) = self.state.as_ref().map(|state| state.timeline_frames)
-            && previous_horizon > 0
-            && event_state.timeline_frames > previous_horizon
-        {
-            // Auto-fit is a one-time view choice. Once content extends the
-            // project, keep the previously visible frame span so edits do not
-            // make the Arrangement appear to zoom out unexpectedly.
-            self.viewport = Some(Viewport::fit(previous_horizon));
-        }
+        // Resize previews retain their own captured viewport through the exact
+        // terminal below. Never adopt that private extent as canonical tail.
+        let resize_owns_viewport = retired_trim.is_some()
+            || self.pending_trim.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some();
+        self.reconcile_arranger_navigation(
+            &event_state,
+            event.project_replaced,
+            resize_owns_viewport,
+        );
         if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
@@ -3424,16 +3423,12 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let playhead = self.cursor_position();
         let viewport = self
             .visible_viewport(horizon)
             .zoom(horizon, playhead, inward);
-        self.viewport = if viewport == Viewport::fit(horizon) {
-            None
-        } else {
-            Some(viewport)
-        };
+        self.install_arranger_navigation(viewport);
     }
 
     pub(super) fn zoom_timeline_wheel_at(
@@ -3459,7 +3454,7 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let current = self.visible_viewport(horizon);
         let Some(anchor) = super::seek::pointer_to_frame(
             f32::from(pointer_x),
@@ -3476,11 +3471,12 @@ impl EditorView {
         if next == current {
             return false;
         }
-        self.viewport = (next != Viewport::fit(horizon)).then_some(next);
+        self.install_arranger_navigation(next);
         true
     }
 
     pub(super) fn fit_timeline(&mut self) {
+        self.clear_retained_navigation();
         self.viewport = None;
     }
 
@@ -3488,14 +3484,10 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let current = self.visible_viewport(horizon);
         let panned = current.pan_half(horizon, right);
-        self.viewport = if self.viewport.is_none() && panned == current {
-            None
-        } else {
-            Some(panned)
-        };
+        self.install_arranger_navigation(panned);
     }
 
     pub(super) fn queue_audio_command(&mut self, command: PlaybackCommand) {

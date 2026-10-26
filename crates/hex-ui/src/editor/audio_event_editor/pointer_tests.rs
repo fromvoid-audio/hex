@@ -220,7 +220,18 @@ fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppCon
                     MouseButton::Left,
                     Modifiers::default(),
                 ),
-                "focus" => visual.update(|w, cx| editor.update(cx, |v, _| v.focus.focus(w))),
+                "focus" => visual.update(|w, cx| {
+                    editor.update(cx, |v, _| v.focus.focus(w));
+                    w.dispatch_input(
+                        gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            position: outside,
+                            button: MouseButton::Left,
+                            modifiers: Modifiers::default(),
+                            click_count: 1,
+                        }),
+                        cx,
+                    );
+                }),
                 "generation" => editor.update(&mut visual, |v, cx| {
                     v.project_generation += 1;
                     cx.notify();
@@ -232,11 +243,8 @@ fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppCon
                 "escape" => visual.simulate_keystrokes("escape"),
                 _ => unreachable!(),
             }
-            // Focus changes are immediately authoritative, even if release
-            // arrives before deferred blur listeners or a completed repaint.
-            if loss == "focus" {
-                visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
-            }
+            // The focus case dispatches both operations in one update so a
+            // simulator repaint cannot hide the input-turn ordering boundary.
             visual.run_until_parked();
             if loss != "focus" {
                 visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());

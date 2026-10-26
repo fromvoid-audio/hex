@@ -1191,6 +1191,12 @@ fn copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_cop
     // MIDI is born first in row order, then its NoteId, then the copied Audio
     // ClipId: the actual response range contains a note hole.
     let originals = [midi, audio];
+    editor.update(&mut visual, |v, cx| {
+        // Keep the intended short overlap inside the original loop cycle.
+        v.viewport = Some(super::super::viewport::Viewport::fit(384_000));
+        cx.notify();
+    });
+    visual.run_until_parked();
     let target = begin_group(&mut visual, &originals);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
     visual.simulate_mouse_up(
