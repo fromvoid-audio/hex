@@ -4,7 +4,9 @@
 use super::*;
 use hex_plugin_host::{
     Error,
-    protocol::{ParameterPage, ParameterPageProgress, ParameterPageQuery},
+    protocol::{
+        ParameterConversionResult, ParameterPage, ParameterPageProgress, ParameterPageQuery,
+    },
 };
 use std::{
     sync::{TryLockError, Weak},
@@ -15,6 +17,7 @@ use std::{
 struct Reply {
     page: ParameterPage,
     changed: bool,
+    conversion: Option<ParameterConversionResult>,
 }
 #[derive(Default)]
 pub(super) struct Slot {
@@ -61,6 +64,7 @@ pub struct NativeWorkerControllerQuery {
 pub enum NativeWorkerControllerProgress {
     Pending,
     Page(Box<ParameterPage>),
+    Conversion(Box<ParameterConversionResult>),
     Changed { revision: u64, total: u16 },
     Failed,
 }
@@ -170,7 +174,9 @@ impl NativeWorker {
         let reply = slot.reply;
         slot.requested = false;
         drop(mailbox);
-        let progress = if reply.changed {
+        let progress = if let Some(conversion) = reply.conversion {
+            NativeWorkerControllerProgress::Conversion(Box::new(conversion))
+        } else if reply.changed {
             NativeWorkerControllerProgress::Changed {
                 revision: reply.page.revision,
                 total: reply.page.total,
@@ -279,6 +285,11 @@ impl State {
                 ParameterPageProgress::Page(page) => Some(Reply {
                     page: *page,
                     changed: false,
+                    conversion: None,
+                }),
+                ParameterPageProgress::Conversion(conversion) => Some(Reply {
+                    conversion: Some(*conversion),
+                    ..Reply::default()
                 }),
                 ParameterPageProgress::Changed { revision, total } => {
                     let mut page = ParameterPage::default();
@@ -287,6 +298,7 @@ impl State {
                     Some(Reply {
                         page,
                         changed: true,
+                        conversion: None,
                     })
                 }
             };

@@ -79,6 +79,7 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
                     }
                     ParameterPageProgress::Pending => {}
                     ParameterPageProgress::Changed { .. } => panic!("unversioned first query"),
+                    ParameterPageProgress::Conversion(_) => panic!("expected metadata page"),
                 }
                 assert!(Instant::now() < until);
                 thread::sleep(Duration::from_millis(1));
@@ -91,8 +92,208 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
     }
 }
 use crate::protocol::{
-    ParameterPage, ParameterPageProgress, ParameterPageQuery, ParameterPlainValue,
+    ParameterConversion, ParameterConversionResult, ParameterConversionStatus, ParameterPage,
+    ParameterPageProgress, ParameterPageQuery, ParameterPlainValue, ParameterText,
 };
+
+fn converted(
+    mut poll: impl FnMut() -> crate::Result<ParameterPageProgress>,
+) -> Box<ParameterConversionResult> {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match poll().unwrap() {
+            ParameterPageProgress::Pending => {}
+            ParameterPageProgress::Conversion(value) => return value,
+            other => panic!("actual SDK conversion terminal: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+}
+fn convert(
+    instance: &mut Prepared,
+    conversion: ParameterConversion,
+) -> Box<ParameterConversionResult> {
+    instance
+        .begin_parameter_page_on_worker(ParameterPageQuery {
+            conversion: Some(conversion),
+            ..ParameterPageQuery::default()
+        })
+        .unwrap();
+    converted(|| instance.poll_parameter_page_on_worker())
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn sdk_text_and_plain_conversions_preserve_live_values_pcm_and_stopped_source() {
+    for variant in [91, 92, 80] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        let child = instance.child_id_on_control();
+        let initial = instance.ready().initial_state.clone();
+        let before = page(&mut instance, ParameterPageQuery::default());
+        let id = if variant == 91 { 7 } else { 0 };
+        let parsed = convert(
+            &mut instance,
+            ParameterConversion::Parse {
+                id,
+                text: ParameterText::from_text("double").unwrap(),
+            },
+        );
+        if variant == 80 {
+            assert_eq!(parsed.status, ParameterConversionStatus::Unsupported);
+            assert_eq!(parsed.normalized, None);
+            let value = convert(
+                &mut instance,
+                ParameterConversion::Format {
+                    id,
+                    normalized: 0.5,
+                },
+            );
+            assert_eq!(value.normalized, Some(0.5));
+            assert_eq!(value.plain, ParameterPlainValue::Finite(0.5));
+            assert_eq!(value.display, None);
+        } else {
+            assert_eq!(parsed.status, ParameterConversionStatus::Converted);
+            assert_eq!(parsed.normalized, Some(0.5));
+            assert_eq!(parsed.plain, ParameterPlainValue::Finite(2.0));
+            assert_eq!(
+                parsed.display.unwrap(),
+                ParameterText::from_text("double").unwrap()
+            );
+            let value = convert(
+                &mut instance,
+                ParameterConversion::Format {
+                    id,
+                    normalized: 0.8125,
+                },
+            );
+            assert_eq!(value.normalized, Some(0.8125));
+            assert_eq!(value.plain, ParameterPlainValue::Finite(3.25));
+            assert_eq!(
+                value.display.unwrap(),
+                ParameterText::from_text("3.250 x").unwrap()
+            );
+            let value = convert(
+                &mut instance,
+                ParameterConversion::FromPlain {
+                    id,
+                    plain: ParameterPlainValue::Finite(3.0),
+                },
+            );
+            assert_eq!(value.normalized, Some(0.75));
+            assert_eq!(value.plain, ParameterPlainValue::Finite(3.0));
+            let value = convert(
+                &mut instance,
+                ParameterConversion::Parse {
+                    id,
+                    text: ParameterText::from_text("invalid text").unwrap(),
+                },
+            );
+            assert_eq!(value.status, ParameterConversionStatus::Refused);
+            assert_eq!(value.normalized, None);
+            let value = convert(
+                &mut instance,
+                ParameterConversion::FromPlain {
+                    id,
+                    plain: ParameterPlainValue::NegativeInfinity,
+                },
+            );
+            assert_eq!(value.status, ParameterConversionStatus::Refused);
+            assert_eq!(value.normalized, None);
+        }
+        let missing = convert(
+            &mut instance,
+            ParameterConversion::Parse {
+                id: 999,
+                text: ParameterText::from_text("double").unwrap(),
+            },
+        );
+        assert_eq!(missing.status, ParameterConversionStatus::Missing);
+        assert_eq!(missing.normalized, None);
+        let after = page(&mut instance, ParameterPageQuery::default());
+        assert_eq!(
+            *before, *after,
+            "SDK conversion is not a setter or metadata edit"
+        );
+        assert_eq!(instance.ready().initial_state, initial);
+        assert_eq!(instance.completed_blocks_on_control(), 0);
+        let input = request(instance.configuration(), 0);
+        let output = instance.exchange_on_worker(input).unwrap();
+        for (output, input) in output.pcm[..8].iter().zip(&input.pcm[..8]) {
+            assert_eq!(*output, [input[0] * 0.5, input[1] * 0.5]);
+        }
+        let mut stopped = instance.quiesce_retained_on_control().unwrap();
+        stopped
+            .begin_parameter_page_on_control(ParameterPageQuery {
+                conversion: Some(ParameterConversion::Format {
+                    id,
+                    normalized: 0.5,
+                }),
+                ..ParameterPageQuery::default()
+            })
+            .unwrap();
+        let value = converted(|| stopped.poll_parameter_page_on_control());
+        assert_eq!(value.normalized, Some(0.5));
+        assert_eq!(stopped.child_id_on_control(), child);
+        assert_eq!(stopped.completed_blocks(), 1);
+        assert_eq!(
+            (
+                case.observation().unwrap()[10],
+                case.observation().unwrap()[11]
+            ),
+            (1, 0)
+        );
+        assert!(stopped.retire_on_control().unwrap().status.success());
+        assert_eq!(case.observation().unwrap()[1], 0);
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn malformed_sdk_parse_success_retires_original_source_without_fabricated_value() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(94),
+    )
+    .unwrap();
+    let initial = instance.ready().initial_state.clone();
+    instance
+        .begin_parameter_page_on_worker(ParameterPageQuery {
+            conversion: Some(ParameterConversion::Parse {
+                id: 7,
+                text: ParameterText::from_text("malformed sdk result").unwrap(),
+            }),
+            ..ParameterPageQuery::default()
+        })
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match instance.poll_parameter_page_on_worker() {
+            Ok(ParameterPageProgress::Pending) => {}
+            Err(Error::Worker(11)) => break,
+            other => panic!("invalid SDK success must refuse source: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert_eq!(instance.ready().initial_state, initial);
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    let retired = instance.cancel_and_reap_on_control().unwrap();
+    assert!(!retired.status.success() && retired.terminal.is_none());
+    assert!(instance.child_id_on_control().is_none());
+}
 
 fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage> {
     instance.begin_parameter_page_on_worker(query).unwrap();
@@ -104,6 +305,7 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
             ParameterPageProgress::Page(page) => return page,
             ParameterPageProgress::Pending => {}
             ParameterPageProgress::Changed { .. } => panic!("unchanged fixture metadata"),
+            ParameterPageProgress::Conversion(_) => panic!("expected metadata page"),
         }
         assert!(Instant::now() < until);
         thread::yield_now();
@@ -173,6 +375,7 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
         let query = ParameterPageQuery {
             first: 0,
             revision: current.revision,
+            conversion: None,
         };
         assert_eq!(current.as_slice()[0].normalized, 0.5);
         assert_eq!(
@@ -198,7 +401,7 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                     assert_eq!((revision, total), (current.revision, 1));
                     break;
                 }
-                ParameterPageProgress::Page(_) => {
+                ParameterPageProgress::Page(_) | ParameterPageProgress::Conversion(_) => {
                     panic!("stale metadata must invalidate enumeration")
                 }
             }
@@ -213,6 +416,7 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Page(page) => break page,
                 ParameterPageProgress::Pending => {}
                 ParameterPageProgress::Changed { .. } => panic!("same stopped metadata"),
+                ParameterPageProgress::Conversion(_) => panic!("expected stopped metadata page"),
             }
             assert!(Instant::now() < until);
             thread::yield_now();

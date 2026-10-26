@@ -354,10 +354,10 @@ public:
     const ParameterSnapshot* parameter_snapshot() const {
         return host?host->snapshot():nullptr;
     }
-    bool parameter_page_on_control(uint16 first,uint64 revision,ControllerParameterPage& result) {
+    bool parameter_page_on_control(const ControllerQuery& query,ControllerParameterPage& result) {
         if(![NSThread isMainThread]) return false;
         return opened && host && !quarantined.load() &&
-            controller_page(controller,host->snapshot(),first,revision,result);
+            controller_page(controller,host->snapshot(),query,result);
     }
     ProcessingParameterSnapshot processing_parameters_on_control() const {
         return host?host->processing_snapshot_on_control():ProcessingParameterSnapshot{};

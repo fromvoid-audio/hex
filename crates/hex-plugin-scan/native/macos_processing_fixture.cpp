@@ -220,8 +220,9 @@ public:
         return kResultOk;
     }
     tresult PLUGIN_API getParamValueByString(ParamID id,TChar* text,ParamValue& value) override {
-        if(fault!=91 && fault!=92) return kNotImplemented;
+        if(fault!=91 && fault!=92 && fault!=94) return kNotImplemented;
         if(!control() || !context || id!=parameter_id(fault) || !text) return kInvalidArgument;
+        if(fault==94) {value=std::numeric_limits<double>::quiet_NaN();return kResultOk;}
         char input[32]{};size_t n=0;
         for(;n<31 && text[n];++n) {if(text[n]>127) return kResultFalse;input[n]=static_cast<char>(text[n]);}
         if(text[n]) return kResultFalse;
@@ -640,7 +641,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>93) return false;next_fault=value;
+        if (value>94) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

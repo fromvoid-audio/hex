@@ -1,7 +1,9 @@
 //! Paired original callback/worker/controller observations, not a mock mailbox.
 use super::*;
 use crate::plugin_worker::{NativeWorkerControllerProgress, NativeWorkerControllerQuery};
-use hex_plugin_host::protocol::ParameterPageQuery;
+use hex_plugin_host::protocol::{
+    ParameterConversion, ParameterPageQuery, ParameterPlainValue, ParameterText,
+};
 
 fn query(owner: &mut NativeWorker) -> NativeWorkerControllerQuery {
     let until = Instant::now() + Duration::from_secs(3);
@@ -83,6 +85,39 @@ fn actual_worker_controller_pages_share_capture_reader_and_preserve_stopped_sour
     assert_eq!(observed.as_slice()[0].normalized, 0.25);
     complete(&mut owner, &capture);
     assert!(owner.poll_controller_query_on_control(&request).is_err());
+    let until = Instant::now() + Duration::from_secs(3);
+    let conversion = loop {
+        match owner.begin_controller_query_on_control(ParameterPageQuery {
+            conversion: Some(ParameterConversion::Parse {
+                id: 0,
+                text: ParameterText::from_text("double").unwrap(),
+            }),
+            ..ParameterPageQuery::default()
+        }) {
+            Ok(request) => break request,
+            Err("native controller mailbox is busy") => {}
+            Err(error) => panic!("SDK parse admission: {error}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    };
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.poll_controller_query_on_control(&conversion).unwrap() {
+            NativeWorkerControllerProgress::Pending => {}
+            NativeWorkerControllerProgress::Conversion(value) => {
+                assert_eq!(
+                    (value.id, value.normalized, value.plain),
+                    (0, Some(0.5), ParameterPlainValue::Finite(2.0))
+                );
+                break;
+            }
+            other => panic!("SDK parse completion: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    assert!(owner.poll_controller_query_on_control(&conversion).is_err());
     callback_block(&owner, &mut callback, 0);
     let late = query(&mut owner);
     owner.revoke_on_control();

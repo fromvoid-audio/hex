@@ -5,6 +5,19 @@
 
 namespace hex_instance {
 inline constexpr size_t CONTROLLER_PAGE_COUNT=4;
+struct ControllerQuery {
+    uint16 first=0;uint64 revision=0;
+    uint8 kind=0;uint32 id=0;uint64 bits=0;String128 text{};
+    bool operator==(const ControllerQuery& other) const {
+        return first==other.first && revision==other.revision && kind==other.kind &&
+            id==other.id && bits==other.bits && !std::memcmp(text,other.text,sizeof(text));
+    }
+};
+struct ControllerConversion {
+    uint32 id=0;uint8 status=3; // converted/refused/unsupported/missing
+    double normalized=0,plain=std::numeric_limits<double>::quiet_NaN();
+    bool formatted=false;String128 display{};
+};
 struct ControllerParameter {
     ParameterInfo info{};
     ParamValue normalized=0;
@@ -16,6 +29,7 @@ struct ControllerParameterPage {
     uint64 revision=0;
     uint16 first=0,total=0,count=0;
     bool changed=false;
+    bool conversion=false;ControllerConversion converted{};
     std::array<ControllerParameter,CONTROLLER_PAGE_COUNT> parameters{};
 };
 static_assert(sizeof(ControllerParameterPage)<8192,
@@ -38,13 +52,56 @@ inline bool controller_text(String128 value) {
     }
     return false;
 }
+inline bool valid_controller_query(const ControllerQuery& query) {
+    if(query.first>HOST_PARAMETER_COUNT || (query.first && !query.revision) || query.kind>5) return false;
+    String128 text{};std::memcpy(text,query.text,sizeof(text));
+    if(!controller_text(text) || std::memcmp(text,query.text,sizeof(text))) return false;
+    if(!query.kind) return !query.id && !query.bits && !text[0];
+    if(query.first || query.id>static_cast<uint32>(std::numeric_limits<int32>::max())) return false;
+    double value=0;std::memcpy(&value,&query.bits,8);
+    if(query.kind==2) return !query.bits;
+    if(text[0]) return false;
+    if(query.kind>=4) return !query.bits;
+    return std::isfinite(value) && (query.kind!=1 || (value>=0 && value<=1));
+}
+inline bool controller_conversion(IEditController* controller,const ParameterSnapshot* snapshot,
+                                   const ControllerQuery& query,ControllerConversion& result) {
+    result={};result.id=query.id;
+    bool exists=false;
+    if(snapshot) for(uint32 n=0;n<snapshot->count;++n) exists|=snapshot->parameters[n].info.id==query.id;
+    if(!controller || !exists) return true;
+    double input=0;std::memcpy(&input,&query.bits,8);
+    double normalized=input;
+    if(query.kind==2) {
+        String128 text{};std::memcpy(text,query.text,sizeof(text));
+        const auto parsed=controller->getParamValueByString(query.id,text,normalized);
+        if(parsed!=kResultOk) {result.status=parsed==kNotImplemented?2:1;return true;}
+        // Success with an invalid normalized value violates the SDK contract.
+        if(!std::isfinite(normalized) || normalized<0 || normalized>1) return false;
+    } else if(query.kind>=3) {
+        if(query.kind==4) input=-std::numeric_limits<double>::infinity();
+        if(query.kind==5) input=std::numeric_limits<double>::infinity();
+        normalized=controller->plainParamToNormalized(query.id,input);
+        if(!std::isfinite(normalized) || normalized<0 || normalized>1) {result.status=1;return true;}
+    }
+    result.status=0;result.normalized=normalized;
+    result.plain=controller->normalizedParamToPlain(query.id,normalized);
+    result.formatted=controller->getParamStringByValue(query.id,normalized,result.display)==kResultOk;
+    if(result.formatted) return controller_text(result.display);
+    std::memset(result.display,0,sizeof(result.display));return true;
+}
 inline bool controller_page(IEditController* controller,const ParameterSnapshot* snapshot,
-                            uint16 first,uint64 revision,ControllerParameterPage& result) {
-    if(![NSThread isMainThread] || first>HOST_PARAMETER_COUNT) return false;
+                            const ControllerQuery& query,ControllerParameterPage& result) {
+    const auto first=query.first;const auto revision=query.revision;
+    if(![NSThread isMainThread] || !valid_controller_query(query)) return false;
     result={};result.first=first;
     if((controller && !snapshot) || (snapshot && snapshot->count>HOST_PARAMETER_COUNT)) return false;
     if(snapshot) {result.revision=snapshot->revision;result.total=static_cast<uint16>(snapshot->count);}
     if((revision && revision!=result.revision) || first>result.total) {result.changed=true;return true;}
+    if(query.kind) {
+        result.conversion=true;
+        return controller_conversion(controller,snapshot,query,result.converted);
+    }
     if(!controller) return result.total==0;
     for(size_t index=first;index<result.total && result.count<result.parameters.size();++index) {
         auto& parameter=result.parameters[result.count];

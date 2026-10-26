@@ -3,6 +3,8 @@
 //! source custody or publication authority. Values describe a main-lane read,
 //! not a sample-exact processing or final audio-delivery acknowledgement.
 use super::*;
+mod conversion;
+pub use conversion::{ParameterConversion, ParameterConversionResult, ParameterConversionStatus};
 
 pub const PARAMETER_PAGE_SIZE: usize = 4;
 pub const MAX_CONTROLLER_PARAMETERS: u16 = 128;
@@ -24,6 +26,21 @@ impl Default for ParameterText {
     }
 }
 impl ParameterText {
+    /// Bounded user text for SDK parsing; preserve spelling/case and refuse
+    /// truncation or embedded terminators before any request is admitted.
+    pub fn from_text(text: &str) -> Result<Self> {
+        let mut result = Self::default();
+        for unit in text.encode_utf16() {
+            if unit == 0 || usize::from(result.len) == TEXT_UNITS - 1 {
+                return Err(Error::Protocol(
+                    "controller text exceeds its bound or contains a terminator",
+                ));
+            }
+            result.units[usize::from(result.len)] = unit;
+            result.len += 1;
+        }
+        Ok(result)
+    }
     pub fn as_utf16(&self) -> &[u16] {
         &self.units[..usize::from(self.len)]
     }
@@ -99,16 +116,25 @@ impl ControllerParameter {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ParameterPageQuery {
     pub first: u16,
     /// Zero starts enumeration; subsequent pages bind the accepted revision.
     pub revision: u64,
+    /// A single read-only SDK conversion instead of enumeration. Raw IDs are
+    /// stable parameter identity; first must be zero for this query kind.
+    pub conversion: Option<ParameterConversion>,
 }
 impl ParameterPageQuery {
     pub fn validate(self) -> Result<()> {
         if self.first > MAX_CONTROLLER_PARAMETERS || (self.first != 0 && self.revision == 0) {
             return Err(Error::Protocol("invalid controller page query"));
+        }
+        if let Some(conversion) = self.conversion {
+            if self.first != 0 {
+                return Err(Error::Protocol("conversion cannot enumerate a page"));
+            }
+            conversion.validate()?;
         }
         Ok(())
     }
@@ -133,6 +159,7 @@ pub enum ParameterPageProgress {
     Pending,
     /// One bounded control-side allocation; never decoded on the callback.
     Page(Box<ParameterPage>),
+    Conversion(Box<ParameterConversionResult>),
     /// Ordinary metadata refresh invalidates enumeration, not the processor.
     Changed {
         revision: u64,
@@ -146,13 +173,16 @@ pub fn parameter_page_request(
     operation: u64,
     query: ParameterPageQuery,
     poll: bool,
-) -> Result<[u8; 82]> {
+) -> Result<[u8; 351]> {
     query.validate()?;
-    let mut out = [0; 82];
+    let mut out = [0; 351];
     out[..72].copy_from_slice(&capture_request(config, sequence, operation)?);
     out[..4].copy_from_slice(if poll { b"HXVN" } else { b"HXVM" });
     out[72..74].copy_from_slice(&query.first.to_le_bytes());
-    out[74..].copy_from_slice(&query.revision.to_le_bytes());
+    out[74..82].copy_from_slice(&query.revision.to_le_bytes());
+    if let Some(conversion) = query.conversion {
+        conversion.write(&mut out[82..]);
+    }
     Ok(out)
 }
 
@@ -194,8 +224,19 @@ pub fn parameter_page(
         reader.end()?;
         return Ok(ParameterPageProgress::Changed { revision, total });
     }
-    if status != 1 || (query.revision != 0 && query.revision != revision) {
+    if (query.revision != 0 && query.revision != revision) || (status != 1 && status != 3) {
         return Err(Error::Protocol("controller page revision differs"));
+    }
+    if status == 3 {
+        let conversion = query
+            .conversion
+            .ok_or(Error::Protocol("unexpected controller conversion"))?;
+        let result = ParameterConversionResult::read(&mut reader, conversion, revision, total)?;
+        reader.end()?;
+        return Ok(ParameterPageProgress::Conversion(Box::new(result)));
+    }
+    if query.conversion.is_some() {
+        return Err(Error::Protocol("conversion returned an enumeration"));
     }
     let first = u16::from_le_bytes(reader.array()?);
     let len = reader.byte()?;

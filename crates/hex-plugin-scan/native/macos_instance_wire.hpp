@@ -3,6 +3,7 @@
 #pragma once
 #include "macos_state_stream.hpp"
 #include "macos_parameters.hpp"
+#include "macos_parameter_page.hpp"
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -178,7 +179,7 @@ struct Packet {
     uint16_t frames=0;bool stop=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
-    uint16_t parameter_first=0;uint64_t parameter_revision=0;
+    hex_instance::ControllerQuery parameter_query{};
     std::optional<Presentation> resumed_presentation;
     // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume,
     // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 stopped flush,
@@ -216,11 +217,15 @@ struct Packet {
         if(stop) return frames? -1:2;
         if(quiesce) return frames? -1:3;
         if(page_start || page_poll) {
-            if(frames || read_exact(fd,p+header_size,18)!=1) return -1;
+            if(frames || read_exact(fd,p+header_size,287)!=1) return -1;
             capture_operation=number(p+header_size,8);
-            parameter_first=static_cast<uint16_t>(number(p+header_size+8,2));
-            parameter_revision=number(p+header_size+10,8);
-            if(!capture_operation || parameter_first>128 || (parameter_first && !parameter_revision)) return -1;
+            parameter_query.first=static_cast<uint16_t>(number(p+header_size+8,2));
+            parameter_query.revision=number(p+header_size+10,8);
+            parameter_query.kind=p[header_size+18];
+            parameter_query.id=static_cast<uint32_t>(number(p+header_size+19,4));
+            parameter_query.bits=number(p+header_size+23,8);
+            for(size_t n=0;n<128;++n) parameter_query.text[n]=static_cast<Steinberg::Vst::TChar>(number(p+header_size+31+n*2,2));
+            if(!capture_operation || !hex_instance::valid_controller_query(parameter_query)) return -1;
             return page_start?10:11;
         }
         if(flush) {

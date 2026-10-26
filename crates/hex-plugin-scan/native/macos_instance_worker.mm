@@ -211,6 +211,13 @@ int main(int argc,char** argv) {
             hex_instance::ParameterFeedback parameter_feedback;
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
+            const auto control_failure=[&](uint32_t code) {
+                // Share the epoch wait mutex so failure publication cannot
+                // lose a wake between its predicate check and actual wait.
+                { std::lock_guard<std::mutex> lock(startup_mutex);
+                  uint32_t clear=0;worker_failure.compare_exchange_strong(clear,code); }
+                startup_changed.notify_all();
+            };
             // One serialized epoch mailbox, never a second request reader. The
             // processing lane is stopped and waiting at every epoch SDK step.
             // Live capture below has its own bounded nonwaiting slot in this
@@ -235,7 +242,7 @@ int main(int argc,char** argv) {
             // controller pointer. This bounded slot is separate from Host.
             enum PageStage {PageIdle,PageFeedbackPending,PageRequested,PageComplete,PageFailed};
             std::atomic<PageStage> page_stage{PageIdle};
-            uint16_t page_first=0;uint64_t page_revision=0;
+            hex_instance::ControllerQuery page_query{};
             hex_instance::ControllerParameterPage parameter_page{};
             uint32_t page_failure=0;
             std::thread worker([&] {
@@ -298,21 +305,30 @@ int main(int argc,char** argv) {
                         if(!poll) {
                             if(state!=PageIdle || page_operation==std::numeric_limits<uint64_t>::max() ||
                                 request.capture_operation!=page_operation+1) return false;
-                            page_first=request.parameter_first;page_revision=request.parameter_revision;
+                            page_query=request.parameter_query;
                             // A previous PCM result may still be waiting for
                             // the main-lane feedback slot. Publish it before
                             // allowing the controller to answer this query.
                             ++page_operation;page_stage.store(parameter_feedback.count?PageFeedbackPending:PageRequested,std::memory_order_release);
                         } else if(state==PageIdle || request.capture_operation!=page_operation ||
-                                  request.parameter_first!=page_first || request.parameter_revision!=page_revision) return false;
+                                  !(request.parameter_query==page_query)) return false;
                         if(state==PageFailed) {worker_failure.store(page_failure);return false;}
                         const bool complete=poll && state==PageComplete;
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         wire::number(body,page_operation,8);
-                        wire::number(body,complete?(parameter_page.changed?2:1):0,1);
+                        wire::number(body,complete?(parameter_page.changed?2:(parameter_page.conversion?3:1)):0,1);
                         if(complete) {
                             wire::number(body,parameter_page.revision,8);wire::number(body,parameter_page.total,2);
-                            if(!parameter_page.changed) {
+                            if(!parameter_page.changed && parameter_page.conversion) {
+                                const auto& value=parameter_page.converted;
+                                wire::number(body,value.id,4);wire::number(body,value.status,1);
+                                uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);wire::number(body,bits,8);
+                                const auto kind=std::isnan(value.plain)?3:(std::isinf(value.plain)?(value.plain<0?1:2):0);
+                                wire::number(body,kind,1);
+                                const double plain=kind?0:value.plain;std::memcpy(&bits,&plain,8);wire::number(body,bits,8);
+                                wire::number(body,value.formatted?1:0,1);
+                                for(const auto unit:value.display) wire::number(body,static_cast<uint16_t>(unit),2);
+                            } else if(!parameter_page.changed) {
                                 wire::number(body,parameter_page.first,2);wire::number(body,parameter_page.count,1);
                                 const auto number=[&](double value) {
                                     uint64_t bits=0;std::memcpy(&bits,&value,8);wire::number(body,bits,8);
@@ -408,8 +424,9 @@ int main(int argc,char** argv) {
                             {
                                 std::unique_lock<std::mutex> lock(startup_mutex);
                                 epoch_stage=FactsRequested;startup_changed.notify_all();
-                                startup_changed.wait(lock,[&]{return epoch_stage==FactsSent;});
+                                startup_changed.wait(lock,[&]{return epoch_stage==FactsSent || worker_failure.load();});
                             }
+                            if(worker_failure.load()) break;
                             phase.store(1,std::memory_order_release);
                             auto resumed=packet.read(channel,*config,blocks,frames);
                             uint64_t captures=0,flushes=0;
@@ -455,8 +472,9 @@ int main(int argc,char** argv) {
                                     {
                                         std::unique_lock<std::mutex> lock(startup_mutex);
                                         flush_operation=packet.capture_operation;flush_applied=result==hex_instance::FlushResult::Applied;epoch_stage=FlushRequested;
-                                        startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent;});
+                                        startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
                                     }
+                                    if(worker_failure.load()) break;
                                     ++flushes;phase.store(1,std::memory_order_release);resumed=packet.read(channel,*config,blocks,frames);continue;
                                 }
                                 if(captures==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=captures+1) {
@@ -466,8 +484,9 @@ int main(int argc,char** argv) {
                                     std::unique_lock<std::mutex> lock(startup_mutex);
                                     capture_operation=packet.capture_operation;epoch_stage=CaptureRequested;
                                     startup_changed.notify_all();
-                                    startup_changed.wait(lock,[&]{return epoch_stage==CaptureSent;});
+                                    startup_changed.wait(lock,[&]{return epoch_stage==CaptureSent || worker_failure.load();});
                                 }
+                                if(worker_failure.load()) break;
                                 ++captures;resumed=packet.read(channel,*config,blocks,frames);
                             }
                             if(worker_failure.load()) break;
@@ -479,16 +498,18 @@ int main(int argc,char** argv) {
                                 next_graph=packet.next_graph;next_epoch=packet.next_epoch;
                                 next_presentation=packet.resumed_presentation;
                                 epoch_stage=ResumeRequested;startup_changed.notify_all();
-                                startup_changed.wait(lock,[&]{return epoch_stage==ResumeConfigured;});
+                                startup_changed.wait(lock,[&]{return epoch_stage==ResumeConfigured || worker_failure.load();});
                             }
+                            if(worker_failure.load()) break;
                             phase.store(2,std::memory_order_release);
                             started=instance.start_processing();
                             if(!started) { worker_failure.store(Resume);break; }
                             {
                                 std::unique_lock<std::mutex> lock(startup_mutex);
                                 epoch_stage=Restarted;startup_changed.notify_all();
-                                startup_changed.wait(lock,[&]{return epoch_stage==ResumeSent;});
+                                startup_changed.wait(lock,[&]{return epoch_stage==ResumeSent || worker_failure.load();});
                             }
+                            if(worker_failure.load()) break;
                             continue;
                         }
                         if(received!=1) { worker_failure.store(ProtocolFailure);break; }
@@ -587,19 +608,24 @@ int main(int argc,char** argv) {
                         // Do not dispatch more foreign callbacks after failure.
                         std::this_thread::yield();continue;
                     }
-                    if(!instance.synchronize_parameter_feedback_on_control()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
+                    // The worker owns active response framing. Publishing a
+                    // main-lane failure lets it finish any current response
+                    // before sending the terminal error; a direct main write
+                    // could interleave an error header/body with PCM/receipts.
+                    if(!instance.synchronize_parameter_feedback_on_control()) { control_failure(HostControl);continue; }
                     instance.dispatch_host_callbacks();
-                    if(instance.host_refusals()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
+                    if(instance.host_refusals()) { control_failure(HostControl);continue; }
                     if(page_stage.load(std::memory_order_acquire)==PageRequested) {
                         try {
                             // Acquire the exact prior worker publication even
                             // if it arrived after this main iteration's sync.
                             page_failure=instance.synchronize_parameter_feedback_on_control() &&
-                                instance.parameter_page_on_control(page_first,page_revision,parameter_page)?0:HostControl;
+                                instance.parameter_page_on_control(page_query,parameter_page)?0:HostControl;
                         } catch(...) {page_failure=Unexpected;}
                         page_stage.store(page_failure?PageFailed:PageComplete,std::memory_order_release);
-                        if(page_failure) {uint32_t clear=0;worker_failure.compare_exchange_strong(clear,page_failure);}
+                        if(page_failure) control_failure(page_failure);
                     }
+                    if(worker_failure.load()) continue;
                     if(live_stage.load(std::memory_order_acquire)==LiveRequested) {
                         // Admission observes only that instant's queue. Main
                         // callbacks may arrive before or during SDK capture.
@@ -623,9 +649,10 @@ int main(int argc,char** argv) {
                             // The original worker reports the failure at its
                             // current exchange boundary, then exits without
                             // stop/unload beneath the failed capture owner.
-                            uint32_t clear=0;worker_failure.compare_exchange_strong(clear,live_failure);
+                            control_failure(live_failure);
                         }
                     }
+                    if(worker_failure.load()) continue;
                     EpochStage stage;
                     { std::lock_guard<std::mutex> lock(startup_mutex);stage=epoch_stage; }
                     if(stage==FactsRequested) {
@@ -727,7 +754,7 @@ int main(int argc,char** argv) {
                         std::_Exit(Cancelled);
                     }
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
-                } catch(...) { error(channel,&*config,Unexpected);std::_Exit(Unexpected); }
+                } catch(...) { control_failure(Unexpected); }
             }
             worker.join();failure=worker_failure.load();
             if(!failure && (!instance.publish_parameter_feedback(parameter_feedback) ||

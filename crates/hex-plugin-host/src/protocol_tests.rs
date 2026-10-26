@@ -1,5 +1,7 @@
 //! Finite hostile-wire contracts; actual SDK behavior is tested separately.
 use super::*;
+#[path = "protocol_tests/conversion.rs"]
+mod conversion;
 use crate::transport::{Events, MidiEvent};
 use hex_plugin_state::{BinaryIdentity, ClassId, State};
 fn config() -> Configuration {
@@ -800,12 +802,14 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     let query = ParameterPageQuery {
         first: 0,
         revision: 9,
+        conversion: None,
     };
     let request = parameter_page_request(&config, 1, 7, query, false).unwrap();
     assert_eq!(&request[..4], b"HXVM");
     assert_eq!(&request[64..72], &7_u64.to_le_bytes());
     assert_eq!(&request[72..74], &0_u16.to_le_bytes());
-    assert_eq!(&request[74..], &9_u64.to_le_bytes());
+    assert_eq!(&request[74..82], &9_u64.to_le_bytes());
+    assert!(request[82..].iter().all(|byte| *byte == 0));
     assert_eq!(
         &parameter_page_request(&config, 1, 7, query, true).unwrap()[..4],
         b"HXVN"
@@ -929,7 +933,8 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
             7,
             ParameterPageQuery {
                 first: 1,
-                revision: 0
+                revision: 0,
+                conversion: None,
             },
             false
         )

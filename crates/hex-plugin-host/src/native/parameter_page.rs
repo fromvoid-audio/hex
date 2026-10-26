@@ -10,7 +10,7 @@ pub(super) struct PendingPage {
     until: Instant,
 }
 impl Prepared {
-    /// Admit one bounded metadata page. This control/worker exchange returns
+    /// Admit one bounded metadata page or read-only SDK conversion. This exchange returns
     /// pending without waiting for a controller getter. A second begin refuses
     /// without disturbing the first query; rows never identify edit targets.
     pub fn begin_parameter_page_on_worker(&mut self, query: ParameterPageQuery) -> Result<()> {

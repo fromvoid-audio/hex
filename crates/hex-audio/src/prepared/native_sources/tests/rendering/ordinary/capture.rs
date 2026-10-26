@@ -99,6 +99,50 @@ fn actual_ordinary_track_return_main_controller_queries_preserve_installed_pcm_a
             page.as_slice()[0].plain,
             hex_plugin_host::protocol::ParameterPlainValue::Finite(1.0)
         );
+        let until = Instant::now() + Duration::from_secs(3);
+        let conversion = loop {
+            match f.control.begin_native_source_controller_query_on_control(
+                f.binding,
+                ParameterPageQuery {
+                    conversion: Some(hex_plugin_host::protocol::ParameterConversion::Parse {
+                        id: 7,
+                        text: hex_plugin_host::protocol::ParameterText::from_text("double")
+                            .unwrap(),
+                    }),
+                    ..ParameterPageQuery::default()
+                },
+            ) {
+                Ok(query) => break query,
+                Err("native preparation is busy" | "native controller mailbox is busy") => {}
+                Err(error) => panic!("ordinary SDK parse admission: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match f
+                .control
+                .poll_native_source_controller_query_on_control(f.binding, &conversion)
+            {
+                Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
+                }
+                Ok(NativeWorkerControllerProgress::Conversion(value)) => {
+                    assert_eq!(
+                        (value.id, value.normalized, value.plain),
+                        (
+                            7,
+                            Some(0.5),
+                            hex_plugin_host::protocol::ParameterPlainValue::Finite(2.0)
+                        )
+                    );
+                    break;
+                }
+                other => panic!("ordinary SDK parse completion: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
         assert_eq!(
             f.control.native_source_prepared_state(f.binding),
             Some(initial)
