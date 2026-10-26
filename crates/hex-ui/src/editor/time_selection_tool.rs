@@ -2,7 +2,7 @@
 //! starts, not persisted draw/pan modes or a gesture already in custody. Each
 //! canvas retains its existing range model, snap and capture/release contract.
 use super::EditorView;
-use gpui::{Context, KeyDownEvent, Window};
+use gpui::{Context, KeyDownEvent, KeyUpEvent, Window};
 
 impl EditorView {
     fn time_selection_tool_has_focus(&self, window: &Window) -> bool {
@@ -42,6 +42,32 @@ impl EditorView {
             cx.notify();
         }
         cx.stop_propagation();
+        true
+    }
+
+    /// macOS reports shifted number-row symbols on release. Also retain the
+    /// keyboard layout's public equivalent (for example AZERTY's unshifted key).
+    pub(super) fn time_selection_key_up(
+        &mut self,
+        event: &KeyUpEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.time_selection_key_held {
+            return false;
+        }
+        let key = event.keystroke.key.as_str();
+        let equivalent = cx
+            .keyboard_mapper()
+            .get_key_equivalents()
+            .and_then(|map| map.get(&'2'))
+            .copied();
+        if !matches!(key, "2" | "@" | "\"")
+            && !equivalent.is_some_and(|alias| key.chars().eq(std::iter::once(alias)))
+        {
+            return false;
+        }
+        self.time_selection_key_held = false;
+        cx.notify();
         true
     }
 
@@ -221,6 +247,30 @@ mod tests {
                 visual.deactivate_window();
             }
             editor.read_with(&visual, |v, _| assert!(!v.time_selection_key_held));
+        }
+    }
+
+    #[gpui::test]
+    fn held_two_releases_shifted_number_symbols_without_losing_other_key_chords(
+        cx: &mut TestAppContext,
+    ) {
+        for symbol in ["@", "\""] {
+            let (mut visual, editor, _environment, _) =
+                crate::editor::midi_canvas::creation_tests::fixture(cx);
+            key(&mut visual, true);
+            visual.simulate_event(KeyUpEvent {
+                keystroke: Keystroke::parse("f").unwrap(),
+            });
+            editor.read_with(&visual, |v, _| assert!(v.time_selection_key_held));
+            visual.simulate_event(KeyUpEvent {
+                keystroke: Keystroke::parse(symbol).unwrap(),
+            });
+            editor.read_with(&visual, |v, _| {
+                assert!(
+                    !v.time_selection_key_held,
+                    "shifted release {symbol} must restore normal input"
+                )
+            });
         }
     }
 

@@ -714,9 +714,7 @@ impl Render for EditorView {
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
-                if event.keystroke.key == "2" && view.time_selection_key_held {
-                    view.time_selection_key_held = false;
-                    cx.notify();
+                if view.time_selection_key_up(event, cx) {
                     cx.stop_propagation();
                 }
                 super::device_panel::selection_key_up(view, event, window, cx);
