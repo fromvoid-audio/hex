@@ -276,6 +276,11 @@ fn current_read_selection_is_required_typed_unique_and_strict_on_both_row_kinds(
         let mut value = valid.clone();
         value[inventory][0]["device"] = 999999.into();
         assert!(crate::decode(&bytes(&value)).is_err());
+        // Authored-only reads also validate canonical ownership before taking
+        // the no-selection-change path.
+        let mut value = encode(&all_authored(&fixture())).unwrap();
+        value[inventory][0]["device"] = 999999.into();
+        assert!(crate::decode(&bytes(&value)).is_err());
     }
     let text = serde_json::to_string(&valid).unwrap();
     let duplicate = text.replacen(
