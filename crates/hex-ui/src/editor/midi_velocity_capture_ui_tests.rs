@@ -58,7 +58,7 @@ fn host(
 }
 #[gpui::test]
 fn velocity_value_drag_owns_buttons_wheel_and_cursor_then_frees_input(cx: &mut TestAppContext) {
-    for group in [false, true] {
+    for (group, outside_release) in [(false, false), (true, false), (false, true), (true, true)] {
         let cx = &mut cx.new_app();
         let (mut visual, editor, _environment, _clip) = setup(cx);
         let actions = host(&mut visual, &editor, group);
@@ -79,6 +79,9 @@ fn velocity_value_drag_owns_buttons_wheel_and_cursor_then_frees_input(cx: &mut T
             visual.rendered_cursor_style(),
             Some(CursorStyle::ResizeUpDown)
         );
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        repaint(&editor, &mut visual);
+        let end = if outside_release { outside } else { end };
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         repaint(&editor, &mut visual);
         let held = handles(&mut visual);
@@ -111,6 +114,8 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
             "invalid-x",
             "escape",
             "generation",
+            "revision",
+            "source",
             "selection",
             "viewport",
             "hidden",
@@ -133,7 +138,7 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                     w.dispatch_input(
                         gpui::PlatformInput::MouseUp(MouseUpEvent {
                             button: MouseButton::Left,
-                            position: end,
+                            position: point(px(640.), px(10.)),
                             ..Default::default()
                         }),
                         cx,
@@ -151,7 +156,7 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                     w.dispatch_input(
                         gpui::PlatformInput::MouseUp(MouseUpEvent {
                             button: MouseButton::Left,
-                            position: end,
+                            position: point(px(640.), px(10.)),
                             ..Default::default()
                         }),
                         cx,
@@ -160,6 +165,31 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                 "escape" => visual.simulate_keystrokes("escape"),
                 "generation" => editor.update(&mut visual, |v, cx| {
                     v.project_generation += 1;
+                    cx.notify();
+                }),
+                "revision" => editor.update(&mut visual, |v, cx| {
+                    let state = v.state.as_ref().unwrap();
+                    v.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
+                        canonical_audio_source: state.canonical_audio_source.clone(),
+                        comparison_audio: None,
+                        project: std::sync::Arc::clone(&state.project),
+                        waveforms: state.waveforms.clone(),
+                        source_overviews: state.source_overviews.clone(),
+                        audio_clip_waveforms: state.audio_clip_waveforms.clone(),
+                        midi_preview: std::sync::Arc::clone(&state.midi_preview),
+                        gain_preview: state.gain_preview.clone(),
+                        timeline_frames: state.timeline_frames,
+                        can_undo: state.can_undo,
+                        can_redo: state.can_redo,
+                        revision: state.revision + 1,
+                        unsaved: state.unsaved,
+                        document_path: state.document_path.clone(),
+                    }));
+                    cx.notify();
+                }),
+                "source" => editor.update(&mut visual, |v, cx| {
+                    v.selected_clip = None;
+                    v.retained_clip_detail = None;
                     cx.notify();
                 }),
                 "selection" => editor.update(&mut visual, |v, cx| {
@@ -182,11 +212,14 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                 _ => unreachable!(),
             }
             repaint(&editor, &mut visual);
-            visual.simulate_mouse_up(
-                point(px(640.), px(10.)),
-                MouseButton::Left,
-                Modifiers::default(),
-            );
+            if loss != "focus" && loss != "invalid-x" {
+                visual.simulate_mouse_up(
+                    point(px(640.), px(10.)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                );
+            }
+
             assert_eq!(actions.get(), 0, "group={group}/{loss}: late release");
             editor.read_with(&visual, |v, _| {
                 assert!(v.midi_velocity.gesture.is_none(), "group={group}/{loss}");
@@ -195,5 +228,47 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
         }
+    }
+}
+
+#[gpui::test]
+#[ignore = "opt-in held/released velocity dispatch and repaint CPU probe"]
+fn velocity_dispatch_repaint_latency(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = setup(cx);
+    let _actions = host(&mut visual, &editor, true);
+    let down = handle(&mut visual, 0.5, 37);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    for phase in ["held", "released"] {
+        if phase == "released" {
+            visual.simulate_mouse_up(
+                down - point(px(0.), px(14.)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            let event = terminal(&editor, &mut visual);
+            assert!(event.error.is_none());
+            // Deliberately hold the real terminal through this phase's paints.
+        }
+        let mut samples = Vec::new();
+        for n in 0..144 {
+            let start = Instant::now();
+            if phase == "held" {
+                visual.simulate_mouse_move(
+                    down - point(px(0.), px(7. + (n % 8) as f32)),
+                    Some(MouseButton::Left),
+                    Modifiers::default(),
+                );
+            }
+            repaint(&editor, &mut visual);
+            if n >= 16 {
+                samples.push(start.elapsed().as_secs_f64() * 1_000_000.);
+            }
+        }
+        assert_eq!(handles(&mut visual).len(), 3);
+        samples.sort_by(f64::total_cmp);
+        println!(
+            "velocity_repaint_us phase={phase} p50={} p95={} max={} handles=3 tracks=1 clips=1 notes=3 selected=2 warmups=16 samples=128",
+            samples[64], samples[121], samples[127]
+        );
     }
 }
