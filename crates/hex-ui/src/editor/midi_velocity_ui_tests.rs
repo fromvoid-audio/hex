@@ -6,7 +6,7 @@ use super::super::{
 use super::*;
 use gpui::{Entity, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, ClipId, MidiNoteInsert};
-use hex_session::service::{Event, Service};
+use hex_session::service::{Event, Request, Service};
 use std::{
     path::Path,
     time::{Duration, Instant},
