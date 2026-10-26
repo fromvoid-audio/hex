@@ -464,3 +464,71 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
     oracle.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn gain_recording_delivery_delay_includes_the_complete_serial_main_chain() {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Command, Created, Editor, Project};
+    for (lookaheads, expected_delay) in [(&[2_u32][..], 288_u64), (&[0_u32, 2][..], 360_u64)] {
+        let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "serial main".into(),
+                path: "memory/serial-main.wav".into(),
+                source_sample_rate: 48000,
+                source_frames: 4096,
+                playback_frames: 4096,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        for &lookahead in lookaheads {
+            let definition = &hex_devices::limiter::DEFINITION;
+            let state = definition
+                .patch_parameter(
+                    &definition.default_state().unwrap(),
+                    hex_devices::limiter::parameter::LOOKAHEAD,
+                    ParameterValue::Choice(lookahead),
+                )
+                .unwrap();
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
+        let media = std::collections::BTreeMap::from([(
+            asset,
+            Audio::new(48000, vec![[0.01, -0.02]; 4096]).unwrap(),
+        )]);
+        let revision = PreparedRevision::prepare_for_gain_recording(
+            editor.project(),
+            &media,
+            Arc::new(SineTable::new()),
+            None,
+            track,
+        )
+        .unwrap();
+        assert_eq!(
+            u64::from(revision.arrangement().main_latency_frames()),
+            expected_delay
+        );
+        let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        assert_eq!(
+            runtime.gain_recording_clock(track.value()),
+            Some((0, expected_delay, 0)),
+            "serial Main delay must be added after the pre-Main sum"
+        );
+        let mut initial = [[1.0; 2]; 16];
+        runtime.render(&mut initial).unwrap();
+        assert_eq!(initial, [[0.0; 2]; 16]);
+        assert_eq!(
+            runtime.gain_recording_clock(track.value()),
+            Some((16, expected_delay, 0))
+        );
+    }
+}
