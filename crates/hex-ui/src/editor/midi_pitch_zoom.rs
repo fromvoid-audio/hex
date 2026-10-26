@@ -102,6 +102,13 @@ impl EditorView {
                 let low = (i16::from(z.scene.pitch_low)
                     + (i16::from(z.scene.pitch_rows) - i16::from(rows)) / 2)
                     .clamp(0, 128 - i16::from(rows)) as u8;
+                // Preserve the original integer-row redraw threshold. The
+                // window lease still consumes a sub-row move exclusively.
+                if matches!(event, SplitterEvent::Change(_))
+                    && (self.piano_pitch_low, self.piano_pitch_rows) == (low, rows)
+                {
+                    return false;
+                }
                 self.piano_pitch_low = low;
                 self.piano_pitch_rows = rows;
                 if matches!(event, SplitterEvent::Commit(_)) {
