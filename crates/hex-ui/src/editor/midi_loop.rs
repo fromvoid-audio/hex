@@ -152,7 +152,7 @@ impl EditorView {
             .child(
                 canvas(
                     |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-                    move |bounds, hitbox, window, _| {
+                    move |bounds, hitbox, window, cx| {
                         let b = bounds_of(bounds);
                         if !b.is_valid() || span == 0 {
                             return;
@@ -209,6 +209,9 @@ impl EditorView {
                                 &hitbox,
                             );
                         }
+                        entity
+                            .read(cx)
+                            .renew_midi_ruler_capture(b, entity.entity_id(), window);
                         let down_entity = entity.clone();
                         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                             if !phase.bubble()
@@ -227,58 +230,11 @@ impl EditorView {
                                         context,
                                         f32::from(event.position.x),
                                         handle,
+                                        window,
+                                        cx,
                                     )
                                 {
                                     view.midi_focus.focus(window);
-                                    cx.notify();
-                                    cx.stop_propagation();
-                                }
-                            });
-                        });
-                        let move_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                            if !phase.bubble() {
-                                return;
-                            }
-                            move_entity.update(cx, |view, cx| {
-                                if view
-                                    .midi_ruler
-                                    .gesture
-                                    .is_none_or(|gesture| gesture.handle == Handle::Start)
-                                {
-                                    return;
-                                }
-                                let changed = if event.pressed_button == Some(MouseButton::Left) {
-                                    view.update_midi_ruler(
-                                        b,
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    )
-                                } else {
-                                    view.midi_ruler.cancel()
-                                };
-                                if changed {
-                                    cx.notify();
-                                }
-                                cx.stop_propagation();
-                            });
-                        });
-                        let up_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if !phase.bubble() || event.button != MouseButton::Left {
-                                return;
-                            }
-                            up_entity.update(cx, |view, cx| {
-                                if view
-                                    .midi_ruler
-                                    .gesture
-                                    .is_some_and(|gesture| gesture.handle != Handle::Start)
-                                {
-                                    view.finish_midi_ruler(
-                                        b,
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    );
                                     cx.notify();
                                     cx.stop_propagation();
                                 }
