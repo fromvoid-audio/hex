@@ -269,7 +269,10 @@ impl EditorView {
         })
         .w_full()
         .flex_1()
-        .min_h_0();
+        .min_h_0()
+        // Scroll past the final real row without inventing a track. A fraction
+        // preserves usable track space even in a very short arranger viewport.
+        .pb(relative(0.2));
         let mut content = div()
             .relative()
             .flex_1()
