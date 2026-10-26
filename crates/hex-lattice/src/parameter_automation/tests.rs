@@ -451,27 +451,92 @@ fn host_chain(bypassed: bool) -> crate::NativeRuntimeChain {
     .unwrap()
 }
 #[test]
+fn all_chain_clock_entrypoints_keep_unavailable_host_stage_origins_independent() {
+    use crate::{ForeignProcessors, NativeInstrumentClock, RefuseForeign};
+    let clock: &dyn NativeInstrumentClock = &Clock;
+    let sampled_input = HostGain::from_db(-60.0).unwrap().linear();
+    let sampled_output = HostGain::from_normalized(0.5).unwrap().linear();
+    let base_input = HostGain::from_db(-6.0).unwrap().linear();
+    let base_output = HostGain::from_db(3.0).unwrap().linear();
+    for (input_clock, output_clock, gain) in [
+        (Some(clock), None, sampled_input * base_output),
+        (None, Some(clock), base_input * sampled_output),
+    ] {
+        for api in 0..5 {
+            let mut chain = host_chain(false);
+            chain.begin_block();
+            let mut frame = [[1.0, 0.5]];
+            let mut foreign = RefuseForeign;
+            let foreign: &mut dyn ForeignProcessors = &mut foreign;
+            match api {
+                0 => chain.process_range_with_clock(0..1, &mut frame, input_clock, output_clock),
+                1 => chain.process_range_observed_with_clock(
+                    0..1,
+                    &mut frame,
+                    0,
+                    input_clock,
+                    output_clock,
+                    &mut |_, _, _, _, _| {},
+                ),
+                2 => chain.process_range_tapped_with_clock(
+                    0..1,
+                    &mut frame,
+                    0,
+                    input_clock,
+                    output_clock,
+                    &mut |_, _, _, _, _, _| {},
+                ),
+                3 => chain.process_range_with_foreign(
+                    0..1,
+                    &mut frame,
+                    0,
+                    input_clock,
+                    output_clock,
+                    foreign,
+                ),
+                _ => chain.process_range_tapped_with_foreign(
+                    0..1,
+                    &mut frame,
+                    0,
+                    input_clock,
+                    output_clock,
+                    foreign,
+                    &mut |_, _, _, _, _, _| {},
+                ),
+            }
+            .unwrap();
+            for (actual, expected) in frame[0].into_iter().zip([2.0 * gain, gain]) {
+                assert!(
+                    (actual - expected).abs() < 1e-7,
+                    "stage origins crossed in API {api}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn memoryless_host_chain_runs_without_provider_optin_and_freezes_only_committed_trim() {
     let mut chain = host_chain(false);
     assert!(chain.has_stateful_processors());
     chain.begin_block();
     let mut frame = [[1.0, 0.5]; 1];
     chain
-        .process_range_with_clock(0..1, &mut frame, Some(&Clock))
+        .process_range_with_clock(0..1, &mut frame, Some(&Clock), Some(&Clock))
         .unwrap();
     chain.commit_block();
     let committed = frame[0];
     chain.begin_block();
     let mut speculative = [[1.0, 0.5]; 32];
     chain
-        .process_range_with_clock(0..1, &mut speculative, Some(&Clock))
+        .process_range_with_clock(0..1, &mut speculative, Some(&Clock), Some(&Clock))
         .unwrap();
     chain.rollback_block();
     chain.begin_output_tail();
     chain.begin_block();
     let mut tail = [[1.0, 0.5]; 32];
     chain
-        .process_range_with_clock(0..1, &mut tail, Some(&Clock))
+        .process_range_with_clock(0..1, &mut tail, Some(&Clock), Some(&Clock))
         .unwrap();
     assert!(tail.iter().all(|f| *f == committed));
     let mut absent = host_chain(false);
@@ -486,7 +551,7 @@ fn memoryless_host_chain_runs_without_provider_optin_and_freezes_only_committed_
     bypass.begin_block();
     let mut dry = [[1.0, 0.5]; 32];
     bypass
-        .process_range_with_clock(0..1, &mut dry, Some(&Clock))
+        .process_range_with_clock(0..1, &mut dry, Some(&Clock), Some(&Clock))
         .unwrap();
     assert_eq!(dry, [[1.0, 0.5]; 32]);
 }

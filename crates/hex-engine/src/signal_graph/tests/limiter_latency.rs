@@ -1,5 +1,7 @@
 use super::*;
-use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+use hex_lattice_contract::{
+    DeviceAutomationTarget, DeviceTypeId, HostGain, ParameterId, ParameterValue,
+};
 
 fn prepare_native(f: &Fixture) -> Arc<PreparedRevision> {
     Arc::new(
@@ -180,6 +182,226 @@ fn limiter_lookahead_is_reported_and_compensated_in_actual_rendering() {
             .all(|frame| *frame == [0.0; 2])
     );
     assert_eq!(&rendered[latency as usize..], fixture.samples.as_slice());
+}
+
+#[test]
+fn limiter_host_input_automation_follows_entering_content() {
+    for location in [
+        HostLocation::Track,
+        HostLocation::Main,
+        HostLocation::Return,
+    ] {
+        assert_limiter_host_automation_content_origin(
+            DeviceAutomationTarget::HostInputGain,
+            location,
+            None,
+        );
+    }
+}
+
+#[test]
+fn limiter_host_output_automation_follows_emitted_content() {
+    for location in [
+        HostLocation::Track,
+        HostLocation::Main,
+        HostLocation::Return,
+    ] {
+        assert_limiter_host_automation_content_origin(
+            DeviceAutomationTarget::HostOutputGain,
+            location,
+            None,
+        );
+    }
+}
+
+#[test]
+fn utility_host_automation_before_and_after_limiter_follows_content() {
+    for before in [true, false] {
+        assert_limiter_host_automation_content_origin(
+            DeviceAutomationTarget::HostOutputGain,
+            HostLocation::Track,
+            Some(before),
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HostLocation {
+    Track,
+    Main,
+    Return,
+}
+
+// Host automation follows the content at its physical stage: input gain and
+// provider controls use the entering content origin; output gain uses the emitted
+// origin after the processor's own algorithmic latency. A transparent real
+// Limiter must therefore produce the same delayed gain step at either boundary.
+// This oracle derives that PCM directly from source indices and authored steps,
+// independently of renderer clocks, compensation stamps and envelope evaluation.
+fn assert_limiter_host_automation_content_origin(
+    target: DeviceAutomationTarget,
+    location: HostLocation,
+    utility_before: Option<bool>,
+) {
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime};
+
+    const FRAMES: usize = 4096;
+    const LATENCY: usize = 288;
+    let mut f = fixture(&[&[]], FRAMES);
+    f.samples.fill([0.01, -0.02]);
+    for audio in f.media.values_mut() {
+        *audio = Audio::new(48_000, f.samples.clone()).unwrap();
+    }
+    let state = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        hex_devices::limiter::TYPE_ID,
+    )
+    .unwrap();
+    let state = crate::patch_native_device_parameter_for_class(
+        crate::NativeDeviceClass::Effect,
+        &state,
+        hex_devices::limiter::parameter::LOOKAHEAD,
+        ParameterValue::Choice(2),
+    )
+    .unwrap();
+    let command = match location {
+        HostLocation::Track => Command::InsertDevice {
+            track: f.tracks[0],
+            before: None,
+            state,
+        },
+        HostLocation::Main => Command::InsertMainDevice {
+            before: None,
+            state,
+        },
+        HostLocation::Return => {
+            let Created::ReturnTrack(bus) = f
+                .editor
+                .execute(Command::AddReturnTrack {
+                    name: "host origin".into(),
+                })
+                .unwrap()
+            else {
+                panic!("return fixture");
+            };
+            f.editor
+                .execute(Command::SetReturnSend {
+                    track: f.tracks[0],
+                    return_track: bus,
+                    gain: 1.0,
+                })
+                .unwrap();
+            Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state,
+            }
+        }
+    };
+    let Created::Device(mut device) = f.editor.execute(command).unwrap() else {
+        panic!("limiter fixture device");
+    };
+    if let Some(before) = utility_before {
+        let Created::Device(utility) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: before.then_some(device),
+                state: hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("utility fixture device");
+        };
+        device = utility;
+    }
+    // Return send and direct paths are both audible and compensated to 288 frames.
+    let dry_copies = if matches!(location, HostLocation::Return) {
+        2.0
+    } else {
+        1.0
+    };
+    let dry = prepare_native(&f);
+    assert_eq!(dry.arrangement().main_latency_frames(), LATENCY as u32);
+    let dry_output = session(dry, FRAMES + LATENCY, 63);
+    assert_eq!(&dry_output[..LATENCY], &[[0.0; 2]; LATENCY]);
+    for (actual, source) in dry_output[LATENCY..].iter().zip(&f.samples) {
+        assert_eq!(
+            *actual,
+            [source[0] * dry_copies, source[1] * dry_copies],
+            "the real limiter must be transparent below its ceiling at {location:?}"
+        );
+    }
+
+    let step_beat = BeatTime::from_raw(1 << 28);
+    let step_frame = f
+        .editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(step_beat)
+        .unwrap();
+    assert_eq!(step_frame, 1500);
+    let attenuated = HostGain::from_millidb(-6000).unwrap();
+    f.editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target,
+            points: [(BeatTime::ZERO, HostGain::ZERO), (step_beat, attenuated)]
+                .into_iter()
+                .map(|(beat, gain)| AutomationPoint {
+                    beat,
+                    value: AutomationValue::new(gain.normalized()).unwrap(),
+                    outgoing: AutomationInterpolation::Step,
+                })
+                .collect(),
+        })
+        .unwrap();
+    let revision = prepare_native(&f);
+    assert_eq!(revision.arrangement().main_latency_frames(), LATENCY as u32);
+    let mut expected = vec![[0.0; 2]; FRAMES + LATENCY];
+    for (content_frame, (output, source)) in
+        expected[LATENCY..].iter_mut().zip(&f.samples).enumerate()
+    {
+        let gain = if content_frame as u64 >= step_frame {
+            attenuated.linear()
+        } else {
+            1.0
+        };
+        let gain = gain + (dry_copies - 1.0);
+        *output = [source[0] * gain, source[1] * gain];
+    }
+    for partition in [1, 63, 256] {
+        let actual = session(Arc::clone(&revision), expected.len(), partition);
+        assert_host_automation_pcm(&actual, &expected, target, location, partition, "session");
+        let mut renderer = Renderer::new(revision.arrangement());
+        renderer.play();
+        let mut offline = vec![[0.0; 2]; expected.len()];
+        for block in offline.chunks_mut(partition) {
+            renderer.render(block).unwrap();
+        }
+        assert_host_automation_pcm(&offline, &expected, target, location, partition, "renderer");
+    }
+}
+
+fn assert_host_automation_pcm(
+    actual: &[Frame],
+    expected: &[Frame],
+    target: DeviceAutomationTarget,
+    location: HostLocation,
+    partition: usize,
+    renderer: &str,
+) {
+    assert_eq!(actual.len(), expected.len());
+    for (frame, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        for channel in 0..2 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 1e-7,
+                "{renderer} {location:?} {target:?} content-origin mismatch at frame {frame}, channel {channel}, partition {partition}: {actual:?} != {expected:?}"
+            );
+        }
+    }
 }
 
 /// Measures the real Session host, including source dispatch, PDC, meters and

@@ -889,16 +889,17 @@ impl SignalRuntime {
             return Err(Invalid("main content-origin plan does not match runtime"));
         }
         for (index, node) in self.graph.main_devices.iter().copied().enumerate() {
-            let clock = OriginClock(
-                self.delays
-                    .stamp_at_delay(self.graph.plan.nodes()[node].input_arrival_frames),
-            );
+            let planned = &self.graph.plan.nodes()[node];
+            let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
+            let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
+            let output_clock = OriginClock(output_stamp);
             if let Some(observer) = observer.as_mut() {
                 chain.process_range_tapped_with_foreign(
                     index..index + 1,
                     frames,
                     offset,
                     Some(&clock),
+                    Some(&output_clock),
                     foreign,
                     &mut |owner, device, kind, phase, offset, frames| {
                         observer(
@@ -915,15 +916,12 @@ impl SignalRuntime {
                     frames,
                     offset,
                     Some(&clock),
+                    Some(&output_clock),
                     foreign,
                 )
             }
             .map_err(|_| Invalid("main effect runtime failed"))?;
-            if self
-                .delays
-                .stamp_at_delay(self.graph.plan.nodes()[node].output_arrival_frames)
-                .is_none()
-            {
+            if output_stamp.is_none() {
                 frames.fill([0.0; 2]);
             }
         }
@@ -1043,10 +1041,10 @@ impl SignalRuntime {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
         for (local, &node) in nodes.iter().enumerate() {
-            let clock = OriginClock(
-                self.delays
-                    .stamp_at_delay(self.graph.plan.nodes()[node].input_arrival_frames),
-            );
+            let planned = &self.graph.plan.nodes()[node];
+            let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
+            let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
+            let output_clock = OriginClock(output_stamp);
             let frames = std::slice::from_mut(frame);
             if let Some(observer) = observer.as_mut() {
                 chain.process_range_tapped_with_foreign(
@@ -1054,6 +1052,7 @@ impl SignalRuntime {
                     frames,
                     offset,
                     Some(&clock),
+                    Some(&output_clock),
                     foreign,
                     &mut |owner, device, kind, phase, offset, frames| {
                         observer(
@@ -1070,15 +1069,12 @@ impl SignalRuntime {
                     frames,
                     offset,
                     Some(&clock),
+                    Some(&output_clock),
                     foreign,
                 )
             }
             .map_err(|_| Invalid("compensated native device range is invalid"))?;
-            if self
-                .delays
-                .stamp_at_delay(self.graph.plan.nodes()[node].output_arrival_frames)
-                .is_none()
-            {
+            if output_stamp.is_none() {
                 *frame = [0.0; 2];
             }
         }
