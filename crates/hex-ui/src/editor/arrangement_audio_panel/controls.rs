@@ -701,6 +701,20 @@ impl EditorView {
 mod tests {
     use super::*;
     #[test]
+    fn pitch_dial_spec_preserves_signed_cents_bounds_and_steps() {
+        let spec = spec(super::super::tests::window(), Field::Pitch, 96_000).unwrap();
+        assert_eq!(spec.format(137.).unwrap(), "+137 ct");
+        assert_eq!(spec.parse("-137 ct").unwrap(), -137.);
+        assert_eq!(spec.step(137., 1., false).unwrap(), 237.);
+        assert_eq!(spec.step(137., 1., true).unwrap(), 138.);
+        for text in ["nan", "inf", "4801 ct", "-4801", "0.5 ct"] {
+            assert!(spec.parse(text).is_err());
+        }
+        for value in [-4800., 0., 4800.] {
+            assert_eq!(spec.parse(&spec.format(value).unwrap()).unwrap(), value);
+        }
+    }
+    #[test]
     fn clip_slider_units_and_conversion_preserve_exact_frames_and_bounds() {
         let window = super::super::tests::window();
         let position = spec(window, Field::Position, 96_000).unwrap();

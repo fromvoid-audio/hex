@@ -331,3 +331,91 @@ fn pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen(cx: &m
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before_group)
     });
 }
+
+#[gpui::test]
+fn pitch_source_replacement_cancels_held_draft_and_repitch_keeps_transpose_unavailable(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (handle, editor, _, clip) =
+        super::super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let down = visual
+        .debug_bounds("audio-clip-pitch-knob")
+        .unwrap()
+        .center();
+    let up = down + point(px(0.), px(-10.));
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(cx, |v, cx| {
+        v.project_generation += 1;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |v, cx| {
+        assert!(v.last_enqueued_edit.is_none() && !v.audio_clip_controls.has_pending());
+        assert_eq!(
+            v.audio_clip_controls.numbers[&Field::Pitch]
+                .entity
+                .read(cx)
+                .value(),
+            0.
+        );
+    });
+    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().clone());
+    let mut model = hex_project::Editor::new((*before.project).clone(), 8).unwrap();
+    let settings = hex_project::default_audio_warp(
+        model.project().clip(clip).unwrap(),
+        model.project().tempo_map(),
+        hex_project::WarpMode::RePitch,
+    )
+    .unwrap();
+    model
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let mut event = super::super::super::arrangement_main_track_ui_test::completed_event(&before);
+    let state = std::sync::Arc::get_mut(&mut event.state).unwrap();
+    state.project = std::sync::Arc::new(model.project().clone());
+    state.revision += 1;
+    editor.update(cx, |v, cx| {
+        v.state = Some(event.state);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let at = visual
+        .debug_bounds("audio-clip-pitch-knob")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_move(at, None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow)
+    );
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        at + point(px(0.), px(-10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |v, cx| {
+        assert!(v.last_enqueued_edit.is_none() && !v.audio_clip_controls.has_pending());
+        assert_eq!(pitch(&v.state.as_ref().unwrap().project, clip), 0);
+        assert_eq!(
+            v.audio_clip_controls.numbers[&Field::Pitch]
+                .entity
+                .read(cx)
+                .value(),
+            0.
+        );
+    });
+}
