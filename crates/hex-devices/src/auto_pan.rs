@@ -528,6 +528,8 @@ impl AutoPanRuntime {
         }
         if self.targets.right_phase_degrees != previous.targets.right_phase_degrees {
             let from = normalize_degrees(self.right_phase_degrees.current);
+            // Start in the same wrapped coordinates used to choose the shortest arc.
+            self.right_phase_degrees.current = from;
             let delta = shortest_degrees(from, self.targets.right_phase_degrees);
             self.right_phase_degrees
                 .retarget(from + delta, self.ramp_frames);

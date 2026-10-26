@@ -762,3 +762,63 @@ fn intrinsic_edges_and_harmonic_content_are_explicit_not_alias_free_claims() {
     assert!((triangle - 1.0 / 81.0).abs() < 1.0e-4);
     assert!(energy(Waveform::Sine, 3.0) / energy(Waveform::Sine, 1.0) < 1.0e-20);
 }
+
+#[test]
+fn wrapped_and_inflight_phase_retargets_follow_the_shortest_pcm_arc() {
+    const RATE: u32 = 8_000;
+    const RAMP_FRAMES: usize = 40; // Existing 5 ms transition at 8 kHz.
+    let input = [0.8_f32, -0.25];
+    let base = patch(
+        &patch(
+            &AUTO_PAN_DEFINITION.default_state().unwrap(),
+            parameter::AMOUNT,
+            1.0,
+        ),
+        parameter::RIGHT_PHASE,
+        10.0,
+    );
+    let phase_350 = patch(&base, parameter::RIGHT_PHASE, 350.0);
+    for (elapsed, next_degrees, normalized_start) in [(40, 0.0, 350.0), (30, 5.0, 355.0)] {
+        let source = runtime(&base, RATE);
+        let mut wrapped = runtime(&phase_350, RATE);
+        wrapped.copy_history_from(source.as_ref());
+        // 10 -> 350 takes the existing negative 20-degree shortest arc.
+        // The second case interrupts that transition after 30 finite samples.
+        wrapped.process_block(
+            &mut vec![input; elapsed],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        let next = patch(&base, parameter::RIGHT_PHASE, next_degrees);
+        let mut edited = runtime(&next, RATE);
+        edited.copy_history_from(wrapped.as_ref());
+        let mut actual = [input; 49];
+        let mut from = 0;
+        for frames in [1, 7, 2, 13, 26] {
+            let to = from + frames;
+            edited.process_block(&mut actual[from..to], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            from = to;
+        }
+        for (offset, frame) in actual.iter().enumerate() {
+            // Both second edits move only +10 degrees across zero. Controls
+            // advance before each sample; the oscillator is sampled before its
+            // unchanged 1 Hz clock advances. After 40 samples the offset holds.
+            let degrees = normalized_start
+                + 10.0 * ((offset + 1).min(RAMP_FRAMES) as f64 / RAMP_FRAMES as f64);
+            let oscillator = (elapsed + offset) as f64 / f64::from(RATE);
+            for channel in 0..2 {
+                let phase = if channel == 0 {
+                    oscillator
+                } else {
+                    (oscillator + degrees / 360.0).rem_euclid(1.0)
+                };
+                let expected =
+                    f64::from(input[channel]) * (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5;
+                assert!(
+                    (f64::from(frame[channel]) - expected).abs() < 8.0e-8,
+                    "elapsed {elapsed}, sample {offset}, channel {channel}: {} != {expected}",
+                    frame[channel]
+                );
+            }
+        }
+    }
+}
