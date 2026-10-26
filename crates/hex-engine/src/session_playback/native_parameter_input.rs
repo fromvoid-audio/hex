@@ -354,6 +354,42 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn native_input_irregular_blocks_keep_loop_content_and_processing_origins_distinct() {
+        let id = parameter::GAIN;
+        let target = DeviceAutomationTarget::Parameter(id);
+        let (prepared, _) = fixture(0, target, None);
+        let mut runtime = SessionPlayback::new_with_policy_and_loop(
+            Arc::clone(&prepared.revision),
+            false,
+            None,
+            Some(hex_project::LoopRegion::new(0, 64, true).unwrap()),
+        )
+        .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let operation = NativeTransientOperation::Set(NativeTransientValue::Parameter {
+            id,
+            value: ParameterValue::Float(2.0),
+        });
+        let mut performance = 0;
+        for frames in [7, 19, 3, 43, 1] {
+            runtime.set_native_parameter_input(operation).unwrap();
+            let mut output = vec![[9.0; 2]; frames];
+            runtime.render(&mut output).unwrap();
+            assert_eq!(output, vec![[0.25, -0.5]; frames]);
+            let applied = runtime.take_native_parameter_application().unwrap();
+            assert_eq!(
+                (
+                    applied.performance_frame,
+                    applied.arrangement_frame,
+                    applied.loop_pass
+                ),
+                (performance, performance % 64, performance / 64)
+            );
+            performance += frames as u64;
+        }
+    }
+
+    #[test]
     fn native_input_waits_for_real_upstream_origin_and_reports_actual_processing_counter() {
         let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
         let (mut runtime, _) = fixture(1, target, Some(true));
