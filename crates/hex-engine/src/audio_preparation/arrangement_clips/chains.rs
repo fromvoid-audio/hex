@@ -141,6 +141,10 @@ impl ChainCustody {
             .map(|device| {
                 hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes(
                     device.automation().len(),
+                    device
+                        .automation()
+                        .iter()
+                        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
                 )
             })
             .try_fold(0usize, |largest, value| Some(largest.max(value?)))
@@ -191,6 +195,10 @@ impl ChainCustody {
             .map(|device| {
                 hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes(
                     device.automation().len(),
+                    device
+                        .automation()
+                        .iter()
+                        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
                 )
             })
             .try_fold(0usize, |largest, value| Some(largest.max(value?)))

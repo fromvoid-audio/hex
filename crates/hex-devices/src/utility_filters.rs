@@ -23,6 +23,28 @@ pub struct PreparedUtilityFilters {
 }
 
 impl PreparedUtilityFilters {
+    pub(crate) fn check_inline(&self) {
+        let Self {
+            sample_rate,
+            dc_enabled,
+            bass_enabled,
+            audition,
+            output_muted,
+            dc_pole,
+            low,
+            high,
+        } = self;
+        let _: (&u32, &bool, &bool, &bool, &bool, &f64) = (
+            sample_rate,
+            dc_enabled,
+            bass_enabled,
+            audition,
+            output_muted,
+            dc_pole,
+        );
+        low.check_inline();
+        high.check_inline();
+    }
     pub fn new(
         sample_rate: u32,
         dc_enabled: bool,
@@ -106,7 +128,17 @@ struct BiquadHistory {
     y1: f64,
     y2: f64,
 }
+impl BiquadCoefficients {
+    fn check_inline(&self) {
+        let Self { b0, b1, b2, a1, a2 } = self;
+        let _: (&f64, &f64, &f64, &f64, &f64) = (b0, b1, b2, a1, a2);
+    }
+}
 impl BiquadHistory {
+    fn check_inline(&self) {
+        let Self { x1, x2, y1, y2 } = self;
+        let _: (&f64, &f64, &f64, &f64) = (x1, x2, y1, y2);
+    }
     fn sample(&mut self, input: f64, coefficients: BiquadCoefficients) -> f64 {
         let output =
             coefficients.b0 * input + coefficients.b1 * self.x1 + coefficients.b2 * self.x2
@@ -183,15 +215,15 @@ impl UtilityFilterProcessor {
             side_high,
             mid_low,
         } = self;
-        fn inline<T: Copy>(_: &T) {}
-        inline(dc_history_valid);
-        inline(bass_history_valid);
-        inline(automation);
-        inline(prepared);
-        inline(dc_input);
-        inline(dc_output);
-        inline(side_high);
-        inline(mid_low);
+        let _: (&bool, &bool) = (dc_history_valid, bass_history_valid);
+        if let Some(automation) = automation {
+            automation.check_inline();
+        }
+        prepared.check_inline();
+        let _: (&[f64; 2], &[f64; 2]) = (dc_input, dc_output);
+        for history in side_high.iter().chain(mid_low) {
+            history.check_inline();
+        }
     }
 
     pub fn reset(&mut self) {
@@ -248,16 +280,47 @@ impl UtilityFilterProcessor {
             [BiquadHistory::default(); 2]
         };
         if let (Some(target), Some(source)) = (&mut self.automation, previous.automation) {
-            target.matrix = source.matrix;
-            target.effective = source.effective;
+            target.inherit(&source);
             self.prepared = previous.prepared;
         }
         true
     }
 
+    fn process_automated(
+        &mut self,
+        frames: &mut [StereoFrame],
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        bypassed: bool,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        let resolved = self
+            .automation
+            .as_ref()
+            .ok_or(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)?
+            .resolve(values)?;
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let automation = self
+                .automation
+                .as_mut()
+                .ok_or(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)?;
+            let (_, filters) = automation.configuration(
+                Some((values, &resolved)),
+                offset,
+                self.prepared.sample_rate,
+                Some(self.prepared),
+            )?;
+            self.reconfigure(filters);
+            let internal = self.process_frame(*frame);
+            if !bypassed {
+                *frame = internal;
+            }
+        }
+        Ok(())
+    }
+
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
         let input = self
             .automation
+            .as_ref()
             .map_or(input, |automation| automation.matrix.apply(input));
         let input = if self.prepared.output_muted {
             [0.0; 2]
@@ -270,6 +333,7 @@ impl UtilityFilterProcessor {
         // cleanly instead of resurrecting history from before the skipped span.
         self.dc_history_valid = self
             .automation
+            .as_ref()
             .is_none_or(|automation| automation.may_advance_dc())
             || self.prepared.dc_enabled;
         if self.dc_history_valid {
@@ -290,6 +354,7 @@ impl UtilityFilterProcessor {
         let mut low_mid = mid;
         self.bass_history_valid = self
             .automation
+            .as_ref()
             .is_none_or(|automation| automation.may_advance_bass())
             || self.prepared.bass_enabled;
         if self.bass_history_valid {
@@ -349,22 +414,17 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
         _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         values: &dyn hex_lattice::NativeParameterAutomation,
         _resources: &dyn hex_lattice::DeviceResources,
-    ) {
-        for (offset, frame) in frames.iter_mut().enumerate() {
-            if let Some(mut automation) = self.automation
-                && let Ok((matrix, filters)) = automation.configuration(
-                    Some(values),
-                    offset,
-                    self.prepared.sample_rate,
-                    Some(self.prepared),
-                )
-            {
-                automation.matrix = matrix;
-                self.automation = Some(automation);
-                self.reconfigure(filters);
-            }
-            *frame = self.process_frame(*frame);
-        }
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.process_automated(frames, values, false)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        self.process_automated(frames, values, true)
     }
     fn process_block(
         &mut self,

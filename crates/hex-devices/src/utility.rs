@@ -126,6 +126,52 @@ impl UtilitySettings {
         })
     }
 
+    fn check_inline(&self) {
+        let Self {
+            gain,
+            balance,
+            width,
+            channel_mode,
+            invert_left,
+            invert_right,
+            mono,
+            mute,
+            mid_side_balance,
+            dc_remove,
+            bass_mono,
+            bass_mono_cutoff_hz,
+            bass_mono_audition,
+        } = self;
+        let _: (
+            &f32,
+            &f32,
+            &f32,
+            &ChannelMode,
+            &bool,
+            &bool,
+            &bool,
+            &bool,
+            &Option<f32>,
+            &bool,
+            &bool,
+            &f32,
+            &bool,
+        ) = (
+            gain,
+            balance,
+            width,
+            channel_mode,
+            invert_left,
+            invert_right,
+            mono,
+            mute,
+            mid_side_balance,
+            dc_remove,
+            bass_mono,
+            bass_mono_cutoff_hz,
+            bass_mono_audition,
+        );
+    }
     pub const fn gain(self) -> f32 {
         self.gain
     }
@@ -184,128 +230,239 @@ impl Default for UtilitySettings {
 }
 
 const CHANNEL_LABELS: &[&str] = &["stereo", "left", "right", "swap"];
-const DESCRIPTORS: &[ParameterDescriptor] = &[
-    ParameterDescriptor {
-        id: parameter::GAIN,
-        label: "gain",
-        kind: ParameterKind::Float {
-            min: 0.0,
-            max: MAX_UTILITY_GAIN,
-            unit: Some("linear"),
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct UtilityControls {
+    settings: UtilitySettings,
+    mid_side_enabled: bool,
+    mid_side_balance: f32,
+}
+impl UtilityControls {
+    fn decode(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
+        let (settings, mid_side_enabled, mid_side_balance) = decode_state_fields(state)?;
+        Ok(Self {
+            settings,
+            mid_side_enabled,
+            mid_side_balance,
+        })
+    }
+    fn settings(self) -> UtilitySettings {
+        UtilitySettings {
+            mid_side_balance: self.mid_side_enabled.then_some(self.mid_side_balance),
+            ..self.settings
+        }
+    }
+    fn encode(self) -> Result<NativeDeviceState, DeviceContractError> {
+        encode_state_fields(
+            self.settings(),
+            self.mid_side_enabled,
+            self.mid_side_balance,
+        )
+    }
+    fn check_inline(&self) {
+        let Self {
+            settings,
+            mid_side_enabled,
+            mid_side_balance,
+        } = self;
+        settings.check_inline();
+        let _: &bool = mid_side_enabled;
+        let _: &f32 = mid_side_balance;
+    }
+}
+const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::GAIN,
+            label: "gain",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: MAX_UTILITY_GAIN,
+                unit: Some("linear"),
+            },
+            default: ParameterValue::Float(1.0),
+            presentation: ParameterPresentation::LinearAmplitudeDecibels,
         },
-        default: ParameterValue::Float(1.0),
-        presentation: ParameterPresentation::LinearAmplitudeDecibels,
-    },
-    ParameterDescriptor {
-        id: parameter::BALANCE,
-        label: "balance",
-        kind: ParameterKind::Float {
-            min: -1.0,
-            max: 1.0,
-            unit: None,
+        |c| c.settings.gain,
+        |c, v| c.settings.gain = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::BALANCE,
+            label: "balance",
+            kind: ParameterKind::Float {
+                min: -1.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Float(0.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::WIDTH,
-        label: "width",
-        kind: ParameterKind::Float {
-            min: 0.0,
-            max: 4.0,
-            unit: None,
+        |c| c.settings.balance,
+        |c, v| c.settings.balance = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::WIDTH,
+            label: "width",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 4.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(1.0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Float(1.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::CHANNEL,
-        label: "channel",
-        kind: ParameterKind::Choice {
-            labels: CHANNEL_LABELS,
+        |c| c.settings.width,
+        |c, v| c.settings.width = v,
+    ),
+    crate::parameter_binding::Binding::choice(
+        ParameterDescriptor {
+            id: parameter::CHANNEL,
+            label: "channel",
+            kind: ParameterKind::Choice {
+                labels: CHANNEL_LABELS,
+            },
+            default: ParameterValue::Choice(0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Choice(0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::INVERT_LEFT,
-        label: "invert left",
-        kind: ParameterKind::Bool,
-        default: ParameterValue::Bool(false),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::INVERT_RIGHT,
-        label: "invert right",
-        kind: ParameterKind::Bool,
-        default: ParameterValue::Bool(false),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::MONO,
-        label: "mono",
-        kind: ParameterKind::Bool,
-        default: ParameterValue::Bool(false),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::MUTE,
-        label: "mute",
-        kind: ParameterKind::Bool,
-        default: ParameterValue::Bool(false),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::MID_SIDE_ENABLED,
-        label: "mid-side",
-        kind: ParameterKind::Bool,
-        default: ParameterValue::Bool(false),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::MID_SIDE_BALANCE,
-        label: "mid-side balance",
-        kind: ParameterKind::Float {
-            min: -1.0,
-            max: 1.0,
-            unit: None,
+        |c| match c.settings.channel_mode {
+            ChannelMode::Stereo => 0,
+            ChannelMode::Left => 1,
+            ChannelMode::Right => 2,
+            ChannelMode::Swap => 3,
         },
-        default: ParameterValue::Float(0.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::DC_REMOVE,
-        label: "dc remove",
-        kind: ParameterKind::Bool,
-        default: ParameterValue::Bool(false),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::BASS_MONO,
-        label: "bass mono",
-        kind: ParameterKind::Bool,
-        default: ParameterValue::Bool(false),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::BASS_MONO_CUTOFF,
-        label: "bass mono cutoff",
-        kind: ParameterKind::Float {
-            min: 50.0,
-            max: 500.0,
-            unit: Some("hz"),
+        |c, v| {
+            c.settings.channel_mode = match v {
+                0 => ChannelMode::Stereo,
+                1 => ChannelMode::Left,
+                2 => ChannelMode::Right,
+                3 => ChannelMode::Swap,
+                _ => return Err(DeviceContractError::InvalidParameterValue),
+            };
+            Ok(())
         },
-        default: ParameterValue::Float(200.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::BASS_MONO_AUDITION,
-        label: "bass mono audition",
-        kind: ParameterKind::Bool,
-        default: ParameterValue::Bool(false),
-        presentation: ParameterPresentation::Linear,
-    },
+    ),
+    crate::parameter_binding::Binding::boolean(
+        ParameterDescriptor {
+            id: parameter::INVERT_LEFT,
+            label: "invert left",
+            kind: ParameterKind::Bool,
+            default: ParameterValue::Bool(false),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.settings.invert_left,
+        |c, v| c.settings.invert_left = v,
+    ),
+    crate::parameter_binding::Binding::boolean(
+        ParameterDescriptor {
+            id: parameter::INVERT_RIGHT,
+            label: "invert right",
+            kind: ParameterKind::Bool,
+            default: ParameterValue::Bool(false),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.settings.invert_right,
+        |c, v| c.settings.invert_right = v,
+    ),
+    crate::parameter_binding::Binding::boolean(
+        ParameterDescriptor {
+            id: parameter::MONO,
+            label: "mono",
+            kind: ParameterKind::Bool,
+            default: ParameterValue::Bool(false),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.settings.mono,
+        |c, v| c.settings.mono = v,
+    ),
+    crate::parameter_binding::Binding::boolean(
+        ParameterDescriptor {
+            id: parameter::MUTE,
+            label: "mute",
+            kind: ParameterKind::Bool,
+            default: ParameterValue::Bool(false),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.settings.mute,
+        |c, v| c.settings.mute = v,
+    ),
+    crate::parameter_binding::Binding::boolean(
+        ParameterDescriptor {
+            id: parameter::MID_SIDE_ENABLED,
+            label: "mid-side",
+            kind: ParameterKind::Bool,
+            default: ParameterValue::Bool(false),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.mid_side_enabled,
+        |c, v| c.mid_side_enabled = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::MID_SIDE_BALANCE,
+            label: "mid-side balance",
+            kind: ParameterKind::Float {
+                min: -1.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.mid_side_balance,
+        |c, v| c.mid_side_balance = v,
+    ),
+    crate::parameter_binding::Binding::boolean(
+        ParameterDescriptor {
+            id: parameter::DC_REMOVE,
+            label: "dc remove",
+            kind: ParameterKind::Bool,
+            default: ParameterValue::Bool(false),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.settings.dc_remove,
+        |c, v| c.settings.dc_remove = v,
+    ),
+    crate::parameter_binding::Binding::boolean(
+        ParameterDescriptor {
+            id: parameter::BASS_MONO,
+            label: "bass mono",
+            kind: ParameterKind::Bool,
+            default: ParameterValue::Bool(false),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.settings.bass_mono,
+        |c, v| c.settings.bass_mono = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::BASS_MONO_CUTOFF,
+            label: "bass mono cutoff",
+            kind: ParameterKind::Float {
+                min: 50.0,
+                max: 500.0,
+                unit: Some("hz"),
+            },
+            default: ParameterValue::Float(200.0),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.settings.bass_mono_cutoff_hz,
+        |c, v| c.settings.bass_mono_cutoff_hz = v,
+    ),
+    crate::parameter_binding::Binding::boolean(
+        ParameterDescriptor {
+            id: parameter::BASS_MONO_AUDITION,
+            label: "bass mono audition",
+            kind: ParameterKind::Bool,
+            default: ParameterValue::Bool(false),
+            presentation: ParameterPresentation::Linear,
+        },
+        |c| c.settings.bass_mono_audition,
+        |c, v| c.settings.bass_mono_audition = v,
+    ),
 ];
+const DESCRIPTORS: &[ParameterDescriptor] =
+    &crate::parameter_binding::descriptors(&BINDINGS, BINDINGS[0].descriptor);
 
 /// Built-in Utility metadata, portable state codec, and control-side factory.
 pub struct UtilityDefinition;
@@ -456,29 +613,8 @@ impl NativeDeviceMetadata for UtilityDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
-        let (settings, mid_side_enabled, mid_side_balance) = decode_state_fields(state)?;
-        Ok(match id {
-            parameter::GAIN => ParameterValue::Float(settings.gain),
-            parameter::BALANCE => ParameterValue::Float(settings.balance),
-            parameter::WIDTH => ParameterValue::Float(settings.width),
-            parameter::CHANNEL => ParameterValue::Choice(match settings.channel_mode {
-                ChannelMode::Stereo => 0,
-                ChannelMode::Left => 1,
-                ChannelMode::Right => 2,
-                ChannelMode::Swap => 3,
-            }),
-            parameter::INVERT_LEFT => ParameterValue::Bool(settings.invert_left),
-            parameter::INVERT_RIGHT => ParameterValue::Bool(settings.invert_right),
-            parameter::MONO => ParameterValue::Bool(settings.mono),
-            parameter::MUTE => ParameterValue::Bool(settings.mute),
-            parameter::MID_SIDE_ENABLED => ParameterValue::Bool(mid_side_enabled),
-            parameter::MID_SIDE_BALANCE => ParameterValue::Float(mid_side_balance),
-            parameter::DC_REMOVE => ParameterValue::Bool(settings.dc_remove),
-            parameter::BASS_MONO => ParameterValue::Bool(settings.bass_mono),
-            parameter::BASS_MONO_CUTOFF => ParameterValue::Float(settings.bass_mono_cutoff_hz),
-            parameter::BASS_MONO_AUDITION => ParameterValue::Bool(settings.bass_mono_audition),
-            _ => return Err(DeviceContractError::UnknownParameter),
-        })
+        let controls = UtilityControls::decode(state)?;
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)?.read(&controls))
     }
     fn parameter_enabled(
         &self,
@@ -507,37 +643,10 @@ impl NativeDeviceMetadata for UtilityDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
-        decode_state(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|d| d.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        use hex_lattice_contract::{
-            ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
-            ParameterModulation as M, ParameterNormalization as N, ParameterSmoothing as S,
-            ParameterStepping as T,
-        };
-        let (normalization, stepping) = match descriptor.kind {
-            ParameterKind::Bool => (N::Discrete, T::Boolean),
-            ParameterKind::Choice { .. } => (N::Discrete, T::Choice),
-            _ => (
-                if descriptor.presentation == ParameterPresentation::Logarithmic {
-                    N::PositiveLogarithmic
-                } else {
-                    N::Linear
-                },
-                T::Continuous,
-            ),
-        };
-        Ok(Some(hex_lattice_contract::ParameterSemantics {
-            access: A::ReadWrite,
-            normalization,
-            stepping,
-            automation: E::DeviceArrangementEnvelope,
-            modulation: M::Unsupported,
-            smoothing: S::None,
-            change_impact: I::ValueOnly,
-        }))
+        UtilityControls::decode(state)?;
+        Ok(Some(
+            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
+        ))
     }
     fn patch_parameter(
         &self,
@@ -545,74 +654,9 @@ impl NativeDeviceMetadata for UtilityDefinition {
         id: ParameterId,
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let settings = decode_state(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        let (mut gain, mut balance, mut width, mut mode) = (
-            settings.gain,
-            settings.balance,
-            settings.width,
-            settings.channel_mode,
-        );
-        let (_, mut mid_side_enabled, mut mid_side_balance) = decode_state_fields(state)?;
-        let mut dc_remove = settings.dc_remove;
-        let mut bass_mono = settings.bass_mono;
-        let mut bass_mono_cutoff_hz = settings.bass_mono_cutoff_hz;
-        let mut bass_mono_audition = settings.bass_mono_audition;
-        let (mut left, mut right, mut mono, mut mute) = (
-            settings.invert_left,
-            settings.invert_right,
-            settings.mono,
-            settings.mute,
-        );
-        match (id, value) {
-            (parameter::GAIN, ParameterValue::Float(v)) => gain = v,
-            (parameter::BALANCE, ParameterValue::Float(v)) => balance = v,
-            (parameter::WIDTH, ParameterValue::Float(v)) => width = v,
-            (parameter::CHANNEL, ParameterValue::Choice(v)) => {
-                mode = match v {
-                    0 => ChannelMode::Stereo,
-                    1 => ChannelMode::Left,
-                    2 => ChannelMode::Right,
-                    3 => ChannelMode::Swap,
-                    _ => return Err(DeviceContractError::InvalidParameterValue),
-                }
-            }
-            (parameter::INVERT_LEFT, ParameterValue::Bool(v)) => left = v,
-            (parameter::INVERT_RIGHT, ParameterValue::Bool(v)) => right = v,
-            (parameter::MONO, ParameterValue::Bool(v)) => mono = v,
-            (parameter::MUTE, ParameterValue::Bool(v)) => mute = v,
-            (parameter::MID_SIDE_ENABLED, ParameterValue::Bool(v)) => mid_side_enabled = v,
-            (parameter::MID_SIDE_BALANCE, ParameterValue::Float(v)) => mid_side_balance = v,
-            (parameter::DC_REMOVE, ParameterValue::Bool(v)) => dc_remove = v,
-            (parameter::BASS_MONO, ParameterValue::Bool(v)) => bass_mono = v,
-            (parameter::BASS_MONO_CUTOFF, ParameterValue::Float(v)) => bass_mono_cutoff_hz = v,
-            (parameter::BASS_MONO_AUDITION, ParameterValue::Bool(v)) => bass_mono_audition = v,
-            _ => return Err(DeviceContractError::InvalidParameterValue),
-        }
-        let settings = UtilitySettings::new(
-            gain,
-            balance,
-            width,
-            mode,
-            left,
-            right,
-            mono,
-            mute,
-            mid_side_enabled.then_some(mid_side_balance),
-        )
-        .map_err(|_| DeviceContractError::InvalidParameterValue)?;
-        let settings = UtilitySettings {
-            dc_remove,
-            bass_mono,
-            bass_mono_cutoff_hz,
-            bass_mono_audition,
-            ..settings
-        };
-        encode_state_fields(settings, mid_side_enabled, mid_side_balance)
+        let mut controls = UtilityControls::decode(state)?;
+        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut controls, value)?;
+        controls.encode()
     }
 }
 
@@ -694,9 +738,10 @@ pub struct PreparedUtilityFilterRuntime(
 impl PreparedUtilityFilterRuntime {
     fn check_inline_ownership(&self) {
         let Self(filters, automation) = self;
-        inline(automation);
-        fn inline<T: Copy>(_: &T) {}
-        inline(filters);
+        if let Some(automation) = automation {
+            automation.check_inline();
+        }
+        filters.check_inline();
     }
 }
 
@@ -735,12 +780,13 @@ impl UtilityDefinition {
         parameters: u16,
     ) -> Result<PreparedUtilityFilterRuntime, DeviceContractError> {
         state.require_asset_free_processing()?;
-        let (base, _, mid_side_balance) = decode_state_fields(state)?;
+        let base = UtilityControls::decode(state)?;
         let mut automation = UtilityAutomation {
-            parameters,
-            base,
-            effective: base,
-            mid_side_balance,
+            controls: crate::parameter_binding::Controls::new(
+                base,
+                std::array::from_fn(|index| parameters & (1u16 << index) != 0),
+            ),
+            effective: base.settings(),
             matrix: StereoMatrix::identity(),
         };
         let (matrix, filters) = automation.configuration(None, 0, sample_rate, None)?;
@@ -818,79 +864,64 @@ impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
 /// allocation or metadata enumeration occurs during processing.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UtilityAutomation {
-    parameters: u16,
-    base: UtilitySettings,
+    controls: crate::parameter_binding::Controls<UtilityControls, 14>,
     pub(crate) effective: UtilitySettings,
-    mid_side_balance: f32,
     pub(crate) matrix: StereoMatrix,
 }
 impl UtilityAutomation {
+    pub(crate) fn check_inline(&self) {
+        let Self {
+            controls,
+            effective,
+            matrix,
+        } = self;
+        controls.check_inline(UtilityControls::check_inline);
+        effective.check_inline();
+        let _: &StereoMatrix = matrix;
+    }
+    pub(crate) fn inherit(&mut self, previous: &Self) {
+        self.controls.inherit(&previous.controls);
+        self.matrix = previous.matrix;
+        self.effective = previous.effective;
+    }
     pub(crate) fn supports(&self, parameter: ParameterId) -> bool {
-        parameter
-            .value()
-            .checked_sub(1)
-            .and_then(|shift| 1u16.checked_shl(shift))
-            .is_some_and(|bit| self.parameters & bit != 0)
+        self.controls.supports(&BINDINGS, parameter)
     }
     pub(crate) fn may_advance_dc(&self) -> bool {
-        self.base.dc_remove || self.supports(parameter::DC_REMOVE)
+        self.controls.base().settings.dc_remove || self.controls.admitted(10)
     }
     pub(crate) fn may_advance_bass(&self) -> bool {
-        self.base.bass_mono || self.supports(parameter::BASS_MONO)
+        self.controls.base().settings.bass_mono || self.controls.admitted(11)
+    }
+    pub(crate) fn resolve(
+        &self,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+    ) -> Result<crate::parameter_binding::Resolved<14>, DeviceContractError> {
+        self.controls.resolve(&BINDINGS, values)
     }
     pub(crate) fn configuration(
         &mut self,
-        values: Option<&dyn hex_lattice::NativeParameterAutomation>,
+        values: Option<(
+            &dyn hex_lattice::NativeParameterAutomation,
+            &crate::parameter_binding::Resolved<14>,
+        )>,
         offset: usize,
         rate: u32,
         previous: Option<crate::utility_filters::PreparedUtilityFilters>,
     ) -> Result<(StereoMatrix, crate::utility_filters::PreparedUtilityFilters), DeviceContractError>
     {
-        let mut settings = self.base;
-        let mut mid_enabled = settings.mid_side_balance.is_some();
-        let mut mid_balance = self.mid_side_balance;
-        for &parameter in values.map_or(&[][..], |values| values.parameter_ids()) {
-            if !self.supports(parameter) {
-                return Err(DeviceContractError::UnknownParameter);
-            }
-            let descriptor = parameter
-                .value()
-                .checked_sub(1)
-                .and_then(|index| DESCRIPTORS.get(index as usize))
-                .filter(|descriptor| descriptor.id == parameter)
-                .ok_or(DeviceContractError::UnknownParameter)?;
-            let Some(value) = values.and_then(|values| values.value_at(parameter, offset)) else {
-                continue;
-            };
-            descriptor.validate(value)?;
-            use parameter::*;
-            match (descriptor.id, value) {
-                (GAIN, ParameterValue::Float(v)) => settings.gain = v,
-                (BALANCE, ParameterValue::Float(v)) => settings.balance = v,
-                (WIDTH, ParameterValue::Float(v)) => settings.width = v,
-                (CHANNEL, ParameterValue::Choice(v)) => {
-                    settings.channel_mode = match v {
-                        0 => ChannelMode::Stereo,
-                        1 => ChannelMode::Left,
-                        2 => ChannelMode::Right,
-                        3 => ChannelMode::Swap,
-                        _ => return Err(DeviceContractError::InvalidParameterValue),
-                    }
-                }
-                (INVERT_LEFT, ParameterValue::Bool(v)) => settings.invert_left = v,
-                (INVERT_RIGHT, ParameterValue::Bool(v)) => settings.invert_right = v,
-                (MONO, ParameterValue::Bool(v)) => settings.mono = v,
-                (MUTE, ParameterValue::Bool(v)) => settings.mute = v,
-                (MID_SIDE_ENABLED, ParameterValue::Bool(v)) => mid_enabled = v,
-                (MID_SIDE_BALANCE, ParameterValue::Float(v)) => mid_balance = v,
-                (DC_REMOVE, ParameterValue::Bool(v)) => settings.dc_remove = v,
-                (BASS_MONO, ParameterValue::Bool(v)) => settings.bass_mono = v,
-                (BASS_MONO_CUTOFF, ParameterValue::Float(v)) => settings.bass_mono_cutoff_hz = v,
-                (BASS_MONO_AUDITION, ParameterValue::Bool(v)) => settings.bass_mono_audition = v,
-                _ => return Err(DeviceContractError::InvalidParameterValue),
-            }
-        }
-        settings.mid_side_balance = mid_enabled.then_some(mid_balance);
+        let next = if let Some((values, resolved)) = values {
+            self.controls.sample(&BINDINGS, resolved, values, offset)?
+        } else {
+            let mut next = self.controls;
+            next.reset();
+            Some(next)
+        };
+        let settings = next
+            .as_ref()
+            .unwrap_or(&self.controls)
+            .effective()
+            .settings();
         let filters = if let Some(previous) = previous.filter(|_| {
             settings.dc_remove == self.effective.dc_remove
                 && settings.bass_mono == self.effective.bass_mono
@@ -919,6 +950,9 @@ impl UtilityAutomation {
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?
                 .matrix()
         };
+        if let Some(next) = next {
+            self.controls = next;
+        }
         self.effective = settings;
         self.matrix = matrix;
         Ok((matrix, filters))

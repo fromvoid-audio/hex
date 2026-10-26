@@ -144,3 +144,7 @@ pub(crate) fn prepare_with_registry(
     hex_lattice::PreparedParameterAutomation::new(lanes, points)
         .map_err(|_| Invalid("device automation program is invalid or exceeds its budget"))
 }
+
+#[cfg(test)]
+#[path = "device_automation_result_tests.rs"]
+mod result_tests;

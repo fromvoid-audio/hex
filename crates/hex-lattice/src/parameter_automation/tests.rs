@@ -135,6 +135,21 @@ fn content_origin_linear_increment_discrete_and_absent_laws_are_partition_indepe
         boolean.block(Some(&Clock), 32).value_at(id, 20),
         Some(ParameterValue::Bool(true))
     );
+    for program in [&continuous, &stepped, &logarithmic, &choice, &boolean] {
+        let block = program.block(Some(&Clock), 32);
+        let shifted = crate::OffsetAutomation {
+            values: &block,
+            offset: 7,
+        };
+        for offset in [0, 3, 8, 13, 20, 2] {
+            let mut bulk = [None];
+            shifted.values_at(offset, &mut bulk).unwrap();
+            assert_eq!(bulk[0], block.value_at(id, offset + 7));
+        }
+        let mut missing = [Some(ParameterValue::Bool(true))];
+        program.block(None, 32).values_at(10, &mut missing).unwrap();
+        assert_eq!(missing, [None]);
+    }
 }
 #[test]
 fn constructor_refuses_invalid_domains_ranges_and_order_before_processing() {
@@ -201,7 +216,7 @@ fn constructor_refuses_invalid_domains_ranges_and_order_before_processing() {
         Some(
             ids.capacity() * std::mem::size_of::<ParameterId>()
                 + lanes.capacity() * std::mem::size_of::<PreparedParameterAutomationLane>()
-                + points.capacity() * std::mem::size_of::<ParameterAutomationPoint>()
+                + points.capacity() * std::mem::size_of::<PreparedParameterAutomationPoint>()
         )
     );
 }
@@ -263,4 +278,72 @@ fn both_actual_runtime_twins_must_confirm_factory_parameter_support() {
         NativeRuntimeChain::new_prepared(vec![prepared]),
         Err(DeviceContractError::UnsupportedProcessingClass)
     ));
+}
+
+#[test]
+fn bulk_matches_scalar_with_one_clock_query_and_overwrites_every_missing_slot() {
+    use std::cell::Cell;
+    struct Count(Cell<usize>);
+    impl NativeInstrumentClock for Count {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            Some(999)
+        }
+        fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+            self.0.set(self.0.get() + 1);
+            Some(offset as u64)
+        }
+    }
+    let mut points = Vec::new();
+    let mut lanes = Vec::new();
+    for i in 1..=3 {
+        let start = points.len();
+        points.extend([
+            ParameterAutomationPoint {
+                beat_raw: 10,
+                normalized: 0.0,
+                step: i == 2,
+            },
+            ParameterAutomationPoint {
+                beat_raw: 20,
+                normalized: if i == 3 { 0.0 } else { 1.0 },
+                step: true,
+            },
+        ]);
+        lanes.push(ParameterAutomationLane {
+            descriptor: ParameterDescriptor {
+                id: ParameterId::new(i).unwrap(),
+                ..descriptor()
+            },
+            semantics: semantics(),
+            points: start..points.len(),
+        });
+    }
+    let program = PreparedParameterAutomation::new(lanes, points).unwrap();
+    let clock = Count(Cell::new(0));
+    let block = program.block(Some(&clock), 32);
+    for offset in [0, 10, 15, 20, 31, 12, 0, 19] {
+        let mut output = [Some(ParameterValue::Bool(true)); 3];
+        let before = clock.0.get();
+        block.values_at(offset, &mut output).unwrap();
+        assert_eq!(clock.0.get(), before + 1);
+        for (value, &id) in output.iter().zip(program.parameter_ids()) {
+            assert_eq!(*value, block.value_at(id, offset));
+        }
+    }
+    let mut missing = [Some(ParameterValue::Float(9.0)); 3];
+    program.block(None, 32).values_at(0, &mut missing).unwrap();
+    assert_eq!(missing, [None; 3]);
+    assert!(block.values_at(32, &mut missing).is_err());
+    assert!(block.values_at(0, &mut missing[..2]).is_err());
+    assert_eq!(
+        program.storage_bytes(),
+        PreparedParameterAutomation::quoted_storage_bytes(3, 6)
+    );
+    assert_eq!(
+        PreparedParameterAutomation::quoted_construction_overlap_bytes(3, 6),
+        Some(
+            3 * std::mem::size_of::<ParameterAutomationLane>()
+                + 6 * std::mem::size_of::<ParameterAutomationPoint>()
+        )
+    );
 }

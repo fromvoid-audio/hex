@@ -12,11 +12,33 @@ pub const MAX_AUTOMATION_LANES: usize = 256;
 pub const MAX_AUTOMATION_POINTS: usize = 65_536;
 pub const MAX_AUTOMATION_POINTS_PER_LANE: usize = 1_024;
 
+/// Borrowed final canonical values, independent of their producing control
+/// source. The historical automation name remains the shared delivery seam for
+/// future host composition; providers never inspect envelopes or modulators.
+/// IDs remain stable throughout this borrow. None selects immutable base.
 pub trait NativeParameterAutomation {
     fn parameter_ids(&self) -> &[ParameterId];
     /// Canonical units at this segment's sample offset. None means no authored
     /// lane or unavailable content origin; callers use their immutable base.
     fn value_at(&self, parameter: ParameterId, sample_offset: usize) -> Option<ParameterValue>;
+    /// Query in parameter_ids order, overwriting every output slot. Exact length
+    /// is required; a malformed buffer/offset is an error. Unavailable values
+    /// are None; the current Arrangement block requires a content origin.
+    /// Compatibility providers
+    /// may retain scalar implementation; prepared production overrides this.
+    fn values_at(
+        &self,
+        sample_offset: usize,
+        output: &mut [Option<ParameterValue>],
+    ) -> Result<(), Error> {
+        if output.len() != self.parameter_ids().len() {
+            return Err(Error::InvalidParameterValue);
+        }
+        for (slot, &parameter) in output.iter_mut().zip(self.parameter_ids()) {
+            *slot = self.value_at(parameter, sample_offset);
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParameterAutomationPoint {
@@ -37,6 +59,15 @@ pub struct PreparedParameterAutomationLane {
     descriptor: ParameterDescriptor,
     mapping: Mapping,
     points: std::ops::Range<usize>,
+    constant: Option<ParameterValue>,
+}
+/// Private validated point payload; canonical held values are prepared once.
+/// The public opaque type permits physical backing observations by the existing
+/// storage ledger without exposing a second editable envelope representation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreparedParameterAutomationPoint {
+    point: ParameterAutomationPoint,
+    canonical: ParameterValue,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mapping {
@@ -124,7 +155,7 @@ impl Mapping {
 pub struct PreparedParameterAutomation {
     ids: Vec<ParameterId>,
     lanes: Vec<PreparedParameterAutomationLane>,
-    points: Vec<ParameterAutomationPoint>,
+    points: Vec<PreparedParameterAutomationPoint>,
 }
 impl PreparedParameterAutomation {
     pub fn new(
@@ -140,6 +171,10 @@ impl PreparedParameterAutomation {
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(lanes.len())
+            .map_err(|_| Error::RuntimeAllocation)?;
+        let mut compiled_points = Vec::new();
+        compiled_points
+            .try_reserve_exact(points.len())
             .map_err(|_| Error::RuntimeAllocation)?;
         let mut end = 0;
         for lane in &lanes {
@@ -170,10 +205,25 @@ impl PreparedParameterAutomation {
                 return Err(Error::InvalidParameterValue);
             }
             ids.push(lane.descriptor.id);
+            let mapping = Mapping::prepare(lane.descriptor, lane.semantics)?;
+            let first = values.first().ok_or(Error::InvalidDescriptor)?;
+            let constant = values
+                .iter()
+                .all(|point| point.normalized == first.normalized)
+                .then(|| mapping.value(first.normalized));
+            compiled_points.extend(
+                values
+                    .iter()
+                    .map(|&point| PreparedParameterAutomationPoint {
+                        point,
+                        canonical: mapping.value(point.normalized),
+                    }),
+            );
             prepared.push(PreparedParameterAutomationLane {
                 descriptor: lane.descriptor,
-                mapping: Mapping::prepare(lane.descriptor, lane.semantics)?,
+                mapping,
                 points: lane.points.clone(),
+                constant,
             });
             end = lane.points.end;
         }
@@ -183,7 +233,7 @@ impl PreparedParameterAutomation {
         Ok(Self {
             ids,
             lanes: prepared,
-            points,
+            points: compiled_points,
         })
     }
     pub fn is_empty(&self) -> bool {
@@ -202,7 +252,7 @@ impl PreparedParameterAutomation {
     ) -> (
         &Vec<ParameterId>,
         &Vec<PreparedParameterAutomationLane>,
-        &Vec<ParameterAutomationPoint>,
+        &Vec<PreparedParameterAutomationPoint>,
     ) {
         (&self.ids, &self.lanes, &self.points)
     }
@@ -218,7 +268,7 @@ impl PreparedParameterAutomation {
             .checked_add(
                 self.points
                     .capacity()
-                    .checked_mul(std::mem::size_of::<ParameterAutomationPoint>())?,
+                    .checked_mul(std::mem::size_of::<PreparedParameterAutomationPoint>())?,
             )
     }
     pub fn quoted_storage_bytes(lanes: usize, points: usize) -> Option<usize> {
@@ -227,12 +277,16 @@ impl PreparedParameterAutomation {
                 std::mem::size_of::<ParameterId>()
                     .checked_add(std::mem::size_of::<PreparedParameterAutomationLane>())?,
             )?
-            .checked_add(points.checked_mul(std::mem::size_of::<ParameterAutomationPoint>())?)
+            .checked_add(
+                points.checked_mul(std::mem::size_of::<PreparedParameterAutomationPoint>())?,
+            )
     }
     /// Staging lane metadata coexists with retained compiled backing only while
     /// this control-side constructor validates and converts its input vector.
-    pub fn quoted_construction_overlap_bytes(lanes: usize) -> Option<usize> {
-        lanes.checked_mul(std::mem::size_of::<ParameterAutomationLane>())
+    pub fn quoted_construction_overlap_bytes(lanes: usize, points: usize) -> Option<usize> {
+        lanes
+            .checked_mul(std::mem::size_of::<ParameterAutomationLane>())?
+            .checked_add(points.checked_mul(std::mem::size_of::<ParameterAutomationPoint>())?)
     }
     pub fn block<'a>(
         &'a self,
@@ -251,6 +305,34 @@ pub struct ParameterAutomationBlock<'a> {
     clock: Option<&'a dyn NativeInstrumentClock>,
     frames: usize,
 }
+impl ParameterAutomationBlock<'_> {
+    fn value_at_beat(&self, index: usize, beat: u64) -> Option<ParameterValue> {
+        let lane = self.program.lanes.get(index)?;
+        if let Some(value) = lane.constant {
+            return Some(value);
+        }
+        let points = self.program.points.get(lane.points.clone())?;
+        let next = points.partition_point(|point| point.point.beat_raw <= beat);
+        if next == 0 {
+            return Some(points.first()?.canonical);
+        }
+        let left = points.get(next - 1)?;
+        match points.get(next) {
+            Some(right)
+                if !left.point.step && !lane.mapping.discrete() && beat != left.point.beat_raw =>
+            {
+                let span = right.point.beat_raw.checked_sub(left.point.beat_raw)?;
+                let elapsed = beat.checked_sub(left.point.beat_raw)?;
+                let normalized = (f64::from(left.point.normalized)
+                    + (f64::from(right.point.normalized) - f64::from(left.point.normalized))
+                        * elapsed as f64
+                        / span as f64) as f32;
+                Some(lane.mapping.value(normalized))
+            }
+            _ => Some(left.canonical),
+        }
+    }
+}
 impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
     fn parameter_ids(&self) -> &[ParameterId] {
         self.program.parameter_ids()
@@ -260,27 +342,19 @@ impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
             return None;
         }
         let index = self.program.ids.binary_search(&parameter).ok()?;
-        let beat = self.clock?.arrangement_beat_at_offset(offset)?;
-        let lane = self.program.lanes.get(index)?;
-        let points = self.program.points.get(lane.points.clone())?;
-        let next = points.partition_point(|point| point.beat_raw <= beat);
-        let normalized = if next == 0 {
-            points.first()?.normalized
-        } else {
-            let left = points.get(next - 1)?;
-            match points.get(next) {
-                Some(right) if !left.step && !lane.mapping.discrete() && beat != left.beat_raw => {
-                    let span = right.beat_raw.checked_sub(left.beat_raw)?;
-                    let elapsed = beat.checked_sub(left.beat_raw)?;
-                    (f64::from(left.normalized)
-                        + (f64::from(right.normalized) - f64::from(left.normalized))
-                            * elapsed as f64
-                            / span as f64) as f32
-                }
-                _ => left.normalized,
-            }
-        };
-        Some(lane.mapping.value(normalized))
+        self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?)
+    }
+    fn values_at(&self, offset: usize, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
+        if output.len() != self.program.ids.len() || offset >= self.frames {
+            return Err(Error::InvalidParameterValue);
+        }
+        let beat = self
+            .clock
+            .and_then(|clock| clock.arrangement_beat_at_offset(offset));
+        for (index, slot) in output.iter_mut().enumerate() {
+            *slot = beat.and_then(|beat| self.value_at_beat(index, beat));
+        }
+        Ok(())
     }
 }
 
