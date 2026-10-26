@@ -5067,7 +5067,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3821,176 @@
+@@ -3576,6 +3821,188 @@
              .unwrap_or_else(|| action.name().to_string())
      }
  
@@ -5204,6 +5204,18 @@ diff --git a/src/window.rs b/src/window.rs
 +        }
 +    }
 +
++    /// Cancel only this owner's active lease, including an admitted press whose
++    /// host then refuses Begin. Other owners and typed drags remain untouched.
++    /// The normal cancellation callback runs immediately outside paint.
++    pub fn cancel_pointer_capture_for(&mut self, owner: EntityId, cx: &mut App) -> bool {
++        if self.pointer_capture.as_ref().is_some_and(|capture| capture.owner == owner) {
++            self.cancel_pointer_capture(cx);
++            true
++        } else {
++            false
++        }
++    }
++
 +    pub(crate) fn has_pointer_capture(&self) -> bool {
 +        self.pointer_capture.is_some()
 +    }
@@ -5244,7 +5256,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3585,6 +4000,63 @@
+@@ -3585,6 +4012,63 @@
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
  
@@ -5308,7 +5320,7 @@ diff --git a/src/window.rs b/src/window.rs
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
              // API for the mouse position can only occur on the main thread.
-@@ -3662,10 +4134,60 @@
+@@ -3662,10 +4146,60 @@
              PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
          };
  
@@ -5370,7 +5382,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
  
          DispatchEventResult {
-@@ -3674,17 +4196,50 @@
+@@ -3674,17 +4208,50 @@
          }
      }
  

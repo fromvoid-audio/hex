@@ -363,3 +363,9 @@ their cancellation/propagation guards; a handled Escape cannot accidentally reac
 the parent after premature model cancellation. The terminal still runs outside
 paint in that same input turn, and idempotent widget cancellation retains one
 typed terminal. Other loss/normal release paths and native APIs are unchanged.
+
+Owners may revoke their own lease with `cancel_pointer_capture_for` when a
+host refuses Begin after pointer admission. It checks the exact EntityId, leaves
+other owners/typed drags untouched, and runs the existing cancellation terminal
+immediately outside paint. Refusal therefore retains no input lease while its
+trailing release remains suppressed. Splitter sizing snapshots remain host-owned.
