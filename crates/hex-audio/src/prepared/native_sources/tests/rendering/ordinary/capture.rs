@@ -4,6 +4,188 @@ use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn paused_original_source_uses_stopped_sdk_flush_without_advancing_pcm_or_project() {
+    if std::env::var_os("HEX_PAUSED_PARAMETER_DRIVER").is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--test-threads=1"])
+            .env("HEX_PAUSED_PARAMETER_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "37")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let _serial = serial();
+    for location in 0..3 {
+        let mut f = fixture_at("processing", location);
+        let canonical = f.editor.project().clone();
+        let root = f.control.native_candidate_root();
+        let playback = compile(&f, true);
+        publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+        f.control.command(PlaybackCommand::Play).unwrap();
+        block(&mut f);
+        replacement::wait_for_blocks(&root, f.binding, 1);
+        let position = f.control.status.position.load(Acquire);
+        assert_eq!(position, 8);
+        f.control.command(PlaybackCommand::Pause).unwrap();
+        assert_eq!(block(&mut f), [[0.0; 2]; 8]);
+        assert!(!f.control.status.playing.load(Acquire));
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match f
+                .control
+                .begin_native_source_parameter_change_on_control(f.binding, 7, 0.75)
+            {
+                Err("native parameter source is not live") => break,
+                Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+                other => panic!(
+                    "paused input must refuse the revoked transport: {}",
+                    if other.is_ok() {
+                        "unexpected admission"
+                    } else {
+                        "unexpected refusal"
+                    }
+                ),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        for _ in 0..3 {
+            assert_eq!(block(&mut f), [[0.0; 2]; 8]);
+        }
+        assert_eq!(f.control.status.position.load(Acquire), position);
+        assert_eq!(root.native_source_completed_blocks(f.binding), Some(1));
+        let capture = begin(&mut f);
+        let state = captured(&mut f, &capture);
+        assert_eq!(
+            &hex_plugin_state::decode(&state).unwrap().component.unwrap()[8..12],
+            &1.0_f32.to_le_bytes()
+        );
+        let old = f.binding;
+        let source = f.control.status.native_effect_source().unwrap();
+        let fence = f.control.request_native_epoch_fence(source).unwrap();
+        allocation_free(|| {
+            f.data
+                .owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+        assert_eq!(
+            f.control.stopped_edit_fence_state(fence),
+            StoppedEditFenceState::Ready
+        );
+        f.control
+            .return_stopped_ordinary_native_epoch_runtime(source, fence)
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            f.control.reclaim();
+            if f.control.native_source_endpoint_status(old) == Some((false, false)) {
+                break;
+            }
+            assert!(Instant::now() < until, "paused endpoint did not return");
+            allocation_free(|| {
+                f.data
+                    .owner_mut()
+                    .unwrap()
+                    .run(|callback, _| callback.begin_block())
+            });
+        }
+        let next = epoch::renew_after_returns(&mut f.control, old);
+        assert_eq!((next.root, next.instance), (old.root, old.instance));
+        assert!(next.epoch > old.epoch);
+        f.binding = next;
+        let mut parameters = hex_plugin_host::transport::Parameters::default();
+        parameters
+            .push(hex_plugin_host::transport::ParameterPoint {
+                frame: 0,
+                id: 7,
+                normalized: 0.75,
+            })
+            .unwrap();
+        let flushed = f
+            .control
+            .flush_native_source_parameters_on_control(next, &parameters, &mut || false)
+            .unwrap()
+            .expect("actual stopped SDK flush");
+        assert_eq!(flushed.as_slice()[0].id, 7);
+        assert_eq!(flushed.as_slice()[0].normalized, 0.75);
+        let flushed_state = f
+            .control
+            .capture_native_source_state_on_control(next, &mut || false)
+            .unwrap()
+            .expect("actual stopped SDK state");
+        assert_eq!(
+            &hex_plugin_state::decode(&flushed_state)
+                .unwrap()
+                .component
+                .unwrap()[8..12],
+            &3.0_f32.to_le_bytes()
+        );
+        epoch::on_control(|| {
+            f.control.complete_native_source_preparation(
+                next,
+                Some(hex_plugin_host::protocol::PresentationLatency {
+                    input_frames: 77,
+                    output_frames: 91,
+                }),
+            )
+        });
+        epoch::on_control(|| f.control.start_native_effect(next));
+        let request = begin(&mut f);
+        let until = Instant::now() + Duration::from_secs(3);
+        let snapshot = loop {
+            match f
+                .control
+                .poll_native_source_state_snapshot_on_control(next, &request)
+            {
+                Ok(crate::plugin_worker::NativeWorkerStateSnapshotProgress::Captured(snapshot)) => {
+                    break snapshot;
+                }
+                Ok(crate::plugin_worker::NativeWorkerStateSnapshotProgress::Pending)
+                | Err("native preparation is busy") => {}
+                other => panic!("resumed paused-state capture: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            &hex_plugin_state::decode(snapshot.state())
+                .unwrap()
+                .component
+                .unwrap()[8..12],
+            &3.0_f32.to_le_bytes()
+        );
+        snapshot_action(|| {
+            f.control
+                .stage_native_source_state_snapshot_on_control(next, &snapshot)
+        })
+        .unwrap();
+        snapshot_action(|| {
+            f.control
+                .finalize_native_source_state_snapshot_on_control(next, &snapshot, false)
+        })
+        .unwrap();
+        assert_eq!(f.control.status.position.load(Acquire), position);
+        assert_eq!(f.editor.project(), &canonical);
+        f.control.release_stopped_edit_fence(fence);
+        let returned = dispose(f);
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
+            if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks == 1))
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn stopped_input_terminal_keeps_original_root_binding_until_drained() {
     use crate::plugin_worker::NativeWorkerParameterProgress;
     let _serial = serial();
