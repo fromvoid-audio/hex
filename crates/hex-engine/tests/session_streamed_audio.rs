@@ -1675,5 +1675,5 @@ fn arrangement_crossfade_demands_both_pages_and_matches_resident_audio() {
             assert!((actual[channel] - source[channel] * gain).abs() < 1e-7);
         }
     }
-    assert!(pages.requests.iter().any(|request| *request == (key, 0)));
+    assert!(pages.requests.contains(&(key, 0)));
 }
