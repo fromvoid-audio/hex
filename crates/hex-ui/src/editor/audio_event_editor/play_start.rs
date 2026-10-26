@@ -40,17 +40,25 @@ impl EditorView {
         let anchor = root.root_frame_at(gesture.anchor, tempo).ok()?;
         let first = root.root_frame_at(root.view_start, tempo).ok()?;
         let end = root.root_frame_at(root.view_end, tempo).ok()?;
+        let last_frame = end.checked_sub(1).filter(|frame| *frame >= first)?;
         let viewport = self.event_viewport(root);
         let delta = ((f64::from(x) - f64::from(gesture.origin_x)) * viewport.length as f64 / width)
             .clamp(-(u64::MAX as f64), u64::MAX as f64)
             .round() as i128;
-        let frame =
-            u64::try_from((i128::from(anchor) + delta).clamp(i128::from(first), i128::from(end)))
-                .ok()?;
+        let frame = u64::try_from(
+            (i128::from(anchor) + delta).clamp(i128::from(first), i128::from(last_frame)),
+        )
+        .ok()?;
         let last = root
             .view_end
             .checked_sub(1)
             .filter(|last| *last >= root.view_start)?;
+        // Pointer coordinates are frames. A final raw beat tick can already
+        // project past the last sample, so snapping must share this frame cap.
+        let last = root
+            .root_position_at(last_frame, tempo)
+            .ok()?
+            .clamp(root.view_start, last);
         let raw = root
             .root_position_at(frame, tempo)
             .ok()?

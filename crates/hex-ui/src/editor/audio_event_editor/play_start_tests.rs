@@ -378,3 +378,69 @@ fn directed_audio_saved_start_is_explicitly_readonly_until_its_read_contract_is_
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
+
+#[gpui::test]
+fn frozen_start_outside_release_retains_a_readable_last_source_frame(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    for command in [
+        Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        },
+        Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+    }
+    let span = editor.read_with(&visual, |v, _| {
+        let source = v.state.as_ref().unwrap().project.clip(clip).unwrap();
+        (source.start(), source.duration())
+    });
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = visual
+        .debug_bounds("audio-play-start-handle")
+        .unwrap()
+        .center();
+    let up = point(body.right() + px(100.0), down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let state = v.state.as_ref().unwrap();
+        let source = state.project.clip(clip).unwrap();
+        assert_eq!((source.start(), source.duration()), span);
+        let root = source.audio_event_root();
+        let end = root
+            .root_frame_at(root.view_end, state.project.tempo_map())
+            .unwrap();
+        let position = v
+            .audio_play_start_position()
+            .expect("the clamped saved start stays editable");
+        let frame = root
+            .root_frame_at(position, state.project.tempo_map())
+            .unwrap();
+        assert!(
+            frame >= end - 2 && frame < end,
+            "last source frame: {frame}/{end}"
+        );
+        assert!(
+            AudioViewProjection::new(source, state.project.tempo_map())
+                .unwrap()
+                .root_position_for_frame(source.start())
+                .unwrap()
+                .is_some()
+        );
+    });
+    assert!(visual.debug_bounds("audio-play-start-handle").is_some());
+}
