@@ -606,6 +606,7 @@ impl Command {
             | Self::SetMeterPoint { .. }
             | Self::Mute { .. }
             | Self::ToggleSolo { .. }
+            | Self::ToggleSoloTracks { .. }
             | Self::SetLoopRegion { .. }
             | Self::ToggleLoopRegion
             | Self::ClearLoopRegion

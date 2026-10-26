@@ -1623,11 +1623,6 @@ impl EditorView {
         if viewport.length == 0 {
             return Vec::new();
         }
-        let header_height = self
-            .main_track_lane_bounds
-            .map_or(super::clip_name::CLIP_NAME_HEIGHT, |lane| {
-                super::time_selection::header_hit_height(lane.height)
-            });
         let mut elements = Vec::new();
         for (index, m) in display.markers.iter().enumerate() {
             let (Ok(start), Ok(end)) = (
@@ -1691,7 +1686,12 @@ impl EditorView {
                     })
                     .into()
                 });
-            let mut header = hex_widgets::rectangle_body(-1.0, header_height)
+            let mut header = hex_widgets::rectangle_body(-1.0, super::clip_name::CLIP_NAME_HEIGHT)
+                // Resolve against this layout, including a single H/resize frame.
+                // Previous lane measurements still own pointer geometry, not paint height.
+                .h(relative(super::time_selection::SELECTION_HANDLE_FRACTION))
+                .min_h(px(super::clip_name::CLIP_NAME_HEIGHT))
+                .max_h(relative(1.0))
                 .id(("arrangement-section-header", index))
                 .debug_selector(move || format!("arrangement-section-header-{index}"))
                 .bg(rgb(colors.0))
@@ -2684,7 +2684,7 @@ mod tests {
         visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        for (key, start, end) in [("l", 192_000, 288_000), ("cmd-l", 0, 288_000)] {
+        for (key, start, end) in [("l", 192_000, 288_000), ("w", 0, 288_000)] {
             if start == 0 {
                 let intro = editor.read_with(cx, |v, _| position(v, 2));
                 let shift = Modifiers {

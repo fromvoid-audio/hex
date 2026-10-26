@@ -991,7 +991,7 @@ impl EditorView {
             crate::diagnostics::record_view(
                 cx,
                 format!(
-                    " generation={} revision={:?} track={:?} clip={:?} scene={:?} mode={:?} viewport={:?} browser_open={} browser_query_bytes={}",
+                    " generation={} revision={:?} track={:?} clip={:?} scene={:?} mode={:?} viewport={:?} browser_open={} browser_query_bytes={} forced_time_selection={}",
                     self.project_generation,
                     self.state.as_ref().map(|s| s.revision),
                     self.selected_track.map(|id| id.value()),
@@ -1000,7 +1000,8 @@ impl EditorView {
                     self.mode,
                     self.viewport,
                     self.browser.open,
-                    query_bytes
+                    query_bytes,
+                    self.time_selection_key_held
                 ),
             );
         }
@@ -2071,6 +2072,7 @@ impl EditorView {
         let duplicate_completion = self.take_duplicate_completion(&mut event);
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
+            self.time_selection_key_held = false;
             self.pending_plugin_effect.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();

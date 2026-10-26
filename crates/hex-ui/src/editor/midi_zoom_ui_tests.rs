@@ -232,7 +232,11 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     // Release outside the gutter retires capture, including later pointer moves.
-    visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(
+        point(roll.center().x, keys.center().y - px(120.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     visual.simulate_mouse_move(keys.center(), None, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(v.piano_pitch_zoom.is_none()));
@@ -655,3 +659,6 @@ fn option_wheel_pitch_geometry_creates_the_displayed_note_through_worker_and_und
         )
     });
 }
+
+#[path = "midi_pitch_capture_ui_tests.rs"]
+mod capture_tests;

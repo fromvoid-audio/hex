@@ -1445,7 +1445,7 @@ impl NativeRuntimeChain {
 
     /// Process the summed track signal through all registered stateful entries.
     pub fn process_block(&mut self, frames: &mut [StereoFrame]) -> Result<(), DeviceContractError> {
-        Self::process_entries(&mut self.entries, frames, None)
+        Self::process_entries(&mut self.entries, frames, None, None)
     }
 
     /// Process the full chain while observing each entry's output in order.
@@ -1458,7 +1458,14 @@ impl NativeRuntimeChain {
         frame_offset: usize,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
-        Self::process_entries_observed(&mut self.entries, frames, frame_offset, None, observer)
+        Self::process_entries_observed(
+            &mut self.entries,
+            frames,
+            frame_offset,
+            None,
+            None,
+            observer,
+        )
     }
 
     /// Process a control-prevalidated effect segment without ending the
@@ -1469,23 +1476,29 @@ impl NativeRuntimeChain {
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
     ) -> Result<(), DeviceContractError> {
-        self.process_range_with_clock(range, frames, None)
+        self.process_range_with_clock(range, frames, None, None)
     }
 
-    /// Process a segment with the compensated content-origin clock. A host
-    /// processing entries with different arrivals must call one entry at a time
-    /// and supply each input's origin clock; this method does not shift clocks.
+    /// Process a segment with explicit content origins for both host stages.
+    /// `clock` describes entering content: provider controls and host input gain
+    /// use it. `output_clock` describes emitted content after each processor's
+    /// own algorithmic latency and drives host output gain. Each unavailable
+    /// origin remains independently None; neither stage borrows the other's clock.
+    /// The clocks must describe every entry in the range. Different arrivals
+    /// require single-entry calls; zero-latency ranges explicitly reuse a clock.
+    /// This method never shifts clocks or grants foreign automation support.
     pub fn process_range_with_clock(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         let entries = self
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries(entries, frames, clock)?;
+        Self::process_entries(entries, frames, clock, output_clock)?;
         Ok(())
     }
 
@@ -1500,23 +1513,33 @@ impl NativeRuntimeChain {
         frame_offset: usize,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
-        self.process_range_observed_with_clock(range, frames, frame_offset, None, observer)
+        self.process_range_observed_with_clock(range, frames, frame_offset, None, None, observer)
     }
 
     /// Clock-aware segment processing with the same borrowed post-node tap.
+    /// Stage origins follow `process_range_with_clock`; output observation does
+    /// not change which content origin drives provider/input or output controls.
     pub fn process_range_observed_with_clock(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
         let entries = self
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries_observed(entries, frames, frame_offset, clock, observer)?;
+        Self::process_entries_observed(
+            entries,
+            frames,
+            frame_offset,
+            clock,
+            output_clock,
+            observer,
+        )?;
         Ok(())
     }
 
@@ -1535,7 +1558,14 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
-        Self::process_entries_tapped(&mut self.entries, frames, frame_offset, None, observer)
+        Self::process_entries_tapped(
+            &mut self.entries,
+            frames,
+            frame_offset,
+            None,
+            None,
+            observer,
+        )
     }
 
     /// Process a prepared range with input/output taps and no content clock.
@@ -1553,17 +1583,19 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
-        self.process_range_tapped_with_clock(range, frames, frame_offset, None, observer)
+        self.process_range_tapped_with_clock(range, frames, frame_offset, None, None, observer)
     }
 
     /// Clock-aware paired taps. Input is before host trim, Output after the
     /// entire entry. Both phases have the same identity, offset and frame count.
+    /// The independent stage-origin contract is `process_range_with_clock`.
     pub fn process_range_tapped_with_clock(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -1577,17 +1609,20 @@ impl NativeRuntimeChain {
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries_tapped(entries, frames, frame_offset, clock, observer)?;
+        Self::process_entries_tapped(entries, frames, frame_offset, clock, output_clock, observer)?;
         Ok(())
     }
 
     /// Process a segment without observation through the same borrowed path.
+    /// Stage origins follow `process_range_with_clock`; foreign DSP continues
+    /// to receive only its entering-content clock and existing host trim law.
     pub fn process_range_with_foreign(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), DeviceContractError> {
         self.process_range_tapped_with_foreign(
@@ -1595,6 +1630,7 @@ impl NativeRuntimeChain {
             frames,
             frame_offset,
             clock,
+            output_clock,
             foreign,
             &mut |_, _, _, _, _, _| {},
         )
@@ -1604,12 +1640,15 @@ impl NativeRuntimeChain {
     /// Successful processing still grants no dispatch: final host-format
     /// acceptance remains exclusively with the audio owner. On error all
     /// foreign work for this callback is revoked; owned DSP can then roll back.
+    /// Independent stage origins follow `process_range_with_clock`.
+    #[allow(clippy::too_many_arguments)] // Two explicit borrowed stage clocks and existing foreign/tap endpoints.
     pub fn process_range_tapped_with_foreign(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
@@ -1634,7 +1673,14 @@ impl NativeRuntimeChain {
                     frame_offset,
                     frames,
                 );
-                Self::process_entry_with_foreign(entry, frames, frame_offset, clock, foreign)?;
+                Self::process_entry_with_foreign(
+                    entry,
+                    frames,
+                    frame_offset,
+                    clock,
+                    output_clock,
+                    foreign,
+                )?;
                 observer(
                     entry.owner,
                     entry.device_id,
@@ -1657,6 +1703,7 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -1675,7 +1722,7 @@ impl NativeRuntimeChain {
                 frame_offset,
                 frames,
             );
-            Self::process_entry(entry, frames, clock)?;
+            Self::process_entry(entry, frames, clock, output_clock)?;
             observer(
                 entry.owner,
                 entry.device_id,
@@ -1692,9 +1739,10 @@ impl NativeRuntimeChain {
         entries: &mut [RuntimeEntry],
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         for entry in entries {
-            Self::process_entry(entry, frames, clock)?;
+            Self::process_entry(entry, frames, clock, output_clock)?;
         }
         Ok(())
     }
@@ -1704,10 +1752,11 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
         for entry in entries {
-            Self::process_entry(entry, frames, clock)?;
+            Self::process_entry(entry, frames, clock, output_clock)?;
             observer(
                 entry.owner,
                 entry.device_id,
@@ -1723,8 +1772,9 @@ impl NativeRuntimeChain {
         entry: &mut RuntimeEntry,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        Self::process_entry_with_foreign(entry, frames, 0, clock, &mut RefuseForeign)
+        Self::process_entry_with_foreign(entry, frames, 0, clock, output_clock, &mut RefuseForeign)
     }
 
     fn process_entry_with_foreign(
@@ -1732,6 +1782,7 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), DeviceContractError> {
         let is_foreign = matches!(entry.runtime, RuntimeOwnership::Foreign(_));
@@ -1812,7 +1863,7 @@ impl NativeRuntimeChain {
             }
         }
         if !entry.bypassed {
-            Self::apply_host_gain(entry, frames, clock, false);
+            Self::apply_host_gain(entry, frames, output_clock, false);
         }
         if entry.metering {
             entry.meter.observe_output(frames);

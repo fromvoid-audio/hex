@@ -93,15 +93,19 @@ class LaunchTests(unittest.TestCase):
             return self.process(argv, stdout=self.raw_processes)
         self.fail(f"unexpected command: {argv}")
 
-    def run_success(self, *, tested=False):
+    def run_success(self, *, tested=False, diagnostics=False):
         with patch.object(launch.sys, "platform", "darwin"), \
                 patch.object(launch, "command", side_effect=self.command), \
                 patch.object(launch.ci, "LocalCiRunner", side_effect=self.fake_ci if tested else AssertionError("CI on default launch")), \
                 patch.object(launch.delivery, "assert_inactive"), \
                 patch.object(launch.delivery, "verify", return_value={
                     "source": self.source, "candidate": self.source, "profile": "release",
+                    "diagnostic_capabilities": ["actions-v1", "audio-v1"],
                 }):
-            return launch.run_launch(self.root, argv=["--test"] if tested else [])
+            arguments = ["--test"] if tested else []
+            if diagnostics:
+                arguments.append("--diagnostics" if diagnostics is True else f"--diagnostics={diagnostics}")
+            return launch.run_launch(self.root, argv=arguments)
 
     def test_success_fetches_verifies_packages_then_opens_exact_configured_app(self):
         # An installed app must not turn normal launch into installed-only startup.
@@ -309,6 +313,31 @@ class LaunchTests(unittest.TestCase):
             with self.assertRaisesRegex(launch.delivery.DeliveryError, "running"):
                 launch.launch_installed(self.root, diagnostics=True)
         self.assertFalse(any(call[0] == "open" for call in self.calls))
+
+    def test_diagnostics_opt_out_and_all_preserve_mode_through_launcher(self):
+        app = self.root.resolve() / "artifacts/hex.app"
+        for mode in ("off", "all"):
+            with self.subTest(mode=mode), patch.object(launch.sys, "platform", "darwin"), \
+                    patch.object(launch, "command", side_effect=self.command), \
+                    patch.object(launch.delivery, "verify", return_value={"source": "c" * 40, "profile": "release", "diagnostic_capabilities": ["actions-v1", "audio-v1"]}), \
+                    patch.object(launch.delivery, "assert_inactive"):
+                launch.launch_installed(self.root, diagnostics=mode)
+                self.assertEqual(self.calls[-1], ("open", "-a", str(app), "--args", f"--diagnostics={mode}"))
+            with patch.object(launch, "launch_installed") as opened:
+                self.assertEqual(launch.main(["--open", f"--diagnostics={mode}"]), 0)
+                opened.assert_called_once_with(diagnostics=mode)
+
+    def test_build_launch_preserves_diagnostic_mode_without_changing_packaging(self):
+        for mode in ("off", "all"):
+            with self.subTest(mode=mode):
+                self.calls.clear()
+                app = self.run_success(diagnostics=mode)
+                self.assertEqual(self.calls[-1], ("open", "-a", str(app), "--args", f"--diagnostics={mode}"))
+                package = next(call for call in self.calls if call[0] == "sh")
+                self.assertIn("--build-only", package)
+                self.assertFalse(any(arg.startswith("--diagnostics") for arg in package))
+        self.assertEqual(launch.requested_diagnostics(["--diagnostics=all", "--diagnostics=off"]), "off")
+        self.assertIs(launch.requested_diagnostics(["--diagnostics=off", "--diagnostics"]), True)
 
     def test_diagnostics_refuses_older_receipt_before_opening_app(self):
         with patch.object(launch.sys, "platform", "darwin"), \
