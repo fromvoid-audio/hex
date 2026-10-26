@@ -341,7 +341,6 @@ impl SessionPlayback {
                 revision: &revision,
                 cells: &mut cells,
                 downstream: capture,
-                offset: None,
                 invalidated: false,
             };
             let result = self.render_internal_borrowed(
