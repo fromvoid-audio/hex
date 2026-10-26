@@ -1278,7 +1278,6 @@ impl EditorView {
                             ) {
                                 view_cx.notify();
                             }
-                            return;
                         }
                     });
                 });
@@ -1349,7 +1348,6 @@ impl EditorView {
                                 view.error = Some(error.into());
                             }
                             view_cx.notify();
-                            return;
                         }
                     });
                 });
