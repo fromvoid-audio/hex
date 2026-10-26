@@ -133,18 +133,16 @@ pub(crate) fn validate_project_with_registry(
 }
 pub(crate) fn quote(device: &hex_project::Device) -> Result<usize, crate::AudioStorageError> {
     let points = device
-        .automation()
-        .iter()
+        .reading_automation()
         .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))
         .ok_or(crate::AudioStorageError::Overflow)?;
     let provider = device
-        .automation()
-        .iter()
+        .reading_automation()
         .filter(|lane| !lane.target.is_host())
         .count();
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(
         provider,
-        device.automation().len() - provider,
+        device.reading_automation().count() - provider,
         points,
     )
     .ok_or(crate::AudioStorageError::Overflow)
@@ -167,16 +165,14 @@ pub(crate) fn prepare_with_registry(
         .definition(device.state().type_id())
         .ok_or(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED))?;
     let count = device
-        .automation()
-        .iter()
+        .reading_automation()
         .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))
         .ok_or(Invalid("device automation point count overflow"))?;
     let mut lanes = Vec::new();
     lanes
         .try_reserve_exact(
             device
-                .automation()
-                .iter()
+                .reading_automation()
                 .filter(|lane| !lane.target.is_host())
                 .count(),
         )
@@ -184,8 +180,7 @@ pub(crate) fn prepare_with_registry(
     let mut host = Vec::new();
     host.try_reserve_exact(
         device
-            .automation()
-            .iter()
+            .reading_automation()
             .filter(|lane| lane.target.is_host())
             .count(),
     )
@@ -197,6 +192,9 @@ pub(crate) fn prepare_with_registry(
     for lane in device.automation() {
         if !target_supported(registry, device.state(), lane.target) {
             return Err(Invalid(DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED));
+        }
+        if !lane.is_reading() {
+            continue;
         }
         let start = points.len();
         points.extend(

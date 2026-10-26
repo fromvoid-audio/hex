@@ -900,6 +900,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
     h.service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
             key,
             sequence: 2,
             value: ParameterValue::Float(0.25),
@@ -974,6 +975,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
             (last, _) = h.applied(after);
         }
         let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
             key,
             sequence: 2,
             value: ParameterValue::Float(1.0),
