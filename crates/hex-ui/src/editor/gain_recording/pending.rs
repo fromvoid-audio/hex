@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 pub(super) struct SealedTake {
     target: Target,
-    end: GainTakeEnd,
+    end: Option<GainTakeEnd>,
     proposal: Option<Proposal>,
     pending: Option<EditReceipt>,
     accepted_state: Option<Arc<ViewState>>,
@@ -30,20 +30,41 @@ impl SealedTake {
                 && Some(*expected_epoch) == self.target.recording_epoch.checked_sub(1)
                 && *spans == proposal.spans)
     }
+    pub(super) fn complete(&self) -> bool {
+        self.end.is_some()
+    }
     pub(super) fn awaiting_commit(&self) -> bool {
         self.pending.is_some() || self.accepted_state.is_some()
     }
 }
 impl Recorder {
-    pub(in crate::editor) fn has_sealed_take(&self) -> bool {
-        self.sealed.is_some()
+    pub(in crate::editor) fn has_retained_take(&self) -> bool {
+        self.sealed.is_some() || self.retired.is_some()
     }
     /// Lifecycle loss can retire capture/bindings, never a sealed delivered take.
     pub(in crate::editor) fn audio_lost(&mut self) {
-        if self.sealed.is_some() {
+        self.pending_gain = None;
+        self.binding = None;
+        if self.retired.is_some() {
+            self.mode = Mode::Retained;
+        } else if self.sealed.is_some() {
             self.target = None;
-            self.pending_gain = None;
-            self.binding = None;
+        } else if let Some(target) = self.target.take() {
+            if self.cancelled {
+                self.discard();
+                return;
+            }
+            // Delivered events without an actual Finished have no truthful end
+            // clock. Keep the draft, but never offer a canonical commit for it.
+            self.mode = Mode::Retained;
+            self.sealed = Some(SealedTake {
+                target,
+                end: None,
+                proposal: None,
+                pending: None,
+                accepted_state: None,
+                outcome_unknown: false,
+            });
         } else {
             self.discard();
         }
@@ -63,7 +84,7 @@ impl EditorView {
         self.gain_recorder.mode = Mode::Retained;
         self.gain_recorder.sealed = Some(SealedTake {
             target,
-            end,
+            end: Some(end),
             proposal: None,
             pending: None,
             accepted_state: None,
@@ -73,7 +94,8 @@ impl EditorView {
     }
     pub(super) fn gain_take_retry_available(&self) -> bool {
         self.gain_recorder.sealed.as_ref().is_some_and(|take| {
-            !take.awaiting_commit()
+            take.complete()
+                && !take.awaiting_commit()
                 && !take.outcome_unknown
                 && self.project_generation == take.target.project_generation
                 && self.state.as_ref().is_some_and(|state| {
@@ -92,6 +114,13 @@ impl EditorView {
     }
     pub(super) fn retry_gain_take(&mut self) {
         let Some(take) = self.gain_recorder.sealed.as_ref() else {
+            return;
+        };
+        let Some(end) = take.end else {
+            self.error = Some(
+                "incomplete gain take retained · no delivered end clock · discard explicitly"
+                    .into(),
+            );
             return;
         };
         if take.outcome_unknown {
@@ -137,7 +166,7 @@ impl EditorView {
                 .gain_recorder
                 .events
                 .first()
-                .map_or(take.end.loop_pass, |event| event.loop_pass),
+                .map_or(end.loop_pass, |event| event.loop_pass),
         };
         let spans = match hex_session::gain_recording::finish_take(
             &state.project,
@@ -145,7 +174,7 @@ impl EditorView {
             expected_epoch,
             context,
             &self.gain_recorder.events,
-            take.end,
+            end,
         ) {
             Ok(spans) if !spans.is_empty() => spans,
             Ok(_) => {
@@ -296,7 +325,7 @@ impl EditorView {
                 Some("gain take is applying · discarding cannot cancel an admitted edit".into());
             return;
         }
-        if self.gain_recorder.sealed.is_some() {
+        if self.gain_recorder.has_retained_take() {
             self.gain_recorder.discard();
             self.status = "retained gain take discarded".into();
         }

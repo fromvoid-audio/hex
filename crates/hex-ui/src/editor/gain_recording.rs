@@ -9,6 +9,7 @@ use hex_widgets::{
 };
 use std::sync::atomic::Ordering::Acquire;
 mod pending;
+mod retirement;
 use pending::SealedTake;
 
 #[derive(Default, PartialEq, Eq)]
@@ -40,6 +41,7 @@ pub(super) struct Recorder {
     cancelled: bool,
     binding: Option<Binding>,
     sealed: Option<SealedTake>,
+    retired: Option<retirement::RetiredCapture>,
 }
 impl Recorder {
     pub(super) fn discard(&mut self) {
@@ -50,6 +52,7 @@ impl Recorder {
         self.pending_gain = None;
         self.events.clear();
         self.sealed = None;
+        self.retired = None;
         self.binding = None;
         self.cancelled = true;
     }
@@ -57,7 +60,7 @@ impl Recorder {
         matches!(self.mode, Mode::Arming | Mode::Touching | Mode::Finishing)
     }
     pub(super) fn blocks_edits(&self) -> bool {
-        self.busy() || self.mode == Mode::Ready || self.sealed.is_some()
+        self.busy() || self.mode == Mode::Ready || self.has_retained_take()
     }
     pub(super) fn numeric_editing(&self, cx: &gpui::App) -> bool {
         self.binding
@@ -235,7 +238,7 @@ impl EditorView {
         }
     }
     pub(super) fn cancel_gain_recording(&mut self) {
-        if self.gain_recorder.has_sealed_take() {
+        if self.gain_recorder.has_retained_take() {
             self.error = Some(
                 "gain take retained · wait for acknowledgment or retry/discard explicitly".into(),
             );
@@ -257,18 +260,20 @@ impl EditorView {
         self.status = "gain take cancelled · original lane retained".into();
     }
     pub(super) fn tick_gain_recording(&mut self) -> bool {
-        if self.gain_recorder.mode == Mode::Idle || self.gain_recorder.has_sealed_take() {
-            return false;
+        let retired_changed = self.poll_retired_gain_receipts();
+        if self.gain_recorder.mode == Mode::Idle || self.gain_recorder.has_retained_take() {
+            return retired_changed;
         }
         let Some(state) = self.state.as_ref() else {
-            return false;
+            return retired_changed;
         };
         let source_changed = self.project_generation != self.gain_recorder.generation
             || state.revision != self.gain_recorder.revision;
         let Some(audio) = self.audio.as_mut() else {
             self.gain_recorder.audio_lost();
-            self.error =
-                Some("audio unavailable · gain take discarded; original lane retained".into());
+            self.error = Some(
+                "audio unavailable · incomplete gain take retained for explicit discard".into(),
+            );
             return true;
         };
         if source_changed {
@@ -290,7 +295,7 @@ impl EditorView {
             };
             receipts.push(receipt);
         }
-        let mut changed = !receipts.is_empty();
+        let mut changed = retired_changed || !receipts.is_empty();
         let status_values = audio.control.status().map(|status| {
             (
                 status.applied_revision.load(Acquire),
@@ -333,78 +338,82 @@ impl EditorView {
             }
         }
         for receipt in receipts {
-            if Some(receipt.target()) != self.gain_recorder.target {
-                continue;
-            }
-            match receipt {
-                Receipt::Applied {
-                    sequence,
-                    performance_frame,
-                    content_frame,
-                    loop_pass,
-                    gain,
-                    ..
-                } => {
-                    if self.gain_recorder.events.len()
-                        < hex_audio::gain_recording::MAX_TAKE_EVENTS as usize
-                    {
-                        self.gain_recorder.events.push(AppliedGain {
-                            sequence,
-                            performance_frame,
-                            content_frame,
-                            loop_pass,
-                            gain,
-                        });
-                    } else {
-                        self.cancel_gain_recording();
-                    }
-                }
-                Receipt::Superseded { .. } => {}
-                Receipt::Finished {
-                    target,
-                    performance_frame,
-                    content_frame,
-                    loop_pass,
-                } => {
-                    if self.gain_recorder.cancelled {
-                        self.gain_recorder.discard();
-                    } else {
-                        self.seal_gain_take(
-                            target,
-                            GainTakeEnd {
-                                performance_frame,
-                                content_frame,
-                                loop_pass,
-                            },
-                        );
-                    }
-                }
-                Receipt::Aborted { reason, .. } => {
-                    self.gain_recorder.target = None;
-                    self.gain_recorder.pending_gain = None;
-                    self.gain_recorder.events.clear();
-                    self.gain_recorder.mode = Mode::Idle;
-                    self.gain_recorder.binding = None;
-                    self.error = Some(
-                        format!("gain take aborted · {reason:?} · original lane retained")
-                            .to_lowercase()
-                            .into(),
-                    );
-                }
-            }
+            self.gain_receipt(receipt);
         }
         self.flush_gain_touch();
         if audio_failed {
-            self.gain_recorder.audio_lost();
-            self.error = Some(if self.gain_recorder.has_sealed_take() {
-                "audio failed · completed gain take retained".into()
-            } else {
-                "audio failed · incomplete gain take discarded; recover audio before recording"
-                    .into()
-            });
+            // Keep the target until the output's quiescent retirement transfer.
+            // A late sink Finished may still be delivered after this status read.
+            self.gain_recorder.pending_gain = None;
+            self.gain_recorder.binding = None;
+            self.error = Some(
+                "audio failed · gain take retained · recover audio to finish receipt handoff"
+                    .into(),
+            );
             return true;
         }
         changed
+    }
+    fn gain_receipt(&mut self, receipt: Receipt) {
+        if Some(receipt.target()) != self.gain_recorder.target {
+            return;
+        }
+        match receipt {
+            Receipt::Applied {
+                sequence,
+                performance_frame,
+                content_frame,
+                loop_pass,
+                gain,
+                ..
+            } => {
+                if self.gain_recorder.events.len()
+                    < hex_audio::gain_recording::MAX_TAKE_EVENTS as usize
+                {
+                    self.gain_recorder.events.push(AppliedGain {
+                        sequence,
+                        performance_frame,
+                        content_frame,
+                        loop_pass,
+                        gain,
+                    });
+                } else {
+                    self.cancel_gain_recording();
+                }
+            }
+            Receipt::Superseded { .. } => {}
+            Receipt::Finished {
+                target,
+                performance_frame,
+                content_frame,
+                loop_pass,
+            } => {
+                if self.gain_recorder.cancelled {
+                    self.gain_recorder.discard();
+                } else {
+                    self.seal_gain_take(
+                        target,
+                        GainTakeEnd {
+                            performance_frame,
+                            content_frame,
+                            loop_pass,
+                        },
+                    );
+                }
+            }
+            Receipt::Aborted { reason, .. } => {
+                if self.gain_recorder.cancelled {
+                    self.gain_recorder.discard();
+                } else {
+                    self.gain_recorder.audio_lost();
+                }
+                self.error = Some(
+                    format!("gain take aborted · {reason:?} · original lane retained")
+                        .to_lowercase()
+                        .into(),
+                );
+            }
+        }
     }
 }
 
@@ -413,7 +422,7 @@ pub(super) fn retained_controls(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
 ) -> gpui::AnyElement {
-    if !view.gain_recorder.has_sealed_take() {
+    if !view.gain_recorder.has_retained_take() {
         return div().into_any_element();
     }
     let retry_available = view.gain_take_retry_available();
@@ -428,6 +437,15 @@ pub(super) fn retained_controls(
         .items_center()
         .child(theme::text(if waiting {
             "saving gain take"
+        } else if view.gain_recorder.retired.is_some() {
+            "recovering gain take"
+        } else if view
+            .gain_recorder
+            .sealed
+            .as_ref()
+            .is_some_and(|take| !take.complete())
+        {
+            "incomplete gain take"
         } else {
             "gain take retained"
         }))
@@ -467,7 +485,7 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
     let mut controls = div().flex().items_center().gap_1().child(
         super::waveform::button(
             if armed { "■" } else { "●" },
-            if view.gain_recorder.has_sealed_take() {
+            if view.gain_recorder.has_retained_take() {
                 "gain take retained · use the transport retry/discard controls"
             } else {
                 "arm gain touch recording · stop cancels the uncommitted take"
@@ -476,7 +494,7 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
         )
         .on_click(cx.listener(move |view, _, _, cx| view.toggle_gain_recording(track, cx))),
     );
-    if !armed || view.gain_recorder.track != Some(track) || view.gain_recorder.has_sealed_take() {
+    if !armed || view.gain_recorder.track != Some(track) || view.gain_recorder.has_retained_take() {
         return controls;
     }
     if view.gain_recorder.binding.is_none() {

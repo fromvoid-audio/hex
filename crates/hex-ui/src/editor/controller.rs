@@ -319,13 +319,9 @@ impl EditorView {
         }
     }
 
-    fn retire_audio_for_future_generation(&mut self) {
+    pub(super) fn retire_audio_for_future_generation(&mut self) {
         self.invalidate_prepared_seek();
-        if let Some(audio) = self.audio.as_mut() {
-            audio.control.close();
-        }
-        self.audio = None;
-        self.gain_recorder.audio_lost();
+        self.retire_audio_preserving_gain_take();
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
@@ -705,9 +701,7 @@ impl EditorView {
                     ) {
                         continue;
                     }
-                    if let Some(mut audio) = self.audio.take() {
-                        audio.control.close();
-                    }
+                    self.retire_audio_preserving_gain_take();
                     self.status = "preparing sampler audio".into();
                     changed = true;
                 }
@@ -763,9 +757,7 @@ impl EditorView {
                         // observation already correlated to this newly opened endpoint.
                         self.reset_output_publication_tracking(new_identity);
                     }
-                    if let Some(current) = self.audio.as_mut() {
-                        current.control.close();
-                    }
+                    self.retire_audio_preserving_gain_take();
                     self.document_audio_mode = audio.mode;
                     self.audio = Some(audio);
                     let mut recovery_status = None;
@@ -836,10 +828,7 @@ impl EditorView {
                             previous.close();
                         }
                     }
-                    if let Some(audio) = self.audio.as_mut() {
-                        audio.control.close();
-                    }
-                    self.audio = None;
+                    self.retire_audio_preserving_gain_take();
                     if self
                         .pending_publication_observation
                         .as_ref()
@@ -2088,10 +2077,7 @@ impl EditorView {
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
-            if let Some(audio) = self.audio.as_mut() {
-                audio.control.close();
-            }
-            self.audio = None;
+            self.retire_audio_preserving_gain_take();
             let next_generation = self.project_generation.saturating_add(1);
             if self
                 .pending_audio_result
@@ -3026,7 +3012,7 @@ impl EditorView {
             return false;
         }
         if self.gain_recorder.blocks_edits() && !self.pending_gain_take_matches(&request) {
-            self.error = Some(if self.gain_recorder.has_sealed_take() {
+            self.error = Some(if self.gain_recorder.has_retained_take() {
                 "retry or explicitly discard the retained gain take before another project action"
                     .into()
             } else {

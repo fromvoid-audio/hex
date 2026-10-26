@@ -31,7 +31,37 @@ fn source_install_before_finished_poll_retains_already_delivered_gain_take(
 ) {
     delivered_source_race(cx, true);
 }
-fn delivered_source_race(cx: &mut TestAppContext, install_source_first: bool) {
+struct DeliveredFixture {
+    visual: VisualTestContext,
+    editor: gpui::Entity<EditorView>,
+    track: TrackId,
+    output: Option<hex_audio::WorkerPreparedOutput>,
+    backend: hex_audio::worker_fixture::HeadlessBackend,
+}
+impl DeliveredFixture {
+    fn quiesce_and_poll(&mut self) {
+        // Release the actual host owner and both real callback carriers. The
+        // existing lifecycle reaper, rather than this UI fixture, drains receipts.
+        drop(self.output.take());
+        self.backend.close();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let pending = self.editor.update(&mut self.visual, |view, _| {
+                view.tick_gain_recording();
+                view.gain_recorder.retired.is_some()
+            });
+            if !pending {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "retired receipt transfer timed out"
+            );
+            std::thread::yield_now();
+        }
+    }
+}
+fn delivered_fixture(cx: &mut TestAppContext, release: bool) -> DeliveredFixture {
     let service = Service::new(48_000, 16, 0).unwrap();
     next(&service);
     service
@@ -133,9 +163,30 @@ fn delivered_source_race(cx: &mut TestAppContext, install_source_first: bool) {
         view.gain_recorder.target = Some(target);
         assert!(view.tick_gain_recording());
         assert_eq!(view.gain_recorder.events.len(), 1);
-        view.end_gain_touch();
+        if release {
+            view.end_gain_touch();
+        }
     });
-    backend.render_direct(&mut frames, &mut host).unwrap();
+    if release {
+        backend.render_direct(&mut frames, &mut host).unwrap();
+    }
+    DeliveredFixture {
+        visual,
+        editor,
+        track,
+        output: Some(output),
+        backend,
+    }
+}
+
+fn delivered_source_race(cx: &mut TestAppContext, install_source_first: bool) {
+    let DeliveredFixture {
+        mut visual,
+        editor,
+        track,
+        output,
+        mut backend,
+    } = delivered_fixture(cx, true);
     editor.update(&mut visual, |view, _| {
         // Another producer changed the canonical worker before this delivered
         // take was submitted. Keep its event pending so the UI still owns the
@@ -262,7 +313,7 @@ fn sealed_gain_take_waits_through_repaints_and_exact_install_then_one_undo(
     let (mut visual, editor, target, track) = draft_window(cx);
     let terminal = editor.update(&mut visual, |view, _| {
         view.seal_gain_take(target, end());
-        assert!(view.gain_recorder.has_sealed_take());
+        assert!(view.gain_recorder.has_retained_take());
         assert_eq!(view.worker_requests_pending, 1);
         let terminal = next(&view.service);
         assert!(terminal.error.is_none());
@@ -277,13 +328,13 @@ fn sealed_gain_take_waits_through_repaints_and_exact_install_then_one_undo(
         visual.run_until_parked();
         editor.update(&mut visual, |view, cx| {
             assert_eq!(view.gain_recorder.events.len(), 1);
-            assert!(view.gain_recorder.has_sealed_take());
+            assert!(view.gain_recorder.has_retained_take());
             cx.notify();
         });
     }
     editor.update(&mut visual, |view, _| {
         view.receive(terminal);
-        assert!(!view.gain_recorder.has_sealed_take());
+        assert!(!view.gain_recorder.has_retained_take());
         assert!(view.gain_recorder.events.is_empty());
         assert_eq!(
             view.state
@@ -432,7 +483,7 @@ fn local_queue_refusal_keeps_gain_take_until_explicit_retry(cx: &mut TestAppCont
         view.seal_gain_take(target, end());
         assert_eq!(view.worker_requests_pending, 0);
         assert_eq!(view.gain_recorder.events.len(), 1);
-        assert!(view.gain_recorder.has_sealed_take());
+        assert!(view.gain_recorder.has_retained_take());
         // No queued take was admitted: clearing only this test's pressure lets
         // the explicit retry submit the unchanged captured take exactly once.
         view.pending_requests.clear();
@@ -441,7 +492,7 @@ fn local_queue_refusal_keeps_gain_take_until_explicit_retry(cx: &mut TestAppCont
         let accepted = next(&view.service);
         assert!(accepted.error.is_none());
         view.receive(accepted);
-        assert!(!view.gain_recorder.has_sealed_take());
+        assert!(!view.gain_recorder.has_retained_take());
         assert!(view.gain_recorder.events.is_empty());
     });
 }
@@ -468,11 +519,143 @@ fn queued_gain_take_ignores_earlier_terminal_before_its_own_install(cx: &mut Tes
         assert!(earlier.error.is_none());
         view.receive(earlier);
         assert_eq!(view.gain_recorder.events.len(), 1);
-        assert!(view.gain_recorder.has_sealed_take());
+        assert!(view.gain_recorder.has_retained_take());
         let terminal = next(&view.service);
         assert!(terminal.error.is_none());
         view.receive(terminal);
         assert!(view.gain_recorder.events.is_empty());
-        assert!(!view.gain_recorder.has_sealed_take());
+        assert!(!view.gain_recorder.has_retained_take());
+    });
+}
+
+#[gpui::test]
+fn finished_gain_receipts_survive_all_current_output_retirement_paths(cx: &mut TestAppContext) {
+    for retirement in ["recovery", "future generation", "project replacement"] {
+        let mut fixture = delivered_fixture(cx, true);
+        fixture.editor.update(&mut fixture.visual, |view, _| {
+            // Finished is already in the real callback receipt queue, with no
+            // intervening UI tick. Each production retirement entry must retain it.
+            match retirement {
+                "recovery" => view.recover_audio(),
+                "future generation" => view.retire_audio_for_future_generation(),
+                _ => {
+                    view.service
+                        .submit(Request::NewWithAudioMode {
+                            mode: hex_session::DocumentAudioMode::Resident,
+                            reservation: None,
+                        })
+                        .unwrap();
+                    let replaced = next(&view.service);
+                    assert!(replaced.project_replaced);
+                    view.receive(replaced);
+                }
+            }
+            assert!(view.audio.is_none());
+            assert!(view.gain_recorder.retired.is_some());
+            assert_eq!(view.gain_recorder.events.len(), 1);
+            assert!(!view.gain_take_retry_available());
+            assert!(view.gain_recorder.blocks_edits());
+        });
+        fixture.quiesce_and_poll();
+        fixture.editor.update(&mut fixture.visual, |view, _| {
+            assert_eq!(view.gain_recorder.events.len(), 1);
+            assert!(view.gain_recorder.sealed.as_ref().unwrap().complete());
+            if retirement == "project replacement" {
+                assert!(!view.gain_take_retry_available());
+                let pending = view.worker_requests_pending;
+                view.retry_gain_take();
+                assert_eq!(view.worker_requests_pending, pending);
+                view.discard_gain_take();
+            } else {
+                // The canonical take is now admitted: explicit discard cannot
+                // cancel it, even though the old audio endpoint is gone.
+                view.discard_gain_take();
+                assert_eq!(view.gain_recorder.events.len(), 1);
+                while view.worker_requests_pending != 0 {
+                    let event = next(&view.service);
+                    view.receive(event);
+                }
+                assert_eq!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(fixture.track)
+                        .unwrap()
+                        .gain_lane()
+                        .spans()
+                        .len(),
+                    1
+                );
+            }
+            assert!(view.gain_recorder.events.is_empty());
+            assert!(!view.gain_recorder.has_retained_take());
+        });
+    }
+}
+
+#[gpui::test]
+fn interrupted_gain_capture_retains_incomplete_events_without_inventing_end_clock(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = delivered_fixture(cx, false);
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        view.retire_audio_preserving_gain_take();
+        assert!(view.gain_recorder.retired.is_some());
+        assert_eq!(view.gain_recorder.events.len(), 1);
+    });
+    fixture.quiesce_and_poll();
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        assert_eq!(view.gain_recorder.events.len(), 1);
+        assert!(!view.gain_recorder.sealed.as_ref().unwrap().complete());
+        assert!(view.gain_recorder.blocks_edits());
+        let pending = view.worker_requests_pending;
+        view.retry_gain_take();
+        assert_eq!(view.worker_requests_pending, pending);
+        assert!(!view.gain_take_retry_available());
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(fixture.track)
+                .unwrap()
+                .gain_lane()
+                .spans()
+                .is_empty()
+        );
+        view.discard_gain_take();
+        assert!(!view.gain_recorder.blocks_edits());
+        assert!(view.gain_recorder.events.is_empty());
+    });
+}
+
+#[gpui::test]
+fn explicit_discard_can_release_unresolved_capture_receipts_without_committing(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = delivered_fixture(cx, true);
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        view.retire_audio_preserving_gain_take();
+        assert!(view.gain_recorder.retired.is_some());
+        assert_eq!(view.worker_requests_pending, 0);
+        view.discard_gain_take();
+        assert!(view.gain_recorder.retired.is_none());
+        assert!(view.gain_recorder.events.is_empty());
+    });
+    fixture.quiesce_and_poll();
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(fixture.track)
+                .unwrap()
+                .gain_lane()
+                .spans()
+                .is_empty()
+        );
     });
 }
