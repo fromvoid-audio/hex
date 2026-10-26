@@ -368,3 +368,43 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     assert!(!chain.committed_range_is_quiescent(0..1));
     assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
 }
+
+#[test]
+fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserves_empty_processing()
+ {
+    let declaration = declaration(ProcessorChainOwner::Main, false);
+    let mut endpoint = endpoint(&declaration);
+    let node = ForeignProcessorNode {
+        owner: declaration.owner,
+        device_id: 17,
+        device_type: TYPE,
+        sample_rate: 48_000,
+        configuration: declaration.configuration.as_deref().unwrap(),
+        prepared: PreparedForeignProcessor::new(8, 3, 16).unwrap(),
+        bypassed: false,
+        input_gain: 10.0,
+    };
+    let mut frames = [[1.0, -0.5]; 2];
+    endpoint
+        .process_segment_with_parameters(node, 0, &mut frames, &[], None)
+        .unwrap();
+    assert_eq!(frames, [[2.5, -1.25]; 2]);
+    assert_eq!(endpoint.segments, 1);
+    assert_eq!(
+        endpoint.process_segment_with_parameters(
+            node,
+            2,
+            &mut frames,
+            &[ForeignParameterPoint {
+                frame: 0,
+                id: 0,
+                normalized: 0.5
+            }],
+            None
+        ),
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    );
+    assert_eq!(frames, [[0.0; 2]; 2]);
+    assert_eq!(endpoint.segments, 1);
+    assert_eq!(endpoint.rejections, 1);
+}
