@@ -70,6 +70,10 @@ struct Preparation {
 pub(super) struct NativeAudioSink {
     plugins: plugins::Plugins,
     request_cancellation: Option<hex_session::service::RequestCancellation>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    native_graph_gate: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    native_graph_busy_observer: Option<SyncSender<()>>,
     policy: Result<AudioPolicy, String>,
     resident: resident::Resident,
     // Selected before initialization; applies to every resident graph, including an empty project.
@@ -119,6 +123,10 @@ impl NativeAudioSink {
         Self {
             plugins: plugins::Plugins::default(),
             request_cancellation: None,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            native_graph_gate: None,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            native_graph_busy_observer: None,
             policy: AudioPolicy::new(),
             resident: resident::Resident::default(),
             worker_owned_resident_graphs: true,

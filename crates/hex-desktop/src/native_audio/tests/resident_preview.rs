@@ -20,6 +20,12 @@ struct ResidentSink {
     pending_present: Arc<AtomicBool>,
     file_publication_waiting: Arc<AtomicBool>,
     pending_observation_generation: Arc<AtomicU64>,
+    publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+}
+struct PublicationProbe {
+    ready: SyncSender<()>,
+    resume: mpsc::Receiver<()>,
+    busy: SyncSender<()>,
 }
 impl WorkerAudioSink for ResidentSink {
     fn capture_plugin_states_for_save(
@@ -102,6 +108,10 @@ impl WorkerAudioSink for ResidentSink {
         self.file_publication_waiting
             .store(files.is_some(), std::sync::atomic::Ordering::Release);
         let refuse = self.refuse.load(Acquire);
+        if let Some(probe) = self.publication_probe.lock().unwrap().take() {
+            self.inner.native_graph_gate = Some((probe.ready, probe.resume));
+            self.inner.native_graph_busy_observer = Some(probe.busy);
+        }
         let result = self.inner.publish_resident_with_files(
             playback,
             resources,
@@ -119,6 +129,8 @@ impl WorkerAudioSink for ResidentSink {
             },
             files,
         );
+        self.inner.native_graph_gate = None;
+        self.inner.native_graph_busy_observer = None;
         self.file_publication_waiting
             .store(false, std::sync::atomic::Ordering::Release);
         result
@@ -291,6 +303,7 @@ pub(super) struct ResidentHarness {
     pub(super) pending_present: Arc<AtomicBool>,
     file_publication_waiting: Arc<AtomicBool>,
     pub(super) pending_observation_generation: Arc<AtomicU64>,
+    publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
@@ -433,6 +446,7 @@ impl ResidentHarness {
         let pending_present = Arc::new(AtomicBool::new(false));
         let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
+        let publication_probe = Arc::new(Mutex::new(None));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
@@ -445,6 +459,7 @@ impl ResidentHarness {
                 pending_present: Arc::clone(&pending_present),
                 file_publication_waiting: Arc::clone(&file_publication_waiting),
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
+                publication_probe: Arc::clone(&publication_probe),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
@@ -463,6 +478,7 @@ impl ResidentHarness {
             pending_present,
             file_publication_waiting,
             pending_observation_generation,
+            publication_probe,
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
@@ -705,17 +721,41 @@ impl ResidentHarness {
     ) -> std::thread::JoinHandle<()> {
         let callback = Arc::clone(&self.callback);
         std::thread::spawn(move || {
-            callback
-                .lock()
-                .unwrap()
-                .as_mut()
-                .unwrap()
-                .with_native_source_work_held_on_control(|| {
-                    held.send(()).unwrap();
-                    release.recv_timeout(Duration::from_secs(10)).unwrap();
-                })
-                .unwrap();
+            let result = {
+                callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .with_native_source_work_held_on_control(|| {
+                        held.send(()).map_err(|error| error.to_string())?;
+                        release
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|error| error.to_string())
+                    })
+            };
+            // A broken fixture channel must fail after both original locks
+            // are released, without poisoning Root's production Work mutex.
+            assert_eq!(result, Some(Ok(())));
         })
+    }
+    pub(super) fn probe_next_native_publication(
+        &self,
+    ) -> (mpsc::Receiver<()>, SyncSender<()>, mpsc::Receiver<()>) {
+        let (ready, entered) = mpsc::sync_channel(1);
+        let (resume, resumed) = mpsc::sync_channel(1);
+        let (busy, observed_busy) = mpsc::sync_channel(1);
+        let old = self
+            .publication_probe
+            .lock()
+            .unwrap()
+            .replace(PublicationProbe {
+                ready,
+                resume: resumed,
+                busy,
+            });
+        assert!(old.is_none(), "one exact publication probe");
+        (entered, resume, observed_busy)
     }
     pub(super) fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {
         let end = Instant::now() + Duration::from_secs(10);

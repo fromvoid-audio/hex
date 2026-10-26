@@ -48,6 +48,39 @@ fn workers_idle(h: &ResidentHarness) {
     });
 }
 
+fn hold_graph_publication(
+    h: &mut ResidentHarness,
+    request: Request,
+) -> (mpsc::SyncSender<()>, std::thread::JoinHandle<()>) {
+    let (ready, resume, busy) = h.probe_next_native_publication();
+    h.service.submit(request).unwrap();
+    graph_publication_ready(h, &ready);
+    let (held, observed_hold) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let holder = h.hold_native_work_on_control(held, released);
+    observed_hold.recv_timeout(Duration::from_secs(10)).unwrap();
+    resume.send(()).unwrap();
+    if let Err(error) = busy.recv_timeout(Duration::from_secs(10)) {
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        panic!("actual Root graph Work refusal: {error}");
+    }
+    (release, holder)
+}
+fn graph_publication_ready(h: &mut ResidentHarness, ready: &mpsc::Receiver<()>) {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if ready.try_recv().is_ok() {
+            return;
+        }
+        h.pump();
+        h.render();
+        workers_idle(h);
+        assert!(Instant::now() < until, "actual compiled graph publication");
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_repeated_state_history_reclaims_superseded_instances() {
@@ -216,6 +249,117 @@ fn native_effect_state_replacement_preserves_device_and_one_history_edge() {
 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
+fn native_effect_reused_graph_document_cancellation_respects_admission() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for cancel_before_admission in [true, false] {
+        let (mut h, files, before) = fixture(Start::Saved);
+        let original = fs::read(files.0.join("effect.hex")).unwrap();
+        h.applied(0);
+        let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        let clip = before.project.tracks()[0].clips()[0].id();
+        let edit = Request::Edit(Command::DuplicateClip(clip));
+        let (resume, held_work) = if cancel_before_admission {
+            let (ready, resume, _) = h.probe_next_native_publication();
+            h.service.submit(edit).unwrap();
+            graph_publication_ready(&mut h, &ready);
+            (resume, None)
+        } else {
+            let (release, holder) = hold_graph_publication(&mut h, edit);
+            (release, Some(holder))
+        };
+        h.service
+            .submit(Request::NewWithAudioMode {
+                mode: DocumentAudioMode::Resident,
+                reservation: None,
+            })
+            .unwrap();
+        resume.send(()).unwrap();
+        if let Some(holder) = held_work {
+            holder.join().unwrap();
+        }
+        let finished = h.next();
+        if cancel_before_admission {
+            assert!(
+                finished
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.contains("cancelled")),
+                "{:?}",
+                finished.error
+            );
+            assert_eq!(finished.state.project, before.project);
+            assert_eq!(finished.state.revision, before.revision);
+            assert_eq!(
+                (finished.state.can_undo, finished.state.can_redo),
+                (before.can_undo, before.can_redo)
+            );
+        } else {
+            assert!(finished.error.is_none(), "{:?}", finished.error);
+            assert_eq!(finished.state.revision, before.revision + 1);
+            assert_eq!(finished.state.project.tracks()[0].clips().len(), 2);
+            assert!(finished.state.can_undo);
+        }
+        let replaced = h.next();
+        assert!(replaced.project_replaced && replaced.state.project.tracks().is_empty());
+        h.release_relinquished_output();
+        h.wait_fresh_output(old_output);
+        assert_eq!(fs::read(files.0.join("effect.hex")).unwrap(), original);
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
+fn native_effect_graph_contention_keeps_exact_insertion_admission_cutoff() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for cancel_before_admission in [true, false] {
+        let mut h = ResidentHarness::with_plugins(
+            host(),
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+        );
+        let before = h.next();
+        assert!(before.error.is_none());
+        let (applied, _) = h.applied(0);
+        let input = request(&before.state, PluginEffectDestination::Main);
+        if cancel_before_admission {
+            let (ready, resume, _) = h.probe_next_native_publication();
+            h.service
+                .submit(Request::InsertPluginEffect(input.clone()))
+                .unwrap();
+            graph_publication_ready(&mut h, &ready);
+            assert!(input.control.cancel(), "pre-admission cancellation");
+            resume.send(()).unwrap();
+        } else {
+            let (release, holder) =
+                hold_graph_publication(&mut h, Request::InsertPluginEffect(input.clone()));
+            let cancelled = input.control.cancel();
+            release.send(()).unwrap();
+            holder.join().unwrap();
+            assert!(!cancelled, "admission already owns this insertion");
+        }
+        let finished = terminal(&mut h);
+        assert_eq!(finished.plugin_effect_complete.len(), 1);
+        let completion = &finished.plugin_effect_complete[0];
+        assert!(Arc::ptr_eq(&completion.control, &input.control));
+        assert_eq!(completion.accepted, !cancel_before_admission);
+        if cancel_before_admission {
+            assert!(finished.error.is_some());
+            assert_eq!(finished.state.project, before.state.project);
+            assert_eq!(finished.state.revision, before.state.revision);
+            assert!(!finished.state.can_undo);
+        } else {
+            assert!(finished.error.is_none(), "{:?}", finished.error);
+            assert_eq!(finished.state.revision, before.state.revision + 1);
+            assert_eq!(finished.state.project.main_devices().len(), 1);
+            h.applied(applied);
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_pending_state_edit_keeps_fifo_save_and_document_cancellation() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     for cancel in [false, true] {
@@ -343,7 +487,17 @@ fn native_effect_contended_admission_retries_or_cancels_the_exact_insertion() {
         ));
         assert_eq!(finished.plugin_effect_complete[0].accepted, !cancel);
         if cancel {
-            assert!(finished.error.is_some());
+            // Session may retire the explicitly cancelled pending control in
+            // its normal receive, without manufacturing an error message.
+            assert!(input.control.is_cancelled());
+            assert!(
+                finished
+                    .error
+                    .as_ref()
+                    .is_none_or(|error| error.contains("cancelled")),
+                "{:?}",
+                finished.error
+            );
             assert_eq!(finished.state.project, initial.state.project);
             assert_eq!(finished.state.revision, initial.state.revision);
             assert!(!finished.state.can_undo);
@@ -478,7 +632,9 @@ fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_re
     assert!(undone.error.is_none(), "{:?}", undone.error);
     assert_eq!(undone.state.project.tracks(), source_tracks);
     (applied, _) = h.applied(applied);
-    h.service.submit(Request::Redo).unwrap();
+    let (release, holder) = hold_graph_publication(&mut h, Request::Redo);
+    release.send(()).unwrap();
+    holder.join().unwrap();
     let redone = ordinary_terminal(&mut h);
     assert!(redone.error.is_none(), "{:?}", redone.error);
     assert_eq!(

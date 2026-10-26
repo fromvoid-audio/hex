@@ -230,6 +230,9 @@ impl NativeAudioSink {
                 }),
         ]
     }
+    /// Retry native Work contention with the exact returned graph. Once the
+    /// caller's admission hook wins, later source intent cannot cancel that
+    /// owned work; actual enqueue/refusal still determines its terminal.
     #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Explicit admission inputs; refusal returns the exact graph.
     pub(super) fn publish_resident_graph(
         &mut self,
@@ -242,21 +245,23 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
-        let preparing_native_edit = self.plugins.preparing_edit(metadata.context);
-        let edit_cancellation = preparing_native_edit
+        let native_publication = self.plugins.preparing_edit(metadata.context)
+            || playback.foreign_nodes_on_control().next().is_some();
+        let edit_cancellation = native_publication
             .then(|| self.request_cancellation.clone())
             .flatten();
-        let mut edit_admitted = false;
+        let publication_cancelled = || {
+            edit_cancellation
+                .as_ref()
+                .is_some_and(hex_session::service::RequestCancellation::is_cancelled)
+        };
+        let edit_admitted = std::cell::Cell::new(false);
         let mut guarded_admit = |resources: &[DeviceResourceAdmission<'_>]| {
-            if !edit_admitted
-                && edit_cancellation
-                    .as_ref()
-                    .is_some_and(hex_session::service::RequestCancellation::is_cancelled)
-            {
+            if !edit_admitted.get() && publication_cancelled() {
                 return Err("vst3 edit cancelled before admission".into());
             }
             admit(resources)?;
-            edit_admitted = true;
+            edit_admitted.set(true);
             Ok(())
         };
         let admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String> =
@@ -465,20 +470,49 @@ impl NativeAudioSink {
                 },
             );
             let mut retained_playback = playback;
+            #[cfg(all(test, feature = "allocation-probe"))]
+            if let Some((ready, resume)) = self.native_graph_gate.take()
+                && (ready.send(()).is_err()
+                    || resume
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .is_err())
+            {
+                return Err(ResidentPublicationRefusal {
+                    playback: retained_playback,
+                    error: "fixture native graph publication gate closed".into(),
+                });
+            }
             let result = loop {
-                match control.publish_with_admission_and_source_on_control(
+                if !edit_admitted.get() && publication_cancelled() {
+                    return Err(ResidentPublicationRefusal {
+                        playback: retained_playback,
+                        error: "vst3 edit cancelled before admission".into(),
+                    });
+                }
+                let published = control.publish_with_admission_and_source_on_control(
                     retained_playback,
                     policy,
                     metadata.context,
                     |prospective| admit(&[prospective, retired, pending]),
-                ) {
+                );
+                // Observe the real Root refusal, never synthesize contention,
+                // source readiness, admission or an audio acknowledgement.
+                #[cfg(all(test, feature = "allocation-probe"))]
+                if let Err(hex_audio::prepared::AdmittedPublishError::Publication(error)) =
+                    &published
+                    && error.reason == "native graph preparation is busy"
+                    && let Some(observer) = self.native_graph_busy_observer.as_ref()
+                {
+                    let _ = observer.try_send(());
+                }
+                match published {
                     Err(hex_audio::prepared::AdmittedPublishError::Publication(error))
-                        if preparing_native_edit
-                            && error.reason == "native graph preparation is busy" =>
+                        if error.reason == "native graph preparation is busy" =>
                     {
-                        // Work contention happens before source references or
-                        // publication admission. Retry the exact returned graph;
-                        // the existing resource owner rolls back its proposal.
+                        // Root has not retained sources or enqueued the graph,
+                        // but the caller's admission hook may already have won.
+                        // Retry the exact graph and preserve that cutoff while
+                        // the resource owner rolls back its unpublished proposal.
                         retained_playback = error.playback;
                         control.reclaim();
                         control.poll_resident_publication();
