@@ -15,6 +15,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             project.main_devices.insert(
                 index,
                 Device {
+                    automation: Vec::new(),
                     id,
                     state,
                     bypassed: false,

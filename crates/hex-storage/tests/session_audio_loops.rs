@@ -10,7 +10,7 @@ fn fixture() -> Editor {
 fn schema47_migrates_every_field_and_preserves_original_document_and_media() {
     let project = decode(OLD).unwrap();
     let mut current: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
-    assert_eq!(current["version"], 49);
+    assert_eq!(current["version"], 50);
     let rows = current
         .as_object_mut()
         .unwrap()
@@ -26,6 +26,16 @@ fn schema47_migrates_every_field_and_preserves_original_document_and_media() {
     for source in current["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
     }
+    assert!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("device_automation")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     current["version"] = 47.into();
     assert_eq!(
         current,
@@ -155,10 +165,20 @@ fn authentic_schema48_migrates_complete_loop_and_singleton_source_without_rewrit
     assert_eq!(source.receiver(), Some(contributor.id()));
     assert_eq!(project.source_contributors(source.id()).count(), 1);
     let mut current: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
-    assert_eq!(current["version"], 49);
+    assert_eq!(current["version"], 50);
     for source in current["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
     }
+    assert!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("device_automation")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     current["version"] = 48.into();
     assert_eq!(
         current, old,
@@ -222,7 +242,7 @@ fn schema49_shared_source_receiver_and_console_cycle_roundtrip_together_with_his
     assert_eq!(shared.source_contributors(source).count(), 2);
     let bytes = encode(&shared).unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["version"], 49);
+    assert_eq!(value["version"], 50);
     assert_eq!(value["native_sources"][0]["receiver"], contributor.value());
     assert_eq!(
         value["session_audio_cycles"][0]["cycle"],

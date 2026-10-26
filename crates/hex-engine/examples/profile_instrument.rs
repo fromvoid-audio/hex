@@ -98,12 +98,14 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: vec![
                 DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: prefix_id,
                     bypassed: false,
                     state: utility_state.clone(),
                 },
                 DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: suffix_id,
                     bypassed: false,
@@ -111,6 +113,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 },
             ],
             instrument: Some(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
                 bypassed: false,

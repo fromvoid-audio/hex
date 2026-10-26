@@ -107,6 +107,8 @@ pub use native_device_view::{
     sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
 
+mod device_automation;
+pub use device_automation::DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED;
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,

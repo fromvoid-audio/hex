@@ -2,9 +2,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// Restore the frozen inline-instrument representation when comparing a current
-/// schema46 writer with an evidenced pre-binding document. This removes only the
-/// schema46 representation layer; device IDs, states, references and placements
-/// are reconstructed from the canonical source inventory.
+/// writer with an evidenced pre-binding document. Later cycle/automation layers
+/// must be empty; device IDs, states, references and placements are reconstructed
+/// from the canonical source inventory.
 pub fn restore_pre_binding_instruments(value: &mut Value) -> usize {
     remove_audio_cycles(value);
     let sources = value["native_sources"].as_array().unwrap().clone();
@@ -99,9 +99,16 @@ pub fn restore_pre_binding_instruments(value: &mut Value) -> usize {
     promoted
 }
 
-/// Remove only the schema48 layer when constructing a frozen older envelope.
-/// Every row must explicitly retain one-shot behavior before comparison.
+/// Remove the schema48 cycle layer and any newer empty automation inventory
+/// when constructing a frozen pre-cycle envelope. Never discard authored data.
 pub fn remove_audio_cycles(value: &mut Value) {
+    if let Some(automation) = value.as_object_mut().unwrap().remove("device_automation") {
+        assert_eq!(
+            automation,
+            json!([]),
+            "historical comparison cannot discard device automation"
+        );
+    }
     let cycles = value
         .as_object_mut()
         .unwrap()

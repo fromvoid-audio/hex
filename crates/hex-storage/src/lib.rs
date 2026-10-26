@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 49;
+pub const CURRENT_SCHEMA_VERSION: u32 = 50;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -153,7 +153,7 @@ impl From<serde_json::Error> for StorageError {
 /// byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::session_audio_loops::encode(project)?)
+    encode_document(&schema::device_automation::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -169,6 +169,11 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project.has_device_automation() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save device automation",
+        ));
+    }
     schema::session_audio_loops::refuse_legacy(project)?;
     if !project.native_sources().is_empty() {
         return Err(StorageError::Invalid(
@@ -258,6 +263,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// audio cycles while retaining the receiverless singleton-source layout. Schema49
 /// adds a required nullable source receiver and shared contributor bindings;
 /// schemas46–48 infer a receiver only from their singleton binding.
+/// Schema50 adds ordered stable device/parameter envelopes with bounded normalized
+/// points. Schemas1–49 migrate with no generic device automation; provider-owned
+/// opaque state, including older EQ envelopes, is retained unchanged.
 /// Schema45 retains
 /// independent sources. Schemas1–44 migrate inline instruments
 /// into retained singleton sources, preserving their device identities. Schema44
@@ -290,7 +298,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::session_audio_loops::decode49(bytes),
+        CURRENT_SCHEMA_VERSION => schema::device_automation::decode(bytes),
+        49 => schema::session_audio_loops::decode49(bytes),
         48 => schema::session_audio_loops::decode48(bytes),
         47 => schema::native_sources::decode47(bytes),
         46 => schema::native_sources::decode46(bytes),
