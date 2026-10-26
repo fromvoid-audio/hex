@@ -109,3 +109,30 @@ fn main_resize_after_window_shrink_starts_from_painted_height(cx: &mut TestAppCo
     assert_eq!(next.bottom(), displayed.bottom());
     editor.read_with(&visual, |v, _| assert_eq!(v.worker_requests_pending, 0));
 }
+
+#[gpui::test]
+fn section_header_follows_current_main_height_when_overview_compacts_it(cx: &mut TestAppContext) {
+    let mut model = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+    model
+        .execute(Command::AddArrangementSection {
+            name: "section".into(),
+            color: hex_project::ElementColor::Blue,
+            start: hex_project::BeatTime::ZERO,
+            end: hex_project::BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap();
+    let (mut visual, editor) = project_window(cx, model.project().clone());
+    let from = edge(&mut visual);
+    drag(&mut visual, from, from - point(px(0.), px(100.)));
+    // Leave the large row's previous measurement installed, then perform one H edit.
+    focus_workspace(&mut visual, &editor);
+    visual.simulate_keystrokes("h");
+    visual.run_until_parked();
+    let lane = visual.debug_bounds("main-track-lane").unwrap();
+    let header = visual.debug_bounds("arrangement-section-header-0").unwrap();
+    let expected = super::super::time_selection::header_hit_height(f32::from(lane.size.height));
+    assert!(
+        (f32::from(header.size.height) - expected).abs() <= 1.,
+        "header must use the current row: {header:?}, lane {lane:?}"
+    );
+}
