@@ -463,8 +463,26 @@ mod native {
     fn shared_parameter_right_click_creates_an_empty_lane_without_a_project_edit(
         cx: &mut TestAppContext,
     ) {
+        shared_parameter_right_click(DeviceTypeId::from_static("hex.utility"), cx);
+    }
+    #[gpui::test]
+    fn saturator_dry_wet_uses_the_same_parameter_menu_and_empty_lane_path(cx: &mut TestAppContext) {
+        shared_parameter_right_click(DeviceTypeId::from_static("hex.saturator"), cx);
+    }
+    fn shared_parameter_right_click(provider: DeviceTypeId, cx: &mut TestAppContext) {
         cx.update(super::super::super::bind_editor_keys);
-        let (project, track, device, parameter) = project();
+        let (mut project, track, device, mut parameter) = project();
+        if provider != DeviceTypeId::from_static("hex.utility") {
+            let mut model = Editor::new(project, 16).unwrap();
+            model
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: hex_engine::default_native_device_state(provider).unwrap(),
+                })
+                .unwrap();
+            project = model.project().clone();
+            parameter = ParameterId::new(3).unwrap();
+        }
         let (handle, entity) =
             super::super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
         let mut visual = VisualTestContext::from_window(handle, cx);

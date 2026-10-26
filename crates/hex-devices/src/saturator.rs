@@ -9,6 +9,7 @@ use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
 };
 use std::any::Any;
+mod automation;
 
 pub const SATURATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.saturator");
 pub const SATURATOR_STATE_VERSION: u32 = 1;
@@ -207,6 +208,37 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         }
     }
 
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        let descriptor = DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+            .ok_or(DeviceContractError::UnknownParameter)?;
+        use hex_lattice_contract::{
+            ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
+            ParameterModulation as M, ParameterNormalization as N, ParameterSmoothing as S,
+            ParameterStepping as T,
+        };
+        let (normalization, stepping) = match descriptor.kind {
+            ParameterKind::Float { .. } => (N::Linear, T::Continuous),
+            ParameterKind::Choice { .. } => (N::Discrete, T::Choice),
+            ParameterKind::Bool => return Err(DeviceContractError::InvalidDescriptor),
+        };
+        Ok(Some(hex_lattice_contract::ParameterSemantics {
+            access: A::ReadWrite,
+            normalization,
+            stepping,
+            automation: E::DeviceArrangementEnvelope,
+            modulation: M::Unsupported,
+            smoothing: S::None,
+            change_impact: I::ValueOnly,
+        }))
+    }
+
     fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -236,6 +268,31 @@ impl NativeDeviceMetadata for SaturatorDefinition {
 }
 
 impl NativeDeviceDefinition for SaturatorDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        Ok(DESCRIPTORS
+            .iter()
+            .any(|descriptor| descriptor.id == parameter))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(Self::prepare_owned(state, context.sample_rate, parameters)?),
+            )),
+        })
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -257,24 +314,12 @@ impl NativeDeviceDefinition for SaturatorDefinition {
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        let sample_rate = context.sample_rate;
-        if !(8_000..=192_000).contains(&sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        Ok(Some(Box::new(PreparedSaturator {
-            settings: decode(state)?,
-            sample_rate,
-            drive_gain: gain_from_db(state, parameter::DRIVE)?,
-            output_gain: gain_from_db(state, parameter::OUTPUT)?,
-        })))
+        Ok(Some(Box::new(Self::prepare_owned(
+            state,
+            context.sample_rate,
+            &[],
+        )?)))
     }
-}
-
-fn gain_from_db(state: &NativeDeviceState, id: ParameterId) -> Result<f64, DeviceContractError> {
-    let ParameterValue::Float(db) = SATURATOR_DEFINITION.read_parameter(state, id)? else {
-        return Err(DeviceContractError::InvalidParameterValue);
-    };
-    amplitude_from_db(db)
 }
 
 fn amplitude_from_db(db: f32) -> Result<f64, DeviceContractError> {
@@ -284,7 +329,11 @@ fn amplitude_from_db(db: f32) -> Result<f64, DeviceContractError> {
         .map_err(|_| DeviceContractError::InvalidParameterValue)
 }
 
-struct PreparedSaturator {
+/// Closed control-prepared Saturator factory. All fields are fixed inline;
+/// canonical envelope backing stays in the host's existing program owner.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedSaturator {
+    automation_mask: u8,
     settings: SaturatorSettings,
     sample_rate: u32,
     drive_gain: f64,
@@ -292,6 +341,18 @@ struct PreparedSaturator {
 }
 
 impl PreparedNativeProcessor for PreparedSaturator {
+    fn parameter_automation_descriptor(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<ParameterDescriptor> {
+        self.supports(parameter)
+            .then(|| DESCRIPTORS.iter().find(|d| d.id == parameter).copied())
+            .flatten()
+    }
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.supports(parameter)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -301,12 +362,16 @@ impl PreparedNativeProcessor for PreparedSaturator {
     }
 
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(SaturatorRuntime {
+        self.check_inline_ownership();
+        let runtime = SaturatorRuntime {
+            base: *self,
             settings: self.settings,
             sample_rate: self.sample_rate,
             drive_gain: self.drive_gain,
             output_gain: self.output_gain,
-        })
+        };
+        runtime.check_inline_ownership();
+        Box::new(runtime)
     }
 
     fn algorithmic_latency_frames(&self) -> Option<u32> {
@@ -318,7 +383,11 @@ impl PreparedNativeProcessor for PreparedSaturator {
     }
 }
 
-struct SaturatorRuntime {
+/// Closed fixed-inline DSP owner, including the last effective controls used by
+/// transactional history copying. It owns no program, asset or external handle.
+#[derive(Clone, Copy, Debug)]
+pub struct SaturatorRuntime {
+    base: PreparedSaturator,
     settings: SaturatorSettings,
     sample_rate: u32,
     drive_gain: f64,
@@ -326,6 +395,34 @@ struct SaturatorRuntime {
 }
 
 impl NativeProcessorRuntime for SaturatorRuntime {
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.base.supports(parameter)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            if self.apply_automation(values, offset).is_ok() {
+                self.process_block(std::slice::from_mut(frame), resources);
+            }
+        }
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        if let Some(offset) = frames.len().checked_sub(1) {
+            let _ = self.apply_automation(values, offset);
+        }
+    }
+
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
@@ -351,7 +448,11 @@ impl NativeProcessorRuntime for SaturatorRuntime {
     ) {
     }
 
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        self.settings = self.base.settings;
+        self.drive_gain = self.base.drive_gain;
+        self.output_gain = self.base.output_gain;
+    }
 
     fn is_quiescent(&self) -> bool {
         true
@@ -364,7 +465,17 @@ impl NativeProcessorRuntime for SaturatorRuntime {
             .is_some_and(|previous| self.sample_rate == previous.sample_rate)
     }
 
-    fn copy_history_from(&mut self, _previous: &dyn NativeProcessorRuntime) {}
+    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+        if self.base.automation_mask != 0
+            && let Some(previous) = previous.as_any().downcast_ref::<Self>()
+            && previous.base.automation_mask != 0
+            && self.sample_rate == previous.sample_rate
+        {
+            self.settings = previous.settings;
+            self.drive_gain = previous.drive_gain;
+            self.output_gain = previous.output_gain;
+        }
+    }
 
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
