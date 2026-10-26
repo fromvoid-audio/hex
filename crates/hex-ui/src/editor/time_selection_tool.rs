@@ -9,6 +9,7 @@ impl EditorView {
         self.focus.is_focused(window)
             || self.midi_focus.is_focused(window)
             || self.audio_event_focus.is_focused(window)
+            || self.focused_header_target(window).is_some()
     }
 
     pub(super) fn time_selection_key_down(
@@ -109,11 +110,13 @@ mod tests {
     ) {
         use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
         cx.update(crate::editor::bind_editor_keys);
-        let (project, _, _, clip) = audio_project();
+        let (project, source, _, clip) = audio_project();
         let before = project.snapshot();
         let (window, editor) = editor_window(cx, project, Default::default());
         let mut visual = VisualTestContext::from_window(window, cx);
-        visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| v.track_header_focus(source, cx).focus(window))
+        });
         visual.run_until_parked();
         let header = visual
             .debug_bounds(Box::leak(
