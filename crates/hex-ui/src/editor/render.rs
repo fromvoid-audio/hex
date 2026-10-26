@@ -1292,7 +1292,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &SplitClip, window, cx| {
                 if !view.split_section_at_cursor(window) {
-                    view.split_at_edit_cursor();
+                    view.split_arrangement_clips(window, cx);
                 }
                 cx.notify();
             }))

@@ -1,6 +1,8 @@
-//! Atomic Arrangement splitting at one timeline frame across multiple tracks.
-
-use crate::{Command, Created, Invalid, MAX_TRACKS, Project, TrackId};
+//! Atomic Arrangement cuts through the canonical audio/MIDI split helpers.
+//! A range cuts end before start so retained left identities remain valid for
+//! both boundaries. One private candidate owns all cuts, including direct
+//! Project::apply callers; Editor/session retain history and preparation custody.
+use crate::{Command, Created, Invalid, MAX_TRACKS, Project, TimeRange, TrackId};
 use std::collections::HashSet;
 
 pub(crate) fn apply(
@@ -8,13 +10,30 @@ pub(crate) fn apply(
     tracks: &[TrackId],
     frame: u64,
 ) -> Result<Created, Invalid> {
+    if apply_at_frames(project, tracks, &[frame])? == 0 {
+        return Err(Invalid("split cursor must be inside a clip to split"));
+    }
+    Ok(Created::None)
+}
+
+pub(crate) fn apply_range(project: &mut Project, range: &TimeRange) -> Result<Created, Invalid> {
+    range.validate(project)?;
+    apply_at_frames(project, range.tracks(), &[range.end(), range.start()])?;
+    Ok(Created::None)
+}
+
+// Only the one-cursor/two-range-boundary entry points above supply frames.
+fn apply_at_frames(
+    project: &mut Project,
+    tracks: &[TrackId],
+    frames: &[u64],
+) -> Result<usize, Invalid> {
     if tracks.is_empty() {
         return Err(Invalid("split requires at least one track"));
     }
     if tracks.len() > MAX_TRACKS {
         return Err(Invalid("split track count exceeds project limit"));
     }
-
     let mut seen = HashSet::new();
     seen.try_reserve(tracks.len())
         .map_err(|_| Invalid("could not reserve split track validation"))?;
@@ -26,61 +45,63 @@ pub(crate) fn apply(
             return Err(Invalid("split track no longer exists"));
         }
     }
-
-    project.refuse_automation_transform(tracks)?;
-    let beat = project.tempo_map().frame_to_beat(frame)?;
-    let mut commands = Vec::new();
     let clip_capacity = tracks
         .iter()
         .filter_map(|id| project.track(*id))
         .map(|track| track.clips().len() + track.midi_clips().len())
         .sum::<usize>();
+    let capacity = clip_capacity
+        .checked_mul(frames.len())
+        .ok_or(Invalid("split command count overflow"))?;
+    let mut commands = Vec::new();
     commands
-        .try_reserve(clip_capacity)
+        .try_reserve(capacity)
         .map_err(|_| Invalid("could not reserve split commands"))?;
-
-    for track_id in tracks {
-        let track = project
-            .track(*track_id)
-            .ok_or(Invalid("split track no longer exists"))?;
-        for clip in track.clips() {
-            let end = clip
-                .start()
-                .checked_add(clip.duration())
-                .ok_or(Invalid("clip timeline end overflow"))?;
-            if clip.start() < frame && frame < end {
-                commands.push(Command::SplitClip {
-                    clip: clip.id(),
-                    frame,
-                });
+    // A cut never moves global time: track gain curves/touch spans remain
+    // unchanged, just as for the individual SplitClip/SplitMidiClip commands.
+    for &frame in frames {
+        let beat = project.tempo_map().frame_to_beat(frame)?;
+        for track_id in tracks {
+            let track = project
+                .track(*track_id)
+                .ok_or(Invalid("split track no longer exists"))?;
+            for clip in track.clips() {
+                let end = clip
+                    .start()
+                    .checked_add(clip.duration())
+                    .ok_or(Invalid("clip timeline end overflow"))?;
+                if clip.start() < frame && frame < end {
+                    commands.push(Command::SplitClip {
+                        clip: clip.id(),
+                        frame,
+                    });
+                }
             }
-        }
-        for clip in track.midi_clips() {
-            let end = clip
-                .start()
-                .raw()
-                .checked_add(clip.length().raw())
-                .ok_or(Invalid("midi clip timeline end overflow"))?;
-            if clip.start() < beat && beat.raw() < end {
-                commands.push(Command::SplitMidiClip {
-                    clip: clip.id(),
-                    beat,
-                });
+            for clip in track.midi_clips() {
+                let end = clip
+                    .start()
+                    .raw()
+                    .checked_add(clip.length().raw())
+                    .ok_or(Invalid("midi clip timeline end overflow"))?;
+                if clip.start() < beat && beat.raw() < end {
+                    commands.push(Command::SplitMidiClip {
+                        clip: clip.id(),
+                        beat,
+                    });
+                }
             }
         }
     }
-    if commands.is_empty() {
-        return Err(Invalid("split cursor must be inside a clip to split"));
+    let count = commands.len();
+    if count == 0 {
+        return Ok(0);
     }
-
-    // Apply every split to a private candidate. A failure in a later clip must
-    // not leave earlier clips changed when this command is used outside Editor.
     let mut candidate = project.clone();
     for command in commands {
         candidate.apply(command)?;
     }
     *project = candidate;
-    Ok(Created::None)
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -152,6 +173,265 @@ mod tests {
             })
             .expect("midi note");
         (editor, audio_track, midi_track)
+    }
+
+    type Intervals = Vec<(u64, u64)>;
+
+    fn intervals(project: &Project, audio: TrackId, midi: TrackId) -> (Intervals, Intervals) {
+        let audio = project
+            .track(audio)
+            .unwrap()
+            .clips()
+            .iter()
+            .map(|c| (c.start(), c.start() + c.duration()))
+            .collect();
+        let midi = project
+            .track(midi)
+            .unwrap()
+            .midi_clips()
+            .iter()
+            .map(|c| {
+                (
+                    project.tempo_map().beat_to_frame(c.start()).unwrap(),
+                    project
+                        .tempo_map()
+                        .beat_to_frame(BeatTime::from_raw(c.start().raw() + c.length().raw()))
+                        .unwrap(),
+                )
+            })
+            .collect();
+        (audio, midi)
+    }
+
+    #[test]
+    fn selected_edges_preserve_canonical_split_content_and_one_history_step() {
+        let (mut fixture, audio, midi) = fixture();
+        fixture
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track: audio,
+                points: vec![crate::GainPoint {
+                    incoming_gain: None,
+                    beat: BeatTime::ONE,
+                    gain: 0.5,
+                    outgoing: crate::GainInterpolation::Linear,
+                }],
+            })
+            .unwrap();
+        let audio_clip = fixture.project().track(audio).unwrap().clips()[0].id();
+        fixture
+            .execute(Command::SetClipFades {
+                clip: audio_clip,
+                fade_in: 40_000,
+                fade_out: 40_000,
+            })
+            .unwrap();
+        fixture
+            .execute(Command::SpliceGainTouch {
+                track: audio,
+                expected_epoch: 0,
+                span: crate::GainTouchSpan {
+                    source_start: BeatTime::ZERO,
+                    start: BeatTime::ZERO,
+                    end: BeatTime::ONE,
+                    context: crate::GainTouchContext {
+                        recording_epoch: 1,
+                        project_generation: 0,
+                        canonical_revision: 1,
+                        audio_revision: 1,
+                        transport_epoch: 1,
+                        gesture_epoch: 1,
+                        gesture_serial: 1,
+                        sample_rate: 48_000,
+                        loop_pass: 0,
+                    },
+                    steps: vec![crate::GainTouchStep {
+                        beat: BeatTime::ZERO,
+                        gain: 0.75,
+                        origin_beat: BeatTime::ZERO,
+                        source_sequence: 1,
+                    }],
+                },
+            })
+            .unwrap();
+        let midi_clip = fixture.project().track(midi).unwrap().midi_clips()[0].id();
+        fixture
+            .execute(Command::ReplaceMidiClipVolume {
+                clip: midi_clip,
+                volume: crate::MidiClipVolume::new(
+                    vec![
+                        crate::MidiClipVolumePoint::linear(
+                            BeatTime::ZERO,
+                            crate::MidiClipGain::new(0.5).unwrap(),
+                        ),
+                        crate::MidiClipVolumePoint::linear(
+                            BeatTime::from_raw(4 * BeatTime::ONE.raw()),
+                            crate::MidiClipGain::new(1.5).unwrap(),
+                        ),
+                    ],
+                    BeatTime::from_raw(4 * BeatTime::ONE.raw()),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let before = fixture.project().clone();
+        // The batch must retain the complete semantics of the established
+        // split commands, including source identities, note gates and fades.
+        let mut expected = before.clone();
+        for frame in [72_000, 24_000] {
+            apply(&mut expected, &[audio, midi], frame).unwrap();
+        }
+        let mut editor = Editor::new(before.clone(), 8).unwrap();
+        editor
+            .execute(Command::SplitTimeRange {
+                range: TimeRange::new(vec![audio, midi], 24_000, 72_000).unwrap(),
+            })
+            .unwrap();
+        assert_eq!(editor.project(), &expected);
+        let edges = vec![(0, 24_000), (24_000, 72_000), (72_000, 96_000)];
+        assert_eq!(
+            intervals(editor.project(), audio, midi),
+            (edges.clone(), edges)
+        );
+        assert!(editor.undo());
+        let mut restored = before.snapshot();
+        restored.next_id = expected.snapshot().next_id;
+        assert_eq!(editor.project().snapshot(), restored);
+        assert!(!editor.can_undo());
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &expected);
+    }
+
+    #[test]
+    fn selection_preserves_existing_cuts_and_edges_are_noops_with_redo_intact() {
+        let (fixture, audio, midi) = fixture();
+        let mut editor = Editor::new(fixture.project().clone(), 8).unwrap();
+        editor
+            .execute(Command::SplitTracksAtFrame {
+                tracks: vec![audio, midi],
+                frame: 48_000,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SplitTimeRange {
+                range: TimeRange::new(vec![audio, midi], 24_000, 72_000).unwrap(),
+            })
+            .unwrap();
+        let edges = vec![
+            (0, 24_000),
+            (24_000, 48_000),
+            (48_000, 72_000),
+            (72_000, 96_000),
+        ];
+        assert_eq!(
+            intervals(editor.project(), audio, midi),
+            (edges.clone(), edges)
+        );
+        assert!(editor.undo());
+        let before_noop = editor.project().clone();
+        // Both exact existing edges and a surrounding interval in gaps have
+        // no cuts. They must not create history or erase the redo branch.
+        for (start, end) in [(0, 48_000), (0, 120_000)] {
+            editor
+                .execute(Command::SplitTimeRange {
+                    range: TimeRange::new(vec![audio, midi], start, end).unwrap(),
+                })
+                .unwrap();
+            assert_eq!(editor.project(), &before_noop);
+            assert!(editor.can_redo());
+        }
+        assert!(editor.redo());
+        let edges = vec![
+            (0, 24_000),
+            (24_000, 48_000),
+            (48_000, 72_000),
+            (72_000, 96_000),
+        ];
+        assert_eq!(
+            intervals(editor.project(), audio, midi),
+            (edges.clone(), edges)
+        );
+    }
+
+    #[test]
+    fn selection_boundaries_in_gaps_cut_only_intersected_material() {
+        let (fixture, audio, midi) = fixture();
+        let mut source = fixture.project().clone();
+        let clip = source.track(audio).unwrap().clips()[0].id();
+        source
+            .apply(Command::MoveClip {
+                clip,
+                track: audio,
+                start: 24_000,
+            })
+            .unwrap();
+        let clip = source.track(midi).unwrap().midi_clips()[0].id();
+        source
+            .apply(Command::MoveMidiClip {
+                clip,
+                track: midi,
+                start: BeatTime::ONE,
+            })
+            .unwrap();
+        for (start, end, cuts) in [
+            (12_000, 60_000, vec![24_000, 60_000, 120_000]),
+            (60_000, 132_000, vec![24_000, 60_000, 120_000]),
+            (12_000, 132_000, vec![24_000, 120_000]),
+            (24_000, 120_000, vec![24_000, 120_000]),
+        ] {
+            let mut project = source.clone();
+            project
+                .apply(Command::SplitTimeRange {
+                    range: TimeRange::new(vec![audio, midi], start, end).unwrap(),
+                })
+                .unwrap();
+            let expected: Vec<_> = cuts.windows(2).map(|w| (w[0], w[1])).collect();
+            assert_eq!(
+                intervals(&project, audio, midi),
+                (expected.clone(), expected),
+                "{start}..{end}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_stale_scope_preparation_and_late_id_failure_leave_no_partial_cuts() {
+        let (fixture, audio, midi) = fixture();
+        let before = fixture.project().clone();
+        let mut project = before.clone();
+        assert!(
+            project
+                .apply(Command::SplitTimeRange {
+                    range: TimeRange::new(vec![midi, audio], 24_000, 72_000).unwrap(),
+                })
+                .is_err()
+        );
+        assert_eq!(project, before);
+        let mut editor = Editor::new(before, 8).unwrap();
+        let result: Result<(_, ()), Invalid> = editor.execute_prepared_transition(
+            Command::SplitTimeRange {
+                range: TimeRange::new(vec![audio, midi], 24_000, 72_000).unwrap(),
+            },
+            |source, candidate| {
+                assert_eq!(source.track(audio).unwrap().clips().len(), 1);
+                assert_eq!(candidate.track(audio).unwrap().clips().len(), 3);
+                Err(Invalid("test preparation refused"))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(editor.project(), &project);
+        assert!(!editor.can_undo());
+        // At least the end cuts succeed privately before ID exhaustion at
+        // the start boundary. Direct callers also retain all-or-nothing edits.
+        project.next_id = u64::MAX - 2;
+        let before = project.clone();
+        assert!(
+            project
+                .apply(Command::SplitTimeRange {
+                    range: TimeRange::new(vec![audio, midi], 24_000, 72_000).unwrap(),
+                })
+                .is_err()
+        );
+        assert_eq!(project, before);
     }
 
     #[test]
