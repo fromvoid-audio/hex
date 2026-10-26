@@ -781,3 +781,7 @@ mod ui_tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "pitch_ui_tests.rs"]
+mod pitch_ui_tests;
