@@ -10,6 +10,15 @@ use std::{any::Any, sync::Arc};
 /// Control-prepared owned transaction factory, independent of the legacy twin
 /// factory. Construction is fallible and finishes before audio publication.
 pub trait PreparedOwnedProcessorRuntime: Send + Sync {
+    fn parameter_automation_descriptor(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterDescriptor> {
+        None
+    }
+    fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
+        false
+    }
     fn runtime_version(&self) -> u32;
     /// Entire owner plus both histories, all buffers and reserved capacities.
     /// Shared prepared configuration is accounted by its separate control owner.
@@ -29,6 +38,43 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
 /// fallible per-segment capability are unsupported by this initial contract.
 /// Host render failure invokes rollback after all earlier speculative segments.
 pub trait OwnedProcessorRuntime: Any + Send {
+    fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
+        false
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        _automation: &dyn crate::NativeParameterAutomation,
+        resources: &dyn crate::DeviceResources,
+    ) {
+        self.process_block_with_clock(frames, clock, resources);
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        automation: &dyn crate::NativeParameterAutomation,
+        resources: &dyn crate::DeviceResources,
+    ) {
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let dry = *frame;
+            let shifted = clock.map(|clock| crate::OffsetClock { clock, offset });
+            let values = crate::OffsetAutomation {
+                values: automation,
+                offset,
+            };
+            self.process_block_with_automation(
+                std::slice::from_mut(frame),
+                shifted
+                    .as_ref()
+                    .map(|clock| clock as &dyn NativeInstrumentClock),
+                &values,
+                resources,
+            );
+            *frame = dry;
+        }
+    }
     fn fixed_storage_pair_bytes(&self) -> Option<usize>;
     /// Reopening must abandon prior speculative work, preserving committed PCM.
     fn begin_block(&mut self);
@@ -121,6 +167,26 @@ pub enum PreparedProcessorFactory {
     Foreign(crate::PreparedForeignProcessor),
 }
 impl PreparedProcessorFactory {
+    pub fn parameter_automation_descriptor(
+        &self,
+        parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterDescriptor> {
+        match self {
+            Self::Legacy(v) => v.parameter_automation_descriptor(parameter),
+            Self::Owned(v) => v.parameter_automation_descriptor(parameter),
+            Self::Foreign(_) => None,
+        }
+    }
+    pub fn supports_parameter_automation(
+        &self,
+        parameter: hex_lattice_contract::ParameterId,
+    ) -> bool {
+        match self {
+            Self::Legacy(value) => value.supports_parameter_automation(parameter),
+            Self::Owned(value) => value.supports_parameter_automation(parameter),
+            Self::Foreign(_) => false,
+        }
+    }
     pub fn runtime_version(&self) -> u32 {
         match self {
             Self::Legacy(v) => v.runtime_version(),
@@ -162,6 +228,7 @@ impl PreparedProcessorFactory {
 /// and convert once on control; there is no positional factory sidecar.
 #[derive(Clone)]
 pub struct PreparedRuntimeInstance {
+    pub automation: crate::PreparedParameterAutomation,
     pub meter: Arc<DeviceMeter>,
     pub owner: ProcessorChainOwner,
     pub device_id: u64,
@@ -187,6 +254,7 @@ impl PreparedRuntimeInstance {
 impl From<PreparedProcessorInstance> for PreparedRuntimeInstance {
     fn from(value: PreparedProcessorInstance) -> Self {
         Self {
+            automation: Default::default(),
             meter: value.meter,
             owner: value.owner,
             device_id: value.device_id,
