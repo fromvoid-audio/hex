@@ -242,7 +242,7 @@ pub fn start_on_control(
 
 /// The writer is already source-validated and exclusively owned. All buffer allocation and
 /// thread creation happen before a caller can reserve a receipt batch.
-pub fn spawn_writer_on_control(writer: DraftWriter) -> Result<(DraftInput, DraftWorker), String> {
+fn spawn_writer_on_control(writer: DraftWriter) -> Result<(DraftInput, DraftWorker), String> {
     spawn_with_start(writer, || {})
 }
 fn spawn_with_start(

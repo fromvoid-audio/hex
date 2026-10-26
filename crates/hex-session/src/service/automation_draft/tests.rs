@@ -260,9 +260,12 @@ fn recovery_reuses_source_preparation_without_saved_association_and_save_as_pres
     let files = Files::new();
     let (project, target, stamp) = fixture();
     let path = files.path("recover.hex-automation-draft");
-    let mut writer = DraftWriter::create_new(&path, &project, target, stamp).unwrap();
-    writer.append(&[event(1)]).unwrap();
-    drop(writer); // actual interrupted capture, no fictitious end clock
+    let session = Session::from_loaded(project.clone(), 8, 0, Vec::new()).unwrap();
+    let (mut input, worker) =
+        start_on_control(&session, None, path.clone(), target, stamp).unwrap();
+    send(&mut input, &[event(1)]);
+    input.finish(DraftTerminal::Interrupted).unwrap(); // quiescence is not a fabricated native end
+    assert!(worker.join_on_control().unwrap().failure.is_none());
     let original = fs::read(&path).unwrap();
     let service = Service::with_recovery(48000, 8, 0, files.path("untitled.hex-journal")).unwrap();
     service.events.recv_timeout(Duration::from_secs(5)).unwrap();
