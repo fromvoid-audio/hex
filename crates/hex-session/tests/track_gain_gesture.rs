@@ -557,7 +557,7 @@ fn track_gain_worker_profile_covers_populated_projects_and_retains_one_history_s
         let committed = request(
             &service,
             Request::DeviceGesture(GestureRequest::Commit {
-            manual_edit: false,
+                manual_edit: false,
                 key,
                 sequence: 65,
                 value: ParameterValue::Float(0.25),
@@ -983,7 +983,7 @@ fn header_mix_targets_refuse_nonfinite_out_of_range_and_removed_owners() {
         let stale = request(
             &service,
             Request::DeviceGesture(GestureRequest::Commit {
-            manual_edit: false,
+                manual_edit: false,
                 key,
                 sequence: 5,
                 value: ParameterValue::Float(0.5),
