@@ -401,7 +401,6 @@ actions!(
         SplitClip,
         SetLoopFromClip,
         LoopSelection,
-        BounceInPlace,
         BounceToNewTracks,
         ToggleLoop,
         ZoomIn,
@@ -521,11 +520,6 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
-        KeyBinding::new(
-            "b",
-            BounceInPlace,
-            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
-        ),
         KeyBinding::new(
             "cmd-b",
             BounceToNewTracks,
@@ -1761,7 +1755,19 @@ impl EditorView {
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {
-        self.enqueue(Request::Edit(Command::ToggleSolo { track, exclusive }));
+        let selected = self.selected_track_ids();
+        let command = if selected.len() > 1 && selected.contains(&track) {
+            match hex_project::TrackSelectionIds::new(&selected) {
+                Ok(tracks) => Command::ToggleSoloTracks { tracks, exclusive },
+                Err(error) => {
+                    self.error = Some(error.to_string().into());
+                    return;
+                }
+            }
+        } else {
+            Command::ToggleSolo { track, exclusive }
+        };
+        self.enqueue(Request::Edit(command));
     }
 
     pub(super) fn select_neighbor_track(

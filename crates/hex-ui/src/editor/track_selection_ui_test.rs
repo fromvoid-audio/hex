@@ -508,3 +508,140 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
         }
     }
 }
+
+#[gpui::test]
+fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mut TestAppContext) {
+    use gpui::AppContext;
+    use hex_project::{Command, TrackId};
+    use hex_session::service::{Event, Request, Service};
+    fn next(service: &Service) -> Event {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(event) = service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                return event;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    fn flush(editor: &gpui::Entity<super::EditorView>, cx: &mut TestAppContext) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            editor.update(cx, |view, cx| {
+                view.tick(cx);
+                cx.notify();
+            });
+            if editor.read_with(cx, |view, _| {
+                view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+            }) {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    cx.update(super::bind_editor_keys);
+    let service = Service::new(48_000, 16, 64).unwrap();
+    let _ = next(&service);
+    let mut state = None;
+    for name in ["first", "outside", "last"] {
+        service
+            .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+            .unwrap();
+        state = Some(next(&service).state);
+    }
+    let state = state.unwrap();
+    let tracks: Vec<TrackId> = state
+        .project
+        .tracks()
+        .iter()
+        .map(|track| track.id())
+        .collect();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.activate_window();
+            let editor = window.replace_root(cx, |window, cx| {
+                super::EditorView::new(window, cx, service, Err("offline solo test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(state);
+                view.selected_track = Some(tracks[0]);
+                view.focus.focus(window);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = |visual: &mut VisualTestContext, prefix: &str, track: TrackId| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("{prefix}-{}", track.value()).into_boxed_str(),
+            ))
+            .unwrap()
+    };
+    let first = bounds(&mut visual, "track-name", tracks[0]).center();
+    visual.simulate_click(first, Modifiers::default());
+    let last = bounds(&mut visual, "track-name", tracks[2]).center();
+    visual.simulate_click(
+        last,
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.run_until_parked();
+    let check = |expected: [bool; 3], cx: &TestAppContext| {
+        editor.read_with(cx, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(
+                tracks
+                    .iter()
+                    .map(|id| state.project.track(*id).unwrap().soloed())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(
+                view.selected_track_ids(),
+                [tracks[0], tracks[2]],
+                "solo preserves explicit selection"
+            );
+        })
+    };
+    let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
+    let solo = bounds(&mut visual, "track-solo", tracks[0]);
+    visual.simulate_click(solo.center(), Modifiers::default());
+    flush(&editor, cx);
+    check([true, false, true], cx);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().revision, revision + 1)
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    flush(&editor, cx);
+    check([false; 3], cx);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    flush(&editor, cx);
+    check([true, false, true], cx);
+    visual.simulate_keystrokes("s");
+    flush(&editor, cx);
+    check([false; 3], cx);
+    visual.run_until_parked();
+    let outside = bounds(&mut visual, "track-solo", tracks[1]);
+    visual.simulate_click(outside.center(), Modifiers::default());
+    flush(&editor, cx);
+    check([false, true, false], cx);
+    visual.run_until_parked();
+    let solo = bounds(&mut visual, "track-solo", tracks[0]);
+    visual.simulate_click(
+        solo.center(),
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    flush(&editor, cx);
+    check([true; 3], cx);
+}
