@@ -1221,6 +1221,7 @@ impl EditorView {
             });
         let name_area = div()
             .id(("track-name-area", track_id.value()))
+            .cursor_pointer()
             .debug_selector(move || format!("track-name-area-{}", track_id.value()))
             .min_w_0()
             .flex()

@@ -349,6 +349,7 @@ fn variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_id
 #[gpui::test]
 fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut TestAppContext) {
     let (mut visual, editor, _) = fixture(cx, 0);
+    let original_width = visual.debug_bounds("main-track-header").unwrap().size.width;
     let from = visual
         .debug_bounds("main-track-width-resize")
         .unwrap()
