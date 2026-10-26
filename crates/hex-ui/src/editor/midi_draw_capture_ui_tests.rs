@@ -35,7 +35,7 @@ fn open(
 ) -> (
     VisualTestContext,
     Entity<EditorView>,
-    Arc<super::super::super::test_environment::Environment>,
+    Arc<crate::editor::test_environment::Environment>,
     Rc<Cell<usize>>,
 ) {
     let (mut visual, editor, environment, clip) = fixture(cx);
@@ -174,7 +174,7 @@ fn draw_input_loss_never_submits_a_partial_or_stale_stroke_or_leaks_release(
                     }
                     w.dispatch_input(
                         gpui::PlatformInput::MouseUp(MouseUpEvent {
-                            position: outside,
+                            position: end,
                             button: MouseButton::Left,
                             ..Default::default()
                         }),
