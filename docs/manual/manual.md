@@ -121,6 +121,14 @@ each populated track gets its own clip, preserving track routing; empty tracks
 are skipped. each track must contain one media kind with matching activation.
 the final track's result becomes the selected clip. one undo restores all tracks.
 
+the lower clip editor shows the accepted arrange playback position inside the
+inspected clip, following its trim and repeat phase. the moving line is separate
+from the edit cursor and saved play-start marker. it stays at the accepted
+position when paused and hides outside the clip or while its current audio
+mapping is unavailable. the audio source tab shows the corresponding original
+source position; the piano roll follows the midi source position. zooming and
+scrolling change the visible window without moving playback.
+
 in the lower audio editor, **g** makes the selected event or time span its own
 clip and keeps the material on either side. select one visible, nonrepeating
 span. text fields, device controls and the piano editor keep their own key input;
@@ -134,7 +142,11 @@ media remains available, and undo restores the previous tempo and clip extents.
 with the computer midi keyboard off, **l** or **w** sets and enables a loop around
 selected clips, a time selection, or the selected main sections. pressing again
 with the same bounds toggles looping off or on, retaining the range. with no
-selection, these keys toggle the existing loop. **command+l** uses the same action.
+selection, these keys toggle the existing loop. **command+l** toggles the active
+transport loop without changing its bounds. when starting playback with space,
+an enabled loop provides its beginning as the play-start position, even when the
+edit cursor or time selection is outside it. disabling the loop restores the
+normal time-selection and edit-cursor start behavior.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -181,12 +193,17 @@ playback graph. verified streaming mode is unavailable for this control. a secti
 past the bounded arrangement preroll range, or a source that exceeds existing
 runtime storage or midi density limits, is refused while current playback continues.
 
+hold **2** to force time selection over arrange clips, audio events, piano-roll
+notes or velocity bars, even with midi draw mode enabled. release **2** to return
+to ordinary editing. a range already being dragged continues until mouse release.
+text and numeric fields keep normal number entry.
+
 a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
 
-with the arrange timeline focused, **b** bounces selected material in place;
-**command+b** keeps the originals and inserts bounced audio on a new track below
+with the arrange timeline focused, **command+b** keeps the originals and inserts
+bounced audio on a new track below
 each source track. a nonempty time selection takes precedence over selected clips.
 each selected track produces one audio clip spanning its selected clips and gaps.
 clip bounces include instrument and effect release tails. a time selection renders
@@ -198,9 +215,11 @@ a fresh playback state so live release voices cannot duplicate the baked tails.
 undo and redo of an in-place bounce use the same stopped-edit rule.
 
 bounce writes float audio before the track mixer. mixer automation, sends, returns
-and main processing remain live. in-place bounce removes the baked devices, so it
-refuses if that would change unselected material or a tail would overlap it; use
-**command+b** instead. routed inputs, verified streaming and nonzero-latency device
+and main processing remain live. only the track-header **bounce in place** action replaces material in place and
+removes the track's devices. it covers the entire track, regardless of a smaller
+clip or time selection. for clip and time-selection editing, use **g** to group
+material instead; grouping retains its existing source and processing behavior.
+**b** has no arrange bounce action. routed inputs, verified streaming and nonzero-latency device
 paths currently refuse. clip bounces keep up to 30 seconds of release after the
 selected span. if the tail is still sounding then, hex cuts it at that limit and
 finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
@@ -241,13 +260,23 @@ one **command+z** undoes all cuts. without a time range, **e** splits at the edi
 cursor. main section focus keeps its section-split behavior; the audio event
 editor uses its own local selection. **command+e** is not assigned.
 
-drag the bottom edge of a track header to resize that row. hold **option** while
-resizing to give all ordinary tracks the same height. at the minimum height, rows
+the colored name area shows each ordinary track's name. click its blank area to
+select and focus the header; existing command/shift selection and **command+r**
+rename shortcuts also apply. drag the header width edge to show more of a long
+name. narrow headers truncate the label and keep its full-name tooltip.
+
+drag the bottom edge of an ordinary track header, or the top edge of pinned main,
+to resize that row. hold **option** while resizing to give visible ordinary tracks
+and main the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.
 with the computer midi keyboard off, press **h** in arrange to toggle a compact
 overview. press **h** again to restore each track's previous height. resizing in
 the overview is temporary; it does not replace normal heights. these view sizes
-last for the current editor session. return and main rows retain their own size.
+last for the current editor session. main shares the compact overview; return
+rows retain their fixed height. hold **option** and scroll vertically over an
+ordinary track or main to resize only that hovered row. wheel up grows it; wheel
+down shrinks it. nested controls keep their own wheel behavior. overview wheel
+sizes are temporary, just like overview edge resizing.
 with the computer midi keyboard on, **h** continues to play its note.
 
 right-click a track header or the track area and choose **insert track** or
@@ -289,7 +318,7 @@ midi keyboard keep their contextual shortcuts.
 
 ## arrangement automation view
 
-press **a** or use the toolbar's **a** control to show track-gain automation across
+press **a** or use the toolbar's **a** control to show automation across
 the entire arranger, including unselected tracks. audio and midi clips fade into
 the background while the curves own editing. the toolbar control stays highlighted
 while this mode is on; the key and toolbar always switch the same view.
@@ -300,16 +329,41 @@ span. a partial time span splits clips at its edges. automation lanes prevent
 activation of the retained background clips. text fields and the computer midi
 keyboard keep their own input.
 
-click a gain curve to add a point, drag a point to change its time or value, and
+click a curve to add a point, drag a point to change its time or value, and
 release to apply the edit. editing another track's curve keeps the background
 clip selection. **command** gives free beat placement. **escape**
 cancels a held edit; **backspace** removes the selected automation point.
 one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.
 
-this view currently shows track gain. recorded touch spans are displayed but
-read-only: leave automation view and use the track's gain editor to clear the
-lane before editing its base curve. device-parameter lanes are not offered here.
+right-click a supported device parameter and choose **show automation** to use
+the track's main automation row, or **add new automation lane** for a separate
+lane. a track can show several device lanes at once. from the track-header menu,
+choose **automatable parameters…**, then the device and parameter. main and
+return headers offer the same picker for their effects.
+
+**show used automation lanes** reveals lanes with authored points. **show all
+automation lanes** also restores empty lanes you have already shown and the
+current parameter preview; it does not assign every available parameter.
+
+device parameters are not assigned automatically. the main row follows the last
+supported parameter you touch or show. a dashed line previews its base value
+without changing playback. adding the first point creates a solid automation
+curve. right-click a lane for **clear automation** to remove its points and return
+to the base value, or **hide lane** to keep the curve while hiding its display.
+point edits and clearing support undo and redo; authored curves survive saving
+and reopening.
+
+supported device controls are utility's parameters, saturator's four parameters,
+and auto pan's amount, rate, phase and waveform. native effects on tracks, main
+and returns also offer host **input gain** and **output gain** lanes. instrument
+and source-owned effect lanes, other device controls and vst lanes are not yet
+available. recording device movements, manual automation override and shared
+modulator assignments are not implemented.
+
+recorded track-gain touch spans are displayed but read-only: leave automation
+view and use the track's gain editor to clear the lane before editing its base
+curve.
 
 ## clip loop resizing
 
@@ -327,8 +381,10 @@ shortening or deleting end material keeps your current arrange position and zoom
 when you pan or zoom afterward, obsolete empty tail outside the new view retires;
 scrolling cannot return to that retired space. arrange keeps at least eight
 seconds of normal space beyond content. **command+0** fits the normal navigation
-extent; **z** fits the selection or content, and **x** explicitly restores the
-prior fitted view, including its former visible trailing space.
+extent. **z** fits the selection or content in time and the selected track span
+vertically in arrange. **x** restores the prior time view, track heights and
+vertical scroll, including former visible trailing space. minimum row heights
+can leave a large selection scrollable.
 
 ## create fades from a time selection
 
@@ -548,9 +604,10 @@ dry while history advances privately. removing a device drains its old history;
 a removed frozen tail persists until stop. retained tails use bounded host banks;
 a full bank refuses another edit rather than discarding an existing tail. smooth
 sets none, fast or slow parameter transitions; density selects scattering depth.
-all controls use undo/redo and survive save/reopen. device-parameter automation
-lanes are not currently offered. the functional control set does not establish
-sound parity with another application's reverb.
+all controls use undo/redo and survive save/reopen. reverb's internal parameters
+do not yet support automation lanes; its host input and output gains can be
+automated on tracks, main and returns. the functional control set does not
+establish sound parity with another application's reverb.
 
 the delay effect has independent left and right timing. **sync** selects a
 multiple of a sixteenth note; **time** selects 1–5000 ms. sync is bounded to
@@ -569,9 +626,10 @@ bypass keeps delay history warm while passing dry audio. removing a playing dela
 releases freeze and lets its existing repeats decay; stop and seek clear history.
 loop wraps preserve repeats. changing sample rate prepares empty history at the
 new rate. settings use ordinary device undo and save/reopen; runtime audio history
-is transient. automation lanes are currently unsupported. the control set follows
-the reference device, while the filter, interpolation and modulation algorithms
-are original hex implementations.
+is transient. delay's internal parameters do not yet support automation lanes;
+its host input and output gains can be automated on tracks, main and returns.
+the control set follows the reference device, while the filter, interpolation
+and modulation algorithms are original hex implementations.
 
 overdrive filters the signal before distortion. use **frequency** and **bandwidth**
 to choose the input band; the graph shows this filter response. **drive** adds
@@ -658,6 +716,8 @@ the complete edit.
 | open project | command+o |
 | save / save as | command+s / command+shift+s |
 | play or pause / stop | space / escape |
+| set loop from selection / toggle matching loop | l / w |
+| toggle active transport loop | command+l |
 | import audio | command+i |
 | add track | command+t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
@@ -666,7 +726,7 @@ the complete edit.
 | selection fades / browser search outside audio selection | command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
-| bounce in place / to a new track | b / command+b |
+| bounce selected material to a new track | command+b |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
 | export | command+shift+e |
