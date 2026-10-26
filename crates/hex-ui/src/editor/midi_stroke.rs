@@ -1082,6 +1082,70 @@ mod tests {
     }
 
     #[test]
+    fn erasing_multiple_cells_of_one_note_has_unique_valid_preview_and_command() {
+        let (mut editor, clip) = fixture(beat(4));
+        let Created::Note(note) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 2,
+                velocity: 93,
+            })
+            .unwrap()
+        else {
+            panic!("note expected");
+        };
+        let c = context(clip, beat(4), MidiGrid::Sixteenth, false);
+        let mut stroke = MidiStroke::begin_with_hit(
+            c,
+            beat(4),
+            baseline(&editor, clip),
+            StrokePoint {
+                beat_raw: 0,
+                pitch: 60,
+            },
+            Some(note),
+        )
+        .unwrap();
+        stroke
+            .update(
+                c,
+                false,
+                StrokePoint {
+                    beat_raw: beat(1),
+                    pitch: 60,
+                },
+            )
+            .unwrap();
+        let preview = stroke.shared_preview();
+        assert_eq!(preview.removed, [note]);
+        assert!(preview.inserted.is_empty());
+        assert!(
+            editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .preview_note_overwrite(&preview.removed, &preview.inserted)
+                .is_ok()
+        );
+        let command = stroke.finish(c, false).unwrap().unwrap();
+        let (_, remove, insert) = command_parts(command.clone());
+        assert_eq!(remove, preview.removed);
+        assert!(insert.is_empty());
+        editor.execute(command).unwrap();
+        assert!(
+            editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn preview_snapshots_are_shared_until_a_cell_action_changes() {
         let (editor, clip) = fixture(beat(4));
         let grid = MidiGrid::Sixteenth;

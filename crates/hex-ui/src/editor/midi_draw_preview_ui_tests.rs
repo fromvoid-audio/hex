@@ -8,7 +8,10 @@ fn geometry(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Vec<
     let mut result: Vec<_> = visual
         .rendered_filled_quads("midi-note-roll")
         .into_iter()
-        .filter(|(b, _)| (b.size.height / scale - height).abs() < 0.01)
+        // Canonical notes also paint one-pixel leading/trailing borders.
+        .filter(|(b, _)| {
+            (b.size.height / scale - height).abs() < 0.01 && b.size.width / scale > 1.01
+        })
         .map(|(b, _)| {
             [
                 b.origin.x / scale,
@@ -190,12 +193,21 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
             }))
         );
     });
-    let earlier = terminal(&editor, &mut visual);
-    assert!(earlier.error.is_none());
-    editor.update(&mut visual, |v, cx| {
-        v.receive(earlier);
-        cx.notify();
-    });
+    // The real controller drains the earlier tuning terminal before submitting
+    // the queued draw at the end of tick. The draw terminal remains unreceived.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while editor.read_with(&visual, |v, _| !v.pending_requests.is_empty()) {
+        editor.update(&mut visual, |v, cx| {
+            v.tick(cx);
+            cx.notify();
+        });
+        repaint(&editor, &mut visual);
+        assert_eq!(geometry(&editor, &mut visual), held);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let reply = terminal(&editor, &mut visual);
+    assert!(reply.error.is_none());
     let before_draw =
         editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for _ in 0..3 {
@@ -203,7 +215,11 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
         assert_eq!(geometry(&editor, &mut visual), held);
         editor.read_with(&visual, |v, _| assert!(v.pending_midi_drag.is_some()));
     }
-    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, cx| {
+        v.receive(reply);
+        cx.notify();
+    });
+    repaint(&editor, &mut visual);
     let after = editor.read_with(&visual, |v, _| {
         assert!(v.pending_midi_drag.is_none());
         v.state.as_ref().unwrap().project.snapshot()
