@@ -6,8 +6,8 @@ use super::{
     OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
     PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
     RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
-    SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode,
-    TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    SelectAllMidiNotes, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
+    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
@@ -1367,12 +1367,8 @@ impl Render for EditorView {
                 view.loop_selection_key(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.trace(|view, _: &SetLoopFromClip, window, cx| {
-                view.set_loop_from_clip(window, cx);
-                cx.notify();
-            }))
-            .on_action(cx.trace(|view, _: &ToggleLoop, _, cx| {
-                view.toggle_loop();
+            .on_action(cx.trace(|view, _: &ToggleLoop, window, cx| {
+                view.toggle_active_loop_shortcut(window);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ZoomIn, _, cx| {

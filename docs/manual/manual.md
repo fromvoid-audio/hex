@@ -121,6 +121,14 @@ each populated track gets its own clip, preserving track routing; empty tracks
 are skipped. each track must contain one media kind with matching activation.
 the final track's result becomes the selected clip. one undo restores all tracks.
 
+the lower clip editor shows the accepted arrange playback position inside the
+inspected clip, following its trim and repeat phase. the moving line is separate
+from the edit cursor and saved play-start marker. it stays at the accepted
+position when paused and hides outside the clip or while its current audio
+mapping is unavailable. the audio source tab shows the corresponding original
+source position; the piano roll follows the midi source position. zooming and
+scrolling change the visible window without moving playback.
+
 in the lower audio editor, **g** makes the selected event or time span its own
 clip and keeps the material on either side. select one visible, nonrepeating
 span. text fields, device controls and the piano editor keep their own key input;
@@ -134,7 +142,11 @@ media remains available, and undo restores the previous tempo and clip extents.
 with the computer midi keyboard off, **l** or **w** sets and enables a loop around
 selected clips, a time selection, or the selected main sections. pressing again
 with the same bounds toggles looping off or on, retaining the range. with no
-selection, these keys toggle the existing loop. **command+l** uses the same action.
+selection, these keys toggle the existing loop. **command+l** toggles the active
+transport loop without changing its bounds. when starting playback with space,
+an enabled loop provides its beginning as the play-start position, even when the
+edit cursor or time selection is outside it. disabling the loop restores the
+normal time-selection and edit-cursor start behavior.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -248,13 +260,20 @@ one **command+z** undoes all cuts. without a time range, **e** splits at the edi
 cursor. main section focus keeps its section-split behavior; the audio event
 editor uses its own local selection. **command+e** is not assigned.
 
-drag the bottom edge of a track header to resize that row. hold **option** while
-resizing to give all ordinary tracks the same height. at the minimum height, rows
+the colored name area shows each ordinary track's name. click its blank area to
+select and focus the header; existing command/shift selection and **command+r**
+rename shortcuts also apply. drag the header width edge to show more of a long
+name. narrow headers truncate the label and keep its full-name tooltip.
+
+drag the bottom edge of an ordinary track header, or the top edge of pinned main,
+to resize that row. hold **option** while resizing to give visible ordinary tracks
+and main the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.
 with the computer midi keyboard off, press **h** in arrange to toggle a compact
 overview. press **h** again to restore each track's previous height. resizing in
 the overview is temporary; it does not replace normal heights. these view sizes
-last for the current editor session. return and main rows retain their own size.
+last for the current editor session. main shares the compact overview; return
+rows retain their fixed height.
 with the computer midi keyboard on, **h** continues to play its note.
 
 right-click a track header or the track area and choose **insert track** or
@@ -701,6 +720,8 @@ the complete edit.
 | open project | command+o |
 | save / save as | command+s / command+shift+s |
 | play or pause / stop | space / escape |
+| set loop from selection / toggle matching loop | l / w |
+| toggle active transport loop | command+l |
 | import audio | command+i |
 | add track | command+t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
