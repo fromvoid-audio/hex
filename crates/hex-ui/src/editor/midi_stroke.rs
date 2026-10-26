@@ -536,6 +536,7 @@ impl MidiStroke {
             }
         }
         preview.removed.sort_unstable();
+        preview.removed.dedup();
         preview
             .inserted
             .sort_unstable_by_key(|note| (note.start.raw(), note.pitch));

@@ -234,10 +234,7 @@ impl EditorView {
         let draw_group = self
             .displayed_midi_group_gesture()
             .map(|gesture| (gesture.shared_originals(), gesture.clone()));
-        let draw_stroke = self
-            .midi_stroke
-            .as_ref()
-            .map(|stroke| stroke.shared_preview());
+        let draw_stroke = self.displayed_midi_stroke_preview();
         let draw_creation = self.displayed_midi_creation();
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
