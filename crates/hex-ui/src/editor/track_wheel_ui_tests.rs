@@ -115,9 +115,15 @@ fn option_wheel_caps_trackpad_steps_and_minimum_and_preserves_normal_wheel(
         px(23.)
     );
     let lane = bounds(&mut visual, "arrangement-lane", tracks[1]);
-    let span = editor.read_with(&visual, |v, _| v.arrange_beat_span);
+    let span = editor.read_with(&visual, |v, _| {
+        v.visible_viewport(v.state.as_ref().unwrap().timeline_frames)
+    });
     wheel(&mut visual, lane.center(), line(1.), Modifiers::default());
-    assert_ne!(editor.read_with(&visual, |v, _| v.arrange_beat_span), span);
+    assert_ne!(
+        editor.read_with(&visual, |v, _| v
+            .visible_viewport(v.state.as_ref().unwrap().timeline_frames)),
+        span
+    );
     assert_eq!(
         bounds(&mut visual, "arrangement-track-header", tracks[1])
             .size
