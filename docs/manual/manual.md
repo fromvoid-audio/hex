@@ -357,12 +357,19 @@ to the base value, or **hide lane** to keep the curve while hiding its display.
 point edits and clearing support undo and redo; authored curves survive saving
 and reopening.
 
+editing a supported parameter manually overrides its curve while retaining the
+points. right-click the parameter or its lane and choose **re-enable automation**
+to resume that curve at the current position. the transport's re-enable control
+restores all overridden device curves. override selections support undo and redo
+and are retained when saving, reopening and rendering the project. clicking a
+control without editing it leaves automation running.
+
 supported device controls are utility's parameters, saturator's four parameters,
 and auto pan's amount, rate, phase and waveform. native effects on tracks, main
 and returns also offer host **input gain** and **output gain** lanes. instrument
 and source-owned effect lanes, other device controls and vst lanes are not yet
-available. recording device movements, manual automation override and shared
-modulator assignments are not implemented.
+available. recording device movements and shared modulator assignments are not
+implemented.
 
 recorded track-gain touch spans are displayed but read-only: leave automation
 view and use the track's gain editor to clear the lane before editing its base
