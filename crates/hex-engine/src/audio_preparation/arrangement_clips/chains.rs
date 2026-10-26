@@ -85,6 +85,19 @@ impl ChainCustody {
                     })
                     .transpose()?;
                 (migrated.payload().len(), bytes)
+            } else if state.type_id() == hex_devices::saturator::SATURATOR_TYPE_ID {
+                let migrated = hex_devices::saturator::SATURATOR_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::saturator::SaturatorDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(OwnedShared::<
+                        hex_devices::saturator::PreparedSaturator,
+                    >::declared_parts())?),
+                )
             } else if state.type_id() == hex_devices::reverb::REVERB_TYPE_ID {
                 let migrated = hex_devices::reverb::REVERB_DEFINITION
                     .migrate_state(state)
@@ -222,10 +235,11 @@ impl ChainCustody {
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             let utility = device.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID;
             let reverb = device.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID;
-            let native = utility || reverb;
+            let saturator = device.state().type_id() == hex_devices::saturator::SATURATOR_TYPE_ID;
+            let native = utility || reverb || saturator;
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
-            // Never adopt a provider's state/processor owner. The Utility
-            // and reverb constructors are closed; foreign factories may return scalar facts
+            // Never adopt a provider's state/processor owner. The Utility,
+            // Reverb and Saturator constructors are closed; foreign factories return scalar facts
             // only, matched later to the audio owner's original source.
             let foreign_definition = if native {
                 None
@@ -236,7 +250,12 @@ impl ChainCustody {
                         .ok_or(AudioStorageError::UnsupportedGraph)?,
                 )
             };
-            let migrated = if utility {
+            let migrated = if saturator {
+                hex_devices::saturator::SATURATOR_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if utility {
                 definition
                     .migrate_state(device.state())
                     .and_then(|s| s.with_host_metadata_from(device.state()))
@@ -273,7 +292,7 @@ impl ChainCustody {
                     _ => return Err(AudioStorageError::UnsupportedGraph),
                 }
             };
-            let matrix = if device.bypassed() || !native || !automation.is_empty() {
+            let matrix = if device.bypassed() || !native || !automation.is_empty() || saturator {
                 StereoMatrix::identity()
             } else if reverb {
                 hex_devices::reverb::REVERB_DEFINITION
@@ -295,7 +314,19 @@ impl ChainCustody {
                     .then(trim)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let processor = if utility {
+            let processor = if saturator {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::saturator::SaturatorDefinition::prepare_owned(
+                            &migrated,
+                            rate,
+                            automation.parameter_ids(),
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if utility {
                 (if automation.is_empty() {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                 } else {
@@ -557,130 +588,172 @@ mod tests {
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     #[test]
-    fn sealed_utility_graph_matches_canonical_pcm_reports_nested_payload_and_recovers_original_bank()
-     {
+    fn sealed_native_graphs_match_canonical_pcm_report_nested_payload_and_recover_original_bank() {
         if !crate::audio_storage_constructor_layout_supported() {
             return;
         }
-        let mut static_bytes = None;
-        for automated in [false, true] {
-            let (project, mut bank) = crate::audio_preparation::tests::fixture(2);
-            bank.reservation.handle_obligations = 32;
-            let original = bank.sources.as_ptr();
-            let original_capacity = bank.sources.capacity();
-            let mut snapshot = project.snapshot();
-            snapshot.tracks[0].gain = 0.5;
-            snapshot.tracks[0].balance = -0.25;
-            let definition = &hex_devices::utility::UTILITY_DEFINITION;
-            let state = definition
-                .patch_parameter(
-                    &definition.default_state().unwrap(),
-                    hex_devices::utility::parameter::DC_REMOVE,
-                    ParameterValue::Bool(true),
-                )
-                .unwrap()
+        for saturator in [false, true] {
+            let mut static_bytes = None;
+            for automated in [false, true] {
+                let (project, mut bank) = crate::audio_preparation::tests::fixture(2);
+                bank.reservation.handle_obligations = 32;
+                let original = bank.sources.as_ptr();
+                let original_capacity = bank.sources.capacity();
+                let mut snapshot = project.snapshot();
+                snapshot.tracks[0].gain = 0.5;
+                snapshot.tracks[0].balance = -0.25;
+                let state = if saturator {
+                    let definition = &hex_devices::saturator::SATURATOR_DEFINITION;
+                    definition
+                        .patch_parameter(
+                            &definition.default_state().unwrap(),
+                            hex_devices::saturator::parameter::DRIVE,
+                            ParameterValue::Float(12.0),
+                        )
+                        .unwrap()
+                } else {
+                    let definition = &hex_devices::utility::UTILITY_DEFINITION;
+                    definition
+                        .patch_parameter(
+                            &definition.default_state().unwrap(),
+                            hex_devices::utility::parameter::DC_REMOVE,
+                            ParameterValue::Bool(true),
+                        )
+                        .unwrap()
+                }
                 .with_input_gain_millidb(-6000)
                 .unwrap()
                 .with_output_gain_millidb(3000)
                 .unwrap();
-            snapshot.tracks[0]
-                .devices
-                .push(hex_project::DeviceSnapshot {
-                    automation: if automated {
-                        vec![hex_project::DeviceAutomation {
-                            parameter: hex_devices::utility::parameter::GAIN,
-                            points: vec![
-                                hex_project::AutomationPoint {
-                                    beat: hex_project::BeatTime::ZERO,
-                                    value: hex_project::AutomationValue::new(0.005).unwrap(),
-                                    outgoing: hex_project::AutomationInterpolation::Linear,
+                snapshot.tracks[0]
+                    .devices
+                    .push(hex_project::DeviceSnapshot {
+                        automation: if automated {
+                            vec![hex_project::DeviceAutomation {
+                                parameter: if saturator {
+                                    hex_devices::saturator::parameter::DRIVE
+                                } else {
+                                    hex_devices::utility::parameter::GAIN
                                 },
-                                hex_project::AutomationPoint {
-                                    beat: hex_project::BeatTime::from_raw(1 << 26),
-                                    value: hex_project::AutomationValue::new(0.015).unwrap(),
-                                    outgoing: hex_project::AutomationInterpolation::Step,
-                                },
-                            ],
-                        }]
-                    } else {
-                        Vec::new()
-                    },
-                    comparison: None,
-                    id: snapshot.next_id,
-                    bypassed: false,
-                    state,
-                });
-            snapshot.next_id += 1;
-            let project = hex_project::Project::from_snapshot(snapshot).unwrap();
-            let mut media = std::collections::BTreeMap::new();
-            let (asset, source) = &bank.sources[0];
-            let SourceKind::Resident(audio) = &source.kind else {
-                panic!("resident fixture")
-            };
-            media.insert(*asset, audio.clone());
-            let reference = crate::PreparedRevision::prepare(
-                &project,
-                &media,
-                std::sync::Arc::new(hex_devices::SineTable::new()),
-                None,
-            )
-            .unwrap();
-            let mut reference =
-                crate::SessionPlayback::new(std::sync::Arc::new(reference)).unwrap();
-            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
-            let token = custody
-                .begin_input_on_control(
-                    AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision(),
+                                points: vec![
+                                    hex_project::AutomationPoint {
+                                        beat: hex_project::BeatTime::ZERO,
+                                        value: hex_project::AutomationValue::new(if saturator {
+                                            0.5
+                                        } else {
+                                            0.005
+                                        })
+                                        .unwrap(),
+                                        outgoing: hex_project::AutomationInterpolation::Linear,
+                                    },
+                                    hex_project::AutomationPoint {
+                                        beat: hex_project::BeatTime::from_raw(1 << 26),
+                                        value: hex_project::AutomationValue::new(if saturator {
+                                            0.75
+                                        } else {
+                                            0.015
+                                        })
+                                        .unwrap(),
+                                        outgoing: hex_project::AutomationInterpolation::Step,
+                                    },
+                                ],
+                            }]
+                        } else {
+                            Vec::new()
+                        },
+                        comparison: None,
+                        id: snapshot.next_id,
+                        bypassed: false,
+                        state,
+                    });
+                snapshot.next_id += 1;
+                let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+                let mut media = std::collections::BTreeMap::new();
+                let (asset, source) = &bank.sources[0];
+                let SourceKind::Resident(audio) = &source.kind else {
+                    panic!("resident fixture")
+                };
+                media.insert(*asset, audio.clone());
+                let reference = crate::PreparedRevision::prepare(
+                    &project,
+                    &media,
+                    std::sync::Arc::new(hex_devices::SineTable::new()),
+                    None,
                 )
-                .unwrap_or_else(|refusal| panic!("Utility root preflight: {:?}", refusal.reason));
-            let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
-                crate::AudioStorageLedgerReservation {
-                    data_rows: 1024,
-                    handle_rows: 256,
-                    root_rows: 8,
-                    max_retained_bytes: usize::MAX,
-                    max_construction_peak_bytes: usize::MAX,
-                },
-            )
-            .unwrap();
-            ledger
-                .borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)
                 .unwrap();
-            let summary = ledger.summary().unwrap();
-            assert_eq!(summary.unknown_storage, 0);
-            if automated {
-                let program_bytes =
-                    crate::device_automation::quote(&project.tracks()[0].devices()[0]).unwrap();
-                assert!(
-                    summary.data_bytes >= static_bytes.unwrap() + program_bytes,
-                    "closed program backing is charged in physical inventory"
-                );
-            } else {
-                static_bytes = Some(summary.data_bytes);
+                let mut reference =
+                    crate::SessionPlayback::new(std::sync::Arc::new(reference)).unwrap();
+                let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+                let registry = hex_devices::native_registry().unwrap();
+                let input =
+                    AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision();
+                let input = if saturator {
+                    input.with_effect_registry(&registry)
+                } else {
+                    input
+                };
+                let token = custody
+                    .begin_input_on_control(input)
+                    .unwrap_or_else(|refusal| {
+                        panic!("native root preflight: {:?}", refusal.reason)
+                    });
+                let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+                    crate::AudioStorageLedgerReservation {
+                        data_rows: 1024,
+                        handle_rows: 256,
+                        root_rows: 8,
+                        max_retained_bytes: usize::MAX,
+                        max_construction_peak_bytes: usize::MAX,
+                    },
+                )
+                .unwrap();
+                ledger
+                    .borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)
+                    .unwrap();
+                let summary = ledger.summary().unwrap();
+                assert_eq!(summary.unknown_storage, 0);
+                if automated {
+                    let program_bytes =
+                        crate::device_automation::quote(&project.tracks()[0].devices()[0]).unwrap();
+                    assert!(
+                        summary.data_bytes >= static_bytes.unwrap() + program_bytes,
+                        "closed program backing is charged in physical inventory"
+                    );
+                } else {
+                    static_bytes = Some(summary.data_bytes);
+                }
+                assert!(summary.require_complete().is_err());
+                drop(ledger);
+                let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
+                    .ok()
+                    .unwrap();
+                owner
+                    .test_apply_action(crate::PlaybackAction::Transport(
+                        crate::PlaybackCommand::Play,
+                    ))
+                    .unwrap();
+                reference
+                    .apply(crate::SessionPlaybackCommand::Play)
+                    .unwrap();
+                let mut actual = [[0.0; 2]; 256];
+                let mut expected = actual;
+                owner.test_render(&mut actual).unwrap();
+                reference.render(&mut expected).unwrap();
+                assert_eq!(actual, expected);
+                if saturator {
+                    assert!(actual[..16].iter().any(|frame| frame[0] != 0.0));
+                    assert!(
+                        actual[16..].iter().all(|frame| *frame == [0.0; 2]),
+                        "memoryless Saturator has no output tail"
+                    );
+                } else {
+                    assert!(actual[16..].iter().any(|f| f[0] != 0.0));
+                }
+                owner.dispose_on_control().unwrap();
+                let inputs = owner.recover_inputs_on_control().unwrap();
+                assert_eq!(inputs.sources.as_ptr(), original);
+                assert_eq!(inputs.sources.capacity(), original_capacity);
             }
-            assert!(summary.require_complete().is_err());
-            drop(ledger);
-            let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
-                .ok()
-                .unwrap();
-            owner
-                .test_apply_action(crate::PlaybackAction::Transport(
-                    crate::PlaybackCommand::Play,
-                ))
-                .unwrap();
-            reference
-                .apply(crate::SessionPlaybackCommand::Play)
-                .unwrap();
-            let mut actual = [[0.0; 2]; 256];
-            let mut expected = actual;
-            owner.test_render(&mut actual).unwrap();
-            reference.render(&mut expected).unwrap();
-            assert_eq!(actual, expected);
-            assert!(actual[16..].iter().any(|f| f[0] != 0.0));
-            owner.dispose_on_control().unwrap();
-            let inputs = owner.recover_inputs_on_control().unwrap();
-            assert_eq!(inputs.sources.as_ptr(), original);
-            assert_eq!(inputs.sources.capacity(), original_capacity);
         }
     }
 }

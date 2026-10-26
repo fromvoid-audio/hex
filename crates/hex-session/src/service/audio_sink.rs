@@ -477,8 +477,37 @@ pub trait WorkerAudioSink: Send {
     fn close(&mut self);
 }
 
+/// The existing FIFO payload, optionally annotated. The plain form is retained
+/// only for focused preexisting WorkerEvents unit fixtures; production always
+/// exercises the annotated form through Service's unique EventReceiver.
+enum DiagnosticEventSender {
+    Observed(SyncSender<super::diagnostics::ObservedEvent>),
+    #[cfg(test)]
+    Plain(SyncSender<Event>),
+}
+impl DiagnosticEventSender {
+    #[allow(clippy::result_large_err)] // Failed send returns the same complete Event.
+    fn try_send(
+        &self,
+        event: Event,
+        request: Option<super::diagnostics::DiagnosticRequest>,
+    ) -> Result<(), TrySendError<Event>> {
+        match self {
+            Self::Observed(sender) => sender
+                .try_send(super::diagnostics::ObservedEvent { event, request })
+                .map_err(|error| match error {
+                    TrySendError::Full(event) => TrySendError::Full(event.event),
+                    TrySendError::Disconnected(event) => TrySendError::Disconnected(event.event),
+                }),
+            #[cfg(test)]
+            Self::Plain(sender) => sender.try_send(event),
+        }
+    }
+}
 pub(super) struct WorkerEvents {
-    sender: SyncSender<Event>,
+    sender: DiagnosticEventSender,
+    diagnostics: Arc<super::diagnostics::Hooks>,
+    diagnostic: Option<super::diagnostics::DiagnosticRequest>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
@@ -488,6 +517,26 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    pub(super) fn begin_diagnostics(
+        &mut self,
+        queued: &QueuedRequest,
+        generation: u64,
+        revision: u64,
+    ) {
+        let request = queued.diagnostic.or_else(|| {
+            self.diagnostics
+                .begin_at_worker(&queued.request, queued.diagnostic_origin)
+        });
+        self.diagnostic = request;
+        self.diagnostics.emit(
+            request,
+            super::diagnostics::DiagnosticStage::WorkerBegin {
+                generation,
+                revision,
+            },
+            None,
+        );
+    }
     pub(super) fn begin_request(
         &mut self,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
@@ -507,13 +556,42 @@ impl WorkerEvents {
             .and_then(|audio| audio.ordinary_source_reservation())
     }
 
+    #[cfg(test)]
     pub(super) fn new(
         sender: SyncSender<Event>,
         shutdown: Arc<AtomicBool>,
         audio: Option<Box<dyn WorkerAudioSink>>,
     ) -> Self {
+        Self::with_sender(
+            DiagnosticEventSender::Plain(sender),
+            shutdown,
+            audio,
+            Arc::new(super::diagnostics::Hooks::default()),
+        )
+    }
+    pub(super) fn new_with_diagnostics(
+        sender: SyncSender<super::diagnostics::ObservedEvent>,
+        shutdown: Arc<AtomicBool>,
+        audio: Option<Box<dyn WorkerAudioSink>>,
+        diagnostics: Arc<super::diagnostics::Hooks>,
+    ) -> Self {
+        Self::with_sender(
+            DiagnosticEventSender::Observed(sender),
+            shutdown,
+            audio,
+            diagnostics,
+        )
+    }
+    fn with_sender(
+        sender: DiagnosticEventSender,
+        shutdown: Arc<AtomicBool>,
+        audio: Option<Box<dyn WorkerAudioSink>>,
+        diagnostics: Arc<super::diagnostics::Hooks>,
+    ) -> Self {
         Self {
             sender,
+            diagnostics,
+            diagnostic: None,
             shutdown,
             audio,
             last_context: None,
@@ -636,8 +714,16 @@ impl WorkerEvents {
                     })
             })
             .map(|active| (active.key, active.sequence));
+        let diagnostic = self.diagnostic.take();
+        self.diagnostics.outcome(diagnostic, &event, false);
+        let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
+                self.diagnostics.emit(
+                    diagnostic,
+                    super::diagnostics::DiagnosticStage::ShutdownAbandoned,
+                    None,
+                );
                 return false;
             }
             self.poll();
@@ -646,10 +732,34 @@ impl WorkerEvents {
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
             );
-            match self.sender.try_send(event) {
-                Ok(()) => return true,
-                Err(TrySendError::Disconnected(_)) => return false,
-                Err(TrySendError::Full(returned)) => event = returned,
+            match self.sender.try_send(event, diagnostic) {
+                Ok(()) => {
+                    self.diagnostics.emit(
+                        diagnostic,
+                        super::diagnostics::DiagnosticStage::OutcomeQueued,
+                        None,
+                    );
+                    return true;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.diagnostics.emit(
+                        diagnostic,
+                        super::diagnostics::DiagnosticStage::ConsumerClosed,
+                        None,
+                    );
+                    return false;
+                }
+                Err(TrySendError::Full(returned)) => {
+                    event = returned;
+                    if !reported_backpressure {
+                        self.diagnostics.emit(
+                            diagnostic,
+                            super::diagnostics::DiagnosticStage::OutcomeBackpressure,
+                            None,
+                        );
+                        reported_backpressure = true;
+                    }
+                }
             }
             // Control-side event backpressure retains this exact event. It does
             // not strand native returns or require dropping a canonical ACK.

@@ -19,7 +19,7 @@ mod controller_input;
 mod device_composition;
 mod diagnostics;
 pub use controller_input::install_controller_input;
-pub use diagnostics::{install_audio_diagnostics, install_session_log};
+pub use diagnostics::{install_action_diagnostics, install_audio_diagnostics, install_session_log};
 mod editor;
 mod editor_backend;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
@@ -162,4 +162,13 @@ pub fn sampler_midi_test_ready(
     cx: &gpui::App,
 ) -> Result<bool, String> {
     editor::sampler_midi_fixture_ready(window, cx)
+}
+
+/// Compile-time source provenance; guarded builds include the frozen tree digest.
+pub fn diagnostic_build_identity() -> &'static str {
+    concat!(
+        env!("HEX_DISPLAY_VERSION"),
+        " source=",
+        env!("HEX_DIAGNOSTIC_SOURCE")
+    )
 }
