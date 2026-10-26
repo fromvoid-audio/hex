@@ -424,6 +424,22 @@ pub(in crate::editor) fn view(
                 ),
         );
     }
+    if let Some(position) = view
+        .audio_playhead_root_position()
+        .and_then(frame_at)
+        .filter(|frame| (first + local.start..first + local.start + local.length).contains(frame))
+    {
+        body = body.child(
+            div()
+                .debug_selector(|| "audio-playback-position".into())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(relative(frame_to_x(position)))
+                .w(px(1.0))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+        );
+    }
     let entity = cx.entity();
     body = body.child(
         canvas(

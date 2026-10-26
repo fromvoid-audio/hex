@@ -121,6 +121,14 @@ each populated track gets its own clip, preserving track routing; empty tracks
 are skipped. each track must contain one media kind with matching activation.
 the final track's result becomes the selected clip. one undo restores all tracks.
 
+the lower clip editor shows the accepted arrange playback position inside the
+inspected clip, following its trim and repeat phase. the moving line is separate
+from the edit cursor and saved play-start marker. it stays at the accepted
+position when paused and hides outside the clip or while its current audio
+mapping is unavailable. the audio source tab shows the corresponding original
+source position; the piano roll follows the midi source position. zooming and
+scrolling change the visible window without moving playback.
+
 in the lower audio editor, **g** makes the selected event or time span its own
 clip and keeps the material on either side. select one visible, nonrepeating
 span. text fields, device controls and the piano editor keep their own key input;
