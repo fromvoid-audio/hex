@@ -269,6 +269,7 @@ fn over_capacity_selection_refuses_the_whole_chord_without_project_changes(
                 remove: Vec::new(),
                 insert: (0..18)
                     .map(|index| MidiNoteInsert {
+                        active: true,
                         start: BeatTime::ZERO,
                         duration: BeatTime::ONE,
                         pitch: 48 + index,
@@ -561,6 +562,7 @@ fn marquee_audition_off_is_silent_and_new_contact_overflow_refuses_whole_batch(
                 clip,
                 notes: (36..54)
                     .map(|pitch| MidiNoteInsert {
+                        active: true,
                         start: BeatTime::ONE,
                         duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
                         pitch,

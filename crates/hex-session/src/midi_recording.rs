@@ -323,6 +323,7 @@ pub fn finish_take(
             .filter(|duration| *duration > 0)
             .ok_or("recorded midi note has no positive audible duration")?;
         insert.push(MidiNoteInsert {
+            active: true,
             start: BeatTime::from_raw(start),
             duration: BeatTime::from_raw(duration),
             pitch: note.pitch,

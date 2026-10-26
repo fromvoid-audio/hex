@@ -120,7 +120,12 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
             .unwrap()
             .is_empty()
     );
-    for field in ["alias_sources", "alias_members", "host_automation"] {
+    for field in [
+        "alias_sources",
+        "alias_members",
+        "host_automation",
+        "inactive_midi_notes",
+    ] {
         assert!(
             schema46
                 .as_object_mut()
@@ -547,7 +552,12 @@ fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
             .unwrap()
             .is_empty()
     );
-    for field in ["alias_sources", "alias_members", "host_automation"] {
+    for field in [
+        "alias_sources",
+        "alias_members",
+        "host_automation",
+        "inactive_midi_notes",
+    ] {
         assert!(
             old46
                 .as_object_mut()

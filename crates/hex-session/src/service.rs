@@ -11430,6 +11430,7 @@ mod service_tests {
         };
         let notes = (0..64_u8)
             .map(|pitch| hex_project::MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::ZERO,
                 duration: hex_project::BeatTime::from_quarters(1).expect("gate"),
                 pitch,

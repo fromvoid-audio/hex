@@ -1086,6 +1086,13 @@ pub(super) fn command(value: &Command) -> Description {
         Command::UpdateMidiNotes { clip, notes } => {
             describe!("update_midi_notes"; ["clip" => clip.value(), "notes_count" => notes.len()]; omitted="")
         }
+        Command::SetMidiNotesActive {
+            clip,
+            notes,
+            active,
+        } => {
+            describe!("set_midi_notes_active"; ["clip" => clip.value(), "notes_count" => notes.len(), "active" => active]; omitted="")
+        }
         Command::RemoveMidiNote(value0) => {
             describe!("remove_midi_note"; ["value0" => value0.value()]; omitted="")
         }

@@ -136,6 +136,7 @@ fn transport_loop_project(expanded: bool) -> Project {
             .into_iter()
             .enumerate()
             .map(|(index, (start_raw, duration_raw))| MidiNoteSnapshot {
+                active: true,
                 id: note_id + index as u64,
                 start_raw,
                 duration_raw,
@@ -147,6 +148,7 @@ fn transport_loop_project(expanded: bool) -> Project {
         snapshot.next_id += 4;
     } else {
         clip.notes = vec![MidiNoteSnapshot {
+            active: true,
             id: note_id,
             start_raw: Q,
             duration_raw: 2 * Q,
@@ -175,6 +177,7 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
             let clip = midi_clips.first_mut().expect("receiver clip");
             clip.notes = (0..note_count)
                 .map(|index| MidiNoteSnapshot {
+                    active: true,
                     id: first_note_id + index,
                     start_raw: 2 * Q,
                     duration_raw: Q,
@@ -195,6 +198,7 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
             clip.id = second_clip_id;
             clip.notes = (0..note_count)
                 .map(|index| MidiNoteSnapshot {
+                    active: true,
                     id: second_note_id + index,
                     start_raw: 2 * Q,
                     duration_raw: Q,
@@ -322,6 +326,7 @@ fn combined_loop_expanded_oracle_project() -> Project {
     .into_iter()
     .enumerate()
     .map(|(index, (onset, end))| MidiNoteSnapshot {
+        active: true,
         id: first_note_id + index as u64,
         start_raw: onset * Q / 4,
         duration_raw: (end - onset) * Q / 4,
@@ -631,6 +636,7 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
     let clip = &mut midi_clips[0];
     clip.notes = (0..63)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: 100 + index,
             start_raw: 0,
             duration_raw: 2 * Q,
@@ -639,6 +645,7 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
             velocity: 100,
         })
         .chain(std::iter::once(MidiNoteSnapshot {
+            active: true,
             id: 200,
             start_raw: 2 * Q,
             duration_raw: Q,
@@ -723,6 +730,7 @@ fn finite_arrangement_admission_bounds_aggregate_edges_across_clips() {
     midi_clips[0].loop_end_raw = long_length;
     midi_clips[0].notes = (0..48)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: 100 + index,
             start_raw: 0,
             duration_raw: long_length,
@@ -746,6 +754,7 @@ fn finite_arrangement_admission_bounds_aggregate_edges_across_clips() {
         clip.loop_end_raw = short_length;
         clip.looping = false;
         clip.notes = vec![MidiNoteSnapshot {
+            active: true,
             id: 2_000 + index,
             start_raw: 0,
             duration_raw: note_length,
@@ -794,6 +803,7 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
     clip.looping = false;
     clip.notes = (0..128_u64)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: first_note_id + index,
             start_raw: beat_raw_for_frames(17 + index),
             duration_raw: beat_raw_for_frames(1),
@@ -802,6 +812,7 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
             velocity: 100,
         })
         .chain((0..64_u64).map(|index| MidiNoteSnapshot {
+            active: true,
             id: first_note_id + 128 + index,
             start_raw: beat_raw_for_frames(450),
             duration_raw: beat_raw_for_frames(550),
@@ -842,6 +853,7 @@ fn mutable_transport_handoff_ignores_pre_loop_release_only_candidate() {
         panic!("fixture Arrangement MIDI clip")
     };
     midi_clips[0].notes = vec![MidiNoteSnapshot {
+        active: true,
         id: 42,
         start_raw: beat_raw_for_frames(47_996),
         duration_raw: beat_raw_for_frames(1),
