@@ -275,6 +275,28 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .midi_capture_render(take_id)
     }
+    pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
+        self.current_playback()?.native_parameter_input_target()
+    }
+    pub fn set_native_parameter_input(
+        &mut self,
+        operation: hex_lattice::NativeTransientOperation,
+    ) -> Result<(), crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .set_native_parameter_input(operation)
+    }
+    pub fn invalidate_native_parameter_input(&mut self) {
+        if let Some(playback) = self.current_playback_mut() {
+            playback.invalidate_native_parameter_input();
+        }
+    }
+    pub fn take_native_parameter_application(
+        &mut self,
+    ) -> Option<crate::NativeParameterApplication> {
+        self.current_playback_mut()?
+            .take_native_parameter_application()
+    }
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.current_playback()
             .is_some_and(|p| p.gain_recording_ready(track))

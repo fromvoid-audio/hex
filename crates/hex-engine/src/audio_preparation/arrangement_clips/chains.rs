@@ -33,10 +33,11 @@ pub(in crate::audio_preparation) struct ChainCustody {
 impl ChainCustody {
     /// Quotes only this closed constructor's DATA and transient Vec overlap.
     /// No foreign provider is invoked and no source/worker claim is produced.
-    pub(in crate::audio_preparation) fn quote(
+    pub(in crate::audio_preparation) fn quote_with_input(
         &self,
         devices: &[hex_project::Device],
         rate: u32,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(usize, usize), AudioStorageError> {
         let parts = |parts: Option<(usize, usize)>| -> Result<usize, AudioStorageError> {
             let (p, o) = parts.ok_or(AudioStorageError::UnsupportedConstructor)?;
@@ -56,7 +57,10 @@ impl ChainCustody {
         let mut largest_copy = 0;
         for device in devices {
             retained = retained
-                .checked_add(crate::device_automation::quote(device)?)
+                .checked_add(crate::device_automation::quote_with_input(
+                    device,
+                    native_input,
+                )?)
                 .ok_or(AudioStorageError::Overflow)?;
             let state = device.state();
             state
@@ -69,7 +73,10 @@ impl ChainCustody {
                 let processor = if !device
                     .reading_automation()
                     .any(|lane| lane.target.provider_parameter().is_some())
-                {
+                    && !native_input.is_some_and(|input| {
+                        input.device() == device.id()
+                            && input.target().provider_parameter().is_some()
+                    }) {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?
                         .is_some()
@@ -149,7 +156,9 @@ impl ChainCustody {
         let automation_overlap = devices
             .iter()
             .try_fold(0usize, |sum, device| {
-                sum.checked_add(crate::device_automation::quote(device).ok()?)
+                sum.checked_add(
+                    crate::device_automation::quote_with_input(device, native_input).ok()?,
+                )
             })
             .ok_or(AudioStorageError::Overflow)?;
         let automation_staging = devices
@@ -165,7 +174,7 @@ impl ChainCustody {
                     device
                         .reading_automation()
                         .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
-                )
+                ).and_then(|bytes| bytes.checked_add(crate::device_automation::input_construction_growth_overlap(device, native_input).ok()?))
             })
             .try_fold(0usize, |largest, value| Some(largest.max(value?)))
             .ok_or(AudioStorageError::Overflow)?;
@@ -193,12 +202,23 @@ impl ChainCustody {
             None,
         )
     }
+    #[cfg(test)]
     pub(in crate::audio_preparation) fn prepare_with_effects(
         &mut self,
         devices: &[hex_project::Device],
         owner: ProcessorChainOwner,
         rate: u32,
         effects: Option<&NativeDeviceRegistry<'_>>,
+    ) -> Result<OwnedShared<[PreparedRuntimeInstance]>, AudioStorageError> {
+        self.prepare_with_effects_and_input(devices, owner, rate, effects, None)
+    }
+    pub(in crate::audio_preparation) fn prepare_with_effects_and_input(
+        &mut self,
+        devices: &[hex_project::Device],
+        owner: ProcessorChainOwner,
+        rate: u32,
+        effects: Option<&NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<OwnedShared<[PreparedRuntimeInstance]>, AudioStorageError> {
         if !self.entries.is_empty() {
             return Err(AudioStorageError::SourceMismatch);
@@ -223,7 +243,7 @@ impl ChainCustody {
                     device
                         .reading_automation()
                         .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
-                )
+                ).and_then(|bytes| bytes.checked_add(crate::device_automation::input_construction_growth_overlap(device, native_input).ok()?))
             })
             .try_fold(0usize, |largest, value| Some(largest.max(value?)))
             .ok_or(AudioStorageError::Overflow)?;
@@ -256,8 +276,18 @@ impl ChainCustody {
         }
         let mut admission = StereoMatrix::identity();
         for device in devices {
-            let automation = crate::device_automation::prepare(device)
-                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let automation = if native_input.is_some() {
+                let automation_registry = hex_devices::native_registry()
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                crate::device_automation::prepare_with_registry_and_input(
+                    device,
+                    &automation_registry,
+                    native_input,
+                )
+            } else {
+                crate::device_automation::prepare(device)
+            }
+            .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             let automation_bytes = automation
                 .storage_bytes()
                 .ok_or(AudioStorageError::Overflow)?;
@@ -642,6 +672,64 @@ fn copy_state(
 mod tests {
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    #[test]
+    fn armed_utility_provider_and_host_use_quoted_existing_chain_custody_without_points() {
+        use hex_lattice_contract::DeviceAutomationTarget;
+        let (project, _) = crate::audio_preparation::tests::fixture(2);
+        let mut snapshot = project.snapshot();
+        let id = snapshot.next_id;
+        snapshot.next_id += 1;
+        snapshot.tracks[0]
+            .devices
+            .push(hex_project::DeviceSnapshot {
+                id,
+                bypassed: false,
+                comparison: None,
+                automation: Vec::new(),
+                state: hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            });
+        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+        let track = &project.tracks()[0];
+        let device = &track.devices()[0];
+        let registry = hex_devices::native_registry().unwrap();
+        for target in [
+            DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN),
+            DeviceAutomationTarget::HostInputGain,
+        ] {
+            let input = crate::device_automation::native_parameter_input_target(
+                &project,
+                device.id(),
+                target,
+            )
+            .unwrap();
+            let mut custody = super::ChainCustody::default();
+            let (quoted, overlap) = custody
+                .quote_with_input(track.devices(), project.sample_rate(), Some(input))
+                .unwrap();
+            let chain = custody
+                .prepare_with_effects_and_input(
+                    track.devices(),
+                    hex_lattice::ProcessorChainOwner::Track(track.id().value()),
+                    project.sample_rate(),
+                    Some(&registry),
+                    Some(input),
+                )
+                .unwrap();
+            assert!(custody.bytes(&chain).unwrap() <= quoted);
+            assert!(custody.construction_overlap() <= overlap);
+            assert_eq!(chain[0].automation.input_target(), Some(target));
+            assert_eq!(
+                chain[0].automation.parameter_ids(),
+                target.provider_parameter().as_slice()
+            );
+            if !target.is_host() {
+                assert!(chain[0].definition.is_some());
+            }
+            assert!(device.automation().is_empty());
+        }
+    }
     #[test]
     fn sealed_native_graphs_match_canonical_pcm_report_nested_payload_and_recover_original_bank() {
         if !crate::audio_storage_constructor_layout_supported() {

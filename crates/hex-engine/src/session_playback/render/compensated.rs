@@ -277,6 +277,9 @@ impl SessionPlayback {
                             self.device_metering,
                             foreign,
                             observer,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     let override_gain = self
@@ -328,6 +331,9 @@ impl SessionPlayback {
                             frame_offset,
                             foreign,
                             observer,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(matrix) = bus.matrix {

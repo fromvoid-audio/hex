@@ -4,6 +4,30 @@
 use crate::{Frame, NodeSignalObserver, PostNodeIdentity};
 use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
 
+pub(crate) fn process_with_native_input(
+    chain: &mut NativeRuntimeChain,
+    frames: &mut [Frame],
+    offset: usize,
+    clock: Option<&dyn NativeInstrumentClock>,
+    input: Option<&mut crate::native_parameter_input::Processing>,
+    observer: &mut Option<&mut NodeSignalObserver<'_>>,
+) -> Result<(), crate::Invalid> {
+    let range = 0..chain.len();
+    crate::native_parameter_input::process_range(
+        input,
+        chain,
+        range,
+        frames,
+        offset,
+        clock,
+        clock,
+        0,
+        0,
+        &mut hex_lattice::RefuseForeign,
+        observer,
+    )
+}
+
 pub(crate) fn process(
     chain: &mut NativeRuntimeChain,
     frames: &mut [Frame],

@@ -1069,6 +1069,33 @@ impl Playback {
         }
     }
 
+    pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
+        self.session_runtime
+            .as_ref()?
+            .native_parameter_input_target()
+    }
+    pub fn set_native_parameter_input(
+        &mut self,
+        operation: hex_lattice::NativeTransientOperation,
+    ) -> Result<(), Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("native parameter input requires session playback"))?
+            .set_native_parameter_input(operation)
+    }
+    pub fn invalidate_native_parameter_input(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.invalidate_native_parameter_input();
+        }
+    }
+    pub fn take_native_parameter_application(
+        &mut self,
+    ) -> Option<crate::NativeParameterApplication> {
+        self.session_runtime
+            .as_mut()?
+            .take_native_parameter_application()
+    }
+
     /// True only for an explicitly armed, admitted Session-capable runtime.
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.session_runtime
