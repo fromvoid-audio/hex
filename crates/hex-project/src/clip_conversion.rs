@@ -42,6 +42,7 @@ pub(crate) fn midi_to_audio(
     }) {
         let original = project.tracks[track].content.midi_clips.remove(index);
         project.tracks[track].content.audio_clips.push(Clip {
+            role: crate::AudioClipRole::Input,
             active: original.active,
             name: original.name.into(),
             flavor: original.flavor,

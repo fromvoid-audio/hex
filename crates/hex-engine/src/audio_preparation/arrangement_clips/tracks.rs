@@ -17,6 +17,7 @@ pub struct ArrangementTrackCapacity {
     pub row_bytes: usize,
     pub destination_scratch_bytes: usize,
     pub clip_bytes: usize,
+    pub output_suppression_bytes: usize,
     pub send_bytes: usize,
     pub gain_bytes: usize,
     pub pair_bytes: usize,
@@ -35,6 +36,7 @@ impl ArrangementTrackCapacity {
             self.row_bytes,
             self.destination_scratch_bytes,
             self.clip_bytes,
+            self.output_suppression_bytes,
             self.send_bytes,
             self.gain_bytes,
             self.pair_bytes,
@@ -63,6 +65,7 @@ struct ClipDestination {
 }
 #[derive(Default)]
 struct Row {
+    output_suppression: Vec<hex_project::OutputSuppression>,
     ordinal: usize,
     installed_ordinal: Option<usize>,
     id: Option<hex_project::TrackId>,
@@ -180,8 +183,9 @@ impl TrackAssembly {
                 .midi_bytes
                 .checked_add(r.sampler.backing_bytes(r.actual(root)?)?)
                 .ok_or(AudioStorageError::Overflow)?;
-            let (clips, sends, gain) = if let Some(t) = r.actual(root)? {
-                if r.clips.capacity() != 0
+            let (clips, sends, gain, spans) = if let Some(t) = r.actual(root)? {
+                if r.output_suppression.capacity() != 0
+                    || r.clips.capacity() != 0
                     || r.sends.capacity() != 0
                     || r.prepared_gain.is_some()
                     || r.bare_meter.is_some()
@@ -189,10 +193,24 @@ impl TrackAssembly {
                 {
                     return Err(AudioStorageError::UnknownStorage);
                 }
-                (&t.clips, &t.sends, t.gain_envelope.as_ref())
+                (
+                    &t.clips,
+                    &t.sends,
+                    t.gain_envelope.as_ref(),
+                    &t.output_suppression,
+                )
             } else {
-                (&r.clips, &r.sends, r.prepared_gain.as_ref())
+                (
+                    &r.clips,
+                    &r.sends,
+                    r.prepared_gain.as_ref(),
+                    &r.output_suppression,
+                )
             };
+            c.output_suppression_bytes = c
+                .output_suppression_bytes
+                .checked_add(backing(spans)?)
+                .ok_or(AudioStorageError::Overflow)?;
             c.clip_bytes = c
                 .clip_bytes
                 .checked_add(backing(clips)?)
@@ -349,6 +367,7 @@ impl TrackAssembly {
                 r.id.is_some()
                     || r.root_index.is_some()
                     || r.track.is_some()
+                    || !r.output_suppression.is_empty()
                     || !r.clips.is_empty()
                     || !r.pairs.is_empty()
                     || !r.sends.is_empty()
@@ -408,6 +427,13 @@ impl TrackAssembly {
                     .map_err(invalid)?,
             );
             r.source_mix = r.mix;
+            reserve(
+                &mut r.output_suppression,
+                t.output_suppression().len(),
+                &mut self.growth,
+            )?;
+            r.output_suppression
+                .extend_from_slice(t.output_suppression());
             reserve(&mut r.clips, t.clips().len(), &mut self.growth)?;
             reserve(&mut r.pairs, t.clips().len(), &mut self.growth)?;
             reserve(&mut r.sends, t.sends().len(), &mut self.growth)?;
@@ -444,7 +470,11 @@ impl TrackAssembly {
                 });
             }
             r.handles = [handle()?, handle()?];
-            if !t.devices().is_empty() || !t.sends().is_empty() || !t.gain_envelope().is_empty() {
+            if !t.output_suppression().is_empty()
+                || !t.devices().is_empty()
+                || !t.sends().is_empty()
+                || !t.gain_envelope().is_empty()
+            {
                 r.source_mix = Some(PreparedTrackMix::identity());
             }
         }
@@ -604,6 +634,7 @@ impl TrackAssembly {
                 r.source_mix,
             ) {
                 r.track = Some(Track {
+                    output_suppression: mem::take(&mut r.output_suppression),
                     track_id: r.id,
                     source_id: r.source_id,
                     source_receiver_index: r.source_receiver_index,
@@ -714,6 +745,7 @@ impl TrackAssembly {
                 }
             }
             if let Some(Track {
+                output_suppression,
                 track_id: _,
                 source_id: _,
                 source_receiver_index: _,
@@ -744,6 +776,7 @@ impl TrackAssembly {
                 mutable_looping_source: _,
             }) = r.track.take()
             {
+                r.output_suppression = output_suppression;
                 r.clips = clips;
                 r.prepared_gain = gain_envelope;
                 r.bare_chain = Some(device_chain);
@@ -791,6 +824,7 @@ impl TrackAssembly {
         r.gain.restore(&mut r.prepared_gain).map_err(gain_error)?;
         r.gain.clear_on_control();
         r.sampler.dispose();
+        r.output_suppression.clear();
         r.sends.clear();
         r.pairs.clear();
         r.id = None;
@@ -811,6 +845,7 @@ impl TrackAssembly {
             || self.rows.iter().any(|r| {
                 r.track.is_some()
                     || r.id.is_some()
+                    || !r.output_suppression.is_empty()
                     || !r.clips.is_empty()
                     || !r.pairs.is_empty()
                     || r.meter.is_some()
@@ -1013,6 +1048,7 @@ impl TrackAssembly {
         l.growth(*growth)?;
         for r in rows {
             let Row {
+                output_suppression,
                 source_id: _,
                 source_receiver_index: _,
                 source_audio_receiver: _,
@@ -1043,6 +1079,7 @@ impl TrackAssembly {
                 chain_disposal: _,
             } = r;
             effects.visit_metadata(l)?;
+            l.vec(output_suppression)?;
             l.vec(clips)?;
             l.vec(pairs)?;
             l.vec(sends)?;
@@ -1054,6 +1091,7 @@ impl TrackAssembly {
             sampler.visit(l, actual)?;
             let actual_clips = if let Some(t) = actual {
                 let Track {
+                    output_suppression,
                     track_id: _,
                     source_id: _,
                     source_receiver_index: _,
@@ -1090,6 +1128,7 @@ impl TrackAssembly {
                 {
                     return Err(AudioStorageError::UnknownStorage);
                 }
+                l.vec(output_suppression)?;
                 l.vec(clips)?;
                 l.vec(sends)?;
                 if let Some(gain) = gain_envelope {

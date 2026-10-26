@@ -167,9 +167,6 @@ fn exact_in_place_range_preserves_outside_history_and_deletion_stays_silent() {
         ),
         deleted
     );
-    let saved = folder.0.join("printed-range.hex");
-    hex_storage::save_new(&saved, session.project()).unwrap();
-    assert_eq!(hex_storage::load(&saved).unwrap(), *session.project());
     assert!(session.undo());
     assert_eq!(
         pcm(
@@ -186,4 +183,7 @@ fn exact_in_place_range_preserves_outside_history_and_deletion_stays_silent() {
         ),
         deleted
     );
+    let saved = folder.0.join("printed-range.hex");
+    hex_storage::save_new(&saved, session.project()).unwrap();
+    assert_eq!(hex_storage::load(&saved).unwrap(), *session.project());
 }

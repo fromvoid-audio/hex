@@ -104,6 +104,8 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    /// Sorted non-touching spans; admission refuses malformed inventories.
+    pub output_suppression: Vec<crate::OutputSuppression>,
     pub kind: crate::TrackKind,
     pub parent_group: Option<u64>,
     pub color: crate::ElementColor,
@@ -219,6 +221,8 @@ pub struct MidiNoteSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipSnapshot {
+    /// Placement-local processing position, independent of alias source content.
+    pub role: crate::AudioClipRole,
     pub active: bool,
     pub name: String,
     pub flavor: crate::ClipFlavor,
@@ -300,6 +304,7 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    output_suppression: track.output_suppression.clone(),
                     kind: track.kind,
                     parent_group: track.parent_group.map(TrackId::value),
                     color: track.color,
@@ -337,6 +342,7 @@ impl Project {
                             .audio_clips
                             .iter()
                             .map(|clip| ClipSnapshot {
+                                role: clip.role,
                                 active: clip.active,
                                 name: clip.name().to_owned(),
                                 flavor: clip.flavor,
@@ -932,6 +938,7 @@ impl Project {
                     return Err(Invalid("clip source phase is outside its source interval"));
                 }
                 compiled_audio.push(Clip {
+                    role: clip.role,
                     active: clip.active,
                     name: clip.name.into(),
                     flavor: clip.flavor,
@@ -1065,6 +1072,7 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                output_suppression: track.output_suppression,
                 kind: track.kind,
                 parent_group: track.parent_group.map(TrackId),
                 color: track.color,

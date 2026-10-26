@@ -69,6 +69,7 @@ pub(super) fn content(
             let first_length = first_end - c.source_start();
             let make = |id, start, offset, length| -> Result<ClipSnapshot, String> {
                 Ok(ClipSnapshot {
+                    role: hex_project::AudioClipRole::Input,
                     active: true,
                     name: c.name().to_owned(),
                     flavor: c.flavor(),

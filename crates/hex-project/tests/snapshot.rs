@@ -37,6 +37,7 @@ fn valid_snapshot() -> Snapshot {
             hex_project::Meter::COMMON_TIME,
         )],
         tracks: vec![TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -55,6 +56,7 @@ fn valid_snapshot() -> Snapshot {
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: vec![
                     ClipSnapshot {
+                        role: hex_project::AudioClipRole::Input,
                         active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
@@ -71,6 +73,7 @@ fn valid_snapshot() -> Snapshot {
                         fade: hex_project::ClipFade::neutral(80).unwrap(),
                     },
                     ClipSnapshot {
+                        role: hex_project::AudioClipRole::Input,
                         active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
@@ -204,6 +207,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut tracks = valid_snapshot();
     tracks.tracks = (0..=MAX_TRACKS)
         .map(|index| TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -246,6 +250,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let track = &mut clips.tracks[0];
     *track.audio_clips_mut().unwrap() = (0..=MAX_CLIPS)
         .map(|index| ClipSnapshot {
+            role: hex_project::AudioClipRole::Input,
             active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),

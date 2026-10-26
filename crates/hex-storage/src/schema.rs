@@ -2033,6 +2033,7 @@ impl DocumentV13 {
             .into_iter()
             .map(|track| {
                 Ok(TrackSnapshot {
+                    output_suppression: Vec::new(),
                     kind: hex_project::TrackKind::Ordinary,
                     parent_group: None,
                     color: hex_project::ElementColor::default(),
@@ -2402,6 +2403,7 @@ impl DocumentV10 {
                             ),
                         };
                         Ok(TrackSnapshot {
+                            output_suppression: Vec::new(),
                             kind: hex_project::TrackKind::Ordinary,
                             parent_group: None,
                             color: hex_project::ElementColor::default(),
@@ -2551,6 +2553,7 @@ impl DocumentV9 {
                     }
                 };
                 Ok(TrackSnapshot {
+                    output_suppression: Vec::new(),
                     kind: hex_project::TrackKind::Ordinary,
                     parent_group: None,
                     color: hex_project::ElementColor::default(),
@@ -2830,6 +2833,7 @@ fn clips_v7_into_snapshot(clips: Vec<ClipV7>) -> Result<Vec<ClipSnapshot>, Stora
         .into_iter()
         .map(|clip| {
             Ok(ClipSnapshot {
+                role: hex_project::AudioClipRole::Input,
                 active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
@@ -2862,6 +2866,7 @@ fn tracks_legacy_into_snapshot(
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2889,6 +2894,7 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2916,6 +2922,7 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -2954,6 +2961,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        role: hex_project::AudioClipRole::Input,
                         active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
@@ -2972,6 +2980,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -3010,6 +3019,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        role: hex_project::AudioClipRole::Input,
                         active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
@@ -3028,6 +3038,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -3057,6 +3068,7 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
             let fade = ClipFade::neutral(clip.duration.max(1))
                 .map_err(|error| StorageError::Invalid(error.0))?;
             Ok(ClipSnapshot {
+                role: hex_project::AudioClipRole::Input,
                 active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),

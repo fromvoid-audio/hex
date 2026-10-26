@@ -1171,6 +1171,7 @@ pub(crate) fn new_track(
     let id = TrackId(project.allocate_id()?);
     let color = crate::appearance::new_track_color(project);
     Ok(Track {
+        output_suppression: Vec::new(),
         kind,
         parent_group,
         color,
@@ -1353,6 +1354,7 @@ pub(crate) fn preview_edge_trim(
         clip.fade
     };
     Ok(Clip {
+        role: clip.role,
         active: true,
         name: clip.name.clone(),
         flavor: clip.flavor,
@@ -1427,6 +1429,7 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
+        role: original.role,
         active: original.active,
         name: original.name.clone(),
         flavor: original.flavor,
@@ -1645,6 +1648,7 @@ impl Project {
                 self.asset(asset).ok_or(Invalid("imported media missing"))?,
             )?;
             let mut clip = Clip {
+                role: crate::AudioClipRole::Input,
                 active: true,
                 name: "clip".into(),
                 flavor: crate::ClipFlavor::default(),
@@ -2650,6 +2654,7 @@ impl Project {
                 interval_valid(start, duration, source_offset, source_length, media)?;
                 let fade = ClipFade::neutral(duration)?;
                 let incoming = Clip {
+                    role: crate::AudioClipRole::Input,
                     active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
@@ -2907,7 +2912,7 @@ impl Project {
 }
 
 impl Project {
-    fn add_prepared_asset(
+    pub(crate) fn add_prepared_asset(
         &mut self,
         path: PathBuf,
         source_sample_rate: u32,
@@ -3023,6 +3028,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    role: crate::AudioClipRole::Input,
                     active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
@@ -3087,6 +3093,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    role: crate::AudioClipRole::Input,
                     active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),

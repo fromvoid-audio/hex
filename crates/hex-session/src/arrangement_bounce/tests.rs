@@ -376,8 +376,8 @@ fn exact_range_retains_prerange_instrument_state_and_stops_without_tail() {
                 &BounceTarget::Range(hex_project::TimeRange::new(vec![track], start, end).unwrap()),
                 true
             )
-            .is_err(),
-        "partial in-place bake must not alter unrelated source"
+            .is_ok(),
+        "partial in-place print preserves the original processing path"
     );
 }
 #[test]

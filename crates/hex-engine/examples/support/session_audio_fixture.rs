@@ -72,6 +72,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         };
         let arrangement_duration = 16_384;
         snapshot_tracks.push(TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -88,6 +89,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                role: hex_project::AudioClipRole::Input,
                 active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),

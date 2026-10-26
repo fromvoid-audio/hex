@@ -23,6 +23,7 @@ impl Clip {
     /// Complete metadata for the storage-owned retained-source adapter.
     pub fn retained_snapshot(&self) -> ClipSnapshot {
         ClipSnapshot {
+            role: self.role,
             active: self.active,
             name: self.name().to_owned(),
             flavor: self.flavor,
@@ -56,6 +57,7 @@ impl Project {
             id,
             tempo,
             clip: Clip {
+                role: snapshot.role,
                 active: snapshot.active,
                 name: snapshot.name.into(),
                 flavor: snapshot.flavor,

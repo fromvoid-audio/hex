@@ -154,6 +154,7 @@ impl From<serde_json::Error> for StorageError {
 /// byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
+    refuse_unimplemented_prints(project)?;
     encode_document(&schema::clip_aliases::encode(project)?)
 }
 
@@ -169,7 +170,23 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
     encode_document(&schema::return_feeds::DocumentV20::from_project(project)?)
 }
 
+// The new model/render boundary is intentionally not silently encoded as 52.
+// Its versioned codec must land before a printed project can be published.
+fn refuse_unimplemented_prints(project: &Project) -> Result<(), StorageError> {
+    if project
+        .tracks()
+        .iter()
+        .any(|track| !track.output_suppression().is_empty())
+    {
+        return Err(StorageError::Invalid(
+            "this build cannot save printed track output",
+        ));
+    }
+    Ok(())
+}
+
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    refuse_unimplemented_prints(project)?;
     schema::clip_aliases::require_legacy_compatible(project)?;
     schema::crossfades::require_legacy_disjoint(project)?;
     if project.has_device_automation() {

@@ -16,11 +16,12 @@ type Interval = (u64, u64);
 
 fn geometry_eq(a: &Track, b: &Track) -> bool {
     a.id == b.id
+        && a.output_suppression() == b.output_suppression()
         && a.clips().len() == b.clips().len()
         && a.midi_clips().len() == b.midi_clips().len()
         && a.clips().iter().zip(b.clips()).all(|(a, b)| {
-            (a.id(), a.start(), a.duration(), a.fade())
-                == (b.id(), b.start(), b.duration(), b.fade())
+            (a.id(), a.role(), a.start(), a.duration(), a.fade())
+                == (b.id(), b.role(), b.start(), b.duration(), b.fade())
                 && a.audio_edit() == b.audio_edit()
         })
         && a.midi_clips()
@@ -82,12 +83,16 @@ fn crossfade_covers(a: &Clip, b: &Clip, tempo: &TempoMap) -> Result<bool, Invali
             || (covers(ramp(a, tempo, true)?) && covers(ramp(b, tempo, false)?)),
     )
 }
-fn validate_audio(clips: &[Clip], tempo: &TempoMap) -> Result<Vec<Interval>, Invalid> {
+fn validate_audio(
+    clips: &[Clip],
+    tempo: &TempoMap,
+    role: crate::AudioClipRole,
+) -> Result<Vec<Interval>, Invalid> {
     let mut ordered = Vec::new();
     ordered
-        .try_reserve_exact(clips.len())
+        .try_reserve_exact(clips.iter().filter(|clip| clip.role() == role).count())
         .map_err(|_| Invalid("could not reserve audio occupancy validation"))?;
-    for clip in clips {
+    for clip in clips.iter().filter(|clip| clip.role() == role) {
         let end = clip
             .start()
             .checked_add(clip.duration())
@@ -130,7 +135,36 @@ fn validate_audio(clips: &[Clip], tempo: &TempoMap) -> Result<Vec<Interval>, Inv
     Ok(intervals)
 }
 fn validate_track(track: &Track, tempo: &TempoMap) -> Result<(), Invalid> {
-    let audio = validate_audio(track.clips(), tempo)?;
+    crate::arrangement_print::validate(track.output_suppression())?;
+    if track.is_group() && !track.output_suppression().is_empty() {
+        return Err(Invalid(
+            "group tracks cannot own printed output suppression",
+        ));
+    }
+    let audio = validate_audio(track.clips(), tempo, crate::AudioClipRole::Input)?;
+    validate_audio(track.clips(), tempo, crate::AudioClipRole::PostDevice)?;
+    for clip in track
+        .clips()
+        .iter()
+        .filter(|clip| clip.role() == crate::AudioClipRole::PostDevice)
+    {
+        let end = clip
+            .start()
+            .checked_add(clip.duration())
+            .ok_or(Invalid("printed output end overflows"))?;
+        let index = track
+            .output_suppression()
+            .partition_point(|span| span.start() <= clip.start());
+        if index
+            .checked_sub(1)
+            .and_then(|i| track.output_suppression().get(i))
+            .is_none_or(|span| span.end() < end)
+        {
+            return Err(Invalid(
+                "printed output must be covered by output suppression",
+            ));
+        }
+    }
     let mut midi = Vec::new();
     midi.try_reserve_exact(track.midi_clips().len())
         .map_err(|_| Invalid("could not reserve midi occupancy validation"))?;
@@ -174,7 +208,12 @@ impl Project {
                 )
             })
             .count();
+        let mut suppressions = 0usize;
         for track in &self.tracks {
+            suppressions = suppressions
+                .checked_add(track.output_suppression().len())
+                .filter(|count| *count <= crate::MAX_OUTPUT_SUPPRESSIONS)
+                .ok_or(Invalid("project output suppression interval limit reached"))?;
             count = count
                 .checked_add(track.clips().len())
                 .and_then(|n| n.checked_add(track.midi_clips().len()))

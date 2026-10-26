@@ -496,6 +496,7 @@ impl Audio {
 
 #[derive(Debug, Clone)]
 pub struct Clip {
+    role: hex_project::AudioClipRole,
     active: bool,
     audio: Option<Audio>,
     start: u64,
@@ -590,6 +591,7 @@ impl Clip {
             }))
         };
         Ok(Self {
+            role: hex_project::AudioClipRole::Input,
             active: true,
             audio: Some(audio),
             start,
@@ -783,6 +785,7 @@ impl Clip {
         fade.validate_segment(duration)
             .map_err(|error| Invalid(error.0))?;
         Ok(Self {
+            role: hex_project::AudioClipRole::Input,
             active: true,
             audio: None,
             start,
@@ -804,6 +807,7 @@ impl Clip {
 
 #[derive(Debug, Clone)]
 pub struct Track {
+    output_suppression: Vec<hex_project::OutputSuppression>,
     track_id: Option<hex_project::TrackId>,
     source_id: Option<hex_project::SourceId>,
     source_receiver_index: Option<usize>,
@@ -950,6 +954,70 @@ impl PreparedTrackMix {
 }
 
 impl Track {
+    pub(crate) fn has_printed_output(&self) -> bool {
+        !self.output_suppression.is_empty()
+    }
+
+    pub(crate) fn with_printed_output(mut self, spans: &[hex_project::OutputSuppression]) -> Self {
+        self.output_suppression = spans.to_vec();
+        if !spans.is_empty() {
+            // Fused stateless effects must run on the original input before the
+            // replacement, rather than on a print at the mixer.
+            if self.ordered_suffix.is_none() && !self.has_device_chain() {
+                self.ordered_suffix = self.mix.effects;
+            }
+            self.mix = self.mix.without_effects();
+            self.source_mix = PreparedTrackMix::identity();
+        }
+        self
+    }
+
+    /// Replace post-device/pre-mixer output, without skipping source/device
+    /// processing. This allocates nothing and uses the ordinary clip page path.
+    pub(crate) fn replace_printed_output<P: MediaPages + ?Sized>(
+        &self,
+        start: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+    ) -> Result<(), Invalid> {
+        if self.output_suppression.is_empty() {
+            return Ok(());
+        }
+        let end = start
+            .checked_add(output.len() as u64)
+            .ok_or(Invalid("printed output range overflows"))?;
+        let mut cursor = self
+            .output_suppression
+            .partition_point(|span| span.end() <= start);
+        for (offset, frame) in output.iter_mut().enumerate() {
+            let at = start + offset as u64;
+            while self
+                .output_suppression
+                .get(cursor)
+                .is_some_and(|span| span.end() <= at)
+            {
+                cursor += 1;
+            }
+            if self
+                .output_suppression
+                .get(cursor)
+                .is_some_and(|span| span.contains(at))
+            {
+                *frame = [0.0; 2];
+            }
+        }
+        self.render_audio_role_with_mix(
+            start,
+            end,
+            output,
+            pages,
+            None,
+            PreparedTrackMix::identity(),
+            hex_project::AudioClipRole::PostDevice,
+        );
+        Ok(())
+    }
+
     /// Overlapping clips are summed in this prototype; Live overlap semantics are unverified.
     pub fn new(clips: Vec<Clip>, gain: f32, muted: bool) -> Result<Self, Invalid> {
         Self::with_balance(clips, gain, muted, 0.0)
@@ -962,6 +1030,7 @@ impl Track {
         balance: f32,
     ) -> Result<Self, Invalid> {
         Ok(Self {
+            output_suppression: Vec::new(),
             track_id: None,
             clips,
             mix: PreparedTrackMix::new(gain, balance, muted)?,
@@ -1018,6 +1087,7 @@ impl Track {
             mix
         };
         Ok(Self {
+            output_suppression: Vec::new(),
             track_id: None,
             clips,
             mix,
@@ -1219,8 +1289,9 @@ impl Track {
     }
 
     pub(crate) fn requires_ordered_processing(&self) -> bool {
-        (self.instrument_id.is_some()
-            && (self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0))
+        self.has_printed_output()
+            || (self.instrument_id.is_some()
+                && (self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0))
             || self.mutable_instrument
             || self.midi_source_index.is_some()
             || self.has_device_chain()
@@ -1707,8 +1778,30 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         pages: Option<&mut P>,
+        capture: Option<&mut [Frame]>,
+        source_mix: PreparedTrackMix,
+    ) {
+        self.render_audio_role_with_mix(
+            start_frame,
+            end_frame,
+            output,
+            pages,
+            capture,
+            source_mix,
+            hex_project::AudioClipRole::Input,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_audio_role_with_mix<P: MediaPages + ?Sized>(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
+        role: hex_project::AudioClipRole,
     ) {
         if let Some(pages) = pages {
             self.render_audio_range_with_pages_captured_with_mix(
@@ -1718,10 +1811,11 @@ impl Track {
                 pages,
                 capture,
                 source_mix,
+                role,
             );
             return;
         }
-        for clip in &self.clips {
+        for clip in self.clips.iter().filter(|clip| clip.role == role) {
             if !clip.is_streamed() {
                 self.render_resident_clip(
                     clip,
@@ -1780,9 +1874,11 @@ impl Track {
             pages,
             capture,
             self.source_mix,
+            hex_project::AudioClipRole::Input,
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_audio_range_with_pages_captured_with_mix(
         &self,
         start_frame: u64,
@@ -1791,8 +1887,9 @@ impl Track {
         pages: &mut (impl MediaPages + ?Sized),
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
+        role: hex_project::AudioClipRole,
     ) {
-        for clip in &self.clips {
+        for clip in self.clips.iter().filter(|clip| clip.role == role) {
             if !clip.is_streamed() {
                 self.render_resident_clip(
                     clip,
@@ -2998,6 +3095,7 @@ impl RendererRuntime {
                 if !ordered {
                     render_source_generators(project, index, start, end, target, volume_timing)?;
                 }
+                track.replace_printed_output(start, target, pages.as_deref_mut())?;
                 for (frame_index, (destination, source)) in output[offset..offset + count]
                     .iter_mut()
                     .zip(target.iter().copied())
@@ -3128,6 +3226,7 @@ impl RendererRuntime {
                         volume_timing,
                     )?;
                 }
+                track.replace_printed_output(start, rendered, pages.as_deref_mut())?;
                 for (frame_index, source) in rendered.iter().copied().enumerate() {
                     let mixed = if track.has_gain_automation() {
                         track.mix_at(start + frame_index as u64).apply_frame(source)

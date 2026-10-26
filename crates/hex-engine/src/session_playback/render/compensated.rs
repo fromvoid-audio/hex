@@ -279,6 +279,15 @@ impl SessionPlayback {
                             observer,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    let processed = if self.playing
+                        && matches!(route.owner, RouteOwner::Arrangement)
+                    {
+                        compensation
+                            .replace_printed_output(track, index, processed, pages.as_deref_mut())
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?
+                    } else {
+                        processed
+                    };
                     let override_gain = self
                         .gain_recording_override
                         .filter(|_| self.revision.gain_recording_track() == Some(route.id));

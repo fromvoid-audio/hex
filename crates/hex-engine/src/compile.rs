@@ -616,6 +616,7 @@ fn compile_project_inner<'a>(
                 };
                 if let Some(compiled) = compiled.as_mut() {
                     compiled.active = clip.active();
+                    compiled.role = clip.role();
                 }
                 if let Some(compiled) = &compiled
                     && let Some(audio) = &compiled.audio
@@ -757,6 +758,7 @@ fn compile_project_inner<'a>(
                 effect_plan.suffix,
                 device_chain,
             )?
+            .with_printed_output(track.output_suppression())
             .with_track_id(track.id())
             .with_source_audio_receiver(track.receives_source_audio())
             .with_source_mix_scope(local_content_enabled, local_content_enabled)

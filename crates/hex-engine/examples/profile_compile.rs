@@ -47,6 +47,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                         }
                     };
                     Ok(ClipSnapshot {
+                        role: hex_project::AudioClipRole::Input,
                         active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
@@ -65,6 +66,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, hex_project::Invalid>(TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),

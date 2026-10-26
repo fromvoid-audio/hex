@@ -3,7 +3,10 @@
 //! per source track spans selected clips (including gaps and release tails).
 //! Whole-track bakes additionally print each Console source independently. Explicit ranges
 //! have priority in the UI and adopt exactly their half-open frame interval.
-//! In-place baking removes the baked device chain only when no unselected
+//! Exact in-place ranges retain all original input and devices, adopt a
+//! post-device print and suppress original output over precisely that interval.
+//! Deleting the print retains suppression. Clip/whole-track baking removes the
+//! baked device chain only when no unselected
 //! Arrangement or Console material can be affected. Whole-track intent covers all
 //! active Arrangement clips and every Console cell on one ordinary root track,
 //! independent of selection. Inactive Arrangement clips, hierarchy and external
@@ -206,7 +209,10 @@ impl Project {
             {
                 return Err(Invalid("bounce exceeds its finite frame budget"));
             }
-            if in_place && (track.instrument().is_some() || !track.devices().is_empty()) {
+            if in_place
+                && !matches!(target, BounceTarget::Range(_))
+                && (track.instrument().is_some() || !track.devices().is_empty())
+            {
                 let unrelated = match target {
                     BounceTarget::Clips(_) | BounceTarget::Track(_) => {
                         clips.len() != track.clips().len() + track.midi_clips().len()
@@ -310,6 +316,12 @@ pub(crate) fn commit(
                 ));
             }
             let clip = console::adopt(project, &item, file)?;
+            first.get_or_insert(clip);
+            last = Some(clip);
+            continue;
+        }
+        if in_place && matches!(target, BounceTarget::Range(_)) {
+            let clip = crate::arrangement_print::adopt(project, file)?;
             first.get_or_insert(clip);
             last = Some(clip);
             continue;

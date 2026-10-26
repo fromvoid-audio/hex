@@ -32,6 +32,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
         let mut midi_clips = Vec::new();
         for position in 0..50_u64 {
             audio_clips.push(ClipSnapshot {
+                role: hex_project::AudioClipRole::Input,
                 active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
@@ -79,6 +80,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
             });
         }
         tracks.push(TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

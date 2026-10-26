@@ -9,6 +9,56 @@ use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+#[test]
+fn printed_role_and_suppression_transfer_with_accounted_track_storage_and_cleanup() {
+    let (project, bank, token) = fixture(false, false, false, 2);
+    let mut snapshot = project.snapshot();
+    snapshot.tracks[0].output_suppression =
+        vec![hex_project::OutputSuppression::new(0, 8).unwrap()];
+    snapshot.tracks[0].audio_clips_mut().unwrap()[0].role = hex_project::AudioClipRole::PostDevice;
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let ticket = begin(&mut custody, &project, bank).ok().unwrap();
+    let actual = custody.arrangement_clips.tracks.rows[0]
+        .track
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        actual.output_suppression,
+        project.tracks()[0].output_suppression()
+    );
+    assert_eq!(actual.clips[0].role, hex_project::AudioClipRole::PostDevice);
+    assert_eq!(actual.source_mix, PreparedTrackMix::identity());
+    let mut raw = [[0.0; 2]; 8];
+    actual
+        .render_raw_audio::<dyn crate::MediaPages>(0, &mut raw, None)
+        .unwrap();
+    assert_eq!(raw, [[0.0; 2]; 8], "the print must never enter the devices");
+    actual
+        .replace_printed_output::<dyn crate::MediaPages>(0, &mut raw, None)
+        .unwrap();
+    assert!(raw.iter().flatten().any(|sample| *sample != 0.0));
+    let quoted = custody
+        .capacity_report()
+        .arrangement_clips
+        .tracks
+        .output_suppression_bytes;
+    assert!(quoted >= mem::size_of::<hex_project::OutputSuppression>());
+    assert!(custody.cancel(&ticket));
+    custody.cleanup_on_control();
+    assert!(
+        custody
+            .arrangement_clips
+            .tracks
+            .rows
+            .iter()
+            .all(|row| row.output_suppression.is_empty())
+    );
+    let recovered = custody.recover_on_control(&ticket).unwrap();
+    assert!(recovered.source_view(&token).is_ok());
+}
+
 fn fixture(
     streamed: bool,
     automation: bool,

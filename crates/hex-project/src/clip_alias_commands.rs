@@ -261,6 +261,7 @@ pub(crate) fn apply_settings(project: &mut Project, picked: ClipId) -> Result<Cr
                 .clip(id)
                 .ok_or(Invalid("alias audio member missing"))?;
             replacement.id = id;
+            replacement.role = target.role;
             crate::audio_edit::move_clip(&mut replacement, target.start, project.tempo_map())?;
             *project.clip_mut(id)? = replacement;
         }

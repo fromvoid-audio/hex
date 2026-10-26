@@ -1051,7 +1051,8 @@ impl SessionPlayback {
                     .iter()
                     .any(|k| k.track() == self.route_scratch[index].id);
             let shared_source = revision.source_routing().is_shared(index);
-            let buffered = shared_source
+            let buffered = track.has_printed_output()
+                || shared_source
                 || live_target
                 || stateful_effects
                 || mutable_active
@@ -1456,6 +1457,17 @@ impl SessionPlayback {
                             )
                             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     }
+                }
+                if self.playing
+                    && matches!(self.route_scratch[index].owner, RouteOwner::Arrangement)
+                {
+                    track
+                        .replace_printed_output(
+                            arrangement_frame,
+                            render_output,
+                            pages.as_deref_mut(),
+                        )
+                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                 }
                 for (frame_index, source) in render_output.iter_mut().enumerate() {
                     let mix = if let Some(gain) = recording_override {

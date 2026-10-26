@@ -87,6 +87,12 @@ impl RendererRuntime {
                                 false,
                                 &mut None,
                             )?;
+                            let processed = compensation.replace_printed_output(
+                                track,
+                                index,
+                                processed,
+                                pages.as_deref_mut(),
+                            )?;
                             let mixed = compensation.fader(track, index, None, processed)?;
                             let main =
                                 compensation.edge(compensation.graph.tracks[index].main, mixed)?;

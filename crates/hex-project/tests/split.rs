@@ -166,6 +166,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -184,6 +185,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             content: TrackContentSnapshot::Audio(
                 (0..MAX_CLIPS)
                     .map(|index| ClipSnapshot {
+                        role: hex_project::AudioClipRole::Input,
                         active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
@@ -269,6 +271,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -285,6 +288,7 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                role: hex_project::AudioClipRole::Input,
                 active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),

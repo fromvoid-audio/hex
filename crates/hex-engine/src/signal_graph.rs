@@ -810,6 +810,26 @@ impl SignalRuntime {
             .map_err(error)?;
         Ok(frames[0])
     }
+    pub(crate) fn replace_printed_output<P: crate::MediaPages + ?Sized>(
+        &self,
+        track: &Track,
+        index: usize,
+        frame: Frame,
+        pages: Option<&mut P>,
+    ) -> Result<Frame, Invalid> {
+        if !track.has_printed_output() {
+            return Ok(frame);
+        }
+        let Some(origin) = self.delays.stamp_at_delay(
+            self.graph.plan.nodes()[self.graph.tracks[index].fader].output_arrival_frames,
+        ) else {
+            return Ok([0.0; 2]);
+        };
+        let mut output = [frame];
+        track.replace_printed_output(origin.arrangement_frame, &mut output, pages)?;
+        Ok(output[0])
+    }
+
     pub(crate) fn fader(
         &self,
         track: &Track,

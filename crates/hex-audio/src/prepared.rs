@@ -4354,6 +4354,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -4376,6 +4377,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    role: hex_project::AudioClipRole::Input,
                     active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
@@ -4518,6 +4520,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -4540,6 +4543,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    role: hex_project::AudioClipRole::Input,
                     active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
@@ -4651,6 +4655,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -4673,6 +4678,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    role: hex_project::AudioClipRole::Input,
                     active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
@@ -4803,6 +4809,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -4829,6 +4836,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    role: hex_project::AudioClipRole::Input,
                     active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
@@ -7996,6 +8004,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -8500,6 +8509,7 @@ mod tests {
             next_id: track_id + 1,
             assets: Vec::new(),
             tracks: vec![TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),

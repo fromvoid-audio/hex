@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut clips = Vec::new();
         for clip in 0..100 {
             clips.push(ClipSnapshot {
+                role: hex_project::AudioClipRole::Input,
                 active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
@@ -30,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

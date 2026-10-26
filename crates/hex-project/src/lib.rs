@@ -14,7 +14,9 @@
 //! half-open intervals; retained fragments preserve their processing/source domains.
 //! A selection-fitted crossfade may admit at most two overlapping audio voices
 //! when opposing authored ramps cover their full intersection. MIDI and unfaded
-//! or triple-voice overlaps refuse. Group edits resolve all incoming members
+//! or triple-voice input overlaps refuse. Post-device printed audio has a separate
+//! occupancy plane; persistent output suppression retains original processing
+//! history even after the print is deleted. Group edits resolve all incoming members
 //! together. Loading validates this law without normalizing source documents;
 //! storage retains older schemas' strictly disjoint contract. Source events and
 //! DSP tails retain their own owners and are not top-level occupancy.
@@ -32,6 +34,8 @@
 //! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
 //! preparation must preserve project, IDs and history.
 mod arrangement_occupancy;
+mod arrangement_print;
+pub use arrangement_print::{AudioClipRole, MAX_OUTPUT_SUPPRESSIONS, OutputSuppression};
 mod arrangement_sections;
 pub use arrangement_sections::{
     ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
@@ -381,6 +385,7 @@ impl ClipGain {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
+    pub(crate) role: AudioClipRole,
     pub(crate) active: bool,
     // Immutable authored label shared by private candidates/history. Rename
     // replaces this value; public snapshots retain their owned String contract.
@@ -399,6 +404,10 @@ pub struct Clip {
     pub(crate) edit: Option<Arc<AudioClipEdit>>,
 }
 impl Clip {
+    /// Whether this placement enters devices or replaces their output.
+    pub fn role(&self) -> AudioClipRole {
+        self.role
+    }
     /// Authored clip activation, independent of track mute or selection.
     pub fn active(&self) -> bool {
         self.active
@@ -498,6 +507,7 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) output_suppression: Vec<OutputSuppression>,
     pub(crate) kind: TrackKind,
     pub(crate) parent_group: Option<TrackId>,
     pub(crate) color: crate::ElementColor,
@@ -517,6 +527,11 @@ pub struct Track {
     pub(crate) sends: Vec<SendLevel>,
 }
 impl Track {
+    /// Canonical sorted suppression of original Arrangement output. Console
+    /// ownership and separately prepared live monitoring do not use this lane.
+    pub fn output_suppression(&self) -> &[OutputSuppression] {
+        &self.output_suppression
+    }
     pub fn kind(&self) -> TrackKind {
         self.kind
     }

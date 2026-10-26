@@ -1008,6 +1008,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
             },
         ],
         tracks: vec![TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -1080,6 +1081,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
     let mut snapshot = audio_project(source_start, source_end, 4).snapshot();
     snapshot.next_id = 12;
     snapshot.tracks.push(TrackSnapshot {
+        output_suppression: Vec::new(),
         kind: hex_project::TrackKind::Ordinary,
         parent_group: None,
         color: hex_project::ElementColor::default(),
@@ -1177,6 +1179,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         velocity: 100,
     });
     snapshot.tracks.push(TrackSnapshot {
+        output_suppression: Vec::new(),
         kind: hex_project::TrackKind::Ordinary,
         parent_group: None,
         color: hex_project::ElementColor::default(),
@@ -1193,6 +1196,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+            role: hex_project::AudioClipRole::Input,
             active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
@@ -1229,6 +1233,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         next_id: 8,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -1958,6 +1963,7 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        role: hex_project::AudioClipRole::Input,
         active: true,
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
@@ -2188,6 +2194,7 @@ fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        role: hex_project::AudioClipRole::Input,
         active: true,
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
@@ -4174,6 +4181,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     });
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            role: hex_project::AudioClipRole::Input,
             active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
@@ -5389,6 +5397,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     });
     source.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            role: hex_project::AudioClipRole::Input,
             active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
@@ -7149,6 +7158,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
         let session_clip = 24;
         let session_note = 25;
         snapshot.tracks.push(TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -9173,6 +9183,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     snapshot.next_id = 15;
     for (track_id, clip_id, note_id, gain) in [(7, 13, 14, 0.25), (10, 11, 12, 0.75)] {
         snapshot.tracks.push(TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -9383,6 +9394,7 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
 
     let mut snapshot = original.snapshot();
     snapshot.tracks.push(TrackSnapshot {
+        output_suppression: Vec::new(),
         kind: hex_project::TrackKind::Ordinary,
         parent_group: None,
         color: hex_project::ElementColor::default(),
@@ -11747,6 +11759,7 @@ fn linear_audio_only_export_omits_unused_banks_preserves_pcm_and_refuses_console
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.next_id = 8;
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        role: hex_project::AudioClipRole::Input,
         active: true,
         name: "arrangement".into(),
         flavor: hex_project::ClipFlavor::default(),

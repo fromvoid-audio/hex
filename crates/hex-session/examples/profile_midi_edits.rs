@@ -29,6 +29,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            output_suppression: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

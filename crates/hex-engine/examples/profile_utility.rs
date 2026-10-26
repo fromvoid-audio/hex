@@ -36,6 +36,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
     snapshot.tracks = (0..TRACKS)
         .map(|track| -> Result<TrackSnapshot, hex_project::Invalid> {
             Ok(TrackSnapshot {
+                output_suppression: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),
@@ -60,6 +61,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    role: hex_project::AudioClipRole::Input,
                     active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),

@@ -1060,6 +1060,7 @@ fn same_shell(
     }
     tracks.iter().zip(&b.tracks).all(|(a, b)| {
         let Track {
+            output_suppression,
             kind,
             parent_group,
             color,
@@ -1085,7 +1086,8 @@ fn same_shell(
             audio_clips,
             midi_clips: _,
         } = content;
-        kind == &b.kind
+        output_suppression == &b.output_suppression
+            && kind == &b.kind
             && parent_group == &b.parent_group
             && color == &b.color
             && id == &b.id

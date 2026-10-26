@@ -7,6 +7,7 @@ impl<'a> AudioRootStorageLedger<'a> {
         handle: u64,
     ) -> Result<(), AudioStorageError> {
         let crate::Clip {
+            role: _,
             active: _,
             audio,
             start: _,

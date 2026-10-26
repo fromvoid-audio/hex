@@ -40,6 +40,7 @@ impl AudioPreparationCustody {
         l.growth(capacity.previous_slot_backing_bytes)?;
         l.growth(capacity.native_compiler_workspace_bytes)?;
         for SourceSlot {
+            role: _,
             active: _,
             track: _,
             clip: _,
