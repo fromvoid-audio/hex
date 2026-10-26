@@ -188,6 +188,44 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Consume the existing live capture with original source/operation
+    /// provenance retained. This is copied state plus correlation, not graph or
+    /// canonical acceptance. Caller-owned snapshot storage stays on control.
+    pub fn poll_native_source_state_snapshot_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .poll_live_native_snapshot(binding, request)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
+    /// Recheck exact live source and latest consumed capture, including Root's
+    /// original admission/close gates. This does not assert unchanged DSP bytes
+    /// or validate the caller's document, gesture or applied graph context.
+    pub fn matches_native_source_state_snapshot_on_control(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .matches_live_native_snapshot(binding, snapshot)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
     #[cfg(feature = "allocation-probe")]

@@ -278,6 +278,88 @@ fn actual_worker_capture_preserves_pair_storage_and_exact_operation() {
     assert!(owner.begin_state_capture_on_control().is_err());
 }
 
+fn complete_snapshot(
+    owner: &mut NativeWorker,
+    request: &NativeWorkerCapture,
+) -> Box<NativeWorkerStateSnapshot> {
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match owner.poll_live_state_snapshot_on_control(request).unwrap() {
+            NativeWorkerStateSnapshotProgress::Captured(snapshot) => return snapshot,
+            NativeWorkerStateSnapshotProgress::Failed => panic!("snapshot failed"),
+            NativeWorkerStateSnapshotProgress::Pending => {
+                assert!(Instant::now() < until);
+                thread::yield_now();
+            }
+        }
+    }
+}
+fn matches_snapshot(owner: &NativeWorker, snapshot: &NativeWorkerStateSnapshot) -> bool {
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match owner.matches_live_state_snapshot_on_control(snapshot) {
+            Ok(matches) => return matches,
+            Err("native capture mailbox is busy") => {
+                assert!(Instant::now() < until);
+                thread::yield_now();
+            }
+            other => panic!("snapshot source check: {other:?}"),
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_worker_snapshot_retains_original_capture_provenance_without_source_authority() {
+    let instance = original_instance();
+    let initial = instance.ready().initial_state.clone();
+    let (mut owner, mut callback) = NativeWorker::start_on_control(instance).unwrap();
+    let storage = owner.constructor_storage_on_control(&callback).unwrap();
+    callback_block(&owner, &mut callback, 0);
+    let (mut other, other_callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let request = begin(&mut owner);
+    assert!(other.poll_live_state_snapshot_on_control(&request).is_err());
+    let snapshot = complete_snapshot(&mut owner, &request);
+    assert_ne!(snapshot.state(), &initial);
+    assert!(matches_snapshot(&owner, &snapshot));
+    assert!(!matches_snapshot(&other, &snapshot));
+    assert!(owner.poll_live_state_snapshot_on_control(&request).is_err());
+    refused(&mut owner, &request);
+    {
+        let _slot = owner.reaper.completed.capture.lock().unwrap();
+        assert!(matches!(
+            owner.matches_live_state_snapshot_on_control(&snapshot),
+            Err("native capture mailbox is busy")
+        ));
+    }
+    let next = begin(&mut owner);
+    assert!(!matches_snapshot(&owner, &snapshot));
+    let latest = complete_snapshot(&mut owner, &next);
+    assert!(matches_snapshot(&owner, &latest));
+    assert!(!matches_snapshot(&owner, &snapshot));
+    assert_eq!(
+        owner.constructor_storage_on_control(&callback),
+        Some(storage)
+    );
+    assert!(owner.owns_callback(&callback));
+    assert!(!owner.owns_callback(&other_callback));
+    owner.revoke_on_control();
+    assert!(!matches_snapshot(&owner, &latest));
+    let stopped = begin(&mut owner);
+    assert!(matches!(
+        owner.poll_live_state_snapshot_on_control(&stopped),
+        Err("native snapshot requires live capture")
+    ));
+    complete(&mut owner, &stopped); // Live-only refusal did not consume stopped data.
+    assert!(!matches_snapshot(&owner, &latest));
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+    assert!(!matches_snapshot(&owner, &latest));
+    assert!(other.retire_on_control().unwrap().native.status.success());
+    // Snapshot/data custody survives source destruction on this control lane.
+    assert_ne!(latest.state(), &initial);
+}
+
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_worker_capture_projection_failure_releases_exact_operation() {

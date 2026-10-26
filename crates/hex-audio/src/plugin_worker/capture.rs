@@ -107,7 +107,95 @@ pub enum NativeWorkerCaptureProgress {
     Failed,
 }
 
+/// One consumed live capture terminal from the original joining worker. The
+/// envelope can be copied as data, but callers cannot manufacture its private
+/// source/operation correlation. This owns one weak alias of the existing
+/// completion cell and the captured envelope; both are caller/control storage,
+/// separate from the unchanged worker constructor reservation.
+///
+/// This proves capture provenance only. It does not prove that DSP has stopped
+/// changing, that input reached the final host output, or that any project edit,
+/// graph replacement, endpoint return or save was accepted.
+#[derive(Debug)]
+pub struct NativeWorkerStateSnapshot {
+    source: Weak<Signal>,
+    binding: Binding,
+    ordinal: u64,
+    state: NativeDeviceState,
+}
+impl NativeWorkerStateSnapshot {
+    pub fn state(&self) -> &NativeDeviceState {
+        &self.state
+    }
+}
+
+/// The same single capture operation, retaining provenance at its terminal.
+/// Only a completed capture allocates its caller-owned Box, on control. Pending
+/// polls add no allocation and the worker constructor backing is unchanged.
+#[derive(Debug)]
+pub enum NativeWorkerStateSnapshotProgress {
+    Pending,
+    Captured(Box<NativeWorkerStateSnapshot>),
+    Failed,
+}
+
 impl NativeWorker {
+    /// Consume the matching live capture terminal with its original source
+    /// correlation intact. This shares the ordinary capture slot and consumes
+    /// it exactly once; it does not initiate another SDK read. Stopped captures
+    /// retain their existing data-only path and cannot mint a live snapshot.
+    pub fn poll_live_state_snapshot_on_control(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerStateSnapshotProgress, &'static str> {
+        if request.mode != Mode::Live {
+            return Err("native snapshot requires live capture");
+        }
+        Ok(match self.poll_state_capture_on_control(request)? {
+            NativeWorkerCaptureProgress::Pending => NativeWorkerStateSnapshotProgress::Pending,
+            NativeWorkerCaptureProgress::Failed => NativeWorkerStateSnapshotProgress::Failed,
+            NativeWorkerCaptureProgress::Captured(state) => {
+                NativeWorkerStateSnapshotProgress::Captured(Box::new(NativeWorkerStateSnapshot {
+                    source: Weak::clone(&request.source),
+                    binding: request.binding,
+                    ordinal: request.ordinal,
+                    state,
+                }))
+            }
+        })
+    }
+
+    /// Check the original live source and latest consumed capture operation.
+    /// A later capture admission supersedes this correlation, even while its
+    /// result is pending. Rejection leaves that operation untouched. This is
+    /// neither an assertion that current DSP bytes still equal the snapshot nor
+    /// a graph/canonical acknowledgement. Callers must retain existing context,
+    /// preparation, publication and finalization checks for those operations.
+    pub fn matches_live_state_snapshot_on_control(
+        &self,
+        snapshot: &NativeWorkerStateSnapshot,
+    ) -> Result<bool, &'static str> {
+        if self.retirement_requested
+            || !self.transport_is_live_on_control()
+            || !self.retains_original_source_on_control()
+            || snapshot.binding != self.binding
+            || snapshot.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
+        {
+            return Ok(false);
+        }
+        let slot = self
+            .reaper
+            .completed
+            .capture
+            .try_lock()
+            .map_err(|_| "native capture mailbox is busy")?;
+        Ok(
+            slot.ordinal == snapshot.ordinal
+                && slot.phase == Phase::Idle
+                && slot.mode == Mode::Live,
+        )
+    }
+
     /// Reserve one current-state capture while the original callback may be
     /// loaned. Live requests do no SDK/socket work here. The original worker
     /// starts/polls them between PCM exchanges, at most one control exchange per

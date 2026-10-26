@@ -96,9 +96,53 @@ fn actual_ordinary_track_return_main_host_input_changes_pcm_without_claiming_can
             (7, 0.75, 1, 8)
         );
         let capture = begin(&mut f);
-        let actual = captured(&mut f, &capture);
+        let until = Instant::now() + Duration::from_secs(3);
+        let snapshot = loop {
+            match f
+                .control
+                .poll_native_source_state_snapshot_on_control(f.binding, &capture)
+            {
+                Ok(crate::plugin_worker::NativeWorkerStateSnapshotProgress::Captured(snapshot)) => {
+                    break snapshot;
+                }
+                Ok(crate::plugin_worker::NativeWorkerStateSnapshotProgress::Pending)
+                | Err("native preparation is busy") => {}
+                other => panic!("ordinary SDK snapshot: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match f
+                .control
+                .matches_native_source_state_snapshot_on_control(f.binding, &snapshot)
+            {
+                Ok(true) => break,
+                Err("native preparation is busy" | "native capture mailbox is busy") => {}
+                other => panic!("ordinary snapshot source: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert!(
+            f.control
+                .matches_native_source_state_snapshot_on_control(
+                    Binding {
+                        epoch: f.binding.epoch + 1,
+                        ..f.binding
+                    },
+                    &snapshot
+                )
+                .is_err()
+        );
+        assert!(
+            f.control
+                .poll_native_source_state_capture_on_control(f.binding, &capture)
+                .is_err()
+        );
         assert_eq!(
-            &hex_plugin_state::decode(&actual)
+            &hex_plugin_state::decode(snapshot.state())
                 .unwrap()
                 .component
                 .unwrap()[8..12],

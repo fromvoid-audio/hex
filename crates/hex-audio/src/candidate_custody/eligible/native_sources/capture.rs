@@ -185,6 +185,28 @@ impl Custody {
             _ => Err("native capture owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn poll_live_native_snapshot(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_live_state_snapshot(request),
+            Owner::Loaned(owner) => owner.poll_live_state_snapshot(request),
+            _ => Err("native snapshot owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn matches_live_native_snapshot(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+    ) -> Result<bool, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.matches_live_state_snapshot(snapshot),
+            Owner::Loaned(owner) => owner.matches_live_state_snapshot(snapshot),
+            _ => Err("native snapshot owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn capture_native_source(
         &self,
         binding: Binding,
@@ -404,6 +426,32 @@ impl CandidateRoot {
         let result = self.0.eligible.poll_live_native_capture(binding, request)?;
         // Constructor close precedes eligible-bank close. Recheck this outer
         // gate too; copied result destruction occurs after its lock is gone.
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn poll_live_native_snapshot(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .poll_live_native_snapshot(binding, request)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn matches_live_native_snapshot(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+    ) -> Result<bool, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .matches_live_native_snapshot(binding, snapshot)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }

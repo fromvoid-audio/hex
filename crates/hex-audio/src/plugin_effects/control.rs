@@ -55,6 +55,18 @@ impl NativeEffect {
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
         self.worker.poll_parameter_edits_on_control()
     }
+    pub(crate) fn poll_live_state_snapshot(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
+        self.worker.poll_live_state_snapshot_on_control(request)
+    }
+    pub(crate) fn matches_live_state_snapshot(
+        &self,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+    ) -> Result<bool, &'static str> {
+        self.worker.matches_live_state_snapshot_on_control(snapshot)
+    }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
     }
@@ -128,6 +140,18 @@ impl NativeEffectControl {
         &mut self,
     ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
         self.worker.poll_parameter_edits_on_control()
+    }
+    pub(crate) fn poll_live_state_snapshot(
+        &mut self,
+        request: &NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
+        self.worker.poll_live_state_snapshot_on_control(request)
+    }
+    pub(crate) fn matches_live_state_snapshot(
+        &self,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+    ) -> Result<bool, &'static str> {
+        self.worker.matches_live_state_snapshot_on_control(snapshot)
     }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()

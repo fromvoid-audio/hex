@@ -30,7 +30,10 @@ pub use parameter_change::{
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+pub use capture::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerStateSnapshot,
+    NativeWorkerStateSnapshotProgress,
+};
 
 // Original completion allocation, shared only by joining control and worker.
 // The callback never sees the capture mailbox or takes its mutex.
