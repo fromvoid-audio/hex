@@ -2985,3 +2985,139 @@ fn numeric_f32_storage_and_equivalent_accessibility_values_use_canonical_precisi
         ]
     );
 }
+
+#[gpui::test]
+fn meter_fader_input_fill_and_ceiling_triangle_share_calibrated_bounds(cx: &mut TestAppContext) {
+    let spec = NumericSpec::new(-24.0, 0.0, -0.3, NumericScale::Linear, 2, Some("db")).unwrap();
+    let (handle, control) = open_numeric_control_appearance(
+        cx,
+        NumericControlKind::VerticalSlider,
+        spec,
+        -6.0,
+        NumericControlPresentation::MeterFader,
+    );
+    control.update(cx, |control, cx| {
+        control.set_meter_readout(
+            crate::DeviceMeterReadout {
+                levels: [10.0_f32.powf(-6.0 / 20.0), 0.0],
+                signal: 0x00ff00,
+                clipping: 0xff0000,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(240.0)));
+    visual.run_until_parked();
+    let rail = visual.debug_bounds("test-control-slider").unwrap();
+    let fill = visual.debug_bounds("test-control-input-fill").unwrap();
+    let thumb = visual.debug_bounds("test-control-slider-thumb").unwrap();
+    assert!((fill.size.height / rail.size.height - 0.75).abs() < 0.02);
+    assert!((thumb.center().y - fill.top()).abs() < px(2.0));
+    assert!(visual.debug_bounds("test-control-value").unwrap().top() > rail.bottom());
+    let start = thumb.center();
+    let end = point(start.x, start.y + px(15.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!((control.read_with(cx, |control, _| control.value()) + 9.0).abs() < 0.01);
+    assert_eq!(
+        visual.debug_bounds("test-control-input-fill").unwrap(),
+        fill,
+        "ceiling drag cannot invent signal"
+    );
+}
+
+#[gpui::test]
+fn choice_dial_commits_one_bounded_choice_and_cancels_preview(cx: &mut TestAppContext) {
+    let handle = *cx.add_window(|_, _| Empty);
+    let selector = cx
+        .update_window(handle, |_, window, cx| {
+            let selector = cx.new(|cx| {
+                Selector::from_config(
+                    cx,
+                    crate::SelectorConfig::new("lookahead", ["1.5 ms", "3 ms", "6 ms"], 0, STYLE)
+                        .unwrap()
+                        .with_accessibility_name("lookahead")
+                        .with_appearance(crate::SelectorAppearance::CompactDial),
+                )
+            });
+            let toggle = cx.new(|cx| Toggle::new(cx, "outside", "outside", false, STYLE).unwrap());
+            window.replace_root(cx, |_, _| DiscreteTestRoot {
+                toggle,
+                selector: selector.clone(),
+                key_events: Rc::default(),
+            });
+            selector
+        })
+        .unwrap();
+    let choices = Rc::new(RefCell::new(Vec::new()));
+    let capture = choices.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&selector, move |_, event, _| {
+            capture.borrow_mut().push(event.index)
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let start = visual.debug_bounds("lookahead-knob").unwrap().center();
+    let end = point(start.x, start.y - px(48.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        choices.borrow().is_empty(),
+        "preview does not publish timing edits"
+    );
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*choices.borrow(), vec![2]);
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 2);
+    let start = visual.debug_bounds("lookahead-knob").unwrap().center();
+    let end = point(start.x, start.y + px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*choices.borrow(), vec![2]);
+    visual.simulate_keystrokes("down");
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 1);
+    selector.update(cx, |selector, cx| selector.set_enabled(false, cx));
+    visual.simulate_keystrokes("up");
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 1);
+}
+
+#[gpui::test]
+fn reduction_gauge_grows_down_from_zero_and_bounds_invalid_readings(cx: &mut TestAppContext) {
+    struct Gauge(f32);
+    impl Render for Gauge {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(24.0)).h(px(100.0)).child(crate::reduction_meter(
+                "gr".into(),
+                self.0,
+                crate::LevelMeterStyle {
+                    background: 0x202020,
+                    fill: 0xffaa00,
+                    above: 0xff0000,
+                },
+            ))
+        }
+    }
+    let window = cx.add_window(|_, _| Gauge(0.5));
+    let gauge = window.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*window, cx);
+    for (fraction, expected_height) in [(0.5, 50.0), (2.0, 100.0), (f32::NAN, 0.0)] {
+        gauge.update(cx, |gauge, cx| {
+            gauge.0 = fraction;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let well = visual.debug_bounds("gr").unwrap();
+        let fill = visual.debug_bounds("gr-fill").unwrap();
+        assert_eq!(fill.top(), well.top());
+        assert_eq!(fill.size.height, px(expected_height));
+    }
+}
