@@ -124,12 +124,7 @@ pub(super) fn warp_header(
     }
     controls
 }
-pub(super) fn view(
-    view: &EditorView,
-    clip_id: ClipId,
-    pitch_control: Div,
-    cx: &mut Context<EditorView>,
-) -> Div {
+pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorView>) -> Div {
     let mut controls = div().flex().flex_col().gap(px(2.0));
     let Some(state) = view.state.as_ref() else {
         return controls;
@@ -149,7 +144,6 @@ pub(super) fn view(
         .and_then(|d| d.warp.as_ref())
         .map_or(modes()[0], |w| w.mode);
     controls = controls.child(musical_control_label("musical audio"));
-    controls = controls.child(pitch_control);
     controls = controls.child(button(
         capture,
         if edit.is_some_and(|e| e.live_musical_start().is_some()) {

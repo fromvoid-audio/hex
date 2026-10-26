@@ -141,6 +141,7 @@ pub(super) fn view(
         controls = controls.child(super::musical_audio_controls::warp_header(
             view, clip_id, cx,
         ));
+        controls = controls.child(controls::number(view, window, Field::Pitch, "pitch", cx));
     }
     for (field, label) in [
         (Field::Position, "pos"),
@@ -156,10 +157,7 @@ pub(super) fn view(
     }
     if !grouped_audio {
         controls = controls.child(controls::toggle(view, window, false, cx));
-        let pitch = controls::number(view, window, Field::Pitch, "pitch", cx);
-        controls = controls.child(super::musical_audio_controls::view(
-            view, clip_id, pitch, cx,
-        ));
+        controls = controls.child(super::musical_audio_controls::view(view, clip_id, cx));
     }
     details = details.child(controls);
 

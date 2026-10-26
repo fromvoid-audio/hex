@@ -11,6 +11,11 @@ fn pitch_is_a_dial_and_cancel_keeps_canonical_audio_unchanged(cx: &mut TestAppCo
     let knob = visual
         .debug_bounds("audio-clip-pitch-knob")
         .expect("pitch must use a shared knob");
+    let sidebar = visual.debug_bounds("arrangement-audio-controls").unwrap();
+    assert!(
+        knob.top() >= sidebar.top() && knob.bottom() <= sidebar.bottom(),
+        "pitch must be initially reachable: {knob:?} within {sidebar:?}"
+    );
     let value = visual
         .debug_bounds("audio-clip-pitch-value")
         .expect("pitch keeps editable cents readout");
@@ -264,7 +269,14 @@ fn pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen(cx: &m
     });
     pump(&editor, &mut visual);
     let second = editor.read_with(cx, |v, _| {
-        v.state.as_ref().unwrap().project.tracks()[0]
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|t| t.id() == track)
+            .unwrap()
             .clips()
             .iter()
             .find(|c| c.id() != clip)
