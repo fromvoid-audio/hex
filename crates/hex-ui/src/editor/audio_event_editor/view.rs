@@ -509,7 +509,9 @@ pub(in crate::editor) fn view(
                 .audio_event_editor
                 .range
                 .filter(|(a, b)| a <= &raw && raw < *b);
-            let kind = if target == RangeSelectionTarget::Move && range_hit.is_some() {
+            let kind = if view.time_selection_key_held {
+                Kind::Select
+            } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
                 if let Some((start, end)) = range_hit {
                     Kind::RangeMove { start, end }
                 } else {
