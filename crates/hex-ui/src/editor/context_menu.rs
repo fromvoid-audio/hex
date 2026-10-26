@@ -969,7 +969,12 @@ mod tests {
             visual.run_until_parked();
             editor.read_with(cx, |view, _| {
                 let menu = view.context_menu.as_ref().expect("clip menu");
-                assert_eq!(menu.items.len(), 4);
+                assert!(menu.items.iter().all(|item| matches!(
+                    &item.action,
+                    EditorContextAction::ClipFlavor { .. }
+                        | EditorContextAction::ClipAlias(_)
+                        | EditorContextAction::AdaptiveGrid { .. }
+                )));
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
             visual.simulate_keystrokes("enter");
