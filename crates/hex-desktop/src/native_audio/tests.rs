@@ -7,6 +7,7 @@ mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
 mod resident_export;
+mod resident_gain_audit;
 mod resident_grouping;
 mod resident_lifecycle;
 mod resident_preview;

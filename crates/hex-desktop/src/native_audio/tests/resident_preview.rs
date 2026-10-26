@@ -759,6 +759,8 @@ impl ResidentHarness {
     }
     pub(super) fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {
         let end = Instant::now() + Duration::from_secs(10);
+        let mut diagnostics =
+            std::collections::VecDeque::with_capacity(hex_audio::audio_diagnostics::TRACE_CAPACITY);
         loop {
             self.pump();
             // Stop advancing once the callback has installed the successor. Scalar UI delivery
@@ -772,6 +774,19 @@ impl ResidentHarness {
             {
                 self.render_worker_step();
             }
+            // Keep only bounded recent actual callback evidence, outside every
+            // allocation probe. This never establishes an admission/ACK.
+            if let Some(audio) = self.audio.as_mut() {
+                for _ in 0..hex_audio::audio_diagnostics::MAX_DRAIN_PER_POLL {
+                    let Some(event) = audio.control.take_audio_diagnostic() else {
+                        break;
+                    };
+                    if diagnostics.len() == hex_audio::audio_diagnostics::TRACE_CAPACITY {
+                        diagnostics.pop_front();
+                    }
+                    diagnostics.push_back(event);
+                }
+            }
             if let Some((revision, reason)) = self
                 .audio
                 .as_ref()
@@ -780,7 +795,7 @@ impl ResidentHarness {
                 .filter(|(revision, _)| *revision > after)
             {
                 panic!(
-                    "native graph rejected after {after}: revision={revision}, reason={reason:?}, submitted={:?}",
+                    "native graph rejected after {after}: revision={revision}, reason={reason:?}, submitted={:?}, diagnostics={diagnostics:?}",
                     self.submitted
                 );
             }
