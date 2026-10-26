@@ -1265,8 +1265,8 @@ impl EditorView {
                             view_cx.notify();
                             return;
                         }
-                        if view.midi_stroke.is_some() {
-                            if view.update_midi_draw(
+                        if view.midi_stroke.is_some()
+                            && view.update_midi_draw(
                                 [
                                     f32::from(bounds.origin.x),
                                     f32::from(bounds.origin.y),
@@ -1275,9 +1275,9 @@ impl EditorView {
                                 ],
                                 [f32::from(event.position.x), f32::from(event.position.y)],
                                 StrokeModifiers::from_platform(event.modifiers),
-                            ) {
-                                view_cx.notify();
-                            }
+                            )
+                        {
+                            view_cx.notify();
                         }
                     });
                 });
