@@ -3,6 +3,27 @@
 use super::*;
 use gpui::{Context, ScrollWheelEvent, Window, px};
 
+impl State {
+    /// Manual cameras use offsets from editor bounds. Preserve their absolute
+    /// output-root frames when the same retained root gains or loses placement
+    /// metadata, including Undo/Redo. A replacement root has its own clock.
+    pub(super) fn install_frame_space(&mut self, root: &AudioClipEdit, bounds: (u64, u64)) {
+        let retained = self.frame_domain.as_ref().is_some_and(|prior| {
+            std::sync::Arc::ptr_eq(prior, &root.domain) || prior.as_ref() == root.domain.as_ref()
+        });
+        if retained && let Some((first, _)) = self.frame_bounds {
+            let rebase = |v: Viewport| Viewport {
+                start: first.saturating_add(v.start).saturating_sub(bounds.0),
+                length: v.length,
+            };
+            self.viewport = self.viewport.map(rebase);
+            self.fit_back = self.fit_back.map(|prior| prior.map(rebase));
+        }
+        self.frame_bounds = Some(bounds);
+        self.frame_domain = Some(root.domain.clone());
+    }
+}
+
 impl EditorView {
     pub(in crate::editor) fn sync_audio_navigation(&mut self) {
         let Some((clip_id, root, revision)) = self.event_context() else {
@@ -22,6 +43,20 @@ impl EditorView {
                 source_view,
                 ..State::default()
             };
+        }
+        if self.audio_event_editor.revision != revision
+            || self.audio_event_editor.frame_bounds.is_none()
+        {
+            if let Some(tempo) = self.state.as_ref().map(|s| s.project.tempo_map()) {
+                let (first, end) = editor_bounds(&root);
+                if let (Ok(first), Ok(end)) = (
+                    root.root_frame_at(first, tempo),
+                    root.root_frame_at(end, tempo),
+                ) {
+                    self.audio_event_editor
+                        .install_frame_space(&root, (first, end));
+                }
+            }
         }
         if self.audio_event_editor.revision != revision {
             let (first, last) = editor_bounds(&root);
