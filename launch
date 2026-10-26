@@ -123,7 +123,7 @@ def configured_app(root: Path) -> Path:
     return app.absolute()
 
 
-def open_installed(app: Path, expected_source: str | None = None) -> Path:
+def open_installed(app: Path, expected_source: str | None = None, *, diagnostics: bool = False) -> Path:
     try:
         with ci.terminal_progress("verifying installed hex"):
             receipt = delivery.verify(app)
@@ -137,15 +137,19 @@ def open_installed(app: Path, expected_source: str | None = None) -> Path:
         raise LaunchError(f"installed optimized hex is unavailable: {error}; run ./launch to verify and build it") from error
     if expected_source is not None and (source != expected_source or receipt.get("candidate") != expected_source):
         raise LaunchError(f"installed app does not match fetched main {expected_source}; app was not opened")
-    checked(["open", "-a", str(app)])
+    if diagnostics:
+        # macOS does not replace launch arguments in an already running process.
+        delivery.assert_inactive(app)
+        assert_no_raw_desktop_process(ROOT)
+    checked(["open", "-a", str(app), *(["--args", "--diagnostics"] if diagnostics else [])])
     print(f"opened {app}")
     return app
 
 
-def launch_installed(root: Path = ROOT) -> Path:
+def launch_installed(root: Path = ROOT, *, diagnostics: bool = False) -> Path:
     if sys.platform != "darwin":
         raise LaunchError("./launch opens the native desktop app on macOS only")
-    return open_installed(configured_app(root))
+    return open_installed(configured_app(root), **({"diagnostics": True} if diagnostics else {}))
 
 
 def assert_no_raw_desktop_process(root: Path) -> None:
@@ -242,7 +246,7 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
         capture=False,
     )
 
-    return open_installed(app, expected_source=source)
+    return open_installed(app, expected_source=source, **({"diagnostics": True} if "--diagnostics" in (argv or []) else {}))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -260,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="explicitly recover this repository's inspected pending or recreated release target; "
                              "requires hex already stopped, never signals an app; rebuild/install/open "
                              "latest main normally, tests remain opt-in")
+    parser.add_argument("--diagnostics", action="store_true", help="enable action and audio failure tracing; requires hex stopped")
     arguments = list(sys.argv[1:] if argv is None else argv)
     options = parser.parse_args(arguments)
     if options.recover_release_target and (options.open or options.force_restart):
@@ -268,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--force-restart cannot be combined with installed-only --open")
     try:
         if options.open:
-            launch_installed()
+            launch_installed(**({"diagnostics": True} if options.diagnostics else {}))
         else:
             run_launch(argv=arguments)
     except KeyboardInterrupt:
