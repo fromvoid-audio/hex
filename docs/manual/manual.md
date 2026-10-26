@@ -274,7 +274,10 @@ with the computer midi keyboard off, press **h** in arrange to toggle a compact
 overview. press **h** again to restore each track's previous height. resizing in
 the overview is temporary; it does not replace normal heights. these view sizes
 last for the current editor session. main shares the compact overview; return
-rows retain their fixed height.
+rows retain their fixed height. hold **option** and scroll vertically over an
+ordinary track or main to resize only that hovered row. wheel up grows it; wheel
+down shrinks it. nested controls keep their own wheel behavior. overview wheel
+sizes are temporary, just like overview edge resizing.
 with the computer midi keyboard on, **h** continues to play its note.
 
 right-click a track header or the track area and choose **insert track** or

@@ -1005,3 +1005,6 @@ fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut Test
         assert_eq!(view.track_body_height(tracks[7]), before.1);
     });
 }
+
+#[path = "track_wheel_ui_tests.rs"]
+mod wheel_tests;

@@ -361,6 +361,7 @@ impl EditorView {
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                         if !phase.capture()
+                            || Self::row_size_wheel(event)
                             || !bounds.contains(&event.position)
                             || f32::from(event.position.x)
                                 >= f32::from(bounds.origin.x)
@@ -804,6 +805,9 @@ impl EditorView {
             )
             .children(self.time_selection_cursor_layer());
         let row = div()
+            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+                view.resize_row_wheel(None, event, cx);
+            }))
             .debug_selector(|| "pinned-main-track".to_owned())
             .h(px(self.main_track_height()))
             .min_h(px(super::track_layout::HEADER_ONLY_HEIGHT))
