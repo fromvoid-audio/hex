@@ -51,6 +51,15 @@ are audio observations. The callback retains at most 256 resource-free records;
 control drains at most 64 per poll. Overflow loses diagnostics only and reports
 sequence gaps/loss counters. A log does not establish physical audio deadlines.
 
+Session log rows carry producer wall time, monotonic elapsed time and sequence
+numbers. Messages are quoted/escaped; loss and truncation are explicit. The
+active `.log` path stays stable as it rolls; `.1.log` through `.3.log` retain the
+preceding segments, newest first. Include those sibling files when capturing a
+failure. New sessions retain at most four 8 MiB segments plus one bounded
+rollover header, with ten sessions retained; older logs expire normally.
+A logging startup/shutdown timeout or file error reports incomplete logging.
+
+
 The desktop is the default workspace member. Plain `cargo build` and `cargo test`
 also select it; use `--workspace` to select all members or `-p` for a specific crate.
 Omit `-r` only for a specific debugging need.

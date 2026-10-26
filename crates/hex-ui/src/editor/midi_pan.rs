@@ -1,8 +1,9 @@
 //! View-only, captured two-axis piano-roll navigation. Time uses the same finite
 //! domain as zoom; dragging never changes source extent, notes or history.
 //! Pointer deltas are resolved from the captured viewport, avoiding rounding drift.
+//! Window owns held input; its read-only canvas witness never retains pending edits.
 use super::{EditorView, midi_scene, midi_stroke::CanvasBounds};
-use gpui::MouseButton;
+use gpui::{Context, MouseButton, MouseMoveEvent, MouseUpEvent, Window};
 use hex_project::{BeatTime, ClipId};
 
 #[derive(Default)]
@@ -19,6 +20,7 @@ struct Viewport {
     rows: u8,
 }
 
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct Gesture {
     generation: u64,
     revision: u64,
@@ -77,6 +79,8 @@ impl EditorView {
         bounds: CanvasBounds,
         pointer: [f32; 2],
         button: MouseButton,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> bool {
         if self.context_menu.is_some()
             || !bounds.is_valid()
@@ -120,10 +124,101 @@ impl EditorView {
             viewport,
             button,
         };
+        if !self.capture_piano_pan(gesture, window, cx) {
+            // A secondary middle press cannot replace Window's original left
+            // press. Still retire its unleased note edit: a later left release
+            // must not commit the creation that the navigation request cancelled.
+            // Another leased owner never dispatches this press to the canvas.
+            if button == MouseButton::Middle && self.cancel_midi_note_gesture() {
+                cx.notify();
+            }
+            return false;
+        }
         self.cancel_midi_note_gesture();
         self.midi_hover = None;
         self.midi_pan.gesture = Some(gesture);
         true
+    }
+
+    fn capture_piano_pan(&self, gesture: Gesture, window: &mut Window, cx: &Context<Self>) -> bool {
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        window.capture_pointer(
+            cx.entity_id(),
+            gesture.button,
+            gpui::CursorStyle::ClosedHand,
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<MouseUpEvent>()
+                    .filter(|e| e.button == gesture.button);
+                let Some(position) = moved
+                    .map(|e| e.position)
+                    .or_else(|| released.map(|e| e.position))
+                else {
+                    return;
+                };
+                let _ = owner.update(cx, |view, cx| {
+                    if view.midi_pan.gesture.as_ref() != Some(&gesture) {
+                        return;
+                    }
+                    let changed = if !view.clip_view_open
+                        || view.device_panel_active
+                        || !view.midi_focus.is_focused(window)
+                    {
+                        view.midi_pan.gesture.take().is_some()
+                    } else if released.is_some() {
+                        view.finish_piano_pan(
+                            gesture.bounds,
+                            [f32::from(position.x), f32::from(position.y)],
+                            gesture.button,
+                        )
+                    } else {
+                        view.update_piano_pan(
+                            gesture.bounds,
+                            [f32::from(position.x), f32::from(position.y)],
+                            moved.and_then(|e| e.pressed_button),
+                        )
+                    };
+                    if changed {
+                        cx.notify();
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.midi_pan.gesture.as_ref() == Some(&gesture) {
+                        view.midi_pan.gesture = None;
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        )
+    }
+    /// Canonical reconciliation runs before the canvas. Witness its held bounds
+    /// and actual rendered source without another project/source lookup.
+    pub(super) fn renew_piano_pan_capture(
+        &self,
+        bounds: CanvasBounds,
+        clip: ClipId,
+        owner: gpui::EntityId,
+        window: &mut Window,
+    ) {
+        if self.clip_view_open
+            && !self.device_panel_active
+            && self.midi_focus.is_focused(window)
+            && let Some(g) = self.midi_pan.gesture.as_ref()
+            && g.bounds == bounds
+            && g.clip == clip
+            && g.generation == self.project_generation
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|s| s.revision == g.revision)
+        {
+            window.renew_pointer_capture(owner, gpui::CursorStyle::ClosedHand);
+        }
     }
 
     pub(super) fn update_piano_pan(
@@ -268,3 +363,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_pan_capture_tests.rs"]
+mod capture_tests;
