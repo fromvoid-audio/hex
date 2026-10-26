@@ -564,3 +564,59 @@ fn page_reads_recheck_integrity_after_open_and_refuse_partial_output() {
         "read failure preserves original bytes"
     );
 }
+
+#[test]
+fn independent_little_endian_record_contract_keeps_version_one_wire_stable() {
+    let chain = [0x31; 32];
+    let application = AppliedEvent {
+        sequence: 7,
+        performance_frame: 1024,
+        content_frame: 17,
+        loop_pass: 2,
+        value: AutomationValue::new(0.25).unwrap(),
+    };
+    let mut payload = [0u8; 64];
+    payload[0] = 1; // event kind, little-endian u64
+    payload[8] = 7;
+    payload[17] = 4; // 1024
+    payload[24] = 17;
+    payload[32] = 2;
+    payload[42] = 0x80;
+    payload[43] = 0x3e; // canonical f32 0.25 in the low half of a u64
+    let record = event_record(application, chain);
+    assert_eq!(&record[..64], &payload);
+    let mut independent = Sha256::new();
+    independent.update(chain);
+    independent.update(payload);
+    let expected: [u8; 32] = independent.finalize().into();
+    assert_eq!(&record[64..], &expected);
+    let clear = terminal_record(
+        DraftTerminal::Finished(DraftClock {
+            performance_frame: 1024,
+            content_frame: 17,
+            loop_pass: 2,
+        }),
+        chain,
+    );
+    payload[0] = 2;
+    payload[8] = 0;
+    payload[42] = 0;
+    payload[43] = 0;
+    assert_eq!(
+        &clear[..64],
+        &payload,
+        "finished has a real clock and no invented value or sequence"
+    );
+    let aborted = terminal_record(
+        DraftTerminal::Aborted(DraftAbortReason::ClockExhausted),
+        chain,
+    );
+    let mut aborted_payload = [0u8; 64];
+    aborted_payload[0] = 3;
+    aborted_payload[48] = 7;
+    assert_eq!(
+        &aborted[..64],
+        &aborted_payload,
+        "an abort never carries an end clock"
+    );
+}
