@@ -33,7 +33,9 @@ pub(super) struct BindingPresentation {
 
 // This is the sole edge translating view-only host control keys into neutral
 // authored targets. Reserved widget IDs never enter provider/model persistence.
-fn automation_target(parameter: ParameterId) -> hex_lattice_contract::DeviceAutomationTarget {
+fn automation_target(
+    parameter: hex_lattice_contract::ParameterId,
+) -> hex_lattice_contract::DeviceAutomationTarget {
     use hex_lattice_contract::DeviceAutomationTarget as Target;
     if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
         Target::HostInputGain
