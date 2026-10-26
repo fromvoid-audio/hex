@@ -424,14 +424,17 @@ impl SessionPlayback {
         }
         if (self.compensation.is_some() || previous.compensation.is_some())
             && !previous.playing
+            && !previous.monitor_source_releases
             && previous.performance_frame == 0
             && previous.arrangement_frame == 0
+            && self.main_chain.can_inherit_from(&previous.main_chain)
         {
-            if !self.main_chain.can_inherit_from(&previous.main_chain) {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
-            // Stop/explicit reset removed every in-flight sample. Adopt fresh
+            // Stop/explicit reset removed every in-flight sample; a donor with
+            // admitted stopped monitoring must use the full source planner.
+            // Adopt fresh
             // processor/delay owners instead of copying incompatible histories.
+            // A changed foreign binding needs the full tail/source planner
+            // below; the fast reset cannot inherit that original endpoint.
             let recipient_epoch = self
                 .capture_epoch
                 .checked_add(1)
@@ -2715,10 +2718,7 @@ impl SessionPlayback {
         // Live replacement can leave the incompatible original suffix with a
         // preflighted tail owner. Validate only the histories actually carried
         // into the candidate; an unchanged incompatible prefix still refuses.
-        if !self.main_chain.can_inherit_from_excluding_old_range(
-            &previous.main_chain,
-            return_tail_plan.main_excluded(previous.main_chain.len()),
-        ) {
+        if !return_tail_plan.can_inherit_main(&self.main_chain, &previous.main_chain) {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
         return_tail_plan.validate_main(&self.return_effect_tails, &previous.main_chain)?;
@@ -3771,7 +3771,10 @@ impl SessionPlayback {
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
         self.interactive_start_frame = previous.interactive_start_frame;
         self.playing = previous.playing;
-        self.monitor_source_releases = previous.monitor_source_releases;
+        // Preparing the first live input can activate a stopped candidate
+        // before this donor has ever monitored. Preserve that admission as
+        // well as existing release intent when a later edit removes the input.
+        self.monitor_source_releases |= previous.monitor_source_releases;
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
         self.anchor = candidate_anchor;

@@ -20,9 +20,12 @@ hex-export = { path = "../hex-export" }
 hex-session = { path = "../hex-session" }
 hex-stream = { path = "../hex-stream" }
 hex-media = { path = "../hex-media" }
+hex-plugin-catalog = { path = "../hex-plugin-catalog" }
+hex-preferences = { path = "../hex-preferences" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
 [dev-dependencies]
+hex-plugin-state = { path = "../hex-plugin-state" }
 hex-storage = { path = "../hex-storage" }
 hex-tuning = { path = "../hex-tuning" }
 hex-project = { path = "../hex-project" }

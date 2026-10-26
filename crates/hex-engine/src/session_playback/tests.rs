@@ -362,6 +362,19 @@ struct MutableFeedbackDefinition {
     metadata: ContinuityInstrumentDefinition,
 }
 
+// Reuse the finite source law in cross-owner playback dispatch tests.
+pub(super) fn finite_feedback_definition(
+    release_frames: u64,
+) -> impl hex_lattice::NativeInstrumentDefinition {
+    MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback"),
+            levels: [0.2, 0.4],
+            release_frames,
+        },
+    }
+}
+
 struct MutableFeedbackPrepared {
     level: f32,
     release_frames: u64,

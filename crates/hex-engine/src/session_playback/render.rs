@@ -360,14 +360,33 @@ impl SessionPlayback {
             ));
         }
         output.fill([0.0; 2]);
+        // An edit at the stopped origin may have retained an original bus/Main
+        // endpoint. Drain its actual zero-input tail before it can return. A
+        // paused transport away from the origin retains its existing freeze;
+        // explicit Stop has already reset the tail bank in the command owner.
+        let stopped_edit_tails = self.performance_frame == 0
+            && self.arrangement_frame == 0
+            && self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active);
         if output.is_empty()
             || (!self.playing
                 && !self.monitor_source_releases
                 && self.computer_keyboard.is_none()
-                && self.current_sampler_keyboards.is_empty())
+                && self.current_sampler_keyboards.is_empty()
+                && !stopped_edit_tails)
             || (!self.playing
                 && self.computer_keyboard.is_none()
                 && self.current_sampler_keyboards.is_empty()
+                && !self
+                    .return_effect_tails
+                    .slots()
+                    .iter()
+                    .flatten()
+                    .any(|tail| tail.output_active)
                 && self
                     .mutable_instruments
                     .iter()
@@ -456,8 +475,27 @@ impl SessionPlayback {
         for keyboard in &mut self.current_sampler_keyboards {
             keyboard.begin_block();
         }
+        let main_tails_only = !self.playing
+            && stopped_edit_tails
+            && !self.monitor_source_releases
+            && self.computer_keyboard.is_none()
+            && self.current_sampler_keyboards.is_empty()
+            && !self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active && tail.return_id().is_some());
+        let ordinary_monitor = !self.playing && !main_tails_only;
         let result = if self.playing {
             self.render_playing(output, pages, &mut observer, &mut capture, sources, foreign)
+        } else if main_tails_only {
+            // No admitted source monitoring can still feed the current chain.
+            // Its flag survives input removal until an explicit discontinuity.
+            // Detached Main output has no input for the new current chain.
+            // Drain only its original owners; do not advance a newly restored
+            // plugin's DSP clock by feeding it invented monitoring callbacks.
+            self.render_stopped_main_tails(output, foreign)
         } else {
             self.render_keyboard_monitor(output, &mut observer, &mut capture, sources, foreign)
         };
@@ -508,7 +546,8 @@ impl SessionPlayback {
                     return Err(SessionPlaybackError::DeviceRuntime);
                 }
             }
-            if !self.playing {
+            if ordinary_monitor {
+                // Main-only draining never staged these source/tail buffers.
                 std::mem::swap(&mut self.releases, &mut self.release_scratch);
                 self.tail_output_active
                     .copy_from_slice(&self.tail_output_scratch);

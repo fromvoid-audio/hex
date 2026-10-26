@@ -73,6 +73,12 @@ impl WorkerAudioSink for Sink {
             ResidentPublicationPolicy::InstallFreshRuntime => {
                 PublicationPolicy::InstallFreshRuntime
             }
+            ResidentPublicationPolicy::RestorePluginState => {
+                return Err(ResidentPublicationRefusal {
+                    playback,
+                    error: "fixture has no fresh native plugin restoration".into(),
+                });
+            }
             ResidentPublicationPolicy::FreshIfUnchanged(expected)
             | ResidentPublicationPolicy::SectionWhenReady {
                 fence: expected, ..

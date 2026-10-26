@@ -66,6 +66,27 @@ fn actual_root_epoch_requires_original_endpoint_return_and_matching_resume_ack()
             Some(NativeSourcePreparationProgress::Facts(_))
         ));
         assert!(root.native_source_prepared_state(next).is_none());
+        assert!(root.capture_native_source(binding, &mut || false).is_err());
+        {
+            let _work = lock(&root.work);
+            assert_eq!(
+                root.capture_native_source(next, &mut || false),
+                Err("native preparation is busy")
+            );
+        }
+        let captured = root
+            .capture_native_source(next, &mut || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(captured, state);
+        assert_eq!(
+            root.capture_native_source(next, &mut || false).unwrap(),
+            Some(captured)
+        );
+        assert!(
+            root.native_source_prepared_state(next).is_none(),
+            "capture data is not a resume ACK"
+        );
         assert!(root.loan_native_endpoint(next).is_err());
         assert!(root.start_native_effect(next).is_err());
         assert!(
@@ -117,6 +138,100 @@ fn actual_root_epoch_requires_original_endpoint_return_and_matching_resume_ack()
     assert!(
         matches!(returned.disposal, PreparationDisposal::Reaped(retired)
         if retired.status.success() && retired.terminal.is_some_and(|t| t.blocks == 0 && t.frames == 0))
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_capture_cancel_retains_original_failure_until_disposal() {
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let old = start(&root);
+    assert!(
+        root.capture_native_source(old, &mut || false).is_err(),
+        "pending is not quiescent"
+    );
+    root.complete_native_source(old, presentation()).unwrap();
+    root.start_native_effect(old).unwrap();
+    let confirmed = root.native_source_prepared_state(old).unwrap();
+    assert!(
+        root.capture_native_source(old, &mut || false).is_err(),
+        "live is not quiescent"
+    );
+    let endpoint = root.loan_native_endpoint(old).unwrap();
+    assert!(
+        root.capture_native_source(old, &mut || false).is_err(),
+        "loan has not returned"
+    );
+    assert!(root.ingest_native_endpoint(endpoint).is_ok());
+    let next = root.quiesce_native_source(old, old.graph + 1).unwrap();
+    assert_eq!(
+        root.capture_native_source(next, &mut || true).unwrap(),
+        None
+    );
+    assert!(matches!(
+        root.native_source_progress(next),
+        Some(NativeSourcePreparationProgress::Retiring)
+    ));
+    assert!(
+        root.recover_native_source(next).is_none(),
+        "refusal is not disposal"
+    );
+    dispose(&root, next);
+    let returned = root.recover_native_source(next).unwrap();
+    assert!(matches!(
+        returned.error,
+        Some(hex_plugin_host::Error::Cancelled)
+    ));
+    assert!(
+        matches!(returned.disposal,PreparationDisposal::Reaped(retired) if retired.status.code()==Some(9))
+    );
+    assert!(
+        hex_plugin_state::decode(&confirmed)
+            .unwrap()
+            .component
+            .is_some()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_close_during_capture_retires_without_publishing_captured_bytes() {
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let old = start(&root);
+    root.complete_native_source(old, presentation()).unwrap();
+    root.start_native_effect(old).unwrap();
+    let confirmed = root.native_source_prepared_state(old).unwrap();
+    let next = root.quiesce_native_source(old, old.graph + 1).unwrap();
+    let mut closed = false;
+    let result = root.capture_native_source(next, &mut || {
+        if !closed {
+            closed = true;
+            root.close();
+        }
+        false
+    });
+    assert!(closed);
+    assert_eq!(result, Ok(None));
+    assert!(root.native_source_prepared_state(next).is_none());
+    assert!(root.complete_native_source(next, presentation()).is_err());
+    dispose(&root, next);
+    let returned = root.recover_native_source(next).unwrap();
+    assert!(matches!(
+        returned.error,
+        Some(hex_plugin_host::Error::Cancelled)
+    ));
+    assert!(
+        matches!(returned.disposal, PreparationDisposal::Reaped(retired) if retired.status.code() == Some(9))
+    );
+    assert!(
+        hex_plugin_state::decode(&confirmed)
+            .unwrap()
+            .component
+            .is_some()
     );
 }
 

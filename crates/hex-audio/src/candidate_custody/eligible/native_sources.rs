@@ -12,6 +12,7 @@ use hex_plugin_host::native::{
 };
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
+mod capture;
 mod completion;
 mod definition;
 mod effect;

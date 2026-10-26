@@ -482,8 +482,11 @@ pub struct SessionPlayback {
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
     playing: bool,
-    // Explicit Pause drains source notes/FX; a stopped seek/preroll keeps its
-    // prepared authored history frozen until Play or live input activation.
+    // Pause/live activation admits source/FX draining. That intent survives
+    // handoffs, input removal and later Pause even after receiver removal;
+    // Stop/seek/preroll reset it. A stopped seek keeps authored history frozen
+    // until Play or live activation. False therefore permits Main-tail-only
+    // draining without ticking a fresh replacement processor's input clock.
     monitor_source_releases: bool,
     linear_arrangement_export: bool,
     current_sampler_console: bool,

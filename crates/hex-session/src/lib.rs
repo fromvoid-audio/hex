@@ -4,7 +4,8 @@
 //!
 //! # Dependencies
 //! Uses hex-project, hex-engine, hex-media, hex-storage, hex-export, hex-tuning and neutral
-//! hex-lattice-contract.
+//! hex-lattice-contract. Uses hex-plugin-state's pure codec for captured save
+//! envelope validation; native runtime/ABI custody remains outside this crate.
 //!
 //! # Does not own
 //! Does not own GPUI, CPAL, page endpoints or callback DSP. Typed requests carry captured

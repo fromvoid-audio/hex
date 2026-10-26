@@ -2,6 +2,33 @@
 use super::*;
 
 impl SessionPlayback {
+    pub(super) fn render_stopped_main_tails(
+        &mut self,
+        output: &mut [Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        self.return_effect_tails.begin_block();
+        let clock = crate::effect_clock::ArrangementEffectClock::session(
+            self.revision.session().timing(),
+            self.arrangement_frame,
+            self.performance_frame,
+            self.arrangement_loop_pass,
+            false,
+        );
+        let step = if self.compensation.is_some() { 1 } else { 256 };
+        for (index, chunk) in output.chunks_mut(step).enumerate() {
+            self.return_effect_tails.render_main_chunk(
+                chunk,
+                self.compensation.as_ref(),
+                &clock,
+                index * step,
+                foreign,
+            )?;
+        }
+        self.return_effect_tails.commit_block();
+        self.revision.arrangement().master_mix().apply(output);
+        Ok(())
+    }
     pub(crate) fn cancel_current_sampler_keyboard(&mut self) {
         self.current_sampler_keyboard_revoked = self
             .current_sampler_keyboard_revoked
@@ -87,6 +114,14 @@ impl SessionPlayback {
             chain.begin_block();
         }
         self.main_chain.begin_block();
+        // A state replacement can introduce a retained bus/Main suffix while
+        // transport is already stopped. Its real zero-input completion still
+        // owns the original endpoint; monitoring must drain that suffix too.
+        // An explicit Stop separately resets these tails in the command owner.
+        let drain_edit_tails = self.performance_frame == 0 && self.arrangement_frame == 0;
+        if drain_edit_tails {
+            self.return_effect_tails.begin_block();
+        }
         self.route_scratch.copy_from_slice(&self.routes);
         let mut offset = 0usize;
         while offset < output.len() {
@@ -115,6 +150,10 @@ impl SessionPlayback {
                     None,
                     foreign,
                 )?;
+                if drain_edit_tails {
+                    self.return_effect_tails
+                        .render_chunk(chunk, offset, capture, foreign)?;
+                }
                 self.compensation
                     .as_ref()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
@@ -126,6 +165,22 @@ impl SessionPlayback {
                         observer,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                let tail_clock = crate::effect_clock::ArrangementEffectClock::session(
+                    self.revision.session().timing(),
+                    self.arrangement_frame,
+                    self.performance_frame,
+                    self.arrangement_loop_pass,
+                    false,
+                );
+                if drain_edit_tails {
+                    self.return_effect_tails.render_main_chunk(
+                        chunk,
+                        self.compensation.as_ref(),
+                        &tail_clock,
+                        offset,
+                        foreign,
+                    )?;
+                }
                 self.advance_paused_analytic_releases(count)?;
                 offset = end;
                 continue;
@@ -270,6 +325,10 @@ impl SessionPlayback {
                 capture,
                 &mut hex_lattice::RefuseForeign,
             )?;
+            if drain_edit_tails {
+                self.return_effect_tails
+                    .render_chunk(chunk, offset, capture, foreign)?;
+            }
             self.render_detached_tails(self.performance_frame, chunk, offset, capture)?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
@@ -290,6 +349,17 @@ impl SessionPlayback {
                 observer,
             )
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            if drain_edit_tails {
+                for (index, chunk) in output.chunks_mut(256).enumerate() {
+                    self.return_effect_tails.render_main_chunk(
+                        chunk,
+                        None,
+                        &main_clock,
+                        index * 256,
+                        foreign,
+                    )?;
+                }
+            }
         }
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.commit_block();
@@ -302,6 +372,9 @@ impl SessionPlayback {
         }
 
         self.main_chain.commit_block();
+        if drain_edit_tails {
+            self.return_effect_tails.commit_block();
+        }
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {
             chain.commit_block();

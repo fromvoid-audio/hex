@@ -1838,6 +1838,61 @@ mod tests {
     }
 
     #[test]
+    fn pause_after_removing_all_receivers_keeps_the_detached_source_release() {
+        on_control(|| {
+            let mut f = fixture();
+            let device = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let device_id = device.id();
+            let original = device.state().clone();
+            let mut authored =
+                hex_devices::sampler::state::SamplerState::from_native(&original).unwrap();
+            authored.envelope.release_seconds = 4.0 / 8000.0;
+            let state = authored
+                .to_native()
+                .unwrap()
+                .with_asset_references(original.asset_references().to_vec())
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device: device_id,
+                    state,
+                })
+                .unwrap();
+            let mut old = started(&f);
+            let mut oracle_old = started(&f);
+            old.apply(SessionPlaybackCommand::Pause).unwrap();
+            oracle_old.apply(SessionPlaybackCommand::Pause).unwrap();
+            for track in [f.contributor, f.receiver] {
+                f.editor.execute(Command::RemoveTrack(track)).unwrap();
+            }
+            let mut actual = playback(&f);
+            let mut oracle = playback(&f);
+            actual.try_inherit_state_from(&mut old).unwrap();
+            oracle.try_inherit_state_from(&mut oracle_old).unwrap();
+            assert!(actual.revision.arrangement().tracks().is_empty());
+            actual.apply(SessionPlaybackCommand::Play).unwrap();
+            actual.apply(SessionPlaybackCommand::Pause).unwrap();
+            let mut expected = [[0.0; 2]; 16];
+            let mut output = [[0.0; 2]; 16];
+            oracle.render(&mut expected).unwrap();
+            for chunk in output.chunks_mut(3) {
+                actual.render(chunk).unwrap();
+            }
+            assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+            assert_eq!(output, expected);
+            assert_eq!(&output[8..], &[[0.0; 2]; 8]);
+            assert_eq!(actual.performance_frame, 7);
+            assert_eq!(actual.arrangement_frame, 7);
+        });
+    }
+
+    #[test]
     fn shared_sampler_scalar_retarget_preserves_ages_and_owns_no_outgoing_kernel() {
         on_control(|| {
             let mut f = fixture();

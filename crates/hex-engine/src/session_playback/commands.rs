@@ -45,7 +45,9 @@ impl SessionPlayback {
             SessionPlaybackCommand::Pause => {
                 if self.playing {
                     self.pause_analytic_sources()?;
-                    self.monitor_source_releases =
+                    // A removed receiver may already own a detached release.
+                    // Only explicit discontinuities reset admitted monitoring.
+                    self.monitor_source_releases |=
                         self.revision.arrangement().tracks().iter().any(|track| {
                             track.source_id().is_some() && track.receives_source_audio()
                         });
