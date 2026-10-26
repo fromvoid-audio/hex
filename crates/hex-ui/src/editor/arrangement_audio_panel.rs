@@ -149,8 +149,7 @@ pub(super) fn view(
                 .items_center()
                 .gap(px(4.0))
                 .flex_shrink_0()
-                .children([pitch])
-                .child(gain.flex_1().min_w_0()),
+                .children([pitch, gain.flex_1().min_w_0()]),
         );
     }
     for (field, label) in [
