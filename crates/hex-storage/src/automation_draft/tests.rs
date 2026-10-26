@@ -411,14 +411,19 @@ fn device_targets_resolve_from_complete_source_inventory_and_source_changes_do_n
     let dir = TestDir::new();
     let path = dir.path();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
-    editor
-        .execute(Command::AddMidiTrack {
-            name: "instrument".into(),
+    let Created::NativeSource(source_id) = editor
+        .execute(Command::CreateNativeSource {
+            name: "retained instrument".into(),
+            devices: vec![hex_project::default_instrument_state().unwrap()],
+            instrument_index: 0,
         })
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("native source")
+    };
     let (base, _, provenance) = fixture();
     let source = editor.project();
-    let device = source.native_sources()[0].instrument().id();
+    let device = source.native_source(source_id).unwrap().instrument().id();
     let target = DraftTarget::Device {
         device,
         target: DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(
