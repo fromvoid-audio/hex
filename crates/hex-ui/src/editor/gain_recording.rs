@@ -689,9 +689,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn unavailable_output_retains_captured_take_until_explicit_discard(
-        cx: &mut TestAppContext,
-    ) {
+    fn unavailable_output_retains_captured_take_until_explicit_discard(cx: &mut TestAppContext) {
         let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddTrack {
@@ -712,14 +710,15 @@ mod tests {
             view.gain_recorder.revision = revision;
             view.gain_recorder.serial = 7;
             view.gain_recorder.target = Some(Target {
-                track_id: track.value(), project_generation: view.project_generation,
-                canonical_revision: revision, audio_revision: 1, recording_epoch: 1,
-                transport_epoch: 1, gesture_serial: 7, sample_rate: 48_000,
-                view.discard_gain_take();
-            assert!(!view.gain_recorder.blocks_edits());
-            assert!(view.gain_recorder.events.is_empty());
-            assert_eq!(view.gain_recorder.serial, 7);
-        });
+                track_id: track.value(),
+                project_generation: view.project_generation,
+                canonical_revision: revision,
+                audio_revision: 1,
+                recording_epoch: 1,
+                transport_epoch: 1,
+                gesture_serial: 7,
+                sample_rate: 48_000,
+            });
             view.gain_recorder.pending_gain = Some(1.5);
             view.gain_recorder.events.push(AppliedGain {
                 sequence: 1,
@@ -747,6 +746,10 @@ mod tests {
                     .unwrap()
                     .contains("incomplete gain take retained")
             );
+            view.discard_gain_take();
+            assert!(!view.gain_recorder.blocks_edits());
+            assert!(view.gain_recorder.events.is_empty());
+            assert_eq!(view.gain_recorder.serial, 7);
         });
     }
 }
