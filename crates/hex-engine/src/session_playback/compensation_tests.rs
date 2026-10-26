@@ -443,7 +443,7 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
     let running = candidate
         .preview_stream_handoff_with_scope(&mut old, 64, Some(true), &mut |_| Ok(()), true)
         .unwrap();
-    assert_eq!(running.frames, 1);
+    assert_eq!(running.frames, 64);
     assert_eq!(
         (
             old.capture_epoch,
