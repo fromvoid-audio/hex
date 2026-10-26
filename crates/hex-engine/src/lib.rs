@@ -108,10 +108,13 @@ pub use native_device_view::{
 };
 
 mod device_automation;
+mod native_parameter_input;
 pub use device_automation::{
-    DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, native_device_automation_target_supported,
-    native_parameter_automation_supported, project_device_automation_target_supported,
+    DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, NativeParameterInputTarget,
+    native_device_automation_target_supported, native_parameter_automation_supported,
+    native_parameter_input_target, project_device_automation_target_supported,
 };
+pub use native_parameter_input::NativeParameterApplication;
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,

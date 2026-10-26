@@ -19,9 +19,9 @@ pub use foreign_processor::{
     ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
 };
 pub use parameter_automation::{
-    HostAutomationLane, NativeParameterAutomation, ParameterAutomationBlock,
-    ParameterAutomationLane, ParameterAutomationPoint, PreparedParameterAutomation,
-    PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
+    HostAutomationLane, NativeParameterAutomation, NativeTransientOperation, NativeTransientValue,
+    ParameterAutomationBlock, ParameterAutomationLane, ParameterAutomationPoint,
+    PreparedParameterAutomation, PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
 };
 mod resources;
 mod runtime_ownership;
@@ -484,6 +484,37 @@ impl fmt::Debug for PreparedProcessorInstance {
             .field("has_configuration_identity", &self.configuration.is_some())
             .field("stateful", &self.definition.is_some())
             .finish()
+    }
+}
+
+/// One current prepared instance and its requested canonical value. The engine
+/// owns source/epoch fencing and supplies this only with a valid stage origin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeTransientInput {
+    pub identity: ProcessorInstanceIdentity,
+    pub operation: NativeTransientOperation,
+}
+/// Successful speculative processing, not physical delivery or a DSP settling
+/// claim. The engine/audio owner commits or discards this Copy observation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeTransientApplication {
+    pub identity: ProcessorInstanceIdentity,
+    pub operation: NativeTransientOperation,
+    pub offset: usize,
+}
+/// Borrowed segment context. Retains at most the first application until its
+/// owner consumes it; any processing refusal clears the speculative observation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeTransientProcessing {
+    pub input: NativeTransientInput,
+    pub applied: Option<NativeTransientApplication>,
+}
+impl NativeTransientProcessing {
+    pub fn new(input: NativeTransientInput) -> Self {
+        Self {
+            input,
+            applied: None,
+        }
     }
 }
 
@@ -1659,12 +1690,121 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
+        self.process_range_tapped_with_foreign_and_input(
+            range,
+            frames,
+            frame_offset,
+            clock,
+            output_clock,
+            foreign,
+            None,
+            observer,
+        )
+    }
+
+    /// Validate an inline request against the exact prepared current target.
+    /// A missing or frozen instance returns false without mutating the chain.
+    /// Host trims cannot be applied while bypassed; provider controls retain
+    /// their existing internal-history advancement under bypass.
+    pub fn validate_transient_input(
+        &self,
+        input: NativeTransientInput,
+    ) -> Result<bool, DeviceContractError> {
+        let mut matching = self.entries.iter().filter(|entry| {
+            !entry.automation_frozen
+                && entry.owner == input.identity.owner()
+                && entry.device_id == input.identity.device_id()
+        });
+        let Some(entry) = matching.next() else {
+            return Ok(false);
+        };
+        if matching.next().is_some()
+            || entry.automation.input_target() != Some(input.operation.target())
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        if entry.bypassed && input.operation.target().is_host() {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        if let Some(value) = input.operation.value() {
+            entry.automation.validate_input(value)?;
+        }
+        if let hex_lattice_contract::DeviceAutomationTarget::Parameter(id) =
+            input.operation.target()
+            && (!entry.matrix.is_identity() || !entry.runtime.supports_parameter_automation(id))
+        {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        Ok(true)
+    }
+
+    /// Same transaction and taps with one prepared transient input. Only the
+    /// exact current, non-frozen instance can consume it. A successful range
+    /// stages its first nonempty application; final host delivery is not owned
+    /// here. Provider values advance under bypass; skipped host trims do not.
+    #[allow(clippy::too_many_arguments)] // Existing borrowed endpoints plus one inline transient context.
+    pub fn process_range_tapped_with_foreign_and_input(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
+        mut transient: Option<&mut NativeTransientProcessing>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        let requested = transient.as_ref().map(|context| context.input);
+        let mut applied = None;
         let result = (|| {
             let entries = self
                 .entries
                 .get_mut(range)
                 .ok_or(DeviceContractError::InvalidDescriptor)?;
+            if let Some(requested) = requested
+                && entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.owner == requested.identity.owner()
+                            && entry.device_id == requested.identity.device_id()
+                    })
+                    .take(2)
+                    .count()
+                    > 1
+            {
+                return Err(DeviceContractError::InvalidDescriptor);
+            }
             for entry in entries {
+                let input = requested
+                    .filter(|requested| {
+                        !entry.automation_frozen
+                            && entry.owner == requested.identity.owner()
+                            && entry.device_id == requested.identity.device_id()
+                    })
+                    .map(|requested| requested.operation);
+                if let Some(operation) = input {
+                    if entry.automation.input_target() != Some(operation.target()) {
+                        return Err(DeviceContractError::InvalidDescriptor);
+                    }
+                    if let Some(value) = operation.value() {
+                        entry.automation.validate_input(value)?;
+                    }
+                    if let hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter) =
+                        operation.target()
+                        && (!entry.matrix.is_identity()
+                            || !entry.runtime.supports_parameter_automation(parameter))
+                    {
+                        return Err(DeviceContractError::UnsupportedProcessingClass);
+                    }
+                }
+
                 observer(
                     entry.owner,
                     entry.device_id,
@@ -1680,7 +1820,26 @@ impl NativeRuntimeChain {
                     clock,
                     output_clock,
                     foreign,
+                    input.and_then(NativeTransientOperation::value),
                 )?;
+                if !frames.is_empty()
+                    && let Some(operation) = input
+                    && (!entry.bypassed
+                        || matches!(
+                            operation.target(),
+                            hex_lattice_contract::DeviceAutomationTarget::Parameter(_)
+                        ))
+                {
+                    applied = Some(NativeTransientApplication {
+                        identity: ProcessorInstanceIdentity {
+                            owner: entry.owner,
+                            device_id: entry.device_id,
+                        },
+                        operation,
+                        offset: frame_offset,
+                    });
+                }
+
                 observer(
                     entry.owner,
                     entry.device_id,
@@ -1694,6 +1853,13 @@ impl NativeRuntimeChain {
         })();
         if result.is_err() {
             foreign.reject_callback();
+            if let Some(context) = &mut transient {
+                context.applied = None;
+            }
+        } else if let Some(context) = &mut transient
+            && context.applied.is_none()
+        {
+            context.applied = applied;
         }
         result
     }
@@ -1774,7 +1940,15 @@ impl NativeRuntimeChain {
         clock: Option<&dyn NativeInstrumentClock>,
         output_clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        Self::process_entry_with_foreign(entry, frames, 0, clock, output_clock, &mut RefuseForeign)
+        Self::process_entry_with_foreign(
+            entry,
+            frames,
+            0,
+            clock,
+            output_clock,
+            &mut RefuseForeign,
+            None,
+        )
     }
 
     fn process_entry_with_foreign(
@@ -1784,10 +1958,11 @@ impl NativeRuntimeChain {
         clock: Option<&dyn NativeInstrumentClock>,
         output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
+        input: Option<NativeTransientValue>,
     ) -> Result<(), DeviceContractError> {
         let is_foreign = matches!(entry.runtime, RuntimeOwnership::Foreign(_));
         if !entry.bypassed && !is_foreign {
-            Self::apply_host_gain(entry, frames, clock, true);
+            Self::apply_host_gain(entry, frames, clock, true, input)?;
         }
         if entry.metering {
             if is_foreign {
@@ -1824,7 +1999,10 @@ impl NativeRuntimeChain {
             if entry.runtime.is_stateful() {
                 if entry.matrix.is_identity() {
                     if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
-                        let values = entry.automation.block(clock, frames.len());
+                        let values =
+                            entry
+                                .automation
+                                .block_with_input(clock, frames.len(), input)?;
                         entry
                             .runtime
                             .process_automation(frames, clock, &values, true)?;
@@ -1854,7 +2032,9 @@ impl NativeRuntimeChain {
         } else {
             entry.matrix.apply_block(frames);
             if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
-                let values = entry.automation.block(clock, frames.len());
+                let values = entry
+                    .automation
+                    .block_with_input(clock, frames.len(), input)?;
                 entry
                     .runtime
                     .process_automation(frames, clock, &values, false)?;
@@ -1863,7 +2043,7 @@ impl NativeRuntimeChain {
             }
         }
         if !entry.bypassed {
-            Self::apply_host_gain(entry, frames, output_clock, false);
+            Self::apply_host_gain(entry, frames, output_clock, false, input)?;
         }
         if entry.metering {
             entry.meter.observe_output(frames);
@@ -1876,7 +2056,8 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
         input: bool,
-    ) {
+        transient: Option<NativeTransientValue>,
+    ) -> Result<(), DeviceContractError> {
         let index = if input { 0 } else { 1 };
         let base = if input {
             entry.input_gain
@@ -1888,7 +2069,10 @@ impl NativeRuntimeChain {
         } else {
             hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
         };
-        if entry.automation_frozen || !entry.automation.has_host_target(target) {
+        if entry.automation_frozen
+            || (!entry.automation.has_host_target(target)
+                && transient.is_none_or(|value| value.target() != target))
+        {
             let gain = if entry.automation_frozen {
                 entry.committed_host_gains[index]
             } else {
@@ -1903,9 +2087,11 @@ impl NativeRuntimeChain {
             if !frames.is_empty() {
                 entry.scratch_host_gains[index] = gain;
             }
-            return;
+            return Ok(());
         }
-        let values = entry.automation.block(clock, frames.len());
+        let values = entry
+            .automation
+            .block_with_input(clock, frames.len(), transient)?;
         for (offset, frame) in frames.iter_mut().enumerate() {
             let gain = values.host_gain_at(target, offset).unwrap_or(base);
             if gain != 1.0 {
@@ -1914,6 +2100,7 @@ impl NativeRuntimeChain {
             }
             entry.scratch_host_gains[index] = gain;
         }
+        Ok(())
     }
 
     /// Commit histories after all render chunks and source reads succeeded.

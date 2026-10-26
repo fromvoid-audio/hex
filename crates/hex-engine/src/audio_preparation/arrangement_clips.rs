@@ -175,6 +175,7 @@ impl ArrangementClips {
             },
         })
     }
+    #[allow(clippy::too_many_arguments)] // One selected arm joins the existing constructor inputs.
     pub(super) fn reserve_with_effects(
         &mut self,
         slots: &[SourceSlot],
@@ -186,6 +187,7 @@ impl ArrangementClips {
             &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
         )>,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
         let Stages {
             assemble_tracks: tracks,
@@ -283,11 +285,17 @@ impl ArrangementClips {
             }
         }
         if tracks {
-            self.tracks
-                .reserve_with_effects(project, &self.rows, samplers, effects)?;
+            self.tracks.reserve_with_effects(
+                project,
+                &self.rows,
+                samplers,
+                effects,
+                native_input,
+            )?;
         }
         if returns {
-            self.returns.reserve_with_effects(project, effects)?;
+            self.returns
+                .reserve_with_effects(project, effects, native_input)?;
         }
         if preview {
             if samplers.is_some() {
@@ -330,15 +338,18 @@ impl ArrangementClips {
     pub(super) fn main_quote(
         &self,
         project: &hex_project::Project,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(usize, usize), AudioStorageError> {
-        self.root.main_quote(project)
+        self.root.main_quote(project, native_input)
     }
     pub(super) fn reserve_main_carrier(
         &mut self,
         project: &hex_project::Project,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
-        self.root.reserve_main_carrier(project, effects)
+        self.root
+            .reserve_main_carrier(project, effects, native_input)
     }
     pub(super) fn construct(
         &mut self,
