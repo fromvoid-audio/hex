@@ -140,3 +140,6 @@ mod pointer_hover_tests;
 
 #[cfg(test)]
 mod pointer_capture_tests;
+
+#[cfg(test)]
+mod surface_capture_tests;
