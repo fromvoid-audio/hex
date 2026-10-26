@@ -1,13 +1,13 @@
 //! Normal-mode held note creation. Preview stays view-owned until one canonical
 //! note edit on release, including source growth if needed. Existing canvas
-//! identity/geometry and grid rules bound the gesture.
+//! identity/geometry and grid rules bound the gesture. Released display transfers
+//! to midi_pending_drag's exact ordinary receipt; it never retains held input.
 use super::{
     EditorView, midi_drag,
     midi_draw::{self, StrokeModifiers},
     midi_stroke::StrokeContext,
 };
 use hex_project::{BeatTime, Command, MidiNoteInsert};
-use hex_session::service::Request;
 
 pub(super) struct Creation {
     context: StrokeContext,
@@ -203,7 +203,11 @@ impl EditorView {
                     velocity: note.velocity,
                 }
             };
-            self.enqueue(Request::Edit(command));
+            self.submit_midi_drag_preview(
+                creation.context.clip,
+                super::midi_pending_drag::Frozen::Creation(note),
+                command,
+            );
         }
     }
 }

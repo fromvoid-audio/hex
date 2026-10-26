@@ -488,3 +488,105 @@ fn console_note_release_uses_its_own_source_identity_through_delayed_terminal(
         )
     });
 }
+
+#[gpui::test]
+fn new_note_creation_keeps_released_geometry_until_its_real_terminal(cx: &mut TestAppContext) {
+    for grows in [false, true] {
+        let cx = &mut cx.new_app();
+        let (mut visual, editor, _environment, clip) = fixture(cx);
+        if grows {
+            editor.update(&mut visual, |v, cx| {
+                v.piano_beat_start = beat(3.0);
+                cx.notify();
+            });
+            repaint(&editor, &mut visual);
+        }
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let start = if grows { 4.0 } else { 1.0 };
+        let down = position(&editor, &mut visual, start, 60);
+        let end = position(&editor, &mut visual, start + 1.0, 60);
+        super::creation_tests::double_down(&mut visual, down, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        repaint(&editor, &mut visual);
+        let held = bodies(&editor, &mut visual);
+        assert_eq!(held.len(), 1);
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        let event = terminal(&editor, &mut visual);
+        assert!(event.error.is_none());
+        for _ in 0..3 {
+            repaint(&editor, &mut visual);
+            assert!(
+                !visual.update(|w, _| w.is_pointer_dragging()),
+                "pending geometry does not retain input"
+            );
+            assert_eq!(
+                bodies(&editor, &mut visual),
+                held,
+                "grows={grows}: released creation remains painted before ACK"
+            );
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+                assert!(v.midi_creation.is_none(), "input ends at release");
+            });
+        }
+        editor.update(&mut visual, |v, cx| {
+            v.receive(event);
+            cx.notify();
+        });
+        repaint(&editor, &mut visual);
+        assert_eq!(bodies(&editor, &mut visual), held);
+        editor.read_with(&visual, |v, _| {
+            assert!(!v.edit_pending());
+            assert!(
+                v.pending_midi_drag.is_none(),
+                "exact terminal retires display custody"
+            );
+            let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
+            assert_eq!(source.notes().len(), 1);
+            assert_eq!(source.notes()[0].start(), beat(start));
+            assert_eq!(source.notes()[0].duration(), BeatTime::ONE);
+            assert_eq!(source.source_length(), beat(if grows { 5.0 } else { 4.0 }));
+        });
+    }
+}
+
+#[gpui::test]
+#[ignore = "opt-in held/released creation repaint CPU probe"]
+fn new_note_creation_repaint_latency(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    visual.simulate_resize(gpui::size(px(1280.), px(800.)));
+    visual.run_until_parked();
+    let down = position(&editor, &mut visual, 1., 60);
+    let end = position(&editor, &mut visual, 2., 60);
+    super::creation_tests::double_down(&mut visual, down, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    repaint(&editor, &mut visual);
+    assert_eq!(bodies(&editor, &mut visual).len(), 1);
+    let mut reply = None;
+    for phase in ["held", "released"] {
+        if phase == "released" {
+            visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            let event = terminal(&editor, &mut visual);
+            assert!(event.error.is_none());
+            reply = Some(event);
+        }
+        let mut samples = Vec::new();
+        for n in 0..144 {
+            let start = Instant::now();
+            repaint(&editor, &mut visual);
+            if n >= 16 {
+                samples.push(start.elapsed().as_secs_f64() * 1_000_000.);
+            }
+        }
+        samples.sort_by(f64::total_cmp);
+        let count = bodies(&editor, &mut visual).len();
+        println!(
+            "creation_repaint_us phase={phase} p50={} p95={} max={} bodies={count} window=1280x800 tracks=1 clips=1 canonical_notes=0 warmups=16 samples=128",
+            samples[64], samples[121], samples[127]
+        );
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(reply.unwrap());
+        cx.notify();
+    });
+}
