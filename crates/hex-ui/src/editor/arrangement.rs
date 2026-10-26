@@ -741,6 +741,16 @@ impl EditorView {
         lines: &[super::musical_time::GridLine],
         cx: &mut Context<Self>,
     ) -> Div {
+        let state = self.state.clone();
+        let automation = state.as_ref().and_then(|state| {
+            super::device_automation::overlay(
+                self,
+                state,
+                super::device_panel::DevicePanelOwner::Main,
+                viewport,
+                cx,
+            )
+        });
         let lane_entity = cx.entity();
         let lane = div()
             .id("main-track-lane")
@@ -753,6 +763,7 @@ impl EditorView {
             .children(self.main_time_selection_overlay(viewport))
             .children(self.section_elements(viewport, cx))
             .children([self.section_pointer_events(cx)])
+            .children(automation)
             .child(
                 canvas(
                     |_, _, _| (),
@@ -771,7 +782,7 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             );
-        div()
+        let row = div()
             .debug_selector(|| "pinned-main-track".to_owned())
             .h(px(TRACK_ROW_HEIGHT))
             .flex_shrink_0()
@@ -783,6 +794,18 @@ impl EditorView {
             .child(
                 div()
                     .id("main-track-header")
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|view, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            view.open_automation_owner_menu(
+                                super::device_panel::DevicePanelOwner::Main,
+                                event.position,
+                                window,
+                                cx,
+                            );
+                        }),
+                    )
                     .on_click(cx.listener(|view, _, window, cx| {
                         super::device_panel::select_main(view, window, cx)
                     }))
@@ -804,7 +827,28 @@ impl EditorView {
                     .child(theme::text("main"))
                     .child(div().flex_1())
                     .children([self.main_track_controls(cx)]),
+            );
+        let extra = state.as_ref().map(|state| {
+            super::device_automation::rows(
+                self,
+                state,
+                super::device_panel::DevicePanelOwner::Main,
+                viewport,
+                cx,
             )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .child(row)
+            .children(extra.map(|rows| {
+                div()
+                    .id("main-automation-rows")
+                    .max_h(px(super::device_automation::LANE_HEIGHT))
+                    .overflow_y_scroll()
+                    .child(rows)
+            }))
     }
 
     fn ruler(&self, state: &ViewState, ruler_width: f32, cx: &mut Context<Self>) -> Div {
