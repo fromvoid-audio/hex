@@ -685,3 +685,54 @@ fn profile_durable_automation_io() {
         );
     }
 }
+
+#[test]
+#[ignore = "child-process helper for abrupt automation writer restart"]
+fn automation_draft_crash_child() {
+    let path = std::env::var_os("HEX_AUTOMATION_DRAFT_CRASH_PATH").expect("child draft path");
+    let (source, target, stamp) = fixture();
+    let mut writer = DraftWriter::create_new(PathBuf::from(path), &source, target, stamp).unwrap();
+    let batch = std::array::from_fn::<_, MAX_APPEND_EVENTS, _>(|index| event(index as u64));
+    let progress = writer.append(&batch).unwrap();
+    assert_eq!(progress.durable_events, MAX_APPEND_EVENTS as u64);
+    // No Rust destructors run: the OS must release the writer lock and preserve the synced prefix.
+    std::process::exit(23);
+}
+
+#[test]
+fn actual_process_exit_releases_writer_lock_and_recovers_the_exact_durable_prefix() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "automation_draft::tests::automation_draft_crash_child",
+            "--nocapture",
+        ])
+        .env("HEX_AUTOMATION_DRAFT_CRASH_PATH", &path)
+        .status()
+        .unwrap();
+    assert_eq!(
+        status.code(),
+        Some(23),
+        "zero matching helpers or a failed child is not restart evidence"
+    );
+    let original = fs::read(&path).unwrap();
+    let mut recovered = open(&path);
+    assert_eq!(recovered.outcome(), DraftOutcome::Interrupted);
+    assert_eq!(
+        recovered.progress().durable_events,
+        MAX_APPEND_EVENTS as u64
+    );
+    assert_eq!(recovered.progress().durable_terminal, None);
+    let mut page = [None; MAX_APPEND_EVENTS];
+    assert_eq!(
+        recovered.read_events(0, &mut page).unwrap(),
+        MAX_APPEND_EVENTS
+    );
+    for (index, actual) in page.iter().enumerate() {
+        assert_eq!(*actual, Some(event(index as u64)));
+    }
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
