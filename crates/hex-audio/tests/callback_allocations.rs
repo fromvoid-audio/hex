@@ -12,6 +12,8 @@ mod project_tuning;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
+#[path = "callback_allocations/stage_clocks.rs"]
+mod stage_clocks;
 
 use allocation_counter::{AllocationInfo, measure};
 use hex_audio::prepared::{self, PublicationPolicy, SessionRouteOwner};
