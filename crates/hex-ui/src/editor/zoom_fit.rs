@@ -293,10 +293,13 @@ impl EditorView {
                         })
                 });
             let (a, b) = range.unwrap_or((0, horizon));
-            let Some(next) = interval(a, b, horizon, 1) else {
+            // Explicit fitting can restore an empty selected interval beyond
+            // shortened content. Ordinary scrolling still obeys retired bounds.
+            let target_horizon = horizon.max(a).max(b);
+            let Some(next) = interval(a, b, target_horizon, 1) else {
                 return false;
             };
-            if next == current && horizon == self.viewport_horizon(state.timeline_frames) {
+            if next == current && target_horizon == self.viewport_horizon(state.timeline_frames) {
                 return false;
             }
             self.zoom_fit.arrange = Some((self.project_generation, Some(current)));

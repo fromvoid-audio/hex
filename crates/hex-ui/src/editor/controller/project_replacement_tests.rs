@@ -1,5 +1,6 @@
 //! GPUI production-event regressions for project replacement and publication policy.
 use super::*;
+use crate::editor::viewport::Viewport;
 use gpui::TestAppContext;
 use hex_engine::{PreparedRevision, SineTable};
 use hex_project::{Command, Editor, Project};

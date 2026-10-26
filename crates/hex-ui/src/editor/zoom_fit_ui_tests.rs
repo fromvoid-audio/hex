@@ -523,6 +523,51 @@ fn shortening_edit_preserves_arranger_view_through_real_ack_and_repaints(cx: &mu
             expected
         )
     });
+    // Explicit Fit must honor a still-visible time selection beyond the new
+    // content bound, rather than clamping both ends to the normal buffer.
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let down = point(
+        lane.left() + lane.size.width * 0.25,
+        lane.top() + lane.size.height * 0.6,
+    );
+    let up = point(lane.left() + lane.size.width * 0.75, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let selected_view = editor.read_with(&visual, |v, _| {
+        let range = v.normalized_time_selection().unwrap();
+        assert!(range.start() >= expected.start && range.end() <= expected.end().unwrap());
+        Viewport {
+            start: range.start(),
+            length: range.duration(),
+        }
+    });
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+            selected_view,
+            "explicit selection fit may restore a visible empty interval beyond content"
+        )
+    });
+    visual.simulate_keystrokes("z"); // A no-op repeated fit must retain Back.
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
+            expected
+        )
+    });
+    // Return to a point selection before testing ordinary scrolling.
+    visual.simulate_click(lane.center(), Modifiers::default());
+    visual.run_until_parked();
     visual.simulate_keystrokes("alt-left");
     visual.run_until_parked();
     let panned = Viewport {
