@@ -143,6 +143,7 @@ pub struct SendLevelSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSnapshot {
+    pub automation: Vec<crate::DeviceAutomation>,
     pub comparison: Option<crate::DeviceComparison>,
     pub id: u64,
     pub bypassed: bool,
@@ -311,6 +312,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
@@ -318,6 +320,7 @@ impl Project {
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        automation: instrument.automation().to_vec(),
                         comparison: instrument.comparison.clone(),
                         id: instrument.id.value(),
                         bypassed: instrument.bypassed,
@@ -404,6 +407,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            automation: device.automation().to_vec(),
                             comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
@@ -484,6 +488,7 @@ impl Project {
                 .main_devices
                 .iter()
                 .map(|device| DeviceSnapshot {
+                    automation: device.automation().to_vec(),
                     comparison: device.comparison.clone(),
                     id: device.id.value(),
                     bypassed: device.bypassed,
@@ -713,6 +718,7 @@ impl Project {
         for device in snapshot.main_devices {
             insert_id(device.id, &mut ids, &mut max_id)?;
             main_devices.push(Device {
+                automation: device.automation,
                 comparison: device.comparison,
                 id: DeviceId(device.id),
                 state: device.state,
@@ -743,6 +749,7 @@ impl Project {
                     comparison.validate(&device.state)?;
                 }
                 devices.push(Device {
+                    automation: device.automation,
                     id: DeviceId(device.id),
                     state: device.state,
                     bypassed: device.bypassed,
@@ -780,6 +787,7 @@ impl Project {
                     return Err(Invalid("project device limit reached"));
                 }
                 devices.push(Device {
+                    automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
@@ -830,6 +838,7 @@ impl Project {
             for device in track.devices {
                 insert_id(device.id, &mut ids, &mut max_id)?;
                 devices.push(Device {
+                    automation: device.automation,
                     comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
@@ -843,7 +852,8 @@ impl Project {
                     .find(|source| source.instrument().id().value() == instrument.id)
                     .ok_or(Invalid("track instrument has no retained source"))?;
                 let expected = source.instrument();
-                if expected.state() != &instrument.state
+                if expected.automation() != instrument.automation
+                    || expected.state() != &instrument.state
                     || expected.bypassed() != instrument.bypassed
                     || expected.comparison() != instrument.comparison.as_ref()
                 {
@@ -1205,6 +1215,7 @@ impl Project {
         }
         project.validate_retained_audio_roots()?;
         project.validate_device_asset_references()?;
+        project.validate_device_automation()?;
         for track in &project.tracks {
             for clip in track.clips() {
                 if let Some(edit) = &clip.edit {
