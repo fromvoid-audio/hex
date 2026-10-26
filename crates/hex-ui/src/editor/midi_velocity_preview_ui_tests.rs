@@ -117,3 +117,6 @@ fn released_velocity_handles_keep_final_values_until_exact_real_terminal(cx: &mu
         }
     }
 }
+
+#[path = "midi_velocity_capture_ui_tests.rs"]
+mod capture_tests;
