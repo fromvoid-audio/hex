@@ -40,15 +40,13 @@ impl Render for Host {
             )
     }
 }
-fn fixture(
-    cx: &mut TestAppContext,
-    creation: bool,
-) -> (
-    gpui::AnyWindowHandle,
-    Entity<ResponseGraph>,
-    Rc<Cell<usize>>,
-    Rc<Cell<usize>>,
-) {
+struct Fixture {
+    handle: gpui::AnyWindowHandle,
+    graph: Entity<ResponseGraph>,
+    actions: Rc<Cell<usize>>,
+    escape: Rc<Cell<usize>>,
+}
+fn fixture(cx: &mut TestAppContext, creation: bool) -> Fixture {
     let actions = Rc::new(Cell::new(0));
     let escape = Rc::new(Cell::new(0));
     let handle = cx.add_window(|_, cx| Host {
@@ -75,13 +73,23 @@ fn fixture(
         escape: escape.clone(),
     });
     let graph = handle.read_with(cx, |h, _| h.graph.clone()).unwrap();
-    (*handle, graph, actions, escape)
+    Fixture {
+        handle: *handle,
+        graph,
+        actions,
+        escape,
+    }
 }
 #[gpui::test]
 fn graph_pointer_isolation_preserves_outside_terminal_and_independent_wheel(
     cx: &mut TestAppContext,
 ) {
-    let (handle, graph, actions, _) = fixture(cx, false);
+    let Fixture {
+        handle,
+        graph,
+        actions,
+        ..
+    } = fixture(cx, false);
     let phases = Rc::new(RefCell::new(Vec::new()));
     let target = phases.clone();
     let _sub = cx.update(|cx| {
@@ -176,7 +184,12 @@ fn graph_pointer_isolation_preserves_outside_terminal_and_independent_wheel(
 #[gpui::test]
 fn graph_escape_keeps_its_keyboard_guard_for_node_and_creation_pointer(cx: &mut TestAppContext) {
     for (creation, dragged) in [(false, false), (false, true), (true, false), (true, true)] {
-        let (handle, graph, actions, parent_escape) = fixture(cx, creation);
+        let Fixture {
+            handle,
+            graph,
+            actions,
+            escape: parent_escape,
+        } = fixture(cx, creation);
         let phases = Rc::new(RefCell::new(Vec::new()));
         let target = phases.clone();
         let _sub = cx.update(|cx| {
@@ -244,7 +257,7 @@ fn profile_graph_pointer(cx: &mut TestAppContext) {
     let warmup = if smoke { 1 } else { 16 };
     let samples = if smoke { 4 } else { 128 };
     for creation in [false, true] {
-        let (handle, graph, _, _) = fixture(cx, creation);
+        let Fixture { handle, graph, .. } = fixture(cx, creation);
         let mut v = VisualTestContext::from_window(handle, cx);
         v.simulate_resize(size(px(440.), px(150.)));
         v.run_until_parked();
