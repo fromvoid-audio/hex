@@ -528,3 +528,6 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
         assert!(view.pending_requests.is_empty() && view.worker_requests_pending == 0);
     });
 }
+
+#[path = "track_header_name_ui_tests.rs"]
+mod header_name_tests;

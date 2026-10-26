@@ -143,9 +143,19 @@ impl EditorView {
             state.revision,
             self.project_generation,
         )?;
-        // Restrict per-frame lookup to the selected owner; never walk every
-        // track/clip to paint one piano-roll cursor.
-        let track = state.project.track(self.selected_track?)?;
+        // A retained inspector can outlive track focus after a time selection.
+        // Resolve that clip's canonical owner, as the audio detail query does;
+        // ordinary clip/Session selection keeps its direct track lookup.
+        let track = if self.selected_clip.is_none() && self.retained_detail_identity() == Some(clip)
+        {
+            state
+                .project
+                .tracks()
+                .iter()
+                .find(|track| track.midi_clips().iter().any(|item| item.id() == clip))?
+        } else {
+            state.project.track(self.selected_track?)?
+        };
         let placement = track.midi_clips().iter().find(|item| item.id() == clip);
         let (source, offset) = if let Some(placement) = placement {
             if !placement.active() {

@@ -668,6 +668,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::Mute { track, muted } => {
             describe!("mute"; ["track" => track.value(), "muted" => muted]; omitted="")
         }
+        Command::ToggleSoloTracks { tracks, exclusive } => {
+            describe!("toggle_solo_tracks"; ["tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "exclusive" => exclusive]; omitted="")
+        }
         Command::ToggleSolo { track, exclusive } => {
             describe!("toggle_solo"; ["track" => track.value(), "exclusive" => exclusive]; omitted="")
         }

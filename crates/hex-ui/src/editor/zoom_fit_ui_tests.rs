@@ -771,3 +771,93 @@ fn arranger_bounds_include_unfocused_automation_and_empty_project_buffer(cx: &mu
         );
     });
 }
+
+#[gpui::test]
+fn arrange_vertical_back_prunes_removed_rows_and_clamps_scroll_after_resize(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    for index in 0..4 {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: format!("fit {index}")
+            })))
+        });
+        pump(&editor, &mut visual);
+    }
+    let tracks = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect::<Vec<_>>()
+    });
+    let resize = visual
+        .debug_bounds(Box::leak(
+            format!("track-height-resize-{}", tracks[0].value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let end = point(resize.x, resize.y + px(40.0));
+    visual.simulate_mouse_down(resize, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let prior = Some(Viewport {
+        start: 12_000,
+        length: 96_000,
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.selected_clip = None;
+        view.selected_track = Some(tracks[2]);
+        view.track_selection.replace(&tracks[..3]);
+        view.time_selection = Some(TimeSelection {
+            anchor_track: tracks[0],
+            end_track: tracks[2],
+            anchor_frame: 0,
+            end_frame: 48_000,
+        });
+        view.viewport = prior;
+        cx.notify();
+    });
+    visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveTrack(tracks[0]))))
+    });
+    pump(&editor, &mut visual);
+    visual.simulate_resize(gpui::size(px(1200.0), px(680.0)));
+    visual.run_until_parked();
+    let project = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    click(&mut visual, "arrange-zoom-back");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.viewport, prior);
+        assert_eq!(
+            view.track_body_height(tracks[0]),
+            super::super::tracks::TRACK_ROW_HEIGHT,
+            "removed row has no retained custom geometry"
+        );
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project.snapshot(), project);
+        assert!(view.track_scroll.list.logical_scroll_top().item_ix < state.project.tracks().len());
+        let maximum = view
+            .arrangement_bounds
+            .unwrap()
+            .height
+            .max(super::super::tracks::TRACK_ROW_HEIGHT);
+        for track in state.project.tracks() {
+            let height = view.track_body_height(track.id());
+            assert!(
+                height.is_finite()
+                    && height >= super::super::track_layout::HEADER_ONLY_HEIGHT
+                    && height <= maximum
+            );
+        }
+    });
+}
