@@ -57,7 +57,7 @@ fn explicitly_faded_source_handle_overlap_is_a_valid_saved_project() {
         .unwrap();
     assert_eq!((outgoing.start(), outgoing.duration()), (0, 100_000));
     assert_eq!((incoming.start(), incoming.duration()), (92_000, 100_000));
-    assert_eq!(incoming.source_phase(), (16 + 96_000 - 4_000) % 96_000);
+    assert_eq!(incoming.source_phase(), 92_016);
     *candidate.clip_mut(left).unwrap() = outgoing;
     *candidate.clip_mut(right).unwrap() = incoming;
     candidate.clip_mut(left).unwrap().fade = ClipFade::new(100_000, 0, 0, 8_000).unwrap();
