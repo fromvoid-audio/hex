@@ -1,5 +1,6 @@
 //! # Purpose
-//! Own strict validated serialization and recoverable publication of canonical project metadata.
+//! Own strict canonical project metadata serialization, recoverable publication and independent
+//! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
 //! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2.
