@@ -1,6 +1,137 @@
 use super::*;
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 
+fn prepare_native(f: &Fixture) -> Arc<PreparedRevision> {
+    Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn live_flat_eq_insertion_under_main_limiter_preserves_pending_pcm_and_clock() {
+    for (warm, remove_main) in [(1, false), (63, false), (257, false), (1, true)] {
+        let mut f = fixture(&[&[]], 1024);
+        let Created::Device(main) = f
+            .editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: crate::default_native_device_state_for_class(
+                    crate::NativeDeviceClass::Effect,
+                    DeviceTypeId::from_static("hex.limiter"),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("main limiter");
+        };
+        let original = prepare_native(&f);
+        assert!(original.arrangement().main_latency_frames() > 0);
+        let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut oracle = SessionPlayback::new(original).unwrap();
+        for runtime in [&mut donor, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut vec![[0.0; 2]; warm]).unwrap();
+        }
+        let Created::Device(eq) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: hex_devices::eq::EqState::default().encode().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("eq");
+        };
+        if remove_main {
+            // Exercise the retained larger stamp owner too: removing Main
+            // cannot discard its pending impulse when EQ changes the indices.
+            f.editor.execute(Command::RemoveDevice(main)).unwrap();
+        }
+        // Insert/remove repeatedly while the Main processor still owns queued
+        // output. A flat zero-latency EQ must not change any delivered sample.
+        for remove in [false, true] {
+            if remove {
+                f.editor.execute(Command::RemoveDevice(eq)).unwrap();
+            }
+            let mut candidate = SessionPlayback::new(prepare_native(&f)).unwrap();
+            candidate.try_inherit_state_from(&mut donor).unwrap();
+            assert!(candidate.playing());
+            let mut actual = [[0.0; 2]; 129];
+            let mut expected = actual;
+            candidate.render(&mut actual).unwrap();
+            oracle.render(&mut expected).unwrap();
+            assert_eq!(actual, expected, "warm={warm}, remove={remove}");
+            assert_eq!(candidate.arrangement_frame(), oracle.arrangement_frame());
+            assert_eq!(candidate.clock_anchor(), oracle.clock_anchor());
+            donor = candidate;
+        }
+    }
+}
+
+#[test]
+fn clock_only_history_does_not_admit_changed_upstream_delay_or_feed() {
+    for feed in [false, true] {
+        let mut f = fixture(&[&[], &[]], 1024);
+        let limiter = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Effect,
+            DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        f.editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: limiter.clone(),
+            })
+            .unwrap();
+        let original = prepare_native(&f);
+        let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
+        let mut oracle = SessionPlayback::new(original).unwrap();
+        for runtime in [&mut donor, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 3]).unwrap();
+        }
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: hex_devices::eq::EqState::default().encode().unwrap(),
+            })
+            .unwrap();
+        let mut current = SessionPlayback::new(prepare_native(&f)).unwrap();
+        current.try_inherit_state_from(&mut donor).unwrap();
+        let command = if feed {
+            Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Track(f.tracks[1]),
+                destination: f.tracks[0],
+                gain: 0.5,
+            }
+        } else {
+            Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: limiter,
+            }
+        };
+        f.editor.execute(command).unwrap();
+        let mut changed = SessionPlayback::new(prepare_native(&f)).unwrap();
+        assert!(changed.try_inherit_state_from(&mut current).is_err());
+        let mut actual = [[0.0; 2]; 129];
+        let mut expected = actual;
+        current.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(actual, expected, "refusal changed donor PCM; feed={feed}");
+        assert_eq!(current.performance_frame(), oracle.performance_frame());
+    }
+}
+
 #[test]
 fn limiter_lookahead_is_reported_and_compensated_in_actual_rendering() {
     let mut fixture = fixture(&[&[]], 32);
