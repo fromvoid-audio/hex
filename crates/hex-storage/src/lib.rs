@@ -2,11 +2,12 @@
 //! Own strict validated serialization and recoverable publication of canonical project metadata.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
 //! formats. Unsupported/malformed input refuses without rewriting the original file.
+pub mod automation_draft;
 mod files;
 mod journal;
 pub mod preset;

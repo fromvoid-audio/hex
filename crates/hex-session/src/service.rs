@@ -21,6 +21,7 @@ mod arrangement_sections;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
+pub mod automation_draft;
 mod canonical_audio_source;
 mod comparison_audio;
 #[cfg(test)]

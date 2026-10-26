@@ -66,7 +66,7 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'corem
               'qos-threads': {'hex-audio'},
               # Source/scanner identities and bounded control-side hashes of
               # the engine's actual retained PCM bank; never callback DSP.
-              'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
+              'sha2': {'hex-storage', 'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
               # Child disposition belongs only to the standalone scanners.
               'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
               # Safe publication/standalone child ownership; host event-only socket readiness.
