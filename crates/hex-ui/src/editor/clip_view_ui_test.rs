@@ -37,6 +37,37 @@ fn audio_event_lower_body_paints_and_repaints_while_upper_rail_moves_range(
             .abs()
             < px(1.0)
     );
+    for (position, hovered) in [
+        (at(0.5, 0.8), false),
+        (at(0.5, 0.1), true),
+        (at(0.5, 0.6), false),
+    ] {
+        visual.simulate_mouse_move(position, None, Modifiers::default());
+        visual.run_until_parked();
+        let fill = visual.rendered_background("audio-event-range-handle");
+        if hovered {
+            assert_eq!(
+                fill,
+                Some(
+                    gpui::Hsla::from(gpui::rgb(crate::theme::color(
+                        crate::theme::PaletteRole::Text
+                    )))
+                    .opacity(crate::theme::TIME_SELECTION_OPACITY)
+                    .into()
+                ),
+                "the actual top-third grab region must light up on hover"
+            );
+            assert_eq!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::OpenHand)
+            );
+        } else {
+            assert!(
+                fill.is_none(),
+                "lower paint region must not highlight the grab handle"
+            );
+        }
+    }
     editor.read_with(cx, |view, _| {
         assert!(
             view.last_enqueued_edit.is_none(),
