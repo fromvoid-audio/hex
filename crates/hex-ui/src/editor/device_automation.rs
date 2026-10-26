@@ -6,6 +6,7 @@
 #[cfg(all(test, feature = "ui-test-support"))]
 mod host_tests;
 mod paint;
+mod read_selection;
 #[cfg(test)]
 mod tests;
 use super::pending_edit::{Disposition, Receipt};
@@ -87,6 +88,7 @@ pub(super) enum Action {
     Hide(Target),
     HidePreview(Target),
     Clear(Target),
+    Reenable(Target),
     Shape(Target, AutomationInterpolation),
 }
 
@@ -116,6 +118,8 @@ pub(super) struct Lanes {
     selected: Option<(Target, BeatTime)>,
     draft: Option<Draft>,
     pending: Option<Pending>,
+    read_pending: Option<read_selection::PendingRead>,
+    read_summary: read_selection::ReadSummary,
     stamp: Option<(u64, u64)>,
     windows: Vec<(Owner, std::ops::Range<usize>)>,
 }
@@ -492,15 +496,16 @@ impl EditorView {
             && kind
                 .provider_parameter()
                 .is_some_and(|parameter| matches!(parameter.value(), 3 | 10));
-        self.open_automation_menu(
-            position,
-            vec![
-                ("show automation", Action::Show(entry.clone(), false)),
-                ("add new automation lane", Action::Show(entry, true)),
-            ],
-            window,
-            cx,
-        );
+        let mut actions = vec![
+            ("show automation", Action::Show(entry.clone(), false)),
+            ("add new automation lane", Action::Show(entry.clone(), true)),
+        ];
+        if self.device_automation_read_selection(entry.target)
+            == Some(hex_project::AutomationReadSelection::Base)
+        {
+            actions.push(("re-enable automation", Action::Reenable(entry.target)));
+        }
+        self.open_automation_menu(position, actions, window, cx);
         if utility_mode {
             self.append_utility_mode_choice(
                 device,
@@ -602,6 +607,7 @@ impl EditorView {
             Action::Hide(target)
             | Action::HidePreview(target)
             | Action::Clear(target)
+            | Action::Reenable(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
                     .identity_current(&state.project, self.project_generation)
@@ -858,6 +864,7 @@ impl EditorView {
                     .retain(|entry| entry.target != target);
                 self.track_scroll.remeasure();
             }
+            Action::Reenable(target) => self.reenable_device_automation(Some(target), cx),
             Action::Clear(target) => {
                 self.commit_device_automation(target, Vec::new(), cx);
             }
@@ -936,20 +943,39 @@ impl EditorView {
     }
 
     pub(super) fn pending_device_automation_matches(&self, request: &Request) -> bool {
+        if let Some(pending) = &self.automation_view.devices.read_pending
+            && matches!(request, Request::DeviceAutomationControl { project_generation, revision, edit }
+                if *project_generation == pending.generation && *revision == pending.revision && *edit == pending.edit)
+        {
+            return true;
+        }
         let Some(pending) = &self.automation_view.devices.pending else {
             return false;
         };
         matches!(request, Request::DeviceAutomation { project_generation, revision, device, target, points } if *project_generation == pending.target.generation && *revision == pending.revision && *device == pending.target.device && *target == pending.target.kind && *points == pending.points)
     }
     pub(super) fn device_automation_submitted(&mut self) {
+        if let Some(pending) = &mut self.automation_view.devices.read_pending {
+            pending.receipt.submitted(self.worker_requests_pending);
+        }
         if let Some(pending) = &mut self.automation_view.devices.pending {
             pending.receipt.submitted(self.worker_requests_pending);
         }
     }
     pub(super) fn retire_pending_device_automation(&mut self) -> bool {
-        self.automation_view.devices.pending.take().is_some()
+        let points = self.automation_view.devices.pending.take().is_some();
+        self.automation_view.devices.read_pending.take().is_some() || points
     }
     pub(super) fn device_automation_complete(&mut self, event: &Event) {
+        if let Some(pending) = &mut self.automation_view.devices.read_pending
+            && pending.receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete,
+            ) != Disposition::Waiting
+        {
+            self.automation_view.devices.read_pending = None;
+        }
         if let Some(pending) = &mut self.automation_view.devices.pending
             && pending.receipt.observe(
                 self.project_generation,
@@ -985,7 +1011,10 @@ impl EditorView {
         points: Vec<AutomationPoint>,
         cx: &mut Context<Self>,
     ) {
-        if self.edit_pending() || self.automation_view.devices.pending.is_some() {
+        if self.edit_pending()
+            || self.automation_view.devices.pending.is_some()
+            || self.automation_view.devices.read_pending.is_some()
+        {
             return;
         }
         let Some(state) = &self.state else {
