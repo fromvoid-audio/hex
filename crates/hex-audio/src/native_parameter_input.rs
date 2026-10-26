@@ -1,8 +1,9 @@
 //! One source-fenced native control endpoint. Commands and receipts carry Copy
 //! values only; engine processing and final checked sink delivery are separate.
-//! This endpoint requires playing transport; stopped monitoring/audition is not
-//! implemented. Callback admission refuses stopped requests without fabricating
-//! a content origin, retiring their normal credits and one aborted terminal.
+//! This endpoint requires playing transport and direct output. Stopped
+//! monitoring/audition and the delayed whole-output worker profile are not
+//! implemented. Callback admission refuses these requests without fabricating
+//! delivery clocks, retiring their normal credits and one aborted terminal.
 //! Sixty-four normal commands may be outstanding; Release and Cancel each keep
 //! a reserved terminal slot. There is no recording-duration/event lifetime cap.
 use crate::{
@@ -27,6 +28,7 @@ pub enum AbortReason {
     SourceChanged,
     TransportChanged,
     OutputFailed,
+    UnsupportedOutput,
     Cancelled,
     ClockExhausted,
 }
@@ -143,8 +145,9 @@ impl Control {
         self.target
     }
     /// Queue a playing-transport gesture. Queue acceptance is not application:
-    /// callback admission authoritatively refuses a stopped/stale source and
-    /// returns its credits/terminal through the same receipt channel.
+    /// callback admission authoritatively refuses stopped/stale sources and
+    /// delayed whole-output worker profiles, returning credits and one terminal
+    /// through the same receipt channel.
     pub fn begin(
         &mut self,
         target: Target,

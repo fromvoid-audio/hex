@@ -2120,8 +2120,9 @@ impl Callback {
     /// Construct an original whole-output transport profile before callback
     /// exposure. This does not admit a device, graph node or native worker.
     /// Native resource admission remains unavailable until device insertion
-    /// and delayed delivery clocks exist. Spectrum/gain capture are unsupported
-    /// in this original whole-output profile; ordinary output is unchanged.
+    /// and delayed delivery clocks exist. Spectrum/gain capture and native
+    /// parameter input are unsupported in this original whole-output profile;
+    /// ordinary output is unchanged.
     pub(crate) fn prepare_output_transport_on_control(
         &mut self,
         instance: u64,
@@ -4029,6 +4030,7 @@ impl Callback {
         use crate::native_parameter_input::AbortReason;
         let source = self.status.recording_source();
         let transport_epoch = self.status.transport_epoch.load(Acquire);
+        let unsupported_output = self.output_transport.is_some();
         let status = &self.status;
         let active = self
             .active
@@ -4037,6 +4039,9 @@ impl Callback {
         let live = self.native_parameter_input.prepare(|target| {
             if status.native_parameter_input_revoked(target.gesture_serial) {
                 return Err(AbortReason::Cancelled);
+            }
+            if unsupported_output {
+                return Err(AbortReason::UnsupportedOutput);
             }
             let active = active.as_ref().ok_or(AbortReason::SourceChanged)?;
             if source != Some(target.source)

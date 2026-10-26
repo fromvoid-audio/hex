@@ -56,6 +56,12 @@ fn write(
     })
 }
 fn fixture(limiter: bool) -> (prepared::Control, prepared::Callback, Target) {
+    fixture_with_setup(limiter, |_| {})
+}
+fn fixture_with_setup(
+    limiter: bool,
+    setup: impl FnOnce(&mut prepared::Callback),
+) -> (prepared::Control, prepared::Callback, Target) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -109,6 +115,7 @@ fn fixture(limiter: bool) -> (prepared::Control, prepared::Callback, Target) {
     );
     let input = revision.native_parameter_input_target().unwrap();
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    setup(&mut callback);
     control
         .configure_device_resource_publication_on_control(
             hex_engine::AudioStorageLedgerReservation {
@@ -642,5 +649,45 @@ fn seek_revokes_a_delayed_native_marker_and_resumes_with_base_pcm() {
         })
     ));
     assert!(control.native_parameter_input.try_receipt().is_none());
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
+fn native_begin_release_refuses_delayed_output_profile_before_engine_application() {
+    let mut transport = None;
+    let (mut control, mut callback, target) = fixture_with_setup(false, |callback| {
+        transport = Some(
+            callback
+                .prepare_output_transport_on_control(1, 1, 1, 16)
+                .unwrap(),
+        );
+    });
+    let (_transport_control, mut worker) = transport.unwrap();
+    // Complete the real warmup request on control, outside measured scopes. No
+    // native parameter clock is derived from this worker's delayed output.
+    let request = worker.receive().unwrap().unwrap();
+    worker.complete(request).unwrap();
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control.native_parameter_input.release().unwrap();
+    let mut source = [[0.0; 2]; 16];
+    let rendered = render(&mut callback, &mut source);
+    assert!(rendered.is_ok());
+    assert!(write(&mut callback, &mut source, &rendered, 2));
+    assert!(
+        matches!(control.native_parameter_input.try_receipt(), Some(Receipt::Superseded { target: actual, sequence: 1 }) if actual == target)
+    );
+    assert!(
+        matches!(control.native_parameter_input.try_receipt(), Some(Receipt::Aborted { target: actual, reason: AbortReason::UnsupportedOutput }) if actual == target)
+    );
+    assert!(
+        control.native_parameter_input.try_receipt().is_none(),
+        "delayed worker output cannot confirm native Set or Clear"
+    );
+    assert!(control.native_parameter_input.target().is_none());
+    assert!(control.status.publication_reserve_for_test());
+    control.status.publication_clear_for_test();
     shutdown(&mut control, &mut callback);
 }
