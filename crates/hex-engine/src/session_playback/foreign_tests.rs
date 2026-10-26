@@ -525,6 +525,7 @@ fn completed_foreign_main_suffix_can_be_replaced_without_retaining_it() {
             &mut [[0.0; 2]; 64],
             0,
             None,
+            None,
             &mut Quiet,
         )
         .unwrap();

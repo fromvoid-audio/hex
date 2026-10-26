@@ -189,7 +189,6 @@ fn velocity_input_loss_cancels_only_held_value_and_suppresses_late_release(
                 }),
                 "source" => editor.update(&mut visual, |v, cx| {
                     v.selected_clip = None;
-                    v.retained_clip_detail = None;
                     cx.notify();
                 }),
                 "selection" => editor.update(&mut visual, |v, cx| {

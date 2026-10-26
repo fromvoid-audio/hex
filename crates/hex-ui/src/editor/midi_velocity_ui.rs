@@ -327,12 +327,6 @@ impl EditorView {
         let content = div()
             .id("midi-velocity-lane")
             .debug_selector(|| "midi-velocity-lane".into())
-            .children(self.arrange_midi_highlights(
-                self.piano_beat_start.raw(),
-                self.piano_beat_span.raw(),
-                0.0,
-                "arrange-reflected-velocity-range",
-            ))
             .relative()
             .flex_1()
             .h_full()
@@ -538,6 +532,21 @@ impl EditorView {
                                 {
                                     return;
                                 }
+                                if view.time_selection_key_held {
+                                    view.cancel_all_midi_marquees();
+                                    view.midi_focus.focus(window);
+                                    if view.begin_midi_velocity_time_selection(
+                                        captured.bounds,
+                                        f32::from(event.position.x),
+                                        event.modifiers.platform,
+                                        window,
+                                        cx,
+                                    ) {
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                    return;
+                                }
                                 let position = [
                                     f32::from(event.position.x - bounds.origin.x),
                                     f32::from(event.position.y - bounds.origin.y),
@@ -686,6 +695,7 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             );
+        let content = content.children(self.time_selection_cursor_layer());
         row = row.child(content);
         let splitter = self.velocity_size_input(cx);
         let pointer_layer = splitter.pointer_layer();

@@ -60,6 +60,7 @@ fn rows<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> {
     d.deserialize_seq(Inventory)
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::automation_read::require_authored(project)?;
     let mut rows = Vec::new();
     for device in project.automation_devices() {
         for lane in device.automation() {
@@ -149,6 +150,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .entry(row.device)
             .or_default()
             .push(DeviceAutomation {
+                read_selection: hex_project::AutomationReadSelection::Authored,
                 target: match row.target {
                     Target::InputGain => DeviceAutomationTarget::HostInputGain,
                     Target::OutputGain => DeviceAutomationTarget::HostOutputGain,

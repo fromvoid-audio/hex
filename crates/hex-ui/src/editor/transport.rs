@@ -146,10 +146,11 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "↻",
-                    "toggle loop · l/w/cmd+l: set selection or toggle existing loop",
+                    "toggle loop · cmd+l · l/w set selection or toggle matching loop",
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
+                .debug_selector(|| "transport-loop-toggle".into())
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(
                     if self
@@ -230,6 +231,17 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .debug_selector(|| "automation-view-toggle".into()),
             )
+            .children(self.has_overridden_device_automation().then(|| {
+                self.control_icon(
+                    "↻",
+                    "re-enable all device automation",
+                    |view, _, cx| {
+                        view.reenable_device_automation(None, cx);
+                    },
+                    cx,
+                )
+                .debug_selector(|| "reenable-device-automation".into())
+            }))
             .children([self.snap_control(cx)])
             .children([self.section_focus_toggle(cx)])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))

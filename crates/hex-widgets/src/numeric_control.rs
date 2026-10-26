@@ -105,6 +105,8 @@ pub enum NumericControlPresentation {
     FilledSlider,
     VerticalSlider,
     DeviceMeters,
+    /// Input-level well with a ceiling triangle and editable numeric readout.
+    MeterFader,
 }
 impl NumericControlPresentation {
     pub fn kind(self) -> NumericControlKind {
@@ -117,7 +119,9 @@ impl NumericControlPresentation {
             | Self::CompactSlider
             | Self::LabeledSlider
             | Self::FilledSlider => NumericControlKind::HorizontalSlider,
-            Self::VerticalSlider | Self::DeviceMeters => NumericControlKind::VerticalSlider,
+            Self::VerticalSlider | Self::DeviceMeters | Self::MeterFader => {
+                NumericControlKind::VerticalSlider
+            }
         }
     }
     fn appearance(self) -> NumericControlAppearance {
@@ -133,6 +137,7 @@ impl NumericControlPresentation {
             Self::LabeledSlider => NumericControlAppearance::LabeledSlider,
             Self::FilledSlider => NumericControlAppearance::FilledSlider,
             Self::DeviceMeters => NumericControlAppearance::DeviceMeters,
+            Self::MeterFader => NumericControlAppearance::MeterFader,
         }
     }
 }
@@ -164,6 +169,7 @@ enum NumericControlAppearance {
     /// Bipolar specs fill from the marked center; other scales fill from the left.
     FilledSlider,
     DeviceMeters,
+    MeterFader,
 }
 
 #[cfg(test)]
@@ -188,6 +194,9 @@ pub struct NumericControlEvent {
 /// the owner synchronously submit the same edit before GPUI flushes emitters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NumericControlFinalValue {
+    /// The user edited this draft, even when modified text resolves to the
+    /// previous value. Passive clicks/blur are not parameter-touch intent.
+    pub explicit_edit: bool,
     pub previous: f64,
     pub value: f64,
     formatted: String,
@@ -288,6 +297,7 @@ struct Press {
     unit_pointer_value: f64,
     target: PressTarget,
     dragging: bool,
+    value_changed: bool,
 }
 
 /// One reusable knob/slider and its independently editable numeric value.
@@ -612,6 +622,7 @@ impl NumericControl {
             unit_pointer_value: self.draft,
             target,
             dragging: false,
+            value_changed: false,
         });
         cx.notify();
     }
@@ -949,6 +960,8 @@ impl NumericControl {
             Err(_) => return (true, false),
         };
         if next != self.draft {
+            press.value_changed = true;
+            self.press = Some(press);
             self.draft = next;
             self.value = next;
             self.text = self.spec.format(next).unwrap_or_default();
@@ -1213,12 +1226,14 @@ impl NumericControl {
         if let Some(press) = self.press {
             if press.dragging {
                 return Ok(Some(NumericControlFinalValue {
+                    explicit_edit: press.value_changed,
                     previous: press.start_value,
                     value: self.draft,
                     formatted: self.spec.format(self.draft)?,
                 }));
             }
             return Ok(Some(NumericControlFinalValue {
+                explicit_edit: false,
                 previous: self.value,
                 value: self.value,
                 formatted: self.spec.format(self.value)?,
@@ -1238,6 +1253,7 @@ impl NumericControl {
         let previous = self.value;
         let formatted = self.spec.format(value)?;
         Ok(Some(NumericControlFinalValue {
+            explicit_edit: self.text_modified || previous != value,
             previous,
             value,
             formatted,
@@ -1846,7 +1862,13 @@ impl gpui::Render for NumericControl {
                 .flex()
                 .flex_col()
                 .w(px(60.0))
-                .h(px(86.0))
+                .h(px(
+                    if self.appearance == NumericControlAppearance::MeterFader {
+                        154.0
+                    } else {
+                        86.0
+                    },
+                ))
                 .gap(px(2.0))
                 .items_center()
                 .track_focus(&self.focus)
