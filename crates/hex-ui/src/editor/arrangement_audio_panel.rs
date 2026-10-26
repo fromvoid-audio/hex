@@ -320,6 +320,17 @@ pub(super) fn view(
             ));
         }
     }
+    if let Some(position) = view
+        .audio_playhead_media_frame()
+        .filter(|frame| *frame < window.asset_frames)
+    {
+        canvas_region = canvas_region.child(source_marker(
+            position,
+            window.asset_frames,
+            "audio-source-playback-position",
+            theme::color(theme::PaletteRole::Text),
+        ));
+    }
     waveform_panel = waveform_panel.child(canvas_region).child(
         div()
             .h(px(16.0))

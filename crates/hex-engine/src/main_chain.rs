@@ -1,4 +1,6 @@
-//! Borrowed final-bus processor. Track/Return taps run before this one chain.
+//! Borrowed zero-latency final-bus processor. Both host stages share the input
+//! origin here; compensated Main processing supplies per-device stage origins.
+//! Track/Return taps run before this one chain.
 use crate::{Frame, NodeSignalObserver, PostNodeIdentity};
 use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
 
@@ -33,6 +35,7 @@ pub(crate) fn process_with_foreign(
             frames,
             offset,
             clock,
+            clock,
             foreign,
             &mut |owner, device, kind, phase, offset, frames| {
                 observer(
@@ -44,7 +47,7 @@ pub(crate) fn process_with_foreign(
             },
         )
     } else {
-        chain.process_range_with_foreign(0..chain.len(), frames, offset, clock, foreign)
+        chain.process_range_with_foreign(0..chain.len(), frames, offset, clock, clock, foreign)
     }
 }
 

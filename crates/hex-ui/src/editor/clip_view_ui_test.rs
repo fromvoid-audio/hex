@@ -950,7 +950,7 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
 }
 
 #[gpui::test]
-fn conversion_control_only_offers_midi_bounce_and_blocks_pending_edits(cx: &mut TestAppContext) {
+fn clip_conversion_is_absent_for_audio_and_midi_in_both_views(cx: &mut TestAppContext) {
     for midi in [false, true] {
         for session in [false, true] {
             let (project, track, _, mut clip) = if midi {
@@ -1002,48 +1002,11 @@ fn conversion_control_only_offers_midi_bounce_and_blocks_pending_edits(cx: &mut 
                 cx.notify();
             });
             visual.run_until_parked();
-            if !midi {
-                assert!(
-                    visual.debug_bounds("convert-clip").is_none(),
-                    "audio must not offer destructive empty-MIDI conversion"
-                );
-                editor.read_with(&visual, |view, _| {
-                    assert!(view.last_enqueued_clip_conversion.is_none());
-                    assert_eq!(view.selected_track, Some(track));
-                    assert_eq!(view.selected_clip, Some(clip));
-                });
-                continue;
-            }
-            let click = visual
-                .debug_bounds("convert-clip")
-                .expect("MIDI bounce control")
-                .center();
-            editor.update(&mut visual, |view, cx| {
-                view.worker_requests_pending = 1;
-                cx.notify();
-            });
-            visual.run_until_parked();
-            visual.simulate_click(click, Modifiers::default());
+            assert!(visual.debug_bounds("convert-clip").is_none());
             editor.read_with(&visual, |view, _| {
-                assert!(view.last_enqueued_clip_conversion.is_none())
-            });
-            editor.update(&mut visual, |view, cx| {
-                view.worker_requests_pending = 0;
-                cx.notify();
-            });
-            visual.run_until_parked();
-            visual.simulate_click(click, Modifiers::default());
-            editor.read_with(&visual, |view, _| {
-                assert_eq!(
-                    view.last_enqueued_clip_conversion,
-                    Some((
-                        view.project_generation,
-                        view.state.as_ref().unwrap().revision,
-                        clip,
-                        true
-                    ))
-                );
+                assert!(view.last_enqueued_clip_conversion.is_none());
                 assert_eq!(view.selected_track, Some(track));
+                assert_eq!(view.selected_clip, Some(clip));
             });
         }
     }
@@ -1262,10 +1225,9 @@ fn time_range_detail_context_preserves_pane_modes_and_edit_targets(cx: &mut Test
                     "closed intent is reflected in completed layout"
                 );
                 if mode == 0 {
-                    assert_eq!(
-                        visual.debug_bounds("convert-clip").is_some(),
-                        midi,
-                        "only a retained MIDI source offers bounce"
+                    assert!(
+                        visual.debug_bounds("convert-clip").is_none(),
+                        "clip bounce in place is unavailable"
                     );
                 }
             };

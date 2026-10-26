@@ -123,7 +123,7 @@ fn isolated_bounce_retains_selected_alias_notes_and_excludes_console_members() {
 }
 #[test]
 fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_processing() {
-    for (inplace, whole_track) in [(false, false), (true, false), (true, true)] {
+    for (inplace, whole_track) in [(false, false), (true, true)] {
         let folder = Folder::new();
         let (mut session, track, clip) = fixture();
         session.command(Command::Gain { track, gain: 0.7 }).unwrap();
@@ -399,7 +399,7 @@ fn bounce_failure_case(whole_track: bool) {
     assert!(control.cancel());
     assert!(
         session
-            .bounce_arrangement(target.clone(), true, &folder.0, &control, None)
+            .bounce_arrangement(target.clone(), whole_track, &folder.0, &control, None)
             .is_err()
     );
     assert_eq!(session.project(), &original);
@@ -409,7 +409,7 @@ fn bounce_failure_case(whole_track: bool) {
         session
             .bounce_arrangement(
                 target.clone(),
-                true,
+                whole_track,
                 &occupied,
                 &hex_export::ExportControl::default(),
                 None
@@ -421,7 +421,7 @@ fn bounce_failure_case(whole_track: bool) {
     let mut files_seen = Vec::new();
     let result: Result<(), String> = session.bounce_arrangement_using(
         target.clone(),
-        true,
+        whole_track,
         &folder.0,
         &hex_export::ExportControl::default(),
         |_, _, _| Ok(()),
@@ -438,7 +438,7 @@ fn bounce_failure_case(whole_track: bool) {
     assert_eq!(session.resident_frames, resident);
     let item = session
         .project()
-        .plan_arrangement_bounce(&target, true)
+        .plan_arrangement_bounce(&target, whole_track)
         .unwrap()
         .remove(0);
     let path = folder.0.join("prepared.wav");
@@ -451,7 +451,7 @@ fn bounce_failure_case(whole_track: bool) {
     .unwrap();
     let result = session.adopt_arrangement_bounce_using(
         target.clone(),
-        true,
+        whole_track,
         vec![BounceFile {
             source: hex_project::BounceSource::Arrangement,
             track: item.track,
@@ -1025,7 +1025,7 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
                     hex_project::TimeRange::new(vec![track], start, start + 10_007).unwrap(),
                 )
             } else {
-                BounceTarget::Clips(vec![clip])
+                BounceTarget::Track(track)
             };
             let (_, bounced) = session
                 .bounce_arrangement(
@@ -1639,5 +1639,31 @@ fn shared_console_bounce_refuses_other_authored_midi_without_changing_project_or
         );
         assert_eq!(session.project(), &before);
         assert_eq!(fs::read_dir(&folder.0).unwrap().count(), entries);
+    }
+}
+
+#[test]
+fn retired_clip_and_range_in_place_intents_refuse_before_render_or_media_work() {
+    let folder = Folder::new();
+    let (mut session, track, clip) = fixture();
+    let before = session.project().clone();
+    let history = (session.can_undo(), session.can_redo());
+    for target in [
+        BounceTarget::Clips(vec![clip]),
+        BounceTarget::Range(hex_project::TimeRange::new(vec![track], 12_013, 36_007).unwrap()),
+    ] {
+        let result: Result<(), String> = session.bounce_arrangement_using(
+            target,
+            true,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            |_, _, _| -> Result<(), String> { panic!("retired intent must not prepare") },
+            |_, _, _, _, _| panic!("retired intent must not render"),
+            |_, _, _| panic!("retired intent must not commit"),
+        );
+        assert!(result.unwrap_err().contains("complete track"));
+        assert_eq!(session.project(), &before);
+        assert_eq!((session.can_undo(), session.can_redo()), history);
+        assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
     }
 }

@@ -424,6 +424,22 @@ pub(in crate::editor) fn view(
                 ),
         );
     }
+    if let Some(position) = view
+        .audio_playhead_root_position()
+        .and_then(frame_at)
+        .filter(|frame| (first + local.start..first + local.start + local.length).contains(frame))
+    {
+        body = body.child(
+            div()
+                .debug_selector(|| "audio-playback-position".into())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(relative(frame_to_x(position)))
+                .w(px(1.0))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+        );
+    }
     let entity = cx.entity();
     body = body.child(
         canvas(
@@ -443,7 +459,10 @@ pub(in crate::editor) fn view(
                 if let Some(gesture) = view.audio_event_editor.gesture.as_ref()
                     && view.audio_event_focus.is_focused(window)
                 {
-                    window.renew_pointer_capture(entity.entity_id(), gesture.kind.pointer_cursor());
+                    window.renew_pointer_capture(
+                        entity.entity_id(),
+                        view.audio_event_pointer_cursor(gesture.kind),
+                    );
                 }
             },
         )
@@ -509,7 +528,9 @@ pub(in crate::editor) fn view(
                 .audio_event_editor
                 .range
                 .filter(|(a, b)| a <= &raw && raw < *b);
-            let kind = if target == RangeSelectionTarget::Move && range_hit.is_some() {
+            let kind = if view.time_selection_key_held {
+                Kind::Select
+            } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
                 if let Some((start, end)) = range_hit {
                     Kind::RangeMove { start, end }
                 } else {
@@ -661,6 +682,7 @@ pub(in crate::editor) fn view(
                     "drag ruler for time · drag event to move · cmd for free",
                 )),
         );
+    let body = body.children(view.time_selection_cursor_layer());
     let root = div()
         .id("audio-event-editor")
         .debug_selector(|| "audio-event-editor".into())

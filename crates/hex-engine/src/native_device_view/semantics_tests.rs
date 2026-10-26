@@ -16,7 +16,7 @@ fn cached_view_retains_declarations_and_preserves_undeclared_legacy_controls() {
     );
     assert_eq!(
         rate.semantics.unwrap().automation,
-        ParameterAutomation::Unsupported
+        ParameterAutomation::DeviceArrangementEnvelope
     );
     assert!(rate.enabled);
     let state = hex_devices::utility::UTILITY_DEFINITION
