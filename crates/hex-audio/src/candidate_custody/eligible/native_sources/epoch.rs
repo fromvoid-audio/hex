@@ -61,6 +61,9 @@ impl Custody {
             if effect.has_pending_state_approval() || cell.suspended_state.is_some() {
                 return Err("native epoch requires state approval terminal");
             }
+            if effect.parameter_change_pending()? {
+                return Err("native epoch requires parameter input terminal");
+            }
             let binding = Binding {
                 graph,
                 epoch: bank.sources.next_epoch,
