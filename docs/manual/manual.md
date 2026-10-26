@@ -190,8 +190,8 @@ a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
 
-with the arrange timeline focused, **b** bounces selected material in place;
-**command+b** keeps the originals and inserts bounced audio on a new track below
+with the arrange timeline focused, **command+b** keeps the originals and inserts
+bounced audio on a new track below
 each source track. a nonempty time selection takes precedence over selected clips.
 each selected track produces one audio clip spanning its selected clips and gaps.
 clip bounces include instrument and effect release tails. a time selection renders
@@ -203,9 +203,11 @@ a fresh playback state so live release voices cannot duplicate the baked tails.
 undo and redo of an in-place bounce use the same stopped-edit rule.
 
 bounce writes float audio before the track mixer. mixer automation, sends, returns
-and main processing remain live. in-place bounce removes the baked devices, so it
-refuses if that would change unselected material or a tail would overlap it; use
-**command+b** instead. routed inputs, verified streaming and nonzero-latency device
+and main processing remain live. only the track-header **bounce in place** action replaces material in place and
+removes the track's devices. it covers the entire track, regardless of a smaller
+clip or time selection. for clip and time-selection editing, use **g** to group
+material instead; grouping retains its existing source and processing behavior.
+**b** has no arrange bounce action. routed inputs, verified streaming and nonzero-latency device
 paths currently refuse. clip bounces keep up to 30 seconds of release after the
 selected span. if the tail is still sounding then, hex cuts it at that limit and
 finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
@@ -671,7 +673,7 @@ the complete edit.
 | selection fades / browser search outside audio selection | command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
-| bounce in place / to a new track | b / command+b |
+| bounce selected material to a new track | command+b |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
 | export | command+shift+e |
