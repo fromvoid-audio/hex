@@ -52,6 +52,9 @@ impl CanonicalAudioSourceSnapshot {
                     _ => false,
                 })
     }
+    pub(super) fn project_metadata(&self) -> &Project {
+        &self.project
+    }
     pub fn audio_mode(&self) -> crate::DocumentAudioMode {
         self.mode
     }
@@ -98,6 +101,16 @@ impl CanonicalAudioSourceSnapshot {
     }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
+    }
+    /// Read-only native-effect identities/state in this exact canonical source.
+    /// This borrows opaque bytes and grants no native source or admission.
+    pub fn effect_preparation(&self) -> ResidentEffectPreparation<'_> {
+        ResidentEffectPreparation {
+            project: &self.project,
+            context: self.context,
+            restoring_plugin_state: false,
+            preparing_edit: false,
+        }
     }
     /// Prepare inside the native host's reserved cell without extracting its
     /// bank, draft or completed owner into the Session/Desktop adapter.

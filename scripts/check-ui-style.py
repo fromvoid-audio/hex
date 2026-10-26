@@ -87,7 +87,7 @@ widgets = (
     'super::musical_audio_controls::warp_header(', 'sample_bpm::field(',
     'super::waveform::prepared_waveform_view_cached(',
     'super::waveform::timeline_waveform_view_cached(',
-    'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(',
+    'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(', 'session_audio_loop_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
     'status_slot(', 'super::waveform::waveform_view_cached(',
@@ -124,6 +124,12 @@ widgets = (
     # Saturator composition uses typed shared controls and a normalized plot;
     # its axis/error text is routed through theme::text at the panel boundary.
     'plot)', 'plot.id(', 'self.project_spectrum_panel(', 'self.project_spectrum_pointer_events(', 'chooser)', 'drive)', 'wet)',
+    # Delay composition children are typed Div/shared controls; captions are
+    # normalized through theme::text by control()/channel()/segment_button().
+    'row()', 'mode)', 'timing)', 'offset)', 'right)', 'freeze)', 'smoothing)',
+    'ping)', 'mix)', 'filter)', 'frequency)', 'width)', 'filter_row)',
+    'disclosure)', 'delay_mod)', 'filter_mod)', 'modulation)', 'rate)', 'wave)',
+    'morph)', 'quality)', 'loudness)', 'timings)', 'center)',
     # Compressor composition uses shared typed numeric controls and normalized plot.
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
@@ -189,7 +195,23 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith(('self.console_column_edge(',
                                    'self.console_column_surface(', 'tail)'))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component:
+        # Reverb's grouped panel passes bound controls and provider plot data;
+        # titles and numeric/toggle labels normalize through theme::text.
+        reverb_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/reverb_panel.rs'
+            and suffix.startswith(('row(', 'title(', 'graph(', 'graph_column)',
+                                   'contour)', 'early)', 'diffusion)', 'chorus)',
+                                   'top)', 'bottom)', 'smooth)', 'density)', 'freeze)', 'high)', 'low)'))
+        )
+        # Limiter slots are bound controls or a shared text-free meter widget.
+        # Every caption remains independently checked at theme::text.
+        limiter_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/limiter_panel.rs'
+            and suffix.startswith(('crate::device_composition::dense_rail(', 'hex_widgets::level_meter(', 'meters)', 'gain)', 'link)',
+                                   'maximize_control)', 'threshold)', 'display)', 'mode)',
+                                   'lookahead)', 'routing)', 'release)', 'auto)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not limiter_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

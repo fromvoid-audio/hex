@@ -1,7 +1,9 @@
 use super::super::waveform;
 use super::*;
 use crate::theme;
-use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb};
+use gpui::{
+    Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
+};
 use hex_widgets::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 
 const EVENT_RULER_HEIGHT: f32 = 22.0;
@@ -20,7 +22,7 @@ pub(in crate::editor) fn view(
         view.audio_event_editor = State {
             owner: Some(owner),
             revision,
-            cursor: root.view_start,
+            cursor: editor_bounds(&root).0,
             clipboard,
             pending,
             ..State::default()
@@ -28,13 +30,13 @@ pub(in crate::editor) fn view(
     }
     if view.audio_event_editor.revision != revision {
         view.audio_event_editor.gesture = None;
-        view.audio_event_editor.cursor = view
-            .audio_event_editor
-            .cursor
-            .clamp(root.view_start, root.view_end);
+        // Loop bounds do not invalidate a source-local time selection/cursor.
+        // A retained cycle may hide part of that selection without deleting it.
+        let (first, last) = editor_bounds(&root);
+        view.audio_event_editor.cursor = view.audio_event_editor.cursor.clamp(first, last);
         view.audio_event_editor.range = view.audio_event_editor.range.and_then(|(start, end)| {
-            let start = start.max(root.view_start);
-            let end = end.min(root.view_end);
+            let start = start.max(first);
+            let end = end.min(last);
             (start < end).then_some((start, end))
         });
         view.audio_event_editor.revision = revision;
@@ -55,10 +57,9 @@ pub(in crate::editor) fn view(
         }
     };
     if view.audio_event_editor.selected.is_some_and(|id| {
-        !events
-            .events
-            .iter()
-            .any(|e| e.id == id && e.start >= root.view_start && e.end <= root.view_end)
+        !events.events.iter().any(|e| {
+            e.id == id && e.start >= editor_bounds(&root).0 && e.end <= editor_bounds(&root).1
+        })
     }) {
         view.audio_event_editor.selected = None;
     }
@@ -85,7 +86,7 @@ pub(in crate::editor) fn view(
     let local = view.event_viewport(&root);
     let viewport = view.event_project_viewport(&root)?;
     let first = root
-        .root_frame_at(root.view_start, state.project.tempo_map())
+        .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
         .ok()?;
     let frame_at = |position: u64| root.root_frame_at(position, state.project.tempo_map()).ok();
     let frame_to_x =
@@ -145,8 +146,8 @@ pub(in crate::editor) fn view(
         );
     }
     for event in &preview.events {
-        let raw_a = event.start.max(root.view_start);
-        let raw_b = event.end.min(root.view_end);
+        let raw_a = event.start.max(editor_bounds(&root).0);
+        let raw_b = event.end.min(editor_bounds(&root).1);
         if raw_a >= raw_b {
             continue;
         }
@@ -264,7 +265,7 @@ pub(in crate::editor) fn view(
                 .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                 .child(theme::text(format!("event {}", event.id))),
         );
-        if event.start >= root.view_start && start >= first + local.start {
+        if event.start >= editor_bounds(&root).0 && start >= first + local.start {
             element = element.child(
                 div()
                     .absolute()
@@ -275,7 +276,7 @@ pub(in crate::editor) fn view(
                     .cursor(gpui::CursorStyle::ResizeLeftBracket),
             );
         }
-        if event.end <= root.view_end && end <= first + local.start + local.length {
+        if event.end <= editor_bounds(&root).1 && end <= first + local.start + local.length {
             element = element.child(
                 div()
                     .absolute()
@@ -306,8 +307,8 @@ pub(in crate::editor) fn view(
         }),
     );
     for (index, (a, b)) in intersections.into_iter().enumerate() {
-        let a = frame_at(a.max(root.view_start))?.max(first + local.start);
-        let b = frame_at(b.min(root.view_end))?.min(first + local.start + local.length);
+        let a = frame_at(a.max(editor_bounds(&root).0))?.max(first + local.start);
+        let b = frame_at(b.min(editor_bounds(&root).1))?.min(first + local.start + local.length);
         if a < b {
             body = body.child(
                 div()
@@ -362,7 +363,7 @@ pub(in crate::editor) fn view(
             );
         }
     }
-    body = body.children(view.arrange_audio_highlights(local.start, local.length));
+    body = body.children(view.arrange_audio_highlights(first, local.start, local.length));
     let cursor = frame_at(
         view.audio_event_editor
             .cursor
@@ -380,11 +381,53 @@ pub(in crate::editor) fn view(
                 .bg(rgb(theme::color(theme::PaletteRole::Primary))),
         );
     }
+    // A fixed playback-source cursor, separate from both the edit cursor and
+    // loop brace. The canonical projection owns crop, repeat and directed reads.
+    if let Some(position) = hex_project::AudioViewProjection::new(&clip, state.project.tempo_map())
+        .ok()
+        .and_then(|projection| projection.play_start_position().ok().flatten())
+        .and_then(frame_at)
+        .filter(|frame| (first + local.start..=first + local.start + local.length).contains(frame))
+    {
+        let color = theme::color(theme::PaletteRole::Text);
+        body = body.child(
+            div()
+                .debug_selector(|| "audio-play-start-marker".into())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(relative(frame_to_x(position)))
+                .w(px(1.0))
+                .bg(rgb(color))
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            let x = bounds.left();
+                            let y = bounds.top();
+                            let mut arrow = PathBuilder::fill();
+                            arrow.move_to(point(x, y));
+                            arrow.line_to(point(x + px(7.0), y + px(4.0)));
+                            arrow.line_to(point(x, y + px(8.0)));
+                            arrow.close();
+                            if let Ok(arrow) = arrow.build() {
+                                window.paint_path(arrow, rgb(color));
+                            }
+                        },
+                    )
+                    .absolute()
+                    .top(px(2.0))
+                    .left_0()
+                    .w(px(7.0))
+                    .h(px(8.0)),
+                ),
+        );
+    }
     let entity = cx.entity();
     body = body.child(
         canvas(
             |_, _, _| (),
-            move |bounds, _, _, cx| {
+            move |bounds, _, window, cx| {
                 entity.update(cx, |view, cx| {
                     let changed = view.audio_event_editor.bounds != Some(bounds);
                     view.audio_event_editor.bounds = Some(bounds);
@@ -393,196 +436,150 @@ pub(in crate::editor) fn view(
                         cx.notify();
                     }
                 });
+                // Existing geometry tracking above may end a stale gesture;
+                // the lease witness itself only reads current held state.
+                let view = entity.read(cx);
+                if let Some(gesture) = view.audio_event_editor.gesture.as_ref()
+                    && view.audio_event_focus.is_focused(window)
+                {
+                    window.renew_pointer_capture(entity.entity_id(), gesture.kind.pointer_cursor());
+                }
             },
         )
         .absolute()
         .inset_0(),
     );
-    body = body
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
-                if view.edit_pending() || !view.event_context_current() {
-                    return;
-                }
-                let Some(position) = view
-                    .event_pointer_position(f32::from(event.position.x), event.modifiers.platform)
-                else {
-                    return;
-                };
-                let Some(raw) = view.event_pointer_position(
-                    f32::from(event.position.x),
-                    view.audio_event_editor.grid != SnapGrid::Off,
-                ) else {
-                    return;
-                };
-                view.advance_selection_intent();
-                view.audio_event_focus.focus(window);
-                let Some((clip_id, root, _)) = view.event_context() else {
-                    return;
-                };
-                let Some(state) = view.state.as_ref() else {
-                    return;
-                };
-                let Some(clip) = state.project.clip(clip_id) else {
-                    return;
-                };
-                let Some(bounds) = view.audio_event_editor.bounds else {
-                    return;
-                };
-                let local_y = f32::from(event.position.y - bounds.origin.y);
-                let ruler = (0.0..EVENT_RULER_HEIGHT).contains(&local_y);
-                let target = if ruler {
-                    RangeSelectionTarget::Paint
-                } else {
-                    let Some(target) = RangeSelectionZones::new(
-                        f32::from(bounds.size.height) - EVENT_RULER_HEIGHT,
-                        0.0,
-                    )
-                    .and_then(|zones| {
-                        zones.target(local_y - EVENT_RULER_HEIGHT, true, event.modifiers.shift)
-                    }) else {
-                        return;
-                    };
-                    target
-                };
-                let Ok(events) = clip.editable_audio_events() else {
+    body = body.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+            if view.edit_pending() || !view.event_context_current() {
+                return;
+            }
+            let Some(position) =
+                view.event_pointer_position(f32::from(event.position.x), event.modifiers.platform)
+            else {
+                return;
+            };
+            let Some(raw) = view.event_pointer_position(
+                f32::from(event.position.x),
+                view.audio_event_editor.grid != SnapGrid::Off,
+            ) else {
+                return;
+            };
+            view.advance_selection_intent();
+            view.audio_event_focus.focus(window);
+            let Some((clip_id, root, _)) = view.event_context() else {
+                return;
+            };
+            let Some(state) = view.state.as_ref() else {
+                return;
+            };
+            let Some(clip) = state.project.clip(clip_id) else {
+                return;
+            };
+            let Some(bounds) = view.audio_event_editor.bounds else {
+                return;
+            };
+            let local_y = f32::from(event.position.y - bounds.origin.y);
+            let ruler = (0.0..EVENT_RULER_HEIGHT).contains(&local_y);
+            let target = if ruler {
+                RangeSelectionTarget::Paint
+            } else {
+                let Some(target) = RangeSelectionZones::new(
+                    f32::from(bounds.size.height) - EVENT_RULER_HEIGHT,
+                    0.0,
+                )
+                .and_then(|zones| {
+                    zones.target(local_y - EVENT_RULER_HEIGHT, true, event.modifiers.shift)
+                }) else {
                     return;
                 };
-                let hit = events
-                    .events
-                    .iter()
-                    .find(|e| e.start <= raw && raw < e.end)
-                    .copied();
-                let range_hit = view
-                    .audio_event_editor
-                    .range
-                    .filter(|(a, b)| a <= &raw && raw < *b);
-                let kind = if target == RangeSelectionTarget::Move && range_hit.is_some() {
-                    if let Some((start, end)) = range_hit {
-                        Kind::RangeMove { start, end }
-                    } else {
-                        Kind::Select
-                    }
-                } else if ruler || event.modifiers.shift || hit.is_none() {
-                    Kind::Select
-                } else if let Some(hit) = hit {
-                    let first = root
-                        .root_frame_at(root.view_start, state.project.tempo_map())
-                        .unwrap_or(0);
-                    let local = view.event_viewport(&root);
-                    let bounds = view.audio_event_editor.bounds;
-                    let width = bounds.map_or(1.0, |b| f32::from(b.size.width));
-                    let offset = bounds.map_or(0.0, |b| f32::from(event.position.x - b.origin.x));
-                    let x = |raw: u64| {
-                        root.root_frame_at(raw, state.project.tempo_map())
-                            .unwrap_or(0)
-                            .saturating_sub(first + local.start) as f32
-                            / local.length.max(1) as f32
-                            * width
-                    };
-                    if hit.start >= root.view_start
-                        && root
-                            .root_frame_at(hit.start, state.project.tempo_map())
-                            .is_ok_and(|frame| frame >= first + local.start)
-                        && (offset - x(hit.start)).abs() <= 6.0
-                    {
-                        Kind::Leading(hit)
-                    } else if hit.end <= root.view_end
-                        && root
-                            .root_frame_at(hit.end, state.project.tempo_map())
-                            .is_ok_and(|frame| frame <= first + local.start + local.length)
-                        && (offset - x(hit.end)).abs() <= 6.0
-                    {
-                        Kind::Trailing(hit)
-                    } else if target == RangeSelectionTarget::Move {
-                        Kind::Move(hit)
-                    } else {
-                        Kind::Select
-                    }
+                target
+            };
+            let Ok(events) = clip.editable_audio_events() else {
+                return;
+            };
+            let hit = events
+                .events
+                .iter()
+                .find(|e| e.start <= raw && raw < e.end)
+                .copied();
+            let range_hit = view
+                .audio_event_editor
+                .range
+                .filter(|(a, b)| a <= &raw && raw < *b);
+            let kind = if target == RangeSelectionTarget::Move && range_hit.is_some() {
+                if let Some((start, end)) = range_hit {
+                    Kind::RangeMove { start, end }
                 } else {
                     Kind::Select
+                }
+            } else if ruler || event.modifiers.shift || hit.is_none() {
+                Kind::Select
+            } else if let Some(hit) = hit {
+                let first = root
+                    .root_frame_at(editor_bounds(&root).0, state.project.tempo_map())
+                    .unwrap_or(0);
+                let local = view.event_viewport(&root);
+                let bounds = view.audio_event_editor.bounds;
+                let width = bounds.map_or(1.0, |b| f32::from(b.size.width));
+                let offset = bounds.map_or(0.0, |b| f32::from(event.position.x - b.origin.x));
+                let x = |raw: u64| {
+                    root.root_frame_at(raw, state.project.tempo_map())
+                        .unwrap_or(0)
+                        .saturating_sub(first + local.start) as f32
+                        / local.length.max(1) as f32
+                        * width
                 };
-                if matches!(kind, Kind::Select) {
-                    view.audio_event_editor.range = Some((position, position));
-                    view.audio_event_editor.selected = None;
-                } else if !matches!(kind, Kind::RangeMove { .. }) {
-                    view.audio_event_editor.range = None;
-                    view.audio_event_editor.selected = hit.map(|event| event.id);
-                }
-                view.audio_event_editor.cursor = position;
-                view.audio_event_editor.gesture = Some(Gesture {
-                    pointer_x: f32::from(event.position.x),
-                    origin_x: f32::from(event.position.x),
-                    moved: false,
-                    anchor: if matches!(kind, Kind::Select) {
-                        position
-                    } else {
-                        raw
-                    },
-                    kind,
-                    operation: None,
-                });
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_mouse_move(
-            cx.listener(|view, event: &gpui::MouseMoveEvent, window, cx| {
-                if view.update_audio_event_fade_pointer(
-                    event.position,
-                    event.modifiers.platform,
-                    window,
-                    cx,
-                ) {
-                    cx.stop_propagation();
-                    return;
-                }
-                if event.pressed_button == Some(MouseButton::Left)
-                    && view.audio_event_editor.gesture.is_some()
+                if hit.start >= editor_bounds(&root).0
+                    && root
+                        .root_frame_at(hit.start, state.project.tempo_map())
+                        .is_ok_and(|frame| frame >= first + local.start)
+                    && (offset - x(hit.start)).abs() <= 6.0
                 {
-                    view.event_update_pointer(
-                        f32::from(event.position.x),
-                        event.modifiers.platform,
-                    );
-                    cx.notify();
+                    Kind::Leading(hit)
+                } else if hit.end <= editor_bounds(&root).1
+                    && root
+                        .root_frame_at(hit.end, state.project.tempo_map())
+                        .is_ok_and(|frame| frame <= first + local.start + local.length)
+                    && (offset - x(hit.end)).abs() <= 6.0
+                {
+                    Kind::Trailing(hit)
+                } else if target == RangeSelectionTarget::Move {
+                    Kind::Move(hit)
+                } else {
+                    Kind::Select
                 }
-            }),
-        )
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(|view, event: &gpui::MouseUpEvent, window, cx| {
-                if view.finish_audio_event_fade_pointer(
-                    event.position,
-                    event.modifiers.platform,
-                    window,
-                    cx,
-                ) {
-                    cx.stop_propagation();
-                    return;
-                }
-                if view.audio_event_editor.gesture.is_none() {
-                    return;
-                }
-                view.event_release_pointer(f32::from(event.position.x), event.modifiers.platform);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_mouse_up_out(
-            MouseButton::Left,
-            cx.listener(|view, event: &gpui::MouseUpEvent, window, cx| {
-                if view.audio_event_editor.gesture.is_some() {
-                    view.event_release_pointer(
-                        f32::from(event.position.x),
-                        event.modifiers.platform,
-                    );
-                    view.audio_event_focus.focus(window);
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }),
-        );
+            } else {
+                Kind::Select
+            };
+            if !view.capture_audio_event_pointer(kind, window, cx) {
+                return;
+            }
+            if matches!(kind, Kind::Select) {
+                view.audio_event_editor.range = Some((position, position));
+                view.audio_event_editor.selected = None;
+            } else if !matches!(kind, Kind::RangeMove { .. }) {
+                view.audio_event_editor.range = None;
+                view.audio_event_editor.selected = hit.map(|event| event.id);
+            }
+            view.audio_event_editor.cursor = position;
+            view.audio_event_editor.gesture = Some(Gesture {
+                pointer_x: f32::from(event.position.x),
+                origin_x: f32::from(event.position.x),
+                moved: false,
+                anchor: if matches!(kind, Kind::Select) {
+                    position
+                } else {
+                    raw
+                },
+                kind,
+                operation: None,
+            });
+            cx.stop_propagation();
+            cx.notify();
+        }),
+    );
 
     let grid = view.audio_event_editor.grid;
     let toolbar = div()
@@ -592,7 +589,7 @@ pub(in crate::editor) fn view(
         .items_center()
         .gap_1()
         .child(
-            waveform::button("✂", "split audio event · cmd+e", ("audio-event-split", 0)).on_click(
+            waveform::button("✂", "split audio event · e", ("audio-event-split", 0)).on_click(
                 cx.listener(|view, _, window, cx| {
                     view.audio_event_focus.focus(window);
                     view.event_split();
@@ -674,6 +671,7 @@ pub(in crate::editor) fn view(
         .flex()
         .flex_col()
         .child(toolbar)
+        .children(view.audio_loop_ruler(cx))
         .child(body)
         .on_action(
             cx.listener(|view, _: &super::super::ToggleSnapGrid, _, cx| {
@@ -792,9 +790,11 @@ pub(in crate::editor) fn view(
         )
         .on_action(
             cx.listener(|view, _: &super::super::CancelDragOrStop, _, cx| {
-                view.advance_selection_intent();
-                view.audio_event_editor.gesture = None;
-                view.audio_event_editor.range = None;
+                if !view.cancel_audio_loop_gesture() {
+                    view.advance_selection_intent();
+                    view.audio_event_editor.gesture = None;
+                    view.audio_event_editor.range = None;
+                }
                 cx.stop_propagation();
                 cx.notify();
             }),

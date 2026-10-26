@@ -90,6 +90,17 @@ invalid layer contexts/ranges/geometry and near-order-overflow reservations.
 macOS native image-buffer Surface allocation is outside this fixture; its
 unchanged shared append branch remains compiled, without a fake native handle.
 
+Live draw order is resolved after best-fit descent, starting at the nearby leaf
+and visiting the original sibling subtrees in reverse path order. A high nearby
+order can prune older branches sooner. Placement topology, bounds arithmetic and
+queried geometry stay unchanged; no placement-path bounds check is introduced,
+because floating-point origin + size unions can round an edge inward. Reserved
+replay intervals keep their checked admission and skip the live query. A locked-
+graph test-support verifier checks insert/reserve/clear/overflow against a linear
+scan over deterministic mixed geometry at 1×/2× and a rounded-ancestor case,
+alongside the mixed-primitive replay oracle. No balancing, primitive/layer
+grouping, native API, allocation or dependency is added.
+
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
 and `fr` helpers accept `Into<f32>`; this preserves the same values/layout and
@@ -260,3 +271,101 @@ archive/file hashes and unrelated patch blocks are retained; changed hashes and
 the cumulative patch are regenerated from the verified original archive. Native
 hover selection is checked headlessly; actual cursor appearance remains a user
 interaction acceptance item on the optimized macOS app.
+
+25 October immutable scaled path mesh sharing: Path uses a private owned/shared
+vertex store. Mutable logical-pixel construction retains its directly owned Vec,
+while scaling keeps original arithmetic/order and publishes a fresh shared
+Arc<Vec<_>> array. Cloned scaled Scene paths retain immutable mesh bytes; order,
+PathId, mask, color, bounds and contour state remain independent values. Editing
+a shared path detaches through Arc::make_mut; normal construction avoids that
+atomic work. Existing metal/blade/directx iterators still copy vertex values into
+renderer-owned uploads; no borrowed GPU lifetime, native/unsafe call, dependency
+or public method change. The root-locked oracle checks clone/original edits,
+shared mutation and exact scaled xy/ST/mask bits with retained mixed-alpha/order/
+refusal/repeated replay coverage. Full navigation profiles include construction,
+sharing and metadata costs, and retain RSS/tails separately from native GPU
+acceptance. Published archive/license and unrelated cumulative blocks remain;
+changed scene bytes are reproduced by original-archive and offline full guards.
+
+25 October sibling query upper-bound reuse: BoundsTree's private draw-order
+query retains both child maxima already loaded for visitation order. After the
+first recursive result it visits the second child only if that child's maximum
+can improve the result. No new geometric predicate or placement-path pruning,
+topology, storage, allocation, reservation or painter-order change. The locked
+independent leaf-scan oracle includes higher-child misses, tied maxima and
+already-satisfied queries, retaining numeric union/clear/overflow coverage.
+
+### Compact element identities
+
+`GlobalElementId` and Window's active/deferred ID stacks use eight inline
+`ElementId` entries instead of 32. The existing SmallVec dynamic spill retains
+longer paths without a depth limit or truncation. This reduces inline payloads
+moved through Drawable phases and state-map keys. It changes the concrete inline
+capacity exposed through GlobalElementId's derived Deref target; callers retain
+the same complete sequence, equality/hash/display and push/pop semantics. No
+identity interning, shared ownership, lifecycle, dispatch, layout or painter
+contract changes. Deep identical-prefix click/focus and held-click repaint tests,
+plus keys built in ordinary/forced-dynamic storage, exercise the retained values
+and state through the existing root-locked UI test-support graph. Source size
+alone is not navigation performance or native acceptance evidence.
+
+### Pointer drag hover state
+
+Window tracks pressed-pointer motion across the shared two-pixel drag threshold
+before mouse dispatch. This input state survives consumed move events and cached
+view replay, and ends on matching release, button loss, escape or window
+inactivation. Drag-state transitions invalidate only views with hover/tooltip paint
+dependencies whose painted/current hover can change. Their insertion ranges
+replay with cached/deferred paint; group dependencies retain clipped bounds rather
+than an external parent's transient hitbox ID. Unrelated clip scenes and ordinary
+clicks retain their caches. Div suppresses ordinary/group hover styles and tooltip eligibility
+while this state is active. Stored hover callbacks run before mouse dispatch,
+independently of propagation, and reconcile at pointer/key terminals. Focus
+changes clear drag state without synthesizing hover entry. Callbacks never
+mutate view state during paint. Already visible hoverable
+tooltips are hidden immediately, and pending tooltip builders do not run during
+the drag even when capture swallowed their cancellation event. Typed drag-over styles and
+drop handlers keep their existing hit testing and delivery. This is a bounded
+pure-Rust input/paint change in the existing dependency; there is no native API,
+unsafe Hex code, new UI framework or project/audio contract change.
+
+Window-level state is needed because ordinary Hex capture listeners can stop
+propagation without affecting GPUI's style calculation. This state does not grant
+exclusive mouse routing, own gesture cancellation or select a gesture cursor;
+consumers retain those contracts. Completed-scene regressions check consumed
+movement and repeated repaint, tooltip eligibility, release/button-loss/escape/
+deactivation recovery, and retained typed drop feedback/delivery. Native pointer
+and OS tooltip acceptance remain separate from these headless scene checks.
+
+26 October explicit pointer ownership: Window admits one pressed-button lease
+before a control mutates its gesture. Captured mouse input bypasses ordinary/raw
+listeners after the initiating press; that press retains gesture-owned ancestor
+selection. Keyboard dispatch and the existing typed drag path stay independent.
+The owner supplies its mouse handler, cancellation and cursor. Paint records only
+a live-held witness, including cached/deferred replay ranges. Missing witnesses,
+escape, button loss, deactivation and control-side window removal cancel once
+outside paint; normal matching release commits through the owner without cancel.
+Cancelled buttons retain bounded inline tombstones until their old release or
+next press, preventing trailing actions. Numeric controls use weak entity handlers
+and retain their existing typed events, drafts and owner-acknowledgement contracts.
+Selection-anchor loss preserves newer text/IME drafts. No native API/FFI or new
+unsafe code is added; actual OS interaction acceptance remains separate.
+
+Capture-start input notification also clears framework-only click/drag and active
+latches on affected Divs. It uses the existing cached/deferred observer range and
+never invokes an action or synthesizes mouse-up. The initiating press's ancestor
+selection still runs; an ancestor cannot retain that press and begin a phantom
+drag after the exclusive owner releases, including without an intervening repaint.
+
+Pointer-lease Escape sequencing: dispatch the existing keyboard path before
+retiring any remaining lease. Gesture key handlers still see held state and keep
+their cancellation/propagation guards; a handled Escape cannot accidentally reach
+the parent after premature model cancellation. The terminal still runs outside
+paint in that same input turn, and idempotent widget cancellation retains one
+typed terminal. Other loss/normal release paths and native APIs are unchanged.
+
+Owners may revoke their own lease with `cancel_pointer_capture_for` when a
+host refuses Begin after pointer admission. It checks the exact EntityId, leaves
+other owners/typed drags untouched, and runs the existing cancellation terminal
+immediately outside paint. Refusal therefore retains no input lease while its
+trailing release remains suppressed. Splitter sizing snapshots remain host-owned.

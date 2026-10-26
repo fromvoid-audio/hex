@@ -1,9 +1,9 @@
 use crate::ControlStyle;
 use gpui::{
-    App, Bounds, Context, Element, ElementId, Entity, EventEmitter, GlobalElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
-    SharedString, Style, Window, canvas, div, linear_color_stop, linear_gradient, prelude::*, px,
-    rgb, rgba,
+    App, Bounds, Context, CursorStyle, Element, ElementId, Entity, EventEmitter, GlobalElementId,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, Render, SharedString, Style, Window, canvas, div, linear_color_stop, linear_gradient,
+    prelude::*, px, rgb, rgba,
 };
 use std::cell::Cell;
 
@@ -188,6 +188,8 @@ enum GestureSurface {
 }
 
 /// Native saturation/value field and hue strip for an opaque RGB color.
+/// Held input uses the shared Window pointer lease; callers retain role identity,
+/// preview validation and preference/history ownership. Input loss keeps live color.
 pub struct ColorPicker {
     id: SharedString,
     color: RgbColor,
@@ -219,13 +221,17 @@ impl ColorPicker {
         self.hsv
     }
 
-    /// Synchronize from canonical RGB without emitting and preserve the hue for gray/black.
+    /// Synchronize canonical RGB without emitting, preserving hue for gray/black.
+    /// Changed RGB ends old pointer input; same-RGB owner echoes retain the gesture.
     pub fn set_external_color(
         &mut self,
         color: RgbColor,
         preferred_hue: f64,
         cx: &mut Context<Self>,
     ) {
+        if self.color != color {
+            self.cancel_pointer(cx);
+        }
         self.color = color;
         self.hsv = rgb_to_hsv(color, preferred_hue);
         cx.notify();
@@ -254,8 +260,47 @@ impl ColorPicker {
         true
     }
 
-    fn begin(&mut self, surface: GestureSurface, position: Point<Pixels>, cx: &mut Context<Self>) {
+    /// End pointer input without reverting already emitted live color. Owners
+    /// call this before rebinding a picker to a different role, even if RGB matches.
+    pub fn cancel_pointer(&mut self, cx: &mut Context<Self>) {
+        if self.gesture.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn begin(
+        &mut self,
+        surface: GestureSurface,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        if !window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            CursorStyle::Arrow,
+            move |event, _, cx| {
+                let _ = owner.update(cx, |picker, cx| {
+                    if let Some(event) = event.downcast_ref::<MouseMoveEvent>() {
+                        picker.pointer_move(event, cx);
+                    } else if let Some(event) = event.downcast_ref::<MouseUpEvent>() {
+                        picker.pointer_up(event, cx);
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |picker, cx| picker.cancel_pointer(cx));
+            },
+            cx,
+        ) {
+            return;
+        }
         self.gesture = Some(surface);
+        // Held input must reach cached paint even when the selected color does
+        // not change (for example pressing the current hue position).
+        cx.notify();
         self.move_to(surface, position, cx);
     }
 
@@ -291,7 +336,7 @@ impl ColorPicker {
             return false;
         };
         if event.pressed_button != Some(MouseButton::Left) {
-            self.gesture = None;
+            self.cancel_pointer(cx);
             return false;
         }
         self.move_to(surface, event.position, cx);
@@ -305,6 +350,7 @@ impl ColorPicker {
         let Some(surface) = self.gesture.take() else {
             return false;
         };
+        cx.notify();
         self.move_to(surface, event.position, cx);
         true
     }
@@ -320,9 +366,7 @@ impl Render for ColorPicker {
         let value = self.hsv.value / 100.0;
         let field_bounds = self.field_bounds.clone();
         let hue_bounds = self.hue_bounds.clone();
-        let entity = cx.entity().clone();
-        let move_entity = entity.clone();
-        let up_entity = entity.clone();
+        let entity = cx.entity();
         let id: SharedString = self.id.clone();
         let field_id: SharedString = format!("{}-field", id).into();
         let hue_id: SharedString = format!("{}-hue", id).into();
@@ -383,8 +427,8 @@ impl Render for ColorPicker {
                     )
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|picker, event: &MouseDownEvent, _, cx| {
-                            picker.begin(GestureSurface::Field, event.position, cx);
+                        cx.listener(|picker, event: &MouseDownEvent, window, cx| {
+                            picker.begin(GestureSurface::Field, event.position, window, cx);
                         }),
                     ),
             )
@@ -440,21 +484,17 @@ impl Render for ColorPicker {
                     )
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|picker, event: &MouseDownEvent, _, cx| {
-                            picker.begin(GestureSurface::Hue, event.position, cx);
+                        cx.listener(|picker, event: &MouseDownEvent, window, cx| {
+                            picker.begin(GestureSurface::Hue, event.position, window, cx);
                         }),
                     ),
             )
-            .child(PickerCaptureElement {
-                move_entity,
-                up_entity,
-            })
+            .child(PickerCaptureElement { entity })
     }
 }
 
 struct PickerCaptureElement {
-    move_entity: Entity<ColorPicker>,
-    up_entity: Entity<ColorPicker>,
+    entity: Entity<ColorPicker>,
 }
 
 impl IntoElement for PickerCaptureElement {
@@ -509,30 +549,11 @@ impl Element for PickerCaptureElement {
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) {
-        let move_entity = self.move_entity.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let changed = move_entity.update(cx, |picker, cx| picker.pointer_move(event, cx));
-            if changed {
-                cx.stop_propagation();
-                window.refresh();
-            }
-        });
-        let up_entity = self.up_entity.clone();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let finished = up_entity.update(cx, |picker, cx| picker.pointer_up(event, cx));
-            if finished {
-                cx.stop_propagation();
-                window.refresh();
-            }
-        });
+        if self.entity.read(cx).gesture.is_some() {
+            window.renew_pointer_capture(self.entity.entity_id(), CursorStyle::Arrow);
+        }
     }
 }
 

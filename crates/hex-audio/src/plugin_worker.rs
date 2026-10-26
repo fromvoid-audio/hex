@@ -10,7 +10,32 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod capture;
 mod storage;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+
+// Original completion allocation, shared only by joining control and worker.
+// The callback never sees the capture mailbox or takes its mutex.
+struct Signal {
+    blocks: AtomicU64,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    capture: std::sync::Mutex<capture::Slot>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    capture_requested: std::sync::atomic::AtomicBool,
+}
+impl Signal {
+    fn new() -> Self {
+        Self {
+            blocks: AtomicU64::new(0),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            capture: std::sync::Mutex::new(capture::Slot::default()),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            capture_requested: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use storage::{NativeWorkerResourceBound, NativeWorkerStorage};
 
@@ -29,6 +54,8 @@ struct State {
     processor: Option<Processor>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_error: Option<hex_plugin_host::Error>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    capture: capture::Work,
 }
 impl State {
     fn prepare_transport(&mut self) -> Result<(), Fault> {
@@ -91,7 +118,7 @@ pub(crate) struct Reaper {
     control: Control,
     join: Option<JoinHandle<Completion>>,
     result: Option<thread::Result<Completion>>,
-    completed: Arc<AtomicU64>,
+    completed: Arc<Signal>,
     terminal: crate::native_callback_owner::Terminal<State>,
     worker: Option<Box<State>>,
     storage: Option<crate::native_callback_owner::ChannelStorage>,
@@ -100,7 +127,7 @@ impl Reaper {
     /// Observation after matching reply publication; not a canonical/audio ACK
     /// or authority to consume a reply without its complete identity check.
     pub fn completed_blocks(&self) -> u64 {
-        self.completed.load(Acquire)
+        self.completed.blocks.load(Acquire)
     }
     pub fn revoke(&self) {
         self.control.revoke();
@@ -165,16 +192,18 @@ fn spawn_processor_with(
     processor: Processor,
     spawn: impl FnOnce(
         crate::native_callback_owner::Guard<State>,
-        Arc<AtomicU64>,
+        Arc<Signal>,
     ) -> std::io::Result<SpawnedTransport>,
 ) -> Result<Reaper, SpawnFailure> {
-    let completed = Arc::new(AtomicU64::new(0));
+    let completed = Arc::new(Signal::new());
     let published = Arc::clone(&completed);
     let (guard, terminal) = crate::native_callback_owner::reserve(State {
         worker,
         processor: Some(processor),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         native_error: None,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        capture: capture::Work::default(),
     });
     let storage = storage::reserved_backing(&guard, &completed);
     let join = spawn(guard, published);
@@ -207,7 +236,7 @@ fn spawn_processor_with(
 }
 fn spawn_transport(
     guard: crate::native_callback_owner::Guard<State>,
-    published: Arc<AtomicU64>,
+    published: Arc<Signal>,
 ) -> std::io::Result<SpawnedTransport> {
     let run = transport_runner(guard, published);
     let capture_data_bytes = std::mem::size_of_val(&run);
@@ -221,13 +250,13 @@ fn spawn_transport(
 }
 fn transport_runner(
     guard: crate::native_callback_owner::Guard<State>,
-    published: Arc<AtomicU64>,
+    published: Arc<Signal>,
 ) -> impl FnOnce() -> Completion + Send + 'static {
     transport_runner_with_setup(guard, published, State::prepare_transport)
 }
 fn transport_runner_with_setup(
     mut guard: crate::native_callback_owner::Guard<State>,
-    published: Arc<AtomicU64>,
+    published: Arc<Signal>,
     setup: fn(&mut State) -> Result<(), Fault>,
 ) -> impl FnOnce() -> Completion + Send + 'static {
     move || {
@@ -261,7 +290,9 @@ fn transport_runner_with_setup(
                         }
                         break;
                     }
-                    published.store(state.worker.completed_blocks(), Release);
+                    published
+                        .blocks
+                        .store(state.worker.completed_blocks(), Release);
                 }
                 Ok(None) => thread::sleep(Duration::from_micros(50)),
                 Err(Fault::Revoked) => break,
@@ -269,6 +300,16 @@ fn transport_runner_with_setup(
                     fault = Some(error);
                     break;
                 }
+            }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Err(error) = state.advance_capture(&published) {
+                let refused = matches!(error, hex_plugin_host::Error::Cancelled);
+                state.native_error = Some(error);
+                state.worker.revoke();
+                if !refused {
+                    fault = Some(Fault::Protocol);
+                }
+                break;
             }
         }
         Completion { fault }
@@ -347,12 +388,18 @@ impl NativeWorker {
     pub fn revoke_on_control(&self) {
         self.reaper.revoke();
     }
+    /// Same paired transport's actual revocation state. This grants no source
+    /// custody or native ACK; graph admission also validates the retained pair.
+    pub(crate) fn transport_is_live_on_control(&self) -> bool {
+        !self.retirement_requested && !self.reaper.control.is_revoked()
+    }
     /// Diagnostic publication progress only; never native/root/graph readiness.
     pub fn published_blocks_on_control(&self) -> u64 {
         self.reaper.completed_blocks()
     }
     /// Join, retain the exact old ring endpoints, and consume the returned
-    /// native processor into its actual quiescent protocol. Unwind/refusal is
+    /// native processor into its actual quiescent protocol. An admitted capture
+    /// first drains through its existing bounded terminal. Unwind/refusal is
     /// terminal and cannot become a retry. Old callback custody stays separate.
     pub fn quiesce_on_control(
         &mut self,
@@ -370,6 +417,12 @@ impl NativeWorker {
             .ok_or(hex_plugin_host::Error::Protocol(
                 "native worker terminal missing",
             ))?;
+        if joined.is_ok()
+            && state.native_error.is_none()
+            && let Err(error) = state.drain_capture_before_quiescence(&self.reaper.completed)
+        {
+            state.native_error = Some(error);
+        }
         let failure = state.native_error.take().or_else(|| {
             joined
                 .err()
@@ -425,6 +478,11 @@ impl NativeWorker {
             .native_error
             .take()
             .or_else(|| joined.err().map(|fault| Error::Protocol(fault.message())));
+        if failure.is_none() && state.capture.is_in_flight() {
+            // Retirement explicitly cancels this original outstanding capture;
+            // never send normal SDK Stop while main still owns its streams.
+            failure = Some(Error::Cancelled);
+        }
         let Some(Processor::Native(instance)) = state.processor.as_mut() else {
             return Err(Error::Protocol("native worker already returned its source"));
         };
@@ -488,14 +546,14 @@ mod tests {
         assert!(
             capture_bytes.get()
                 >= std::mem::size_of::<crate::native_callback_owner::Guard<State>>()
-                    + std::mem::size_of::<Arc<AtomicU64>>()
+                    + std::mem::size_of::<Arc<Signal>>()
         );
         assert_eq!(
             storage.data_bytes,
             std::mem::size_of::<State>()
                 + processor_bytes
                 + std::mem::size_of::<std::sync::OnceLock<std::sync::Mutex<Box<State>>>>()
-                + std::mem::size_of::<AtomicU64>()
+                + std::mem::size_of::<Signal>()
                 + capture_bytes.get()
                 + std::mem::size_of::<Completion>()
         );

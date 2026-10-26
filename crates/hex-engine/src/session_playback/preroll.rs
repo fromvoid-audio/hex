@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const MAX_ARRANGEMENT_PREROLL_FRAMES: u64 = 8_388_608;
 /// Maximum accounted owned runtime storage for the returned candidate.
 /// Shared immutable prepared graph data and allocator bookkeeping are excluded.
-pub const MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES: usize = 192 * 1024 * 1024;
 const PREROLL_BLOCK_FRAMES: usize = 256;
 pub(super) const PREROLL_SCRATCH_BYTES: usize =
     std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>();
@@ -34,7 +34,21 @@ pub enum ArrangementPrerollError {
     UnsupportedTransportLoop,
     ArithmeticOverflow,
     CandidatePositionMismatch,
+    MediaPreparation(&'static str),
     Playback(SessionPlaybackError),
+}
+
+/// Control-only page preparation for one bounded preroll candidate. Implementors
+/// must protect the exact demand before rendering and refuse unexpected misses.
+/// This borrow grants no native source, endpoint, readiness or publication custody.
+pub trait PreparedPrerollPages: crate::MediaPages {
+    fn prepare_chunk(
+        &mut self,
+        playback: &SessionPlayback,
+        maximum_frames: usize,
+        cancelled: &AtomicBool,
+    ) -> Result<usize, ArrangementPrerollError>;
+    fn complete_chunk(&mut self) -> Result<(), ArrangementPrerollError>;
 }
 
 impl From<SessionPlaybackError> for ArrangementPrerollError {
@@ -83,6 +97,7 @@ impl SessionPlayback {
             PrerollRuntimePolicy::SectionLoop(region),
             resources,
             || cancelled.load(Ordering::Acquire),
+            |candidate, output| candidate.render(output).map_err(Into::into),
         )
     }
 
@@ -164,6 +179,7 @@ impl SessionPlayback {
             PrerollRuntimePolicy::Interactive,
             None,
             || cancelled.load(Ordering::Acquire),
+            |candidate, output| candidate.render(output).map_err(Into::into),
         )
     }
 
@@ -203,6 +219,7 @@ impl SessionPlayback {
             PrerollRuntimePolicy::LinearExport,
             None,
             is_cancelled,
+            |candidate, output| candidate.render(output).map_err(Into::into),
         )
     }
 
@@ -229,6 +246,59 @@ impl SessionPlayback {
             PrerollRuntimePolicy::Interactive,
             Some(resources),
             || cancelled.load(Ordering::Acquire),
+            |candidate, output| candidate.render(output).map_err(Into::into),
+        )
+    }
+
+    /// Reconstruct a source-bearing ordinary seek or section on control using
+    /// the exact ordinary compiler scope and independently prepared page view.
+    /// Existing replay/storage/cancellation limits and route fences still apply.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_ordinary_arrangement_preroll_with_pages<P: PreparedPrerollPages>(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        section: Option<hex_project::LoopRegion>,
+        cancelled: &AtomicBool,
+        pages: &mut P,
+    ) -> Result<Self, ArrangementPrerollError> {
+        if section.is_some_and(|region| {
+            !region.enabled() || region.start() != destination_frame || !start_playing
+        }) {
+            return Err(ArrangementPrerollError::CandidatePositionMismatch);
+        }
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            section.map_or(
+                PrerollRuntimePolicy::Interactive,
+                PrerollRuntimePolicy::SectionLoop,
+            ),
+            Some(resources),
+            || cancelled.load(Ordering::Acquire),
+            |candidate, output| {
+                let mut offset = 0;
+                while offset < output.len() {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(ArrangementPrerollError::Cancelled);
+                    }
+                    let count = pages.prepare_chunk(candidate, output.len() - offset, cancelled)?;
+                    if count == 0 || count > output.len() - offset {
+                        return Err(ArrangementPrerollError::MediaPreparation(
+                            "invalid preroll page demand width",
+                        ));
+                    }
+                    candidate.render_with_pages(&mut output[offset..offset + count], pages)?;
+                    pages.complete_chunk()?;
+                    offset += count;
+                }
+                Ok(())
+            },
         )
     }
 
@@ -242,6 +312,7 @@ impl SessionPlayback {
         policy: PrerollRuntimePolicy,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         mut is_cancelled: impl FnMut() -> bool,
+        mut render_chunk: impl FnMut(&mut Self, &mut [Frame]) -> Result<(), ArrangementPrerollError>,
     ) -> Result<Self, ArrangementPrerollError> {
         if is_cancelled() {
             return Err(ArrangementPrerollError::Cancelled);
@@ -271,8 +342,12 @@ impl SessionPlayback {
                 .arrangement()
                 .loop_region()
                 .is_some_and(|region| region.enabled() && destination_frame >= region.end());
-        let storage_preflight = arrangement_runtime_storage_preflight_bytes(&revision)
-            .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
+        let storage_preflight = if matches!(policy, PrerollRuntimePolicy::LinearExport) {
+            linear_export_runtime_storage_preflight_bytes(&revision)
+        } else {
+            arrangement_runtime_storage_preflight_bytes(&revision)
+        }
+        .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if storage_preflight > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
         }
@@ -327,7 +402,7 @@ impl SessionPlayback {
             }
             let count = usize::try_from(remaining.min(PREROLL_BLOCK_FRAMES as u64))
                 .map_err(|_| ArrangementPrerollError::ArithmeticOverflow)?;
-            candidate.render(&mut block[..count])?;
+            render_chunk(&mut candidate, &mut block[..count])?;
             remaining = remaining
                 .checked_sub(count as u64)
                 .ok_or(ArrangementPrerollError::ArithmeticOverflow)?;
@@ -342,7 +417,11 @@ impl SessionPlayback {
         }
         candidate.transient_loop = transient_loop;
         if !start_playing {
-            candidate.apply(SessionPlaybackCommand::Pause)?;
+            // Restore stopped transport without performing the user Pause
+            // discontinuity: preroll history must remain frozen until Play or
+            // an admitted live input releases the primed clip gates.
+            candidate.playing = false;
+            candidate.monitor_source_releases = false;
         }
         if !Arc::ptr_eq(&candidate.revision, &revision) {
             return Err(ArrangementPrerollError::CandidatePositionMismatch);
@@ -526,6 +605,22 @@ impl RuntimeStorage<'_> {
 pub(super) fn arrangement_runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
 ) -> Option<usize> {
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY)
+}
+
+pub(super) fn linear_export_runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+) -> Option<usize> {
+    runtime_storage_preflight_bytes(
+        revision,
+        SessionPlayback::release_capacity_for(revision, true),
+    )
+}
+
+fn runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+    release_capacity: usize,
+) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
     let return_buses = arrangement.return_buses();
@@ -587,7 +682,8 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
         track_count,
         std::mem::size_of::<Option<MutableInstrumentTrackRuntime>>(),
     )?;
-    for track in arrangement.tracks() {
+    let source_routing = revision.source_routing();
+    for (index, track) in arrangement.tracks().iter().enumerate() {
         let id = track.canonical_track_id()?;
         if let Some(factory) = revision.session().mutable_instrument_factory(id) {
             checked_add(
@@ -601,6 +697,14 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
                 &mut total,
                 std::mem::size_of::<MutableInstrumentTrackRuntime>(),
             )?;
+            if !revision.requires_control_sampler_sources()
+                && source_routing.receiver_index(index) == Some(index)
+            {
+                checked_add(
+                    &mut total,
+                    MutableInstrumentTrackRuntime::source_live_storage_upper_bound(),
+                )?;
+            }
         }
     }
     add_vec(
@@ -636,7 +740,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for _ in 0..2 {
         add_vec(
             &mut total,
-            SESSION_RELEASE_CAPACITY,
+            release_capacity,
             std::mem::size_of::<ReleaseEntry>(),
         )?;
     }
@@ -662,7 +766,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for _ in 0..2 {
         add_vec(
             &mut total,
-            SESSION_RELEASE_CAPACITY,
+            release_capacity,
             std::mem::size_of::<MidiOccurrenceSuppression>(),
         )?;
     }

@@ -452,10 +452,11 @@ impl Render for EditorView {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
         }
-        if let Some(state) = self.state.as_ref() {
-            if let Some(track) = self.selected_track {
-                self.gain_lane.change_owner(track, &state.project);
-            }
+        if !self.automation_view.enabled
+            && let Some(state) = self.state.as_ref()
+            && let Some(track) = self.selected_track
+        {
+            self.gain_lane.change_owner(track, &state.project);
         }
         self.clip_content_cache
             .reconcile(self.project_generation, self.state.as_ref(), cx);
@@ -583,8 +584,8 @@ impl Render for EditorView {
                     }
                 });
             })
-            .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
-                super::device_panel::capture_navigation_pointer_down(view, event, cx);
+            .capture_any_mouse_down(cx.listener(|view, event, window, cx| {
+                super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
                 if event.button == MouseButton::Left {
@@ -739,6 +740,14 @@ impl Render for EditorView {
             .capture_action(cx.listener(|view, _: &super::SearchBrowser, window, cx| {
                 view.search_browser(window, cx);
             }))
+            .capture_action(
+                cx.listener(|view, _: &super::CreateFadesOrSearch, window, cx| {
+                    if !view.create_selection_fades(window, cx) {
+                        view.search_browser(window, cx);
+                    }
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::RenameTrack, window, cx| {
                 view.begin_track_name(window, cx);
             }))
@@ -875,6 +884,12 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.pending_plugin_effect.is_some() {
+                    view.cancel_plugin_effect();
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.cancel_eq_creation() {
                     cx.stop_propagation();
                     cx.notify();
@@ -887,6 +902,7 @@ impl Render for EditorView {
                 }
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
+                    | view.cancel_audio_loop_gesture()
                     | view.cancel_loop_rail_gesture()
                     | view.project_spectrum_splitter_event(
                         hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
@@ -1319,7 +1335,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &SplitClip, window, cx| {
                 if !view.split_section_at_cursor(window) {
-                    view.split_at_edit_cursor();
+                    view.split_arrangement_clips(window, cx);
                 }
                 cx.notify();
             }))
@@ -1338,11 +1354,11 @@ impl Render for EditorView {
                 }),
             )
             .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
-                view.loop_selection_key(window);
+                view.loop_selection_key(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SetLoopFromClip, window, cx| {
-                view.set_loop_from_clip(window);
+                view.set_loop_from_clip(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ToggleLoop, _, cx| {

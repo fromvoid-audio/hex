@@ -1,6 +1,6 @@
 //! Complete selection projection and canonical atomic history; no media/backend fixture.
 use super::*;
-use crate::{ClipFlavor, Command, Editor, MAX_NOTES, NoteId};
+use crate::{ClipFlavor, Command, Editor, MAX_NAME_BYTES, MAX_NOTES, NoteId};
 
 struct Fixture {
     editor: Editor,
@@ -114,6 +114,68 @@ fn command(f: &Fixture, anchor: ClipId, track: TrackId, position: ClipGroupPosit
         position,
         copy: false,
     }
+}
+#[test]
+fn audio_name_candidates_preserve_source_history_and_owned_snapshots() {
+    let mut f = fixture();
+    let original = f.editor.project().clone();
+    let original_snapshot = original.snapshot();
+    let rename = |name: &str| Command::RenameClip {
+        clip: f.audio,
+        name: name.into(),
+    };
+    let changed = "Lead Äudio 01";
+    f.editor.execute(rename(changed)).unwrap();
+    assert_eq!(f.editor.project().clip_name(f.audio), Some(changed));
+    assert_eq!(original.clip_name(f.audio), Some("kept audio"));
+    assert_eq!(original.snapshot(), original_snapshot);
+    let renamed = f.editor.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(renamed.clone()).unwrap(),
+        *f.editor.project()
+    );
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), original_snapshot);
+    // A new allocation containing the same label is still a semantic no-op.
+    f.editor.execute(rename("kept audio")).unwrap();
+    assert!(f.editor.can_redo());
+    let refused: Result<(Created, ()), Invalid> =
+        f.editor
+            .execute_prepared_transition(rename("refused label"), |source, candidate| {
+                assert_eq!(source.clip_name(f.audio), Some("kept audio"));
+                assert_eq!(candidate.clip_name(f.audio), Some("refused label"));
+                Err(Invalid("test preparation refusal"))
+            });
+    assert!(refused.is_err());
+    assert_eq!(f.editor.project().snapshot(), original_snapshot);
+    assert!(f.editor.can_redo());
+    assert!(f.editor.redo());
+    assert_eq!(f.editor.project().snapshot(), renamed);
+    assert_eq!(original.snapshot(), original_snapshot);
+}
+#[test]
+fn retained_root_labels_are_bounded_and_independent_of_the_project() {
+    let f = fixture();
+    let project = f.editor.project();
+    let before = project.snapshot();
+    let tempo = std::sync::Arc::new(project.tempo_map().clone());
+    let mut snapshot = project.clip(f.audio).unwrap().retained_snapshot();
+    snapshot.name = "Ā".repeat(MAX_NAME_BYTES / "Ā".len());
+    let root = project
+        .restore_retained_audio_root(1, snapshot.clone(), tempo.clone())
+        .unwrap();
+    assert_eq!(root.clip.retained_snapshot(), snapshot);
+    for name in [String::new(), "\n".into(), "x".repeat(MAX_NAME_BYTES + 1)] {
+        let mut invalid = snapshot.clone();
+        invalid.name = name;
+        assert!(
+            project
+                .restore_retained_audio_root(1, invalid, tempo.clone())
+                .is_err()
+        );
+    }
+    assert_eq!(project.snapshot(), before);
+    assert_eq!(root.clip.retained_snapshot(), snapshot);
 }
 #[test]
 fn mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step() {

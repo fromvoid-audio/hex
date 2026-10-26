@@ -60,6 +60,7 @@ impl Project {
     ) -> Option<InstrumentHistoryDelta<'a>> {
         let Self {
             aliases,
+            native_sources,
             arrangement_sections,
             tuning,
             routing,
@@ -78,7 +79,9 @@ impl Project {
             tempo_map,
             meter_map,
         } = self;
-        if aliases != &target.aliases || arrangement_sections != &target.arrangement_sections
+        if aliases != &target.aliases
+            || native_sources.len() != target.native_sources.len()
+            || arrangement_sections != &target.arrangement_sections
             || tuning != &target.tuning
             || routing != &target.routing
             || audio_feeds != &target.audio_feeds
@@ -148,13 +151,16 @@ impl Project {
                 return None;
             };
             let Device {
+                automation,
                 id: device_id,
                 state,
                 bypassed,
                 comparison,
-            } = current;
-            if device_id != &next.id
+            } = &**current;
+            if current.source_id() != next.source_id()
+                || device_id != &next.id
                 || bypassed != &next.bypassed
+                || automation != &next.automation
                 || comparison != &next.comparison
                 || state.type_id() != next.state.type_id()
                 || state == &next.state
@@ -164,7 +170,24 @@ impl Project {
             }
             changed = Some((*id, current, next));
         }
-        let (track, current, target) = changed?;
+        let (track, current, next_instrument) = changed?;
+        let source = current.source_id();
+        for (old, new) in native_sources.iter().zip(&target.native_sources) {
+            if old == new {
+                continue;
+            }
+            if old.id() != source
+                || new.id() != source
+                || old.name() != new.name()
+                || !old.is_singleton()
+                || !new.is_singleton()
+                || old.instrument() != &**current
+                || new.instrument() != &**next_instrument
+            {
+                return None;
+            }
+        }
+        let target = next_instrument;
         Some(InstrumentHistoryDelta {
             track,
             current,
@@ -320,9 +343,23 @@ mod tests {
                     1 => next.tracks[0].gain_lane.recording_epoch = 10,
                     2 => next.tracks[0].gain = 0.5,
                     3 => next.tracks[0].name.push('x'),
-                    4 => next.tracks[0].instrument.as_mut().unwrap().bypassed = true,
+                    4 => {
+                        let id = next.tracks[0].instrument().unwrap().id();
+                        next.edit_device(id, |d| {
+                            d.bypassed = true;
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
                     5 => next.tracks[0].instrument = None,
-                    6 => next.tracks[0].instrument.as_mut().unwrap().id = crate::DeviceId(999),
+                    6 => {
+                        let id = next.tracks[0].instrument().unwrap().id();
+                        next.edit_device(id, |d| {
+                            d.id = crate::DeviceId(999);
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
                     7 => next.master_gain = 0.5,
                     8 => next.tracks[0].instrument_position = Some(1),
                     9 => next.tracks.push(next.tracks[0].clone()),

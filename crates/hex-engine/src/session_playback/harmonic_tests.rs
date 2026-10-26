@@ -79,7 +79,7 @@ fn fixture(notes: usize, duration: u64) -> Project {
         clip.source.notes = authored(100);
     }
     snapshot.next_id = 300;
-    Project::from_snapshot(snapshot).unwrap()
+    Project::from_legacy_snapshot(snapshot).unwrap()
 }
 fn edit(project: &Project, changes: &[(ParameterId, ParameterValue)]) -> Project {
     edit_track(project, project.tracks()[0].id(), changes)
@@ -363,9 +363,18 @@ fn routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and
             track: source,
             quantization: LaunchQuantization::Immediate,
         }),
-        Err(SessionPlaybackError::MutableInstrumentActive),
-        "the source route cannot cut off the destination's committed mutable voices"
+        Ok(()),
+        "the source route cuts its authored destination gates without resetting source DSP"
     );
+    // Independent routing oracle: explicitly stop the destination and source.
+    for track in [destination, source] {
+        painted_reference
+            .apply(SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+    }
     let mut actual = [[0.0; 2]; 37];
     let mut expected = actual;
     painted.render(&mut actual).unwrap();
@@ -684,7 +693,7 @@ fn arrangement_clip_gain_uses_content_clock_after_looped_tempo_handoff() {
         let clip = source.tracks()[0].midi_clips()[0].id();
         let mut snapshot = source.snapshot();
         snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
-        let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+        let mut editor = Editor::new(Project::from_legacy_snapshot(snapshot).unwrap(), 8).unwrap();
         if volume {
             let length = editor.project().midi_source(clip).unwrap().source_length();
             editor
@@ -715,7 +724,7 @@ fn arrangement_clip_gain_uses_content_clock_after_looped_tempo_handoff() {
             BeatTime::ZERO,
             Tempo::new(90_000_000).unwrap(),
         )];
-        let changed = Project::from_snapshot(snapshot).unwrap();
+        let changed = Project::from_legacy_snapshot(snapshot).unwrap();
         let mut next =
             SessionPlayback::new(prepared(&changed, Some(old.revision.session()))).unwrap();
         next.try_inherit_state_from(&mut old).unwrap();

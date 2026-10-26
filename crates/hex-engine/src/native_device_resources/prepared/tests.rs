@@ -18,8 +18,29 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         .join()
         .unwrap();
 }
+#[test]
+fn registered_sampler_mixes_streamed_clips_without_losing_ordinary_resource_scope() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| registered_sampler_fixture(true, false))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+#[test]
+fn shared_sampler_has_one_receiver_resource_configuration_and_ordinary_fallback() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| registered_sampler_fixture(false, true))
+        .unwrap()
+        .join()
+        .unwrap();
+}
 fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate_audio_on_control()
 {
+    registered_sampler_fixture(false, false);
+}
+fn registered_sampler_fixture(streamed: bool, shared: bool) {
     let cancel = AtomicBool::new(false);
     let mut editor = Editor::new(Project::new(16000).unwrap(), 16).unwrap();
     let Created::Asset(asset) = editor
@@ -105,6 +126,50 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
             looping: false,
         })
         .unwrap();
+    let shared_contributor = shared.then(|| {
+        let receiver = editor.project().tracks()[0].id();
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let Created::Track(contributor) = editor
+            .execute(Command::AddMidiTrack {
+                name: "shared contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("contributor")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track: contributor,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("contributor clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 64,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+        contributor
+    });
     let limits = AudioStorageLedgerReservation {
         data_rows: 256,
         handle_rows: 64,
@@ -168,6 +233,93 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         24
     );
     let revision = Arc::new(prepare(&resources, 24).unwrap());
+    if let Some(contributor) = shared_contributor {
+        let receiver = editor.project().tracks()[0].id();
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        assert_eq!(resources.configurations.len(), 1);
+        assert_eq!(resources.configurations[0].track, receiver);
+        assert!(resources.lease_on_control(receiver).unwrap().is_some());
+        assert!(resources.lease_on_control(contributor).unwrap().is_none());
+        assert!(revision.source_routing().has_shared_sources());
+        assert_eq!(
+            revision.source_routing().receiver(contributor),
+            Some(receiver)
+        );
+        let playback =
+            SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
+        assert_eq!(playback.device_resource_leases().count(), 1);
+        let private = ControlSamplerSources::prepare_on_control(
+            &store,
+            editor.project(),
+            20_000_000,
+            8,
+            &cancel,
+        )
+        .unwrap();
+        assert!(private.has_track(receiver));
+        assert!(!private.has_track(contributor));
+        // The same singleton sampler qualifies for CURRENT; binding the extra
+        // contributor declines only that closed constructor, while the ordinary
+        // resource-backed revision above has already succeeded.
+        let mut closed = Editor::new(editor.project().clone(), 16).unwrap();
+        let unrelated = closed
+            .project()
+            .tracks()
+            .iter()
+            .filter(|track| track.id() != receiver && track.id() != contributor)
+            .map(|track| track.id())
+            .collect::<Vec<_>>();
+        for track in unrelated {
+            closed.execute(Command::RemoveTrack(track)).unwrap();
+        }
+        assert!(matches!(
+            super::super::current_sampler::validate_project(closed.project()),
+            Err(AudioStorageError::UnsupportedGraph)
+        ));
+        closed.execute(Command::RemoveTrack(contributor)).unwrap();
+        assert_eq!(
+            super::super::current_sampler::validate_project(closed.project()),
+            Ok(true)
+        );
+        editor
+            .execute(Command::SetNativeSourceReceiver {
+                source,
+                track: Some(contributor),
+            })
+            .unwrap();
+        assert!(resources.validate_project(editor.project()).is_err());
+        let moved = PreparedDeviceResources::prepare_on_control(
+            &store,
+            editor.project(),
+            20_000_000,
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(moved.configurations.len(), 1);
+        assert_eq!(moved.configurations[0].track, contributor);
+        assert!(moved.lease_on_control(receiver).unwrap().is_none());
+        assert!(moved.lease_on_control(contributor).unwrap().is_some());
+        editor
+            .execute(Command::SetNativeSourceReceiver {
+                source,
+                track: None,
+            })
+            .unwrap();
+        let silent = PreparedDeviceResources::prepare_on_control(
+            &store,
+            editor.project(),
+            20_000_000,
+            &cancel,
+        )
+        .unwrap();
+        assert!(silent.configurations.is_empty());
+        return;
+    }
     assert!(
         SessionPlayback::new(Arc::clone(&revision)).is_err(),
         "resource-free constructor cannot omit custody"
@@ -176,6 +328,235 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         PreparedDeviceResources::prepare_on_control(&store, editor.project(), 20_000_000, &cancel)
             .unwrap();
     assert!(SessionPlayback::new_with_device_resources(Arc::clone(&revision), &foreign).is_err());
+    if streamed {
+        let generation = 17;
+        let key = crate::StreamSourceKey::new(generation, asset);
+        let canonical = editor.project().asset(asset).unwrap();
+        let metadata = Arc::new(
+            crate::StreamedSourceMetadata::new(
+                key,
+                canonical.source_sample_rate(),
+                editor.project().sample_rate(),
+                canonical.source_frames(),
+                canonical.playback_frames(),
+                canonical.conversion_version(),
+                [0x17; 32],
+            )
+            .unwrap(),
+        );
+        let mixed = BTreeMap::from([(
+            asset,
+            crate::compile::PreparedAudioSource::Streamed(metadata),
+        )]);
+        let prepare = |generation, scan| {
+            PreparedRevision::prepare_with_prepared_audio_sources_and_device_resources(
+                editor.project(),
+                &mixed,
+                generation,
+                Arc::clone(&table),
+                None,
+                &transforms,
+                &resources,
+                scan,
+                &cancel,
+            )
+        };
+        assert!(
+            prepare(0, 24).is_err(),
+            "zero generation refuses even before source lookup"
+        );
+        assert!(
+            prepare(generation + 1, 24).is_err(),
+            "foreign stream generation refuses"
+        );
+        assert!(
+            prepare(generation, 23).is_err(),
+            "ordinary factory work bound still applies"
+        );
+        let mixed = Arc::new(prepare(generation, 24).unwrap());
+        assert!(mixed.contains_streamed_sources());
+        assert!(mixed.requires_device_resources());
+        assert!(SessionPlayback::new(Arc::clone(&mixed)).is_err());
+        assert!(SessionPlayback::new_with_device_resources(Arc::clone(&mixed), &foreign).is_err());
+        struct Pages<'a> {
+            key: crate::StreamSourceKey,
+            frames: &'a [crate::Frame],
+        }
+        impl crate::MediaPages for Pages<'_> {
+            fn page(
+                &mut self,
+                key: crate::StreamSourceKey,
+                index: u64,
+            ) -> Option<crate::BorrowedMediaPage<'_>> {
+                (key == self.key && index == 0).then_some(crate::BorrowedMediaPage {
+                    page_index: index,
+                    frames: self.frames,
+                })
+            }
+            fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+                panic!("fixture page is ready")
+            }
+        }
+        let mut pages = Pages {
+            key,
+            frames: &derivative,
+        };
+        let mut expected = crate::playback::Playback::try_from_prepared_with_device_resources(
+            Arc::clone(&revision),
+            &resources,
+        )
+        .unwrap();
+        let mut actual =
+            crate::playback::Playback::try_from_prepared_with_device_resources(mixed, &resources)
+                .unwrap();
+        let context = crate::AudioSourceContext {
+            project_generation: 11,
+            editor_revision: 29,
+        };
+        let action = crate::PlaybackAction::Transport(crate::PlaybackCommand::PlayFrom(0));
+        let prepare_action = |runtime: &mut crate::playback::Playback| {
+            runtime
+                .stream_playback(context)
+                .prepare_stream_action(action)
+                .unwrap()
+        };
+        let wrong_context = crate::AudioSourceContext {
+            editor_revision: 30,
+            ..context
+        };
+        let prepared = prepare_action(&mut actual);
+        let mut wrong = actual.stream_playback(wrong_context);
+        assert!(
+            wrong
+                .visit_prepared_stream_action(&prepared, 8, &mut |_| Ok(()))
+                .is_err()
+        );
+        assert!(wrong.commit_stream_action(prepared).is_err());
+        assert!(!actual.playing());
+        let prepared = prepare_action(&mut actual);
+        assert!(
+            expected
+                .stream_playback(context)
+                .commit_stream_action(prepared)
+                .is_err()
+        );
+        assert!(!actual.playing());
+        assert!(!expected.playing());
+        // Demand preflight borrows the real ordinary predecessor and full native
+        // successor. It does not inherit routes, move graph custody or play.
+        let window = actual
+            .stream_playback(context)
+            .preview_stream_handoff(
+                &mut expected.stream_playback(context),
+                8,
+                Some(true),
+                &mut |extent| {
+                    assert_eq!(extent.source, key);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(window.frames, 8);
+        assert!(!actual.playing());
+        assert!(!expected.playing());
+        let prepared = prepare_action(&mut actual);
+        let mut extents = Vec::new();
+        let window = actual
+            .stream_playback(context)
+            .visit_prepared_stream_action(&prepared, 8, &mut |extent| {
+                extents.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(window.frames, 8);
+        assert!(!extents.is_empty());
+        assert!(extents.iter().all(|extent| extent.source == key));
+        actual
+            .stream_playback(context)
+            .commit_stream_action(prepared)
+            .unwrap();
+        assert!(actual.playing());
+        for runtime in [&mut expected, &mut actual] {
+            runtime
+                .try_apply_action(crate::PlaybackAction::Transport(
+                    crate::PlaybackCommand::Play,
+                ))
+                .unwrap();
+        }
+        for frames in [1, 3, 4, 17] {
+            let mut resident = vec![[0.0; 2]; frames];
+            let mut streamed = vec![[0.0; 2]; frames];
+            expected.render(&mut resident).unwrap();
+            actual
+                .stream_playback(context)
+                .render_with_pages_and_signal_observers(&mut streamed, &mut pages, None, None)
+                .unwrap();
+            assert_eq!(
+                streamed, resident,
+                "original-rate sampler, vector and converted clip share the ordinary render kernel"
+            );
+        }
+        // Interactive held-note starts use the same original-rate sampler
+        // resources and page admission. No private scope or prefix replay.
+        for destination in [3, 8_000] {
+            let action =
+                crate::PlaybackAction::Transport(crate::PlaybackCommand::PlayFrom(destination));
+            let plan = actual
+                .stream_playback(context)
+                .prepare_stream_action(action)
+                .unwrap();
+            actual
+                .stream_playback(context)
+                .visit_prepared_stream_action(&plan, 8, &mut |_| Ok(()))
+                .unwrap();
+            actual
+                .stream_playback(context)
+                .commit_stream_action(plan)
+                .unwrap();
+            expected.try_apply_action(action).unwrap();
+            let mut resident = [[0.0; 2]; 8];
+            let mut streamed = resident;
+            expected.render(&mut resident).unwrap();
+            actual
+                .stream_playback(context)
+                .render_with_pages_and_signal_observers(&mut streamed, &mut pages, None, None)
+                .unwrap();
+            assert_eq!(streamed, resident);
+            assert_eq!(actual.position(), destination + 8);
+        }
+        // Resource custody is independent of page readiness. The ordinary book must
+        // admit/retire the scoped graph without treating file extent as resident PCM.
+        let mut book = DeviceResourcePublication::reserve_on_control(limits, 8, 8).unwrap();
+        let actual = match book.publish_on_control(actual, Ok::<_, ()>) {
+            Ok(runtime) => runtime,
+            Err(DeviceResourcePublishError::Resources { reason, .. }) => {
+                panic!("mixed resource admission: {reason:?}")
+            }
+            Err(DeviceResourcePublishError::Publication(())) => panic!("unexpected queue refusal"),
+        };
+        assert_eq!(book.outstanding_leases(), 1);
+        let registered = [book.admission_on_control()];
+        let phase = DeviceResourcePhase {
+            registered: &registered,
+            stores: &[],
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        assert_eq!(
+            inspect_device_resource_union(&phase, &phase, limits)
+                .unwrap()
+                .retained_frames,
+            4,
+            "the registered mixed graph retains only the four original sampler PCM frames"
+        );
+        assert!(book.retire_on_control(Box::new(actual)).is_ok());
+        assert_eq!(book.outstanding_leases(), 0);
+        return;
+    }
+
     assert!(
         PreparedDeviceResources::prepare_on_control(
             &store,
@@ -197,6 +578,17 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         assert_eq!(
             inline_resource_factory_bytes(factory, bound).unwrap(),
             std::mem::size_of_val(factory)
+        );
+        let proof = revision.session().mutable_history_retarget(track).unwrap();
+        let proof_bytes = std::mem::size_of_val(proof);
+        assert_eq!(
+            resources.compiler_construction_allowance_bytes().unwrap(),
+            std::mem::size_of_val(factory) * 2 + proof_bytes,
+            "both factory copies and the actual proof overlap before compilation finishes"
+        );
+        assert_eq!(
+            revision.session().resource_factory_inline_bytes().unwrap(),
+            std::mem::size_of_val(factory) + proof_bytes
         );
         for declared in [
             None,

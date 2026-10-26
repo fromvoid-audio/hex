@@ -533,3 +533,93 @@ fn audio_session_cell_move_clear_scene_delete_and_track_delete_follow_history() 
     assert!(editor.undo());
     assert!(editor.project().track(second_track).is_some());
 }
+
+#[test]
+fn console_audio_cycles_preserve_retained_source_history_and_duplicate_independently() {
+    use hex_project::SessionAudioLoop;
+    let (mut editor, track, _, scene, asset) = fixture();
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionAudioClip {
+            track,
+            scene,
+            name: "intro and loop".into(),
+            asset,
+            source_start: 3,
+            source_end: 29,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    let original = editor.project().clone();
+    let cycle = SessionAudioLoop::new(7, 13).unwrap();
+    editor
+        .execute(Command::SetSessionAudioClipLoop {
+            clip,
+            loop_range: Some(cycle),
+        })
+        .unwrap();
+    let looping = editor.project().clone();
+    let item = looping.session_audio_clip(clip).unwrap();
+    assert_eq!(
+        (item.source_start(), item.source_end(), item.loop_range()),
+        (3, 29, Some(cycle))
+    );
+    assert_eq!(Project::from_snapshot(looping.snapshot()).unwrap(), looping);
+    for invalid in [
+        SessionAudioLoop::new(0, 3).unwrap(),
+        SessionAudioLoop::new(28, 30).unwrap(),
+    ] {
+        assert!(
+            editor
+                .execute(Command::SetSessionAudioClipLoop {
+                    clip,
+                    loop_range: Some(invalid)
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &looping);
+    }
+    assert!(SessionAudioLoop::new(7, 7).is_err());
+    assert!(
+        editor
+            .execute(Command::SetSessionAudioClipSource {
+                clip,
+                asset,
+                source_start: 13,
+                source_end: 29
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project(), &looping);
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &original);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &looping);
+    let Created::Scene(duplicate) = editor.execute(Command::DuplicateScene(scene)).unwrap() else {
+        panic!("scene")
+    };
+    let SessionCellContent::Audio(copied) =
+        editor.project().session_cell(track, duplicate).unwrap()
+    else {
+        panic!("audio")
+    };
+    assert_eq!(copied.loop_range(), Some(cycle));
+    let copied_id = copied.id();
+    editor
+        .execute(Command::SetSessionAudioClipLoop {
+            clip: copied_id,
+            loop_range: None,
+        })
+        .unwrap();
+    assert_eq!(
+        editor
+            .project()
+            .session_audio_clip(clip)
+            .unwrap()
+            .loop_range(),
+        Some(cycle)
+    );
+    assert_eq!(cycle.frame_at(3, u64::MAX), Some(7 + (u64::MAX - 10) % 6));
+    assert_eq!(cycle.frame_at(13, 0), None);
+}

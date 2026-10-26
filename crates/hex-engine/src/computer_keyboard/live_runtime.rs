@@ -12,6 +12,11 @@ struct OffsetClock<'a> {
     offset: usize,
 }
 impl hex_lattice::NativeInstrumentClock for OffsetClock<'_> {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        self.clock
+            .tempo_micro_bpm_at_offset(self.offset.checked_add(offset)?)
+    }
+
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock.beat_at_offset(self.offset.checked_add(offset)?)
     }
@@ -148,10 +153,7 @@ impl ComputerKeyboardRuntime {
         let pitch = ((event.word & 255) - 1) as u8;
         let velocity = ((event.word >> 8) & 255) as u8;
         let sampler = self.input.sampler_index(event.key, pitch, velocity)?;
-        let capacity = self
-            .mutable
-            .as_ref()
-            .map_or(VOICES, NativeInstrumentRuntimePair::max_active_occurrences);
+        let capacity = self.voice_capacity();
         if !self.supported.get(sampler).copied().unwrap_or(false)
             || self.scratch.iter().flatten().count() >= capacity
         {
@@ -248,10 +250,7 @@ impl ComputerKeyboardRuntime {
         // Repeated same-key on releases the prior occurrence before retriggering.
         self.release_hardware(Some(source), events, len);
         let sampler = (usize::from(velocity) - 1) * 128 + usize::from(pitch);
-        let capacity = self
-            .mutable
-            .as_ref()
-            .map_or(VOICES, NativeInstrumentRuntimePair::max_active_occurrences);
+        let capacity = self.voice_capacity();
         if !self.supported.get(sampler).copied().unwrap_or(false)
             || self.scratch.iter().flatten().count() >= capacity
         {

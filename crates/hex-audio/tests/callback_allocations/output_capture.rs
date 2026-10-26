@@ -72,6 +72,7 @@ fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>>
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
@@ -81,6 +82,7 @@ fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>>
     snapshot.return_tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,

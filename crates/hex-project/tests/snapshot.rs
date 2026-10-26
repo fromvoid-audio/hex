@@ -7,6 +7,7 @@ use std::path::PathBuf;
 fn valid_snapshot() -> Snapshot {
     Snapshot {
         aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
@@ -139,6 +140,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut missing_position = valid_snapshot();
     missing_position.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 50,
         bypassed: false,
@@ -148,6 +150,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut out_of_range = valid_snapshot();
     out_of_range.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 50,
         bypassed: false,
@@ -158,12 +161,22 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut valid = valid_snapshot();
     valid.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 50,
         bypassed: false,
         state: hex_project::default_instrument_state().unwrap(),
     });
     valid.tracks[0].instrument_position = Some(0);
+    valid
+        .native_sources
+        .push(hex_project::NativeSourceSnapshot {
+            id: 51,
+            name: "source".into(),
+            devices: vec![valid.tracks[0].instrument.clone().unwrap()],
+            instrument_index: 0,
+            receiver: Some(valid.tracks[0].id),
+        });
     assert_eq!(
         Project::from_snapshot(valid).unwrap().tracks()[0].instrument_position(),
         Some(0)

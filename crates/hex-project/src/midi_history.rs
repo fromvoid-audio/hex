@@ -339,7 +339,15 @@ impl Plan {
             },
             _ => return Ok(None),
         };
-        let alias_source = match kind { Kind::Notes { location, .. } | Kind::Source { location } => source.clip_alias(location.clip()), Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => source.clip_alias(clip), _ => None };
+        let alias_source = match kind {
+            Kind::Notes { location, .. } | Kind::Source { location } => {
+                source.clip_alias(location.clip())
+            }
+            Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => {
+                source.clip_alias(clip)
+            }
+            _ => None,
+        };
         Ok(Some(Self { kind, alias_source }))
     }
     pub(crate) fn finish(
@@ -423,7 +431,10 @@ impl Plan {
             *removed = retired;
             *truncated = shortened;
         }
-        let effect = MidiHistoryEffect { kind: self.kind, alias_source: self.alias_source };
+        let effect = MidiHistoryEffect {
+            kind: self.kind,
+            alias_source: self.alias_source,
+        };
         effect.validates_forward(source, target).then_some(effect)
     }
 }
@@ -451,29 +462,79 @@ impl MidiHistoryEffect {
             Kind::AppendScene { .. } => (None, None),
         };
         if let Some(group) = self.alias_source {
-            let initiating = match self.kind { Kind::Notes { location, .. } | Kind::Source { location } => location.clip(), Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => clip, _ => return false };
+            let initiating = match self.kind {
+                Kind::Notes { location, .. } | Kind::Source { location } => location.clip(),
+                Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => clip,
+                _ => return false,
+            };
             for (clip, source_id) in &source.aliases.members {
-                if *source_id != group { continue; }
-                if matches!(self.kind, Kind::ArrangeDeath { clip: removed, .. } | Kind::ConsoleDeath { clip: removed, .. } if removed == *clip) { continue; }
-                let Some(location) = Location::find(source, *clip) else { return false; };
-                if Location::find(target, *clip) != Some(location) { return false; }
-                let Some((a, b)) = source.midi_source(*clip).zip(target.midi_source(*clip)) else { return false; };
-                let Some(crate::clip_alias::Content::Midi(old_content)) = source.aliases.sources.get(&group) else { return false; };
-                let Some(crate::clip_alias::Content::Midi(new_content)) = target.aliases.sources.get(&group) else { return false; };
-                if !std::sync::Arc::ptr_eq(&a.content, old_content) || !std::sync::Arc::ptr_eq(&b.content, new_content) { return false; }
-                if *clip != initiating && (!matching_clip_shell(source, target, location, false, false) || (a.source_start, a.loop_start, a.loop_end, a.looping, a.one_shot_boundary) != (b.source_start, b.loop_start, b.loop_end, b.looping, b.one_shot_boundary)) { return false; }
+                if *source_id != group {
+                    continue;
+                }
+                if matches!(self.kind, Kind::ArrangeDeath { clip: removed, .. } | Kind::ConsoleDeath { clip: removed, .. } if removed == *clip)
+                {
+                    continue;
+                }
+                let Some(location) = Location::find(source, *clip) else {
+                    return false;
+                };
+                if Location::find(target, *clip) != Some(location) {
+                    return false;
+                }
+                let Some((a, b)) = source.midi_source(*clip).zip(target.midi_source(*clip)) else {
+                    return false;
+                };
+                let Some(crate::clip_alias::Content::Midi(old_content)) =
+                    source.aliases.sources.get(&group)
+                else {
+                    return false;
+                };
+                let Some(crate::clip_alias::Content::Midi(new_content)) =
+                    target.aliases.sources.get(&group)
+                else {
+                    return false;
+                };
+                if !std::sync::Arc::ptr_eq(&a.content, old_content)
+                    || !std::sync::Arc::ptr_eq(&b.content, new_content)
+                {
+                    return false;
+                }
+                if *clip != initiating
+                    && (!matching_clip_shell(source, target, location, false, false)
+                        || (
+                            a.source_start,
+                            a.loop_start,
+                            a.loop_end,
+                            a.looping,
+                            a.one_shot_boundary,
+                        ) != (
+                            b.source_start,
+                            b.loop_start,
+                            b.loop_end,
+                            b.looping,
+                            b.one_shot_boundary,
+                        ))
+                {
+                    return false;
+                }
             }
         }
         for (a, b) in source.tracks.iter().zip(&target.tracks) {
             if a.content
                 .midi_clips
                 .iter()
-                .filter(|c| arrange != Some((a.id, c.id)) && !self.alias_source.is_some_and(|group| source.clip_alias(c.id) == Some(group)))
-                .ne(b
-                    .content
-                    .midi_clips
-                    .iter()
-                    .filter(|c| arrange != Some((b.id, c.id)) && !self.alias_source.is_some_and(|group| target.clip_alias(c.id) == Some(group))))
+                .filter(|c| {
+                    arrange != Some((a.id, c.id))
+                        && !self
+                            .alias_source
+                            .is_some_and(|group| source.clip_alias(c.id) == Some(group))
+                })
+                .ne(b.content.midi_clips.iter().filter(|c| {
+                    arrange != Some((b.id, c.id))
+                        && !self
+                            .alias_source
+                            .is_some_and(|group| target.clip_alias(c.id) == Some(group))
+                }))
             {
                 return false;
             }
@@ -908,13 +969,19 @@ fn matching_clip_shell(
         }
     }
 }
-fn same_shell(a: &Project, b: &Project, alias_source: Option<crate::AliasSourceId>, kind: Kind) -> bool {
+fn same_shell(
+    a: &Project,
+    b: &Project,
+    alias_source: Option<crate::AliasSourceId>,
+    kind: Kind,
+) -> bool {
     let crate::SessionGrid {
         scenes: _,
         cells: _,
     } = &a.session;
     let Project {
         aliases,
+        native_sources,
         arrangement_sections,
         tuning,
         routing,
@@ -933,14 +1000,47 @@ fn same_shell(a: &Project, b: &Project, alias_source: Option<crate::AliasSourceI
         tempo_map,
         meter_map,
     } = a;
-    let death = match kind { Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => Some(clip), _ => None };
+    let death = match kind {
+        Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => Some(clip),
+        _ => None,
+    };
     let aliases_match = if let (Some(changed), Some(removed)) = (alias_source, death) {
-        aliases.members.iter().filter(|(clip, _)| **clip != removed).eq(b.aliases.members.iter())
-            && aliases.sources.iter().filter(|(id, _)| **id != changed || b.aliases.members.values().any(|source| *source == changed)).eq(b.aliases.sources.iter())
+        aliases
+            .members
+            .iter()
+            .filter(|(clip, _)| **clip != removed)
+            .eq(b.aliases.members.iter())
+            && aliases
+                .sources
+                .iter()
+                .filter(|(id, _)| {
+                    **id != changed || b.aliases.members.values().any(|source| *source == changed)
+                })
+                .eq(b.aliases.sources.iter())
     } else if let Some(changed) = alias_source {
-        aliases.members == b.aliases.members && aliases.sources.len() == b.aliases.sources.len() && aliases.sources.iter().all(|(id, content)| b.aliases.sources.get(id).is_some_and(|other| if *id == changed { matches!((content, other), (crate::clip_alias::Content::Midi(_), crate::clip_alias::Content::Midi(_))) } else { content == other }))
-    } else { aliases == &b.aliases };
-    if !aliases_match || arrangement_sections != &b.arrangement_sections
+        aliases.members == b.aliases.members
+            && aliases.sources.len() == b.aliases.sources.len()
+            && aliases.sources.iter().all(|(id, content)| {
+                b.aliases.sources.get(id).is_some_and(|other| {
+                    if *id == changed {
+                        matches!(
+                            (content, other),
+                            (
+                                crate::clip_alias::Content::Midi(_),
+                                crate::clip_alias::Content::Midi(_)
+                            )
+                        )
+                    } else {
+                        content == other
+                    }
+                })
+            })
+    } else {
+        aliases == &b.aliases
+    };
+    if !aliases_match
+        || native_sources != &b.native_sources
+        || arrangement_sections != &b.arrangement_sections
         || tuning != &b.tuning
         || routing != &b.routing
         || audio_feeds != &b.audio_feeds

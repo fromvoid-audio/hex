@@ -15,6 +15,7 @@ use hex_session::service::{
 
 pub(super) struct Pending {
     playback: Playback,
+    file_sources: Option<hex_session::service::ResidentFileSet>,
     resources: Option<PreparedDeviceResources>,
     observation: Arc<hex_engine::PreparedPlaybackObservation>,
     metadata: ResidentPublicationMetadata,
@@ -29,6 +30,15 @@ pub(super) struct Resident {
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
+    pub(super) fn discard_obsolete_pending_after_restore(&mut self, context: AudioSourceContext) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.metadata.context == context)
+        {
+            self.pending = None;
+        }
+    }
     /// A successfully adopted non-resident document supersedes only unpublished old-generation
     /// custody. Actual callback obligations remain in the active/retired book until teardown.
     pub(super) fn discard_obsolete_pending(&mut self, context: hex_engine::AudioSourceContext) {
@@ -220,6 +230,9 @@ impl NativeAudioSink {
                 }),
         ]
     }
+    /// Retry native Work contention with the exact returned graph. Once the
+    /// caller's admission hook wins, later source intent cannot cancel that
+    /// owned work; actual enqueue/refusal still determines its terminal.
     #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Explicit admission inputs; refusal returns the exact graph.
     pub(super) fn publish_resident_graph(
         &mut self,
@@ -230,9 +243,50 @@ impl NativeAudioSink {
         policy: ResidentPublicationPolicy,
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+        file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        let native_publication = self.plugins.preparing_edit(metadata.context)
+            || playback.foreign_nodes_on_control().next().is_some();
+        let edit_cancellation = native_publication
+            .then(|| self.request_cancellation.clone())
+            .flatten();
+        let publication_cancelled = || {
+            edit_cancellation
+                .as_ref()
+                .is_some_and(hex_session::service::RequestCancellation::is_cancelled)
+        };
+        let edit_admitted = std::cell::Cell::new(false);
+        let mut guarded_admit = |resources: &[DeviceResourceAdmission<'_>]| {
+            if !edit_admitted.get() && publication_cancelled() {
+                return Err("vst3 edit cancelled before admission".into());
+            }
+            admit(resources)?;
+            edit_admitted.set(true);
+            Ok(())
+        };
+        let admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String> =
+            &mut guarded_admit;
+        if let Err(error) = self.plugins.check_reopen_publication(
+            metadata.context,
+            matches!(policy, ResidentPublicationPolicy::RestorePluginState),
+        ) {
+            return Err(ResidentPublicationRefusal { playback, error });
+        }
         self.remember_applied_loop();
         self.poll_section_edit();
+        // A request can wake the Session worker directly after the callback's
+        // restore ACK, before its next idle poll. Retire that exact applied
+        // gate before testing a successor publication, as for section edits.
+        if let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        {
+            self.plugins.poll_restore(
+                control,
+                self.desired.as_ref().map(|source| source.context()),
+            );
+        }
         let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
                 Ok(policy) => Some(policy),
@@ -348,6 +402,19 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
+                    match self.plugins.restore_policy(metadata.context) {
+                        Ok(Some(policy)) if metadata.stopped_restore => policy,
+                        Ok(None) => hex_audio::prepared::PublicationPolicy::InstallFreshRuntime,
+                        Ok(Some(_)) => {
+                            return Err(ResidentPublicationRefusal {
+                                playback,
+                                error: "stopped vst3 restore owns publication".into(),
+                            });
+                        }
+                        Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+                    }
+                }
+                ResidentPublicationPolicy::RestorePluginState => {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::ReplaceDocument => {
@@ -402,14 +469,63 @@ impl NativeAudioSink {
                     )
                 },
             );
-            let result = control.publish_with_admission_and_source_on_control(
-                playback,
-                policy,
-                metadata.context,
-                |prospective| admit(&[prospective, retired, pending]),
-            );
+            let mut retained_playback = playback;
+            #[cfg(all(test, feature = "allocation-probe"))]
+            if let Some((ready, resume)) = self.native_graph_gate.take()
+                && (ready.send(()).is_err()
+                    || resume
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .is_err())
+            {
+                return Err(ResidentPublicationRefusal {
+                    playback: retained_playback,
+                    error: "fixture native graph publication gate closed".into(),
+                });
+            }
+            let result = loop {
+                if !edit_admitted.get() && publication_cancelled() {
+                    return Err(ResidentPublicationRefusal {
+                        playback: retained_playback,
+                        error: "vst3 edit cancelled before admission".into(),
+                    });
+                }
+                let published = control.publish_with_admission_and_source_on_control(
+                    retained_playback,
+                    policy,
+                    metadata.context,
+                    |prospective| admit(&[prospective, retired, pending]),
+                );
+                // Observe the real Root refusal, never synthesize contention,
+                // source readiness, admission or an audio acknowledgement.
+                #[cfg(all(test, feature = "allocation-probe"))]
+                if let Err(hex_audio::prepared::AdmittedPublishError::Publication(error)) =
+                    &published
+                    && error.reason == "native graph preparation is busy"
+                    && let Some(observer) = self.native_graph_busy_observer.as_ref()
+                {
+                    let _ = observer.try_send(());
+                }
+                match published {
+                    Err(hex_audio::prepared::AdmittedPublishError::Publication(error))
+                        if error.reason == "native graph preparation is busy" =>
+                    {
+                        // Root has not retained sources or enqueued the graph,
+                        // but the caller's admission hook may already have won.
+                        // Retry the exact graph and preserve that cutoff while
+                        // the resource owner rolls back its unpublished proposal.
+                        retained_playback = error.playback;
+                        control.reclaim();
+                        control.poll_resident_publication();
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    result => break result,
+                }
+            };
             return match result {
                 Ok(audio_revision) => {
+                    if metadata.stopped_restore {
+                        self.plugins.restore_submitted(audio_revision);
+                    }
                     // Initial worker publication can precede Client exposure. The accepted
                     // control already proves this identity; retain its exact submission now
                     // rather than losing the observation while deliver_open is still pending.
@@ -494,6 +610,7 @@ impl NativeAudioSink {
         self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
         self.resident.pending = Some(Pending {
             playback,
+            file_sources: file_sources.cloned(),
             resources: captured,
             observation,
             metadata,
@@ -512,11 +629,38 @@ impl NativeAudioSink {
         if self.output.is_none() {
             return;
         }
+        if self
+            .resident
+            .pending
+            .as_ref()
+            .is_some_and(|pending| self.plugins.hold_reopen(pending.metadata.context))
+        {
+            return;
+        }
         let Some(pending) = self.resident.pending.take() else {
             return;
         };
+        if let Some(files) = pending.file_sources.as_ref() {
+            match self.poll_resident_files(files) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.resident.pending = Some(pending);
+                    return;
+                }
+                Err(error) => {
+                    self.observe(
+                        pending.metadata.context,
+                        "resident-source-refused",
+                        EditorPublicationState::Refused(error),
+                    );
+                    self.resident.pending = Some(pending);
+                    return;
+                }
+            }
+        }
         let Pending {
             playback,
+            file_sources,
             resources,
             observation,
             metadata,
@@ -541,9 +685,11 @@ impl NativeAudioSink {
             policy,
             0,
             &mut with_capture,
+            file_sources.as_ref(),
         ) {
             self.resident.pending = Some(Pending {
                 playback: refused.playback,
+                file_sources,
                 resources,
                 observation,
                 metadata,

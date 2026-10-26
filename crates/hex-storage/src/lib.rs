@@ -1,5 +1,5 @@
 //! # Purpose
-//! Own strict bounded serialization and recoverable publication of canonical project metadata.
+//! Own strict validated serialization and recoverable publication of canonical project metadata.
 //!
 //! # Dependencies
 //! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
@@ -27,9 +27,11 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 45;
+pub const CURRENT_SCHEMA_VERSION: u32 = 52;
 
-pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+/// Older readers rejected documents above this size. This is compatibility
+/// metadata for overwrite consent, never an admission limit for this reader.
+pub const LEGACY_READER_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JournalChange {
@@ -144,8 +146,13 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema45 with explicit shared clip sources and strict member references,
-/// retaining schema44 hierarchy, audio roots/fades, MIDI windows/volume and devices.
+/// Encode the current schema with complete hierarchy, audio roots, event fades,
+/// directed views, activation, MIDI, tuning, device state and retained native sources
+/// with explicit per-track source bindings, Console audio cycles and bounded
+/// faded Arrangement overlaps and explicit shared clip content (schema52).
+/// There is no blanket
+/// byte ceiling; typed model limits still apply. Owned output growth is fallible,
+/// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     encode_document(&schema::clip_aliases::encode(project)?)
 }
@@ -164,6 +171,18 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
     schema::clip_aliases::require_legacy_compatible(project)?;
+    schema::crossfades::require_legacy_disjoint(project)?;
+    if project.has_device_automation() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save device automation",
+        ));
+    }
+    schema::session_audio_loops::refuse_legacy(project)?;
+    if !project.native_sources().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save retained native sources",
+        ));
+    }
     schema::track_groups::require_legacy_compatible(project)?;
     schema::grouped_audio::require_legacy_compatible(project)?;
     schema::audio_events::require_legacy_compatible(project)?;
@@ -222,33 +241,20 @@ fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
 }
 
 fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageError> {
-    struct BoundedOutput {
-        bytes: Vec<u8>,
-        exceeded: bool,
-    }
-    impl io::Write for BoundedOutput {
+    struct Output(Vec<u8>);
+    impl io::Write for Output {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if bytes.len() > MAX_DOCUMENT_BYTES.saturating_sub(self.bytes.len()) {
-                self.exceeded = true;
-                return Err(io::Error::other("project document exceeds byte limit"));
-            }
-            self.bytes.extend_from_slice(bytes);
+            self.0.try_reserve(bytes.len()).map_err(io::Error::other)?;
+            self.0.extend_from_slice(bytes);
             Ok(bytes.len())
         }
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
     }
-    let mut output = BoundedOutput {
-        bytes: Vec::new(),
-        exceeded: false,
-    };
-    let result = serde_json::to_writer(&mut output, document);
-    if output.exceeded {
-        return Err(StorageError::Invalid("project document exceeds byte limit"));
-    }
-    result?;
-    Ok(output.bytes)
+    let mut output = Output(Vec::new());
+    serde_json::to_writer(&mut output, document)?;
+    Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
 /// Schema45 requires explicit shared source/member inventories; schema44 and older
@@ -256,6 +262,19 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
+/// Schema47 retains its evidenced receiverless source layout while allowing
+/// retained processing projections on outer musical views and skipping inaudible
+/// partial first cycles without rewriting authored cursors. Schema48 adds Console
+/// audio cycles while retaining the receiverless singleton-source layout. Schema49
+/// adds a required nullable source receiver and shared contributor bindings;
+/// schemas46–48 infer a receiver only from their singleton binding.
+/// Schema50 adds ordered stable device/parameter envelopes with bounded normalized
+/// points. Schemas1–49 migrate with no generic device automation; provider-owned
+/// opaque state, including older EQ envelopes, is retained unchanged.
+/// Schema45 retains
+/// independent sources. Schemas1–44 migrate inline instruments
+/// into retained singleton sources, preserving their device identities. Schema44
+/// retains track hierarchy.
 /// Schema43 retains independent audio sources and their captured processing tempos.
 /// Schema42 adds source-clock event fades; schema41 inventories directed content views. The evidenced unmerged
 /// grouped41 branch is selected by its disjoint complete inventory; mixed layouts refuse.
@@ -274,9 +293,6 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(StorageError::Invalid("project document exceeds byte limit"));
-    }
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
         format: &'a str,
@@ -286,8 +302,15 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
     }
-    match header.version {
+    let project = match header.version {
         CURRENT_SCHEMA_VERSION => schema::clip_aliases::decode(bytes),
+        51 => schema::crossfades::decode(bytes),
+        50 => schema::device_automation::decode(bytes),
+        49 => schema::session_audio_loops::decode49(bytes),
+        48 => schema::session_audio_loops::decode48(bytes),
+        47 => schema::native_sources::decode47(bytes),
+        46 => schema::native_sources::decode46(bytes),
+        45 => schema::native_sources::decode45(bytes),
         44 => schema::track_groups::decode(bytes),
         43 => schema::grouped_audio::decode(bytes),
         42 => schema::event_fades::decode(bytes),
@@ -304,5 +327,58 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         _ => Err(StorageError::Invalid(
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
+    }?;
+    if header.version < 52 {
+        schema::clip_aliases::require_legacy_compatible(&project)?;
     }
+    if header.version < 51 {
+        schema::crossfades::require_legacy_disjoint(&project)?;
+    }
+    if header.version < 47 && requires_schema47_audio_placement(&project)? {
+        return Err(StorageError::Invalid(
+            "historical project schema contains unsupported audio placement; open a copy with the hex build that saved it; original file unchanged",
+        ));
+    }
+    Ok(project)
+}
+
+/// Historical schemas admitted retained processing and outer placements as
+/// separate states, and required a non-exhausted first occurrence to contain
+/// frames. Apply that frozen contract after decoding into validated
+/// project objects, including grouped retained source clips; opaque device state
+/// is intentionally outside this audio-model check.
+fn requires_schema47_audio_placement(project: &Project) -> Result<bool, StorageError> {
+    let has_state =
+        |clip: &hex_project::Clip, tempo: &hex_project::TempoMap| -> Result<bool, StorageError> {
+            let Some(edit) = clip.audio_edit() else {
+                return Ok(false);
+            };
+            if edit.processing_projection.is_some() && edit.placement.is_some() {
+                return Ok(true);
+            }
+            if edit.placement.is_none() && edit.content_view.is_none() {
+                return Ok(false);
+            }
+            let projection = hex_project::AudioViewProjection::new(clip, tempo)
+                .map_err(|error| StorageError::Invalid(error.0))?;
+            Ok(projection.has_subframe_intro())
+        };
+    for track in project.tracks() {
+        for clip in track.clips() {
+            if has_state(clip, project.tempo_map())? {
+                return Ok(true);
+            }
+            if let Some(events) = clip
+                .audio_edit()
+                .and_then(|edit| edit.domain.events.as_ref())
+            {
+                for source in &events.sources {
+                    if has_state(&source.clip, &source.tempo)? {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
 }

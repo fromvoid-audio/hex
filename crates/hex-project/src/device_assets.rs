@@ -5,13 +5,18 @@ impl Project {
     fn asset_devices(&self) -> impl Iterator<Item = &Device> {
         self.tracks()
             .iter()
-            .flat_map(|track| track.devices().iter().chain(track.instrument()))
+            .flat_map(|track| track.devices().iter())
             .chain(
                 self.return_tracks()
                     .iter()
                     .flat_map(|track| track.devices()),
             )
             .chain(self.main_devices())
+            .chain(
+                self.native_sources()
+                    .iter()
+                    .flat_map(|source| source.devices()),
+            )
     }
 
     /// Resolve identities only; this performs no file access or PCM admission.

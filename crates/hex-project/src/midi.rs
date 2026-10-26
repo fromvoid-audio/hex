@@ -1216,9 +1216,34 @@ pub(crate) fn clip_count(project: &Project) -> usize {
             .count()
 }
 pub(crate) fn note_count(project: &Project) -> usize {
-    let shared: usize = project.aliases.sources.values().map(|content| match content { crate::clip_alias::Content::Midi(content) => content.notes.len(), _ => 0 }).sum();
-    shared + project.tracks.iter().flat_map(Track::midi_clips).filter(|clip| project.clip_alias(clip.id).is_none()).map(|clip| clip.notes().len()).sum::<usize>()
-        + project.session.cells.iter().map(|cell| match &cell.content { crate::SessionCellContent::Midi(clip) if project.clip_alias(clip.id).is_none() => clip.source.notes.len(), _ => 0 }).sum::<usize>()
+    let shared: usize = project
+        .aliases
+        .sources
+        .values()
+        .map(|content| match content {
+            crate::clip_alias::Content::Midi(content) => content.notes.len(),
+            _ => 0,
+        })
+        .sum();
+    shared
+        + project
+            .tracks
+            .iter()
+            .flat_map(Track::midi_clips)
+            .filter(|clip| project.clip_alias(clip.id).is_none())
+            .map(|clip| clip.notes().len())
+            .sum::<usize>()
+        + project
+            .session
+            .cells
+            .iter()
+            .map(|cell| match &cell.content {
+                crate::SessionCellContent::Midi(clip) if project.clip_alias(clip.id).is_none() => {
+                    clip.source.notes.len()
+                }
+                _ => 0,
+            })
+            .sum::<usize>()
 }
 
 pub(crate) fn midi_overwrite_frame_bounds(
@@ -1255,6 +1280,26 @@ pub(crate) fn overwrite_occurrence_count(clip: &MidiClip) -> Result<usize, Inval
 pub(crate) fn materialize_overwrite_ranges(
     original: &MidiClip,
     ranges: &[(u64, u64)],
+) -> Result<Vec<MidiClip>, Invalid> {
+    materialize_overwrite_ranges_inner(original, ranges, None)
+}
+
+/// Frame-based overwrite retains only the audible part of a clipped occurrence.
+/// A generated remainder with both edges in the same frame has no surviving
+/// playback. Unclipped authored notes remain intact, including invalid gates
+/// that the engine must refuse. Beat-only section edits keep their existing law.
+pub(crate) fn materialize_overwrite_frame_ranges(
+    original: &MidiClip,
+    ranges: &[(u64, u64)],
+    tempo: &crate::TempoMap,
+) -> Result<Vec<MidiClip>, Invalid> {
+    materialize_overwrite_ranges_inner(original, ranges, Some(tempo))
+}
+
+fn materialize_overwrite_ranges_inner(
+    original: &MidiClip,
+    ranges: &[(u64, u64)],
+    frame_clipping: Option<&crate::TempoMap>,
 ) -> Result<Vec<MidiClip>, Invalid> {
     let mut fragments = Vec::new();
     fragments
@@ -1320,6 +1365,13 @@ pub(crate) fn materialize_overwrite_ranges(
                 let kept_start = absolute_start.max(start);
                 let kept_end = absolute_end.min(end);
                 if kept_start < kept_end {
+                    if (kept_start != absolute_start || kept_end != absolute_end)
+                        && let Some(tempo) = frame_clipping
+                        && tempo.beat_to_frame(BeatTime::from_raw(kept_start))?
+                            == tempo.beat_to_frame(BeatTime::from_raw(kept_end))?
+                    {
+                        continue;
+                    }
                     generated = generated
                         .checked_add(1)
                         .filter(|n| *n <= MAX_NOTES)

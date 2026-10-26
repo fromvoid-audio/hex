@@ -208,7 +208,7 @@ fn worker_raw_import_and_midi_placement_carve_literal_pcm_and_saved_history() {
             refused
                 .error
                 .as_ref()
-                .is_some_and(|error| error.contains("same track must not overlap")),
+                .is_some_and(|error| error.contains("overlap needs opposing audio fade ramps")),
             "{:?}",
             refused.error
         );

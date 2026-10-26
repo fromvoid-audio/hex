@@ -57,6 +57,7 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
             gain: 0.25,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 21,
                 bypassed: false,
@@ -136,6 +137,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         };
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 22,
             bypassed: false,
@@ -144,6 +146,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         snapshot.return_tracks[0].devices.insert(
             0,
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 23,
                 bypassed: false,
@@ -645,12 +648,14 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         routed.next_id = 110;
         routed.tracks[0].devices = vec![
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 100,
                 bypassed: false,
                 state: prefix,
             },
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 101,
                 bypassed: false,
@@ -668,6 +673,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
             gain: 0.25,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 103,
                 bypassed: false,
@@ -851,6 +857,9 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
         let id = project.tracks()[0].id();
         let mut removed = local.snapshot();
         removed.tracks.clear();
+        for source in &mut removed.native_sources {
+            source.receiver = None;
+        }
         removed.midi_routes.clear();
         let removed = Project::from_snapshot(removed).unwrap();
         let removed_revision = Arc::new(
@@ -1016,6 +1025,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     use hex_lattice::conformance::owned_delay;
     let mut snapshot = audio_fixture_project(true, false, false).snapshot();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 31,
         bypassed: false,
@@ -1023,6 +1033,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     }];
     if compensated {
         snapshot.tracks[1].devices = vec![DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 32,
             bypassed: false,
@@ -1030,6 +1041,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
         }];
     }
     snapshot.return_tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 21,
         bypassed: false,
@@ -1259,4 +1271,114 @@ fn live_project_selection_refuses_unsorted_duplicate_and_unbounded_id_lists() {
     }
     assert!(ProjectOutputTap::new(&[1; hex_project::MAX_TRACKS + 1], &mut observer).is_none());
     assert!(ProjectOutputTap::new(&[], &mut observer).is_some());
+}
+
+#[test]
+fn solo_overrides_mute_for_launched_session_audio_without_changing_authored_flags() {
+    for solo in [false, true] {
+        let mut snapshot = audio_project(0, 32, 4).snapshot();
+        snapshot.tracks[0].muted = true;
+        snapshot.tracks[0].soloed = solo;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let prepared = prepare_audio(&project);
+        let clip = prepared.session().audio_clips()[0].id;
+        let mut runtime = SessionPlayback::new(prepared).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut pcm = [[0.; 2]; 8];
+        for chunk in pcm.chunks_mut(3) {
+            runtime.render(chunk).unwrap();
+        }
+        assert_eq!(pcm, [if solo { [0.4, -0.2] } else { [0., 0.] }; 8]);
+        assert!(project.tracks()[0].muted());
+        assert_eq!(project.tracks()[0].soloed(), solo);
+    }
+}
+
+#[test]
+fn removed_midi_contributor_cannot_capture_a_separate_shared_source_stem() {
+    use hex_project::{Command, Created, Editor};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "midi".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: contributor,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            velocity: 100,
+            channel: 0,
+        })
+        .unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut old = SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 128]).unwrap();
+    editor.execute(Command::RemoveTrack(contributor)).unwrap();
+    let mut candidate = SessionPlayback::new(revision(editor.project(), table)).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    assert!(
+        matches!(
+            candidate.output_capture_plan(&[OutputCaptureId::Track(contributor)], 8),
+            Err(OutputCaptureError::MissingOwner)
+        ),
+        "MIDI identity does not establish an independently separable audio stem"
+    );
+    let plan = candidate
+        .output_capture_plan(&[OutputCaptureId::Track(receiver)], 8)
+        .unwrap();
+    let mut main = [[0.0; 2]; 8];
+    let mut track = main;
+    let mut buffers: [&mut [Frame]; 1] = [&mut track];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    candidate
+        .render_with_capture(&mut main, &mut capture)
+        .unwrap();
+    assert_eq!(main, capture.output(0).unwrap());
+    assert!(main.iter().flatten().any(|sample| sample.abs() > 0.000_001));
 }

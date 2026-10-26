@@ -22,7 +22,37 @@ pub enum Command {
     /// Copy current local clip settings to its group, preserving every placement.
     ApplyClipSettingsToAliases(ClipId),
     /// Copy a Console cell to the next empty cell, adding a scene if necessary.
-    DuplicateSessionCell { track: TrackId, scene: crate::SceneId, alias: bool },
+    DuplicateSessionCell {
+        track: TrackId,
+        scene: crate::SceneId,
+        alias: bool,
+    },
+    /// Register an independent, currently unassigned native source chain.
+    /// Exactly one device is designated as the instrument; other devices are
+    /// source-owned processing, never copied from a track implicitly.
+    CreateNativeSource {
+        name: String,
+        devices: Vec<hex_lattice_contract::NativeDeviceState>,
+        instrument_index: usize,
+    },
+    /// Link this track to a singleton source, or unlink without deleting it.
+    /// Additional linked tracks share the same immutable instrument instance.
+    BindTrackSource {
+        track: TrackId,
+        source: Option<crate::SourceId>,
+    },
+    /// Select the sole track that emits a source's audio, or leave it unselected.
+    /// A selected track must already be linked to this source.
+    SetNativeSourceReceiver {
+        source: crate::SourceId,
+        track: Option<TrackId>,
+    },
+    RenameNativeSource {
+        source: crate::SourceId,
+        name: String,
+    },
+    /// Explicit authored-state deletion. The source must be unlinked from every track.
+    RemoveNativeSource(crate::SourceId),
     /// Create one effects-only group around normalized sibling subtrees.
     GroupTracks {
         tracks: crate::TrackSelectionIds,
@@ -127,6 +157,14 @@ pub enum Command {
     DeleteArrangementSection(crate::SectionId),
     /// Insert a song-wide copy immediately after the source, allocating new IDs.
     DuplicateArrangementSection(crate::SectionId),
+    /// Copy a section's complete song interval before/after a stable target.
+    /// The source remains; one private candidate owns both copy and insertion,
+    /// fresh identities, publication and Undo/Redo. The target may be the source.
+    DuplicateArrangementSectionAt {
+        section: crate::SectionId,
+        target: crate::SectionId,
+        after: bool,
+    },
     /// Split marker metadata at a strict interior beat, preserving all music.
     /// The left marker retains its ID; the right gets a fresh ID and the same
     /// name/color. One validated command owns both adjoining positive ranges.
@@ -272,6 +310,12 @@ pub enum Command {
         device: DeviceId,
         track: TrackId,
         before: Option<DeviceId>,
+    },
+    /// Replace one canonical Arrangement envelope; empty points clear it.
+    ReplaceDeviceAutomation {
+        device: DeviceId,
+        parameter: hex_lattice_contract::ParameterId,
+        points: Vec<crate::AutomationPoint>,
     },
     ReplaceDeviceState {
         device: DeviceId,
@@ -570,7 +614,8 @@ pub enum Command {
     DuplicateClips(Vec<ClipId>),
     /// Wrap one same-track, same-kind selection atomically; never replace nonselected material.
     GroupClips(Vec<ClipId>),
-    /// Split selection edges and group included material independently per track.
+    /// Split selection edges and group included material independently per track,
+    /// retaining the full selected extent including empty margins and internal gaps.
     /// Empty tracks are skipped; returns the last populated track's resulting clip.
     /// All fragments and groups form one atomic edit; mixed media on a row refuses.
     GroupTimeRange(crate::TimeRange),
@@ -592,6 +637,11 @@ pub enum Command {
     SplitTracksAtFrame {
         tracks: Vec<TrackId>,
         frame: u64,
+    },
+    /// Split both boundaries of a finite Arrangement range as one edit. Existing
+    /// boundaries and gaps are no-ops; authored material and global time stay put.
+    SplitTimeRange {
+        range: crate::TimeRange,
     },
     /// Trim an absolute timeline edge, clamping to the nearest valid clip region.
     TrimClipEdge {
@@ -653,6 +703,18 @@ pub enum Command {
         duration: u64,
         source_offset: u64,
         source_length: u64,
+    },
+    /// Fit an edge fade or a two-voice source-handle crossfade to a validated
+    /// Arrangement selection. Source content never translates; failures are atomic.
+    CreateArrangementFades {
+        range: crate::TimeRange,
+    },
+    /// Fit one source-event edge fade. Positions use the retained root's declared
+    /// frame/beat clock; Console source windows and event joins explicitly refuse.
+    CreateAudioEventFades {
+        clip: ClipId,
+        start: u64,
+        end: u64,
     },
     /// Set linear fade lengths and reanchor them to the clip's current duration.
     SetClipFades {
@@ -737,6 +799,9 @@ pub enum Command {
         amount: f32,
     },
     ToggleMute(TrackId),
+    /// Mute every explicit member if any is unmuted; otherwise unmute all.
+    /// Reject stale membership before mutation; one command is one undo step.
+    ToggleTracksMute(crate::TrackSelectionIds),
     AddMidiTrack {
         name: String,
     },
@@ -809,6 +874,11 @@ pub enum Command {
         track: TrackId,
         from_scene: crate::SceneId,
         to_scene: crate::SceneId,
+    },
+    /// Change a Console audio cycle without replacing its retained PCM.
+    SetSessionAudioClipLoop {
+        clip: ClipId,
+        loop_range: Option<crate::SessionAudioLoop>,
     },
     SetSessionAudioClipSource {
         clip: ClipId,
@@ -1014,6 +1084,7 @@ pub struct MidiNoteInsert {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Created {
+    NativeSource(crate::SourceId),
     ArrangementSection(crate::SectionId),
     Track(TrackId),
     /// Inclusive track-only ID range born in one atomic paste.
@@ -1641,8 +1712,19 @@ impl Project {
         match command {
             Command::DuplicateAliasClips(clips) => crate::clip_duplicate::apply_alias(self, clips),
             Command::MakeClipsUnique(clips) => crate::clip_alias_commands::unique(self, clips),
-            Command::ApplyClipSettingsToAliases(clip) => crate::clip_alias_commands::apply_settings(self, clip),
-            Command::DuplicateSessionCell { track, scene, alias } => crate::clip_alias_commands::duplicate_console(self, track, scene, alias),
+            Command::ApplyClipSettingsToAliases(clip) => {
+                crate::clip_alias_commands::apply_settings(self, clip)
+            }
+            Command::DuplicateSessionCell {
+                track,
+                scene,
+                alias,
+            } => crate::clip_alias_commands::duplicate_console(self, track, scene, alias),
+            source_command @ (Command::CreateNativeSource { .. }
+            | Command::BindTrackSource { .. }
+            | Command::SetNativeSourceReceiver { .. }
+            | Command::RenameNativeSource { .. }
+            | Command::RemoveNativeSource(_)) => crate::native_sources::apply(self, source_command),
             Command::CommitArrangementBounce {
                 target,
                 in_place,
@@ -1662,6 +1744,7 @@ impl Project {
             | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
+            | Command::DuplicateArrangementSectionAt { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
@@ -1792,6 +1875,11 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            Command::ReplaceDeviceAutomation {
+                device,
+                parameter,
+                points,
+            } => self.replace_device_automation(device, parameter, points),
             main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
                 crate::main_devices::apply(self, main_command)
             }
@@ -1895,6 +1983,7 @@ impl Project {
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }
+            | Command::SetSessionAudioClipLoop { .. }
             | Command::SetSessionAudioClipSource { .. }
             | Command::ClearSessionCell { .. }
             | Command::SetSessionStopCell { .. }
@@ -1960,6 +2049,7 @@ impl Project {
             Command::SplitTracksAtFrame { tracks, frame } => {
                 crate::split_tracks::apply(self, &tracks, frame)
             }
+            Command::SplitTimeRange { range } => crate::split_tracks::apply_range(self, &range),
             Command::NudgeClip { clip, frames } => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = if frames < 0 {
@@ -2044,6 +2134,21 @@ impl Project {
                 }
                 let gain = (self.master_gain + amount).clamp(0.0, 2.0);
                 self.apply(Command::MasterGain { gain })
+            }
+            Command::ToggleTracksMute(tracks) => {
+                let mut muted = false;
+                for id in tracks.ids() {
+                    muted |= !self
+                        .track(*id)
+                        .ok_or(Invalid("track selection no longer exists"))?
+                        .muted;
+                }
+                for track in &mut self.tracks {
+                    if tracks.ids().contains(&track.id()) {
+                        track.muted = muted;
+                    }
+                }
+                Ok(Created::None)
             }
             Command::ToggleMute(track) => {
                 let muted = !self
@@ -2728,6 +2833,12 @@ impl Project {
                 }
                 Ok(Created::None)
             }
+            Command::CreateArrangementFades { range } => {
+                crate::selection_fades::arrangement(self, &range)
+            }
+            Command::CreateAudioEventFades { clip, start, end } => {
+                crate::selection_fades::event(self, clip, start, end)
+            }
             Command::SetClipFadeEnvelope { clip, fade } => {
                 let target = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 if fade.span() != target.duration || fade.offset() != 0 {
@@ -2850,6 +2961,7 @@ impl Command {
                 }
                 | Self::DeleteArrangementSection(_)
                 | Self::DuplicateArrangementSection(_)
+                | Self::DuplicateArrangementSectionAt { .. }
         )
     }
 }

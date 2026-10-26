@@ -189,6 +189,9 @@ pub struct AudioProcessingProjection {
 /// A section override is legal only with `AudioClipTiming::Musical`; the
 /// `Frozen` variant owns its complete processing clock without an override or
 /// residuals. Frame destination displacement never changes source coordinates.
+/// With an outer placement, the retained projection also owns its full repeat/
+/// directed read clock. Live musical endpoints plus residuals remain validated
+/// independently; translating a saved frame clock never re-quantizes its seams.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipEdit {
     /// Directed finite outer read law; source processing and editable settings stay live.
@@ -242,6 +245,27 @@ impl ProjectedAudioFade<'_> {
             domain.fade_start.checked_add(age)
         };
         Ok(root.filter(|frame| *frame < self.length))
+    }
+
+    /// Inverse authoring coordinate for a root-output frame boundary. The
+    /// exclusive root end is accepted; negative retained context returns None.
+    /// This retains the existing fade reference clock so editing one ramp does
+    /// not re-quantize or reanchor the opposite authored ramp.
+    pub fn domain_position_at_frame(&self, frame: u64) -> Result<Option<u64>, Invalid> {
+        if frame > self.length {
+            return Err(Invalid("fade boundary is outside the prepared root"));
+        }
+        let domain = &self.edit.domain;
+        let age = if let Some(projection) = &domain.fade_projection {
+            let beat =
+                audio_projection_beat(self.tempo, self.first + i128::from(frame))? - self.origin;
+            let delta = beat - i128::from(projection.local_start_raw);
+            let start = audio_projection_frame(&projection.tempo, projection.origin_beat_raw)?;
+            audio_projection_frame(&projection.tempo, projection.origin_beat_raw + delta)? - start
+        } else {
+            i128::from(frame) - i128::from(domain.fade_start)
+        };
+        Ok(u64::try_from(i128::from(domain.fade.offset()) + age).ok())
     }
 
     pub fn gain_at(&self, root_output_frame: u64) -> Result<f32, Invalid> {
@@ -639,7 +663,6 @@ impl AudioClipEdit {
         let domain = &self.domain;
         if let Some(projection) = &self.processing_projection
             && (self.live_musical_start().is_none()
-                || self.placement.is_some()
                 || !(-1..=1).contains(&self.placement_start_offset)
                 || !(-1..=1).contains(&self.placement_end_offset)
                 || projection.tempo.sample_rate() != tempo.sample_rate()
@@ -772,6 +795,33 @@ impl AudioClipEdit {
                 "audio source cache differs from its canonical domain",
             ));
         }
+        if self.processing_projection.is_some() && self.placement.is_some() {
+            let start = self
+                .live_musical_start()
+                .ok_or(Invalid("retained outer audio needs musical placement"))?;
+            let length = self
+                .placement
+                .ok_or(Invalid("audio placement missing"))?
+                .outer_length
+                .length();
+            let end = start
+                .raw()
+                .checked_add(length)
+                .ok_or(Invalid("audio outer end overflow"))?;
+            if offset_frame(tempo.beat_to_frame(start)?, self.placement_start_offset)? != clip.start
+                || offset_frame(
+                    tempo.beat_to_frame(BeatTime::from_raw(end))?,
+                    self.placement_end_offset,
+                )? != clip
+                    .start
+                    .checked_add(clip.duration)
+                    .ok_or(Invalid("audio outer end overflow"))?
+            {
+                return Err(Invalid(
+                    "retained outer frame cache differs from musical endpoints",
+                ));
+            }
+        }
         if self.content_view.is_some()
             || self.placement.is_some()
             || matches!(self.timing, AudioClipTiming::Frozen { .. })
@@ -818,7 +868,12 @@ impl AudioClipEdit {
     pub(crate) fn anchor(&mut self, clip_start: u64, tempo: &TempoMap) -> Result<(), Invalid> {
         self.anchor_at_reference(clip_start, i128::from(clip_start), tempo)
     }
-    pub(crate) fn anchor_at_reference(&mut self, clip_start: u64, reference_start: i128, tempo: &TempoMap) -> Result<(), Invalid> {
+    pub(crate) fn anchor_at_reference(
+        &mut self,
+        clip_start: u64,
+        reference_start: i128,
+        tempo: &TempoMap,
+    ) -> Result<(), Invalid> {
         if self.live_musical_start().is_some() {
             return Ok(());
         }
@@ -859,16 +914,26 @@ impl AudioClipEdit {
             .placement
             .map(|p| -> Result<_, Invalid> {
                 let outer_start = audio_projection_beat(tempo, reference_start)?;
-                let outer_end = audio_projection_beat(tempo, reference_start.checked_add(i128::from(p.outer_length.length())).ok_or(Invalid("audio outer end overflow"))?)?;
+                let outer_end = audio_projection_beat(
+                    tempo,
+                    reference_start
+                        .checked_add(i128::from(p.outer_length.length()))
+                        .ok_or(Invalid("audio outer end overflow"))?,
+                )?;
                 Ok(AudioViewPlacement {
                     mode: p.mode,
                     outer_length: AudioDomainClock::Beats(BeatTime::from_raw(
-                        u64::try_from(outer_end.checked_sub(outer_start).ok_or(Invalid("audio outer beat span invalid"))?).map_err(|_| Invalid("audio outer beat span overflow"))?,
+                        u64::try_from(
+                            outer_end
+                                .checked_sub(outer_start)
+                                .ok_or(Invalid("audio outer beat span invalid"))?,
+                        )
+                        .map_err(|_| Invalid("audio outer beat span overflow"))?,
                     )),
-                    cycle_phase: u64::try_from(
-                        outer_start - origin_beat - i128::from(start),
-                    )
-                    .map_err(|_| Invalid("audio consumed offset is not representable in beats"))?,
+                    cycle_phase: u64::try_from(outer_start - origin_beat - i128::from(start))
+                        .map_err(|_| {
+                            Invalid("audio consumed offset is not representable in beats")
+                        })?,
                 })
             })
             .transpose()?;
@@ -1085,7 +1150,7 @@ pub use commands::default_audio_warp;
 mod view;
 pub(crate) use commands::{
     apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
-    set_fades, source_policy, trim_view,
+    set_fades, source_policy, trim_view, validate_clip,
 };
 pub(crate) use view::resize_view;
 pub use view::{

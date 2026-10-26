@@ -660,3 +660,199 @@ fn time_group_empty_stale_and_late_row_refusals_are_atomic() {
         assert!(!e.can_undo());
     }
 }
+
+#[test]
+fn time_group_includes_empty_audio_margins_for_single_and_multiple_clips() {
+    for (start, end, expected) in [
+        (150, 300, vec![(50, 150)]),
+        (200, 350, vec![(0, 100)]),
+        (150, 350, vec![(50, 150)]),
+        (150, 550, vec![(50, 150), (250, 350)]),
+    ] {
+        let (mut e, t, _) = audio_fixture();
+        let before = e.project().snapshot();
+        let Created::Clip(id) = e
+            .execute(Command::GroupTimeRange(
+                hex_project::TimeRange::new(vec![t], start, end).unwrap(),
+            ))
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        let group = e.project().clip(id).unwrap();
+        assert_eq!((group.start(), group.duration()), (start, end - start));
+        assert_eq!(
+            group
+                .audio_events()
+                .events
+                .iter()
+                .map(|event| (event.start, event.end))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let after = e.project().snapshot();
+        assert_eq!(Project::from_snapshot(after.clone()).unwrap(), *e.project());
+        assert!(e.undo());
+        let mut restored = e.project().snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        assert!(!e.can_undo());
+        assert!(e.redo());
+        assert_eq!(e.project().snapshot(), after);
+    }
+}
+
+#[test]
+fn time_group_includes_empty_midi_margins_per_populated_track() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    let tracks = [track(&mut e), track(&mut e), track(&mut e)];
+    midi(&mut e, tracks[0], 2);
+    midi(&mut e, tracks[0], 6);
+    midi(&mut e, tracks[1], 4);
+    let mut e = Editor::new(e.project().clone(), 16).unwrap();
+    let before = e.project().snapshot();
+    let start = e.project().tempo_map().beat_to_frame(b(1)).unwrap();
+    let end = e.project().tempo_map().beat_to_frame(b(9)).unwrap();
+    e.execute(Command::GroupTimeRange(
+        hex_project::TimeRange::new(tracks.to_vec(), start, end).unwrap(),
+    ))
+    .unwrap();
+    for (t, onsets) in [(tracks[0], vec![b(1), b(5)]), (tracks[1], vec![b(3)])] {
+        let row = e.project().track(t).unwrap();
+        assert_eq!(row.midi_clips().len(), 1);
+        let group = &row.midi_clips()[0];
+        assert_eq!((group.start(), group.length()), (b(1), b(8)));
+        assert_eq!(
+            group
+                .notes()
+                .iter()
+                .map(|note| note.start())
+                .collect::<Vec<_>>(),
+            onsets
+        );
+    }
+    assert!(
+        e.project()
+            .track(tracks[2])
+            .unwrap()
+            .midi_clips()
+            .is_empty()
+    );
+    let after = e.project().snapshot();
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(!e.can_undo());
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
+
+#[test]
+fn time_group_exact_single_clip_is_unchanged_and_oversized_margins_refuse_atomically() {
+    let (mut e, t, clips) = audio_fixture();
+    let before = e.project().clone();
+    let created = e
+        .execute(Command::GroupTimeRange(
+            hex_project::TimeRange::new(vec![t], 200, 300).unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(created, Created::Clip(clips[1]));
+    assert_eq!(e.project(), &before);
+    assert!(!e.can_undo());
+    let error = e
+        .execute(Command::GroupTimeRange(
+            hex_project::TimeRange::new(vec![t], 150, 151 + hex_project::MAX_AUDIO_DOMAIN_FRAMES)
+                .unwrap(),
+        ))
+        .unwrap_err();
+    assert!(error.0.contains("bounded preparation length"));
+    assert_eq!(e.project(), &before);
+    assert!(!e.can_undo());
+}
+
+#[test]
+fn processed_repeated_audio_group_has_a_bounded_prepared_adoption_and_one_history_edge() {
+    let (mut e, track, ids) = audio_fixture();
+    e.execute(Command::MoveClip {
+        clip: ids[2],
+        track,
+        start: 900,
+    })
+    .unwrap();
+    let Created::Clip(group) = e.execute(Command::GroupClips(ids[..2].to_vec())).unwrap() else {
+        panic!()
+    };
+    e.execute(Command::ResizeAudioClipView {
+        clip: group,
+        operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 650 },
+    })
+    .unwrap();
+    e.execute(Command::SetAudioClipGain {
+        clip: group,
+        millidb: -3111,
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    // This is the native report's original canonical refusal. It cannot be
+    // made safe by nesting the root or dropping its processing.
+    assert!(
+        e.execute(Command::GroupClips(vec![group, ids[2]]))
+            .unwrap_err()
+            .to_string()
+            .contains("outer processing or repeats")
+    );
+    assert_eq!(e.project().snapshot(), before);
+    let mut oversized = Editor::new(e.project().clone(), 8).unwrap();
+    oversized
+        .execute(Command::MoveClip {
+            clip: ids[2],
+            track,
+            start: hex_project::MAX_ARRANGEMENT_BOUNCE_FRAMES,
+        })
+        .unwrap();
+    assert!(
+        oversized
+            .project()
+            .audio_group_render_target(&Command::GroupClips(vec![group, ids[2]]))
+            .unwrap_err()
+            .to_string()
+            .contains("finite render frame budget")
+    );
+    let target = e
+        .project()
+        .audio_group_render_target(&Command::GroupClips(vec![group, ids[2]]))
+        .unwrap()
+        .unwrap();
+    assert!(!target.bakes_devices(true));
+    let plan = e.project().plan_arrangement_bounce(&target, true).unwrap();
+    assert_eq!((plan[0].start, plan[0].end), (0, 1000));
+    let command = |frames| Command::CommitArrangementBounce {
+        target: target.clone(),
+        in_place: true,
+        files: vec![hex_project::BounceFile {
+            source: hex_project::BounceSource::Arrangement,
+            track,
+            start: 0,
+            frames,
+            path: "prepared-group.wav".into(),
+        }],
+    };
+    assert!(e.execute(command(999)).is_err());
+    assert_eq!(e.project().snapshot(), before);
+    let Created::Clip(result) = e.execute(command(1000)).unwrap() else {
+        panic!()
+    };
+    let after = e.project().snapshot();
+    assert_eq!(e.project().track(track).unwrap().clips().len(), 1);
+    let clip = e.project().clip(result).unwrap();
+    assert!(!clip.looping() && !clip.has_retained_audio_roots());
+    assert_eq!(clip.duration(), 1000);
+    assert!(!e.next_history_requires_stopped_bounce(false));
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}

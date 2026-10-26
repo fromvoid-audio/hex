@@ -7,7 +7,9 @@ pub(crate) mod clip_aliases;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
 pub(crate) mod content_views;
+pub(crate) mod crossfades;
 pub(crate) mod device_assets;
+pub(crate) mod device_automation;
 pub(crate) mod event_fades;
 pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
@@ -21,11 +23,13 @@ mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
 mod migrations;
 pub(crate) mod musical_audio;
+pub(crate) mod native_sources;
 mod original_sources;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod session_audio_loops;
 pub(crate) mod track_groups;
 pub(crate) mod tuning;
 use crate::StorageError;
@@ -791,7 +795,7 @@ impl DocumentV14 {
                 track.devices = devices.clone();
             }
         }
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -900,7 +904,7 @@ impl DocumentV15 {
                 .and_then(|(_, instrument)| instrument.clone());
             track.instrument_position = track.instrument.as_ref().map(|_| 0);
         }
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -998,7 +1002,7 @@ impl DocumentV16 {
         for (track, position) in snapshot.tracks.iter_mut().zip(positions) {
             track.instrument_position = position;
         }
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -1161,7 +1165,7 @@ impl DocumentV19 {
         for (track, position) in snapshot.tracks.iter_mut().zip(positions) {
             track.instrument_position = position;
         }
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -1197,6 +1201,7 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
         .with_output_gain_millidb(device.output_gain_millidb)
         .map_err(|_| StorageError::Invalid("invalid device output gain"))?;
     Ok(DeviceSnapshot {
+        automation: Vec::new(),
         id: device.id,
         bypassed: device.bypassed,
         comparison: None,
@@ -1271,6 +1276,7 @@ impl DocumentV8 {
                 let sample_rate = document.sample_rate;
                 Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1311,6 +1317,7 @@ impl DocumentV8 {
                 }
                 Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1351,6 +1358,7 @@ impl DocumentV8 {
                 }
                 Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1398,6 +1406,7 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1445,6 +1454,7 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1492,6 +1502,7 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1539,6 +1550,7 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1604,6 +1616,7 @@ impl DocumentV8 {
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1641,7 +1654,7 @@ impl DocumentV8 {
                 ));
             }
         };
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -1854,6 +1867,7 @@ impl DocumentV12 {
                         SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                         SessionContentDtoV12::Audio { clip } => SessionCellContentSnapshot::Audio(
                             hex_project::SessionAudioClipSnapshot {
+                                loop_range: None,
                                 active: true,
                                 flavor: hex_project::ClipFlavor::default(),
                                 gain: hex_project::ClipGain::UNITY,
@@ -1899,7 +1913,7 @@ impl DocumentV12 {
                 })
                 .collect(),
         };
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -2048,6 +2062,7 @@ impl DocumentV13 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             aliases: Default::default(),
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -2078,7 +2093,7 @@ impl DocumentV13 {
             meter_points,
             return_tracks: Vec::new(),
         };
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -2299,7 +2314,7 @@ impl DocumentV11 {
                 })
                 .collect(),
         };
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
 
@@ -2409,6 +2424,7 @@ impl DocumentV10 {
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
                     aliases: Default::default(),
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -2439,7 +2455,7 @@ impl DocumentV10 {
                     meter_points,
                     return_tracks: Vec::new(),
                 };
-                Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+                Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
             }
             _ => DocumentV9::decode(bytes),
         }
@@ -2557,6 +2573,7 @@ impl DocumentV9 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             aliases: Default::default(),
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -2587,7 +2604,7 @@ impl DocumentV9 {
             meter_points,
             return_tracks: Vec::new(),
         };
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }
 
@@ -2727,6 +2744,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                     SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                     SessionContentDtoV12::Audio { clip } => {
                         SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                            loop_range: None,
                             active: true,
                             flavor: hex_project::ClipFlavor::default(),
                             gain: hex_project::ClipGain::UNITY,

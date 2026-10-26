@@ -168,7 +168,7 @@ fn complete_arrangement_console_aliases_roundtrip_with_local_windows_and_history
     let (mut e, audio, audio_alias, midi, midi_alias) = fixture();
     let encoded = encode(e.project()).unwrap();
     let doc: Value = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(doc["version"], 45);
+    assert_eq!(doc["version"], 52);
     assert_eq!(doc["alias_sources"].as_array().unwrap().len(), 4);
     assert_eq!(doc["alias_members"].as_array().unwrap().len(), 8);
     let loaded = decode(&encoded).unwrap();
@@ -372,10 +372,10 @@ fn alias_source_member_inventories_and_inline_content_are_strict_and_atomic() {
 }
 
 #[test]
-fn strict_schema44_writer_migrates_complete_state_and_original_bytes_are_unchanged() {
+fn strict_schema51_writer_migrates_complete_state_and_original_bytes_are_unchanged() {
     let (e, _, _, _) = independent();
-    let prior = super::super::track_groups::encode(e.project()).unwrap();
-    assert_eq!(prior["version"], 44);
+    let prior = super::super::crossfades::encode(e.project()).unwrap();
+    assert_eq!(prior["version"], 51);
     let original = bytes(&prior);
     let migrated = decode(&original).unwrap();
     assert!(!migrated.has_clip_aliases());
@@ -389,7 +389,7 @@ fn strict_schema44_writer_migrates_complete_state_and_original_bytes_are_unchang
         current.as_object_mut().unwrap().remove("alias_members"),
         Some(json!([]))
     );
-    current["version"] = 44.into();
+    current["version"] = 51.into();
     assert_eq!(current, prior, "every predecessor field survives");
     assert_eq!(bytes(&prior), original);
 }

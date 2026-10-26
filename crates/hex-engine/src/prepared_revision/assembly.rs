@@ -192,6 +192,10 @@ impl RevisionAssembly {
                 .and_then(|n| n.checked_add(overhead))
                 .ok_or(Error::Overflow)?;
         }
+        self.reserved_bytes = self
+            .reserved_bytes
+            .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
+            .ok_or(Error::Overflow)?;
         self.reserved = true;
         for index in 0..4 {
             self.handles[index] = crate::audio_only_inputs::handle()?;
@@ -210,6 +214,7 @@ impl RevisionAssembly {
             .map(|o| o.as_ref())
             .or(self.revision_value.as_ref());
         if let Some(PreparedRevision {
+            source_routing: _,
             resource_scope,
             device_resource_scope,
             tuning_family: _,
@@ -324,6 +329,7 @@ impl RevisionAssembly {
         &mut self,
         arrangement: &mut ArrangementClips,
         session: &mut SessionAssembly,
+        source_routing: crate::PreparedSourceRouting,
     ) -> Result<(), Error> {
         if !self.reserved
             || self.handles.contains(&0)
@@ -373,6 +379,7 @@ impl RevisionAssembly {
         ) {
             (Some(arrangement), Some(session), Some(midi_preview)) => {
                 self.revision_value = Some(PreparedRevision {
+                    source_routing,
                     resource_scope: self.current_sampler_scope,
                     device_resource_scope: None,
                     tuning_family: TuningContinuationFamily::fresh()
@@ -433,6 +440,7 @@ impl RevisionAssembly {
             self.extracted += 1;
         }
         if let Some(PreparedRevision {
+            source_routing: _,
             resource_scope: _,
             device_resource_scope: _,
             tuning_family: _,
@@ -554,6 +562,7 @@ impl RevisionAssembly {
             .or(revision_value.as_ref())
         {
             let PreparedRevision {
+                source_routing,
                 resource_scope: _,
                 device_resource_scope: _,
                 tuning_family: _,
@@ -564,6 +573,7 @@ impl RevisionAssembly {
                 authored_midi_sources,
                 gain_recording_track: _,
             } = revision;
+            source_routing.visit_storage(l)?;
             l.vec(mutable_track_revisions)?;
             // This constructor class never admits ordinary authored-evidence children.
             if authored_midi_sources.capacity() != 0 {

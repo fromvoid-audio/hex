@@ -219,7 +219,7 @@ impl NumericControlConfig {
         style: ControlStyle,
     ) -> Result<Self, NumericError> {
         let presentation = presentation.into();
-        spec.validate(value)?;
+        let value = spec.validate(value)?;
         style.validate().map_err(|_| NumericError::InvalidStyle)?;
         let text = spec.format(value)?;
         Ok(Self {
@@ -502,7 +502,7 @@ impl NumericControl {
         value: f64,
         cx: &mut Context<Self>,
     ) -> Result<(), NumericError> {
-        self.spec.validate(value)?;
+        let value = self.spec.validate(value)?;
         if !self.is_interacting() && self.value != value {
             self.value = value;
             self.draft = value;
@@ -583,7 +583,13 @@ impl NumericControl {
         cx.notify();
     }
 
-    fn begin_press(&mut self, target: PressTarget, event: &MouseDownEvent, cx: &mut Context<Self>) {
+    fn begin_press(
+        &mut self,
+        target: PressTarget,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.availability.interactive() || event.button != MouseButton::Left {
             return;
         }
@@ -593,6 +599,9 @@ impl NumericControl {
             && event.click_count >= 2
         {
             self.reset(cx);
+            return;
+        }
+        if !self.capture_pointer(target, window, cx) {
             return;
         }
         self.press = Some(Press {
@@ -737,6 +746,9 @@ impl NumericControl {
             })
             .flatten();
         if self.editing {
+            if !self.capture_pointer(PressTarget::Value, window, cx) {
+                return;
+            }
             let offset = self.text_index_for_point(event.position);
             let anchor = if event.modifiers.shift && focused {
                 if self.reversed {
@@ -770,7 +782,7 @@ impl NumericControl {
         }
         self.text_mouse = None;
         self.text_click = gesture;
-        self.begin_press(PressTarget::Value, event, cx);
+        self.begin_press(PressTarget::Value, event, window, cx);
         self.focus.focus(window);
     }
 
@@ -782,8 +794,49 @@ impl NumericControl {
     ) {
         self.text_mouse = None;
         self.text_click.clear();
-        self.begin_press(PressTarget::Control, event, cx);
+        self.begin_press(PressTarget::Control, event, window, cx);
         self.focus.focus(window);
+    }
+
+    fn capture_pointer(
+        &self,
+        target: PressTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            if matches!(target, PressTarget::Value) {
+                CursorStyle::Arrow
+            } else {
+                CursorStyle::PointingHand
+            },
+            move |event, window, cx| {
+                let _ = owner.update(cx, |control, cx| {
+                    if let Some(event) = event.downcast_ref::<MouseMoveEvent>() {
+                        control.pointer_move(event, cx);
+                    } else if let Some(event) = event.downcast_ref::<MouseUpEvent>() {
+                        control.pointer_up(event, window, cx);
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |control, cx| {
+                    if control.press.is_some() {
+                        control.cancel(cx);
+                    } else if control.text_mouse.take().is_some() {
+                        // Losing a selection anchor must not discard a newer
+                        // keyboard/IME draft or an already accepted owner edit.
+                        control.text_click.clear();
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        )
     }
 
     fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> (bool, bool) {
@@ -981,9 +1034,12 @@ impl NumericControl {
     }
 
     fn emit_accessible_value(&mut self, value: f64, cx: &mut Context<Self>) -> bool {
-        if !self.availability.interactive() || self.editing || self.spec.validate(value).is_err() {
+        if !self.availability.interactive() || self.editing {
             return false;
         }
+        let Ok(value) = self.spec.validate(value) else {
+            return false;
+        };
         if value != self.draft {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
@@ -1035,9 +1091,9 @@ impl NumericControl {
             _ => return false,
         };
         value.is_ok_and(|value| {
-            let changed = value != self.draft;
+            let previous = self.draft;
             let accepted = self.emit_accessible_value(value, cx);
-            if accepted && changed && self.accessibility_binding.is_some() {
+            if accepted && self.draft != previous && self.accessibility_binding.is_some() {
                 self.accessibility_pending = true;
                 cx.notify();
             }
@@ -1507,9 +1563,7 @@ impl gpui::Render for NumericControl {
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
             self.focus_blur = Some(cx.on_blur(&focus, window, |control, _, cx| {
-                if control.press.is_some_and(|press| {
-                    matches!(press.target, PressTarget::Value | PressTarget::Fader)
-                }) {
+                if control.press.is_some() {
                     control.cancel(cx);
                 } else {
                     control.finish_text_edit_on_blur(cx);
@@ -1937,10 +1991,7 @@ impl gpui::Render for NumericControl {
                 .unwrap_or(false)
         });
         if self.press.is_some() || self.text_mouse.is_some() {
-            root.child(GestureCaptureElement {
-                move_entity: entity.clone(),
-                up_entity: entity,
-            })
+            root.child(GestureCaptureElement { entity })
         } else {
             root
         }
@@ -1948,8 +1999,7 @@ impl gpui::Render for NumericControl {
 }
 
 struct GestureCaptureElement {
-    move_entity: Entity<NumericControl>,
-    up_entity: Entity<NumericControl>,
+    entity: Entity<NumericControl>,
 }
 
 impl IntoElement for GestureCaptureElement {
@@ -2011,39 +2061,21 @@ impl Element for GestureCaptureElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if self.move_entity.read(cx).press.is_some_and(|press| {
+        let control = self.entity.read(cx);
+        let hidden = control.press.is_some_and(|press| {
             press.dragging && matches!(press.target, PressTarget::Value | PressTarget::Fader)
-        }) && window.is_window_active()
+        }) && window.is_window_active();
+        let cursor = if hidden {
+            CursorStyle::Hidden
+        } else if control
+            .press
+            .is_some_and(|press| matches!(press.target, PressTarget::Control | PressTarget::Fader))
         {
-            window.set_window_cursor_style(CursorStyle::Hidden);
-        }
-        let move_entity = self.move_entity.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let (handled, changed) =
-                move_entity.update(cx, |control, cx| control.pointer_move(event, cx));
-            if handled {
-                cx.stop_propagation();
-            }
-            if changed {
-                window.refresh();
-            }
-        });
-
-        let up_entity = self.up_entity.clone();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let finished =
-                up_entity.update(cx, |control, cx| control.pointer_up(event, window, cx));
-            if finished {
-                cx.stop_propagation();
-                window.refresh();
-            }
-        });
+            CursorStyle::PointingHand
+        } else {
+            CursorStyle::Arrow
+        };
+        window.renew_pointer_capture(self.entity.entity_id(), cursor);
     }
 }
 

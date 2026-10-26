@@ -189,6 +189,7 @@ pub(super) enum ControlPresentation {
     CompactButton,
     CompactSelector,
     CompactWideSelector,
+    CompactSegments { columns: usize },
 }
 
 #[derive(Clone, Copy, Default)]
@@ -498,6 +499,10 @@ pub(super) fn render_parameter(
             let (width, height) = match presentation {
                 ControlPresentation::CompactSelector => (64.0, 14.0),
                 ControlPresentation::CompactWideSelector => (120.0, 14.0),
+                ControlPresentation::CompactSegments { columns } => (
+                    64.0,
+                    values.len().div_ceil(columns.max(1)) as f32 * 16.0 - 2.0,
+                ),
                 _ => (136.0, 22.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -549,7 +554,7 @@ fn create_parameter_control(
     match (descriptor.kind, value) {
         (ParameterKind::Float { min, max, unit }, ParameterValue::Float(value)) if min < max => {
             let default = match descriptor.default {
-                ParameterValue::Float(default) => f64::from(default),
+                ParameterValue::Float(default) => default,
                 _ => return None,
             };
             let scale = match descriptor.presentation {
@@ -560,9 +565,9 @@ fn create_parameter_control(
                 ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
-            let mut spec = NumericSpec::new(
-                f64::from(min),
-                f64::from(max),
+            let mut spec = NumericSpec::new_f32(
+                min,
+                max,
                 default,
                 scale,
                 2,
@@ -747,6 +752,11 @@ fn create_parameter_control(
                 .ok()?
                 .with_accessibility_name(theme::text(display_label.unwrap_or(descriptor.label)))
                 .with_appearance(appearance);
+            let config = if let ControlPresentation::CompactSegments { columns } = presentation {
+                config.with_segment_columns(columns).ok()?
+            } else {
+                config
+            };
             let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
             let target = key;
             let event_values = values.clone();

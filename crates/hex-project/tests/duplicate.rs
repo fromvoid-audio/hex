@@ -174,8 +174,9 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             fade: hex_project::ClipFade::neutral(1).unwrap(),
         })
         .collect();
-    let full = Project::from_snapshot(Snapshot {
+    let full = Project::from_legacy_snapshot(Snapshot {
         aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),

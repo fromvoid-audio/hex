@@ -143,7 +143,7 @@ impl Editor {
         let section_publication = command.requires_section_publication();
         let stopped_bounce = matches!(
             &command,
-            Command::CommitArrangementBounce { in_place: true, .. }
+            Command::CommitArrangementBounce { target, in_place, .. } if target.bakes_devices(*in_place)
         );
         let plan = crate::midi_history::Plan::capture(&command, &self.project);
         let plan = if require_midi {
@@ -157,12 +157,16 @@ impl Editor {
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
         let alias_changed = alias_plan.finish(&mut candidate)?;
-        if alias_changed { Project::from_snapshot(candidate.snapshot())?; }
+        if alias_changed {
+            Project::from_snapshot(candidate.snapshot())?;
+        }
+        candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
+        candidate.validate_device_automation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
@@ -271,13 +275,16 @@ impl Editor {
                 results.push(candidate.apply(command)?);
                 alias_changed |= alias_plan.finish(&mut candidate)?;
             }
-            if alias_changed { Project::from_snapshot(candidate.snapshot())?; }
+            if alias_changed {
+                Project::from_snapshot(candidate.snapshot())?;
+            }
         }
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
+        candidate.validate_device_automation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.

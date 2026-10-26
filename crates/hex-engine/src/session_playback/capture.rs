@@ -343,13 +343,34 @@ impl SessionPlayback {
             OutputCaptureId::Track(id) => {
                 self.routes.iter().any(|route| route.id == id)
                     || self.releases.iter().any(|release| {
-                        release.location.tail_group().is_none() && release.track_id == id
+                        release.location.tail_group().is_none()
+                            && release
+                                .source_origin
+                                .map_or(release.track_id, |origin| origin.receiver)
+                                == id
                     })
                     || self
                         .tail_groups
                         .iter()
                         .zip(&self.tail_track_ids)
-                        .any(|(group, owner)| group.is_some() && *owner == Some(id))
+                        .enumerate()
+                        .any(|(index, (group, owner))| {
+                            *owner == Some(id)
+                                && group.as_ref().is_some_and(|chain| {
+                                    !chain.is_empty()
+                                        || self.releases.iter().any(|release| {
+                                            release.location.tail_group().map(usize::from)
+                                                == Some(index)
+                                        })
+                                        || self
+                                            .tail_mutable_instruments
+                                            .get(index)
+                                            .and_then(Option::as_ref)
+                                            .is_some_and(|tail| {
+                                                !tail.runtime.committed_is_quiescent()
+                                            })
+                                })
+                        })
             }
             OutputCaptureId::Return(id) => {
                 self.revision

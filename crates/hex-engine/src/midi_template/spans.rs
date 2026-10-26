@@ -369,6 +369,19 @@ impl MidiReleaseVoice {
         retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
         transitions: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<Option<[f32; 2]>, crate::Invalid> {
+        self.sample_at_with_clock(frame, frame, contexts, retained, transitions)
+    }
+
+    /// Source age may advance while transport is paused. The parameter clock
+    /// remains musical time so a held revision ramp freezes until Play resumes.
+    pub(crate) fn sample_at_with_clock(
+        &self,
+        frame: u64,
+        parameter_frame: u64,
+        contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        transitions: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<Option<[f32; 2]>, crate::Invalid> {
         if frame < self.start_frame || frame >= self.end_frame {
             return Ok(None);
         }
@@ -377,7 +390,7 @@ impl MidiReleaseVoice {
                 contexts,
                 retained,
                 transitions,
-                frame,
+                parameter_frame,
                 frame - self.start_frame,
                 self.gate_end_frame - self.start_frame,
             )

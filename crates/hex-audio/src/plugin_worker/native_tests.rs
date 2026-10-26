@@ -1,7 +1,7 @@
 //! Original SDK source/worker custody; no app graph or physical device claim.
 use super::*;
 
-fn original_instance() -> hex_plugin_host::native::Prepared {
+pub(super) fn original_instance() -> hex_plugin_host::native::Prepared {
     original_instance_for_binding(Binding {
         root: 1,
         instance: 2,

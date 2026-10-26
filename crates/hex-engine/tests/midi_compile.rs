@@ -10,7 +10,8 @@ use hex_engine::{
 use hex_lattice::NativeDeviceDefinition;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{
-    BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
+    BeatTime, Command, Created, Editor, MidiClipGain, MidiClipVolume, MidiClipVolumePoint,
+    MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -18,7 +19,10 @@ fn beat(num: u64, den: u64) -> BeatTime {
     BeatTime::from_ratio(num, den).unwrap()
 }
 fn setup() -> (Editor, hex_project::TrackId) {
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    setup_at_rate(48_000)
+}
+fn setup_at_rate(sample_rate: u32) -> (Editor, hex_project::TrackId) {
+    let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 16).unwrap();
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
@@ -50,6 +54,16 @@ fn add_clip(
         Created::Clip(id) => id,
         _ => panic!("clip"),
     }
+}
+
+fn rendered_excerpt(project: &Project, frame: u64) -> [hex_engine::Frame; 64] {
+    let compiled = compile::project(project, &BTreeMap::new()).unwrap();
+    let mut playback = Playback::new(compiled);
+    playback.apply(PlaybackCommand::Seek(frame));
+    playback.apply(PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 64];
+    playback.render(&mut output).unwrap();
+    output
 }
 
 #[test]
@@ -396,6 +410,40 @@ fn zero_frame_note_is_explicitly_refused() {
     assert_eq!(
         compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
         Invalid("midi note duration quantizes to zero frames")
+    );
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(1, 2),
+            duration: BeatTime::from_raw(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    // Force right-remainder materialization without clipping this second
+    // authored gate. Frame editing must not turn invalid source data into
+    // silently accepted playback by filtering every zero-frame note.
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range: hex_project::TimeRange::new(vec![track], 10_000, 10_720).unwrap(),
+            track,
+            frame: 0,
+        })
+        .unwrap();
+    let notes = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .flat_map(|clip| clip.notes())
+        .collect::<Vec<_>>();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].duration(), BeatTime::from_raw(1));
+    assert_eq!(
+        midi_events(editor.project()),
+        Err(Invalid("midi note duration quantizes to zero frames"))
     );
 }
 
@@ -1312,6 +1360,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
     let mut snapshot = editor.project().snapshot();
+    let first_note = snapshot.next_id;
     let hex_project::TrackSnapshot { content, .. } = &mut snapshot.tracks[0];
     let TrackContentSnapshot::Hybrid {
         midi_clips: clips, ..
@@ -1322,7 +1371,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let frame_beat = beat(1, 24_000).raw();
     clips[0].notes = (0..hex_project::MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
-            id: 4 + index as u64,
+            id: first_note + index as u64,
             start_raw: index as u64 * frame_beat,
             duration_raw: frame_beat,
             pitch: 60,
@@ -1330,7 +1379,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
             velocity: 100,
         })
         .collect();
-    snapshot.next_id = 4 + hex_project::MAX_NOTES as u64;
+    snapshot.next_id = first_note + hex_project::MAX_NOTES as u64;
     let project = Project::from_snapshot(snapshot).expect("maximum valid note count");
     let events = midi_events(&project).expect("exact maximum event count");
     assert_eq!(events.len(), MAX_MIDI_EVENT_EDGES);
@@ -1339,8 +1388,186 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
         assert_eq!(pair[0].frame, index as u64);
         assert_eq!(pair[1].kind, MidiEventKind::NoteOff);
         assert_eq!(pair[1].frame, index as u64 + 1);
-        assert_eq!(pair[0].note.value(), 4 + index as u64);
+        assert_eq!(pair[0].note.value(), first_note + index as u64);
         assert_eq!(pair[1].note, pair[0].note);
     }
     assert_eq!(clip, project.tracks()[0].midi_clips()[0].id());
+}
+
+#[test]
+fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
+    for (rate, bpm, tail, leading_silence, reversed) in [
+        (48_000, 120_000_000, false, true, false),
+        (48_000, 120_000_000, true, true, false),
+        (48_000, 143_000_000, false, true, false),
+        (48_000, 143_000_000, false, true, true),
+        (48_000, 143_000_000, false, false, false),
+        (48_000, 143_000_000, true, true, false),
+        (44_100, 143_000_000, false, true, false),
+        (44_100, 143_000_000, true, true, false),
+    ] {
+        let (mut editor, track) = setup_at_rate(rate);
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(bpm).unwrap(),
+            })
+            .unwrap();
+        let one = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(BeatTime::ONE)
+            .unwrap();
+        let two = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(beat(2, 1))
+            .unwrap();
+        let (note_start, selection_end, destination, remaining) = if reversed {
+            let onset = editor
+                .project()
+                .tempo_map()
+                .beat_to_frame(beat(3, 2))
+                .unwrap();
+            (
+                beat(5, 2),
+                two,
+                two,
+                vec![onset, two, two + onset, two + two],
+            )
+        } else if tail {
+            (
+                BeatTime::ZERO,
+                one / 2,
+                two - one / 2,
+                vec![one, two - one / 2],
+            )
+        } else {
+            (BeatTime::ONE, two, two, vec![])
+        };
+        let selection_start = if leading_silence { 0 } else { one };
+        let clip = add_clip(&mut editor, track, BeatTime::ONE, beat(4, 1));
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: note_start,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        if reversed || (tail && rate == 44_100) {
+            editor
+                .execute(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![
+                            MidiClipVolumePoint::linear(
+                                BeatTime::ZERO,
+                                MidiClipGain::new(0.25).unwrap(),
+                            ),
+                            MidiClipVolumePoint::linear(
+                                beat(4, 1),
+                                MidiClipGain::new(0.75).unwrap(),
+                            ),
+                        ],
+                        beat(4, 1),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        if reversed {
+            editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        }
+        let mut before = editor.project().snapshot();
+        let source_notes = editor.project().midi_clip(clip).unwrap().notes().to_vec();
+        let source_volume = editor.project().midi_clip(clip).unwrap().volume().clone();
+        let excerpt = reversed.then(|| {
+            let frame = remaining[0] + 128;
+            let output = rendered_excerpt(editor.project(), frame);
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-5));
+            (frame, output)
+        });
+        assert_eq!(midi_events(editor.project()).unwrap().len(), 2);
+        editor
+            .execute(Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], selection_start, selection_end)
+                    .unwrap(),
+                track,
+                frame: destination,
+            })
+            .unwrap();
+        let events = midi_events(editor.project())
+            .expect("frame-aligned overwrite must not invent an unplayable note gate");
+        assert_eq!(
+            events.iter().map(|event| event.frame).collect::<Vec<_>>(),
+            remaining
+        );
+        compile::project(editor.project(), &BTreeMap::new()).unwrap();
+        assert_eq!(
+            editor.project().midi_clip(clip).unwrap().notes(),
+            source_notes
+        );
+        assert_eq!(
+            editor.project().midi_clip(clip).unwrap().volume(),
+            &source_volume
+        );
+        if let Some((frame, expected)) = excerpt {
+            let actual = rendered_excerpt(editor.project(), frame);
+            for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+                assert!(
+                    (actual - expected).abs() <= 1e-6,
+                    "a prefix crop must preserve audible phase and authored volume before its cut"
+                );
+            }
+        }
+        let after = editor.project().snapshot();
+        // Undo restores complete musical state while the identity allocator
+        // retains its documented high-water mark to prevent ID reuse.
+        assert!(after.next_id >= before.next_id);
+        before.next_id = after.next_id;
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        assert_eq!(midi_events(editor.project()).unwrap(), events);
+    }
+}
+
+#[test]
+fn frame_range_copy_keeps_a_touching_midi_source_exact() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(
+        &mut editor,
+        track,
+        BeatTime::ZERO,
+        BeatTime::from_raw(BeatTime::ONE.raw() + 1),
+    );
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let original = editor.project().midi_clip(clip).unwrap().clone();
+    let events = midi_events(editor.project()).unwrap();
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range: hex_project::TimeRange::new(vec![track], 48_000, 72_000).unwrap(),
+            track,
+            frame: 24_000,
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().midi_clip(clip).unwrap(),
+        &original,
+        "a clip ending in the cut's first frame has no frame overlap"
+    );
+    assert_eq!(midi_events(editor.project()).unwrap(), events);
 }

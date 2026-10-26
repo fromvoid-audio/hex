@@ -80,8 +80,10 @@ impl EditorView {
             let frame_delta = frame_delta
                 .round()
                 .clamp(i128::MIN as f64, i128::MAX as f64) as i128;
-            let next = current.pan_by_frames(state.timeline_frames, frame_delta);
-            self.viewport = (next != Viewport::fit(state.timeline_frames)).then_some(next);
+            let next =
+                current.pan_by_frames(self.viewport_horizon(state.timeline_frames), frame_delta);
+            self.viewport = (next != Viewport::fit(self.viewport_horizon(state.timeline_frames)))
+                .then_some(next);
         }
         if dy != 0.0 {
             let base_handle = self.track_scroll.clone();
@@ -94,7 +96,14 @@ impl EditorView {
     }
 
     pub(super) fn cancel_arrangement_pan(&mut self) -> bool {
-        self.arrangement_pan.take().is_some()
+        if self.arrangement_pan.take().is_none() {
+            return false;
+        }
+        if let Some(state) = self.state.as_ref() {
+            let visible = self.visible_viewport(state.timeline_frames);
+            self.install_arranger_navigation(visible);
+        }
+        true
     }
 
     pub(super) fn arrangement(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -146,6 +155,7 @@ impl EditorView {
                     &self.overview_cache,
                     self.project_generation,
                     &state,
+                    self.viewport_horizon(state.timeline_frames),
                     self.arrangement_focus_ranges(),
                     self.arrangement_revealed_track(),
                 ),
@@ -217,6 +227,7 @@ impl EditorView {
                 &self.overview_cache,
                 self.project_generation,
                 &state,
+                self.viewport_horizon(state.timeline_frames),
                 self.arrangement_focus_ranges(),
                 self.arrangement_revealed_track(),
             ),
@@ -456,7 +467,7 @@ impl EditorView {
                                 cx.notify();
                                 return (true, false);
                             }
-                            if view.pointer_hits_fade_control(x, y) {
+                            if view.pointer_hits_priority_clip_control(x, y) {
                                 return (false, false);
                             }
                             if event.click_count == 2

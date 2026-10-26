@@ -219,11 +219,7 @@ impl EditorView {
                     }
                     if event.phase == NumericEventPhase::Begin {
                         // Gesture pumping bypasses ordinary edit admission while recording.
-                        let reason = if view.document_audio_mode
-                            != hex_session::DocumentAudioMode::Resident
-                        {
-                            Some("live track volume is unavailable in this project mode")
-                        } else if view.gain_recorder.blocks_edits()
+                        let reason = if view.gain_recorder.blocks_edits()
                             || view.midi_recorder.blocks_edits()
                         {
                             Some("finish gain recording before changing track volume")
@@ -275,8 +271,7 @@ impl EditorView {
                 ParameterValue::Float(gain) => Some(gain),
                 _ => None,
             });
-        let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && !automated(track)
+        let enabled = !automated(track)
             && !self.gain_recorder.blocks_edits()
             && !self.midi_recorder.blocks_edits()
             && !self.opening_project

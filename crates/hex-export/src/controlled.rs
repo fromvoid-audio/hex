@@ -346,12 +346,15 @@ fn render_prepared_using(
 }
 
 /// Linear export with caller-owned, independently verified offline pages.
-/// Preparation covers preroll and every output/capture/stem chunk. A miss or
+/// Optional ordinary resources borrow the exact admitted compiler scope; page
+/// preparation does not create or replace those leases. Preparation covers
+/// preroll and every output/capture/stem chunk. A miss or
 /// failed final verification refuses ordinary publication; no resident fallback.
 #[allow(clippy::too_many_arguments)] // Existing range/publication plus one borrowed page boundary.
 pub fn render_prepared_with_pages_and_policy(
     path: &Path,
     revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
     start: u64,
     frames: u64,
     signal: ExportSignal,
@@ -362,7 +365,7 @@ pub fn render_prepared_with_pages_and_policy(
     render_prepared_using_pages(
         path,
         revision,
-        None,
+        resources,
         start,
         frames,
         signal,

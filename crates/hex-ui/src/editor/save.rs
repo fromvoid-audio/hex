@@ -71,18 +71,8 @@ impl EditorView {
         }
         match self.save_admission() {
             SaveAdmission::Current if self.document_format_upgrade_required => {
-                if let Some(path) = self
-                    .state
-                    .as_ref()
-                    .and_then(|state| state.document_path.clone())
-                {
-                    self.save_dialog_open = true;
-                    self.format_upgrade_prompt = Some(FormatUpgradeIntent {
-                        generation: self.project_generation,
-                        path,
-                    });
-                    cx.notify();
-                }
+                self.queue_save_confirmation();
+                cx.notify();
             }
             SaveAdmission::Current => {
                 if self.enqueue_device_barrier(Request::SaveCurrent) {
@@ -93,6 +83,21 @@ impl EditorView {
             }
             SaveAdmission::ChoosePath => self.save_as_dialog(cx),
             SaveAdmission::Reject(message) => self.error = Some(message.into()),
+        }
+    }
+
+    pub(super) fn queue_save_confirmation(&mut self) {
+        if let Some(path) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.document_path.clone())
+        {
+            self.save_dialog_open = true;
+            self.document_format_upgrade_required = true;
+            self.format_upgrade_prompt = Some(FormatUpgradeIntent {
+                generation: self.project_generation,
+                path,
+            });
         }
     }
 
@@ -128,9 +133,9 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let title = theme::text("save this project in the newer format?");
+        let title = theme::text("save for newer hex versions?");
         let detail = theme::text(
-            "overwriting upgrades the saved format. older hex versions that cannot read the newer format will no longer be able to open this file. save as a new or versioned name to preserve the original.",
+            "older hex versions may not support this saved format or document size. overwriting will prevent those versions from opening this file. save as a new or versioned name to preserve the original.",
         );
         let answer = window.prompt(
             PromptLevel::Warning,
@@ -139,7 +144,7 @@ impl EditorView {
             &[
                 PromptButton::new(theme::text("save as…")),
                 PromptButton::cancel(theme::text("cancel")),
-                PromptButton::new(theme::text("overwrite older format")),
+                PromptButton::new(theme::text("overwrite original")),
             ],
             cx,
         );
@@ -174,7 +179,7 @@ impl EditorView {
                                     )
                                 {
                                     view.saving_project = true;
-                                    view.status = "saving project in the newer format".into();
+                                    view.status = "saving project".into();
                                     view.error = None;
                                 }
                             }

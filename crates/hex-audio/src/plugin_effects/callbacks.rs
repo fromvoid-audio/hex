@@ -9,13 +9,19 @@ pub(crate) struct NativeEffectEntry {
     staged: bool,
 }
 impl NativeEffectEntry {
+    pub(crate) fn has_live_epoch(&self) -> bool {
+        !self.staged && !self.callback.transport.is_revoked()
+    }
+    pub(crate) fn transport_is_live(&self) -> bool {
+        !self.callback.transport.is_revoked()
+    }
     pub(crate) fn new(callback: NativeEffectCallback) -> Self {
         Self {
             callback,
             staged: false,
         }
     }
-    #[cfg(all(test, feature = "allocation-probe"))]
+    #[cfg(feature = "allocation-probe")]
     pub(crate) fn committed_frames_for_test(&self) -> u64 {
         self.callback.transport.committed_position_for_test()
     }

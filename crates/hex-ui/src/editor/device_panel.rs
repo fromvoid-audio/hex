@@ -25,6 +25,8 @@ use std::{
 
 mod auto_pan_panel;
 mod bindings;
+mod delay_panel;
+mod overdrive_panel;
 pub(super) use bindings::effective_parameter_value;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
@@ -41,12 +43,14 @@ pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
 mod gate_panel;
 mod keyboard;
 mod navigation;
+mod reverb_panel;
 pub(super) use keyboard::{bind_keys as bind_keyboard_keys, key_up as selection_key_up};
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
@@ -141,6 +145,7 @@ pub(super) struct DevicePanelState {
     operator_envelope_gestures:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
+    delay_panels: HashMap<DeviceId, delay_panel::Panel>,
     eq_spectrum: eq_panel::SpectrumSelection,
     sampler_cursor: sampler_overview::CursorState,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
@@ -149,6 +154,8 @@ pub(super) struct DevicePanelState {
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
+    reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
+    overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_results: HashMap<
@@ -469,12 +476,15 @@ pub(super) fn view(
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq_panels.clear();
+        view.device_panel.delay_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
         view.device_panel.auto_pan_previews.clear();
+        view.device_panel.reverb_previews.clear();
+        view.device_panel.overdrive_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_results.clear();
         if let Some(audio) = view.audio.as_mut() {
@@ -575,12 +585,15 @@ pub(super) fn view(
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq_panels.clear();
+        view.device_panel.delay_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
         view.device_panel.auto_pan_previews.clear();
+        view.device_panel.reverb_previews.clear();
+        view.device_panel.overdrive_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_results.clear();
         view.device_panel.chain_window = Default::default();
@@ -1130,14 +1143,23 @@ fn retire_transfer_previews(
     panel: &mut DevicePanelState,
     type_of: impl Fn(DeviceId) -> Option<hex_lattice_contract::DeviceTypeId>,
 ) {
+    panel.delay_panels.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.delay"))
+    });
     panel.saturator_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.saturator"))
     });
     panel.compressor_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
     });
+    panel.overdrive_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.overdrive"))
+    });
     panel.auto_pan_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
+    });
+    panel.reverb_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.reverb"))
     });
 }
 
@@ -1152,9 +1174,13 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.limiter")) => limiter_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.reverb")) => reverb_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.delay")) => delay_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.auto-pan")) => auto_pan_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     frame_width + gain_meters::WIDTH
@@ -1486,6 +1512,44 @@ fn device_selection_listener(
     })
 }
 
+fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
+    let device_id = device.id();
+    let foreign = view
+        .audible_playback
+        .as_ref()
+        .filter(|audible| audible.project_generation == view.project_generation)
+        .filter(|audible| {
+            audible
+                .state
+                .project
+                .device(device_id)
+                .is_some_and(|current| current.state().processing_eq(device.state()))
+        })
+        .and_then(|audible| audible.observation.as_ref())
+        .and_then(|observation| {
+            observation.foreign_processor(device_id.value(), device.state().type_id())
+        });
+    let (message, status) = match foreign {
+        Some(true) => (
+            theme::text("vst3 effect · parameter controls unavailable"),
+            "active",
+        ),
+        Some(false) => (
+            theme::text("vst3 unavailable · saved state preserved"),
+            "unavailable",
+        ),
+        None => (theme::text("vst3 · awaiting audio status"), "pending"),
+    };
+    let content = crate::device_composition::unsupported_body(message)
+        .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()));
+    div()
+        .child(content)
+        .id(ElementId::Name(
+            format!("device-body-{}", device_id.value()).into(),
+        ))
+        .debug_selector(move || format!("device-body-{}", device_id.value()))
+}
+
 fn render_effect(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -1510,13 +1574,37 @@ fn render_effect(
     let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
+        _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
+            let body = vst3_status_body(view, device);
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text("vst3"),
+                ),
+                theme::device_frame_style(selected),
+                leading,
+                header_actions,
+                body,
+            )
+        }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 utility_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.limiter") {
+                limiter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
                 compressor_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.reverb") {
+                reverb_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.delay") {
+                delay_panel::render_body(view, cx, device_id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
+                overdrive_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
@@ -1614,9 +1702,13 @@ fn render_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8" | "hex.eq") => eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
+        Ok("hex.limiter") => limiter_panel::FRAME_WIDTH,
         Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => gate_panel::FRAME_WIDTH,
+        Ok("hex.reverb") => reverb_panel::FRAME_WIDTH,
+        Ok("hex.delay") => delay_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => auto_pan_panel::FRAME_WIDTH,
+        Ok("hex.overdrive") => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
@@ -2301,12 +2393,17 @@ fn render_add_menu(
         .debug_selector(|| "device-add-menu".into())
         .absolute()
         .top(px(DEVICE_PANEL_HEADER_HEIGHT))
+        .left(px(4.0))
         .right(px(4.0))
-        .h(px(23.0))
+        .max_h(px(crate::device_composition::BODY_HEIGHT))
+        .overflow_y_scroll()
+        .occlude()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(3.0))
         .px(px(4.0))
+        .py(px(2.0))
         .bg(rgb(theme::color(theme::PaletteRole::Raised)));
     let mut any_entry = false;
     for (class, entries) in [
@@ -2334,6 +2431,8 @@ fn render_add_menu(
                             .id(ElementId::Name(action_id.clone().into()))
                             .debug_selector(move || action_id.clone())
                             .h(px(18.0))
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
                             .px(px(5.0))
                             .flex()
                             .items_center()

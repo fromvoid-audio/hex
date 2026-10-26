@@ -80,6 +80,7 @@ fn render_action(
     hex_export::render_prepared_with_pages_and_policy(
         request.path(),
         Arc::clone(request.prepared()),
+        request.resources(),
         request.start(),
         request.frames(),
         request.signal().clone(),

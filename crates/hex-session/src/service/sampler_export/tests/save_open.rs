@@ -14,7 +14,12 @@ fn export_pcm(service: &Service, path: PathBuf) -> Vec<[i16; 2]> {
         .unwrap();
     assert!(event(service).error.is_none());
     let result = export_event(service);
-    assert!(result.result.is_ok(), "{:?}", result.result);
+    assert!(
+        result.result.is_ok(),
+        "{}: {:?}",
+        path.display(),
+        result.result
+    );
     fs::read(path).unwrap()[44..]
         .chunks_exact(4)
         .map(|f| {
@@ -583,6 +588,8 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
         )
         .unwrap();
         let allowance = sources.compiler_factory_allowance().unwrap();
+        // This precompiler allowance includes future factory/proof owners;
+        // both the one-under refusal and exact-budget admission happen below.
         let admission = Admission {
             current: Some(old_snapshot.selection()),
             ..Admission::default()
@@ -631,4 +638,169 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
         assert_eq!(old.project().snapshot(), before);
         assert_eq!((old.can_undo(), old.can_redo()), history);
     }
+}
+
+#[test]
+fn retained_sampler_source_reopens_unassigned_and_rebinds_without_losing_original_pcm_or_state() {
+    let files = Files::new(true);
+    let saved = files.source.with_file_name("retained-source.hex");
+    let service = Service::with_native_reservation(16000, 32, 1024, reservation()).unwrap();
+    let (track, before) = authored(&service);
+    service
+        .submit(request(&before, track, files.source.clone()))
+        .unwrap();
+    let loaded = event(&service);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    let source = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let definition = loaded.state.project.native_source(source).unwrap().clone();
+    let device = definition.instrument().id();
+    let mut expected_definition = hex_project::NativeSourceSnapshot::from(&definition);
+    expected_definition.receiver = None;
+    let expected = export_pcm(&service, files.source.with_file_name("before.wav"));
+    assert!(expected.iter().any(|f| *f != [0; 2]));
+    let unlinked = edit(
+        &service,
+        Command::BindTrackSource {
+            track,
+            source: None,
+        },
+    );
+    assert!(unlinked.error.is_none(), "{:?}", unlinked.error);
+    assert_eq!(
+        unlinked
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
+    assert_eq!(
+        export_pcm(&service, files.source.with_file_name("unlinked.wav")),
+        vec![[0; 2]; 8]
+    );
+    let removed = edit(&service, Command::RemoveTrack(track));
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    assert_eq!(
+        removed
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
+    service.submit(Request::SaveNew(saved.clone())).unwrap();
+    assert!(event(&service).error.is_none());
+    service
+        .submit(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: None,
+        })
+        .unwrap();
+    assert!(event(&service).error.is_none());
+    service.submit(Request::Open(saved)).unwrap();
+    let reopened = event(&service);
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(
+        reopened
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
+    let new_track = edit(
+        &service,
+        Command::AddMidiTrack {
+            name: "reuse".into(),
+        },
+    );
+    let Some(Created::Track(new_track)) = new_track.created else {
+        panic!("new track")
+    };
+    let rebound = edit(
+        &service,
+        Command::BindTrackSource {
+            track: new_track,
+            source: Some(source),
+        },
+    );
+    assert!(rebound.error.is_none(), "{:?}", rebound.error);
+    expected_definition.receiver = Some(new_track.value());
+    assert_eq!(
+        rebound
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
+    assert_eq!(
+        rebound
+            .state
+            .project
+            .track(new_track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id(),
+        device
+    );
+    assert!(
+        rebound
+            .state
+            .project
+            .track(new_track)
+            .unwrap()
+            .devices()
+            .is_empty()
+    );
+    let placed = edit(
+        &service,
+        Command::PlaceMidiClip {
+            track: new_track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        },
+    );
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    assert!(
+        edit(
+            &service,
+            Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::ZERO,
+                duration: hex_project::BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127
+            }
+        )
+        .error
+        .is_none()
+    );
+    assert_eq!(
+        export_pcm(&service, files.source.with_file_name("reused.wav")),
+        expected
+    );
+    service
+        .submit(Request::Edit(Command::RemoveNativeSource(source)))
+        .unwrap();
+    let refused = event(&service);
+    assert!(refused.error.is_some(), "bound source removal must refuse");
+    assert_eq!(
+        refused
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition)
+    );
 }

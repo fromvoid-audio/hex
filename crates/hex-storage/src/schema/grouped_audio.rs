@@ -145,7 +145,7 @@ fn isolated_root(
         midi_clips: Vec::new(),
     };
     snapshot.tempo_points = tempo.points().to_vec();
-    Project::from_snapshot(snapshot).map_err(invalid)
+    Project::from_legacy_snapshot(snapshot).map_err(invalid)
 }
 pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), StorageError> {
     if project
@@ -164,7 +164,7 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
     super::clip_aliases::require_legacy_compatible(project)?;
     super::track_groups::require_legacy_compatible(project)?;
-    Project::from_snapshot(project.snapshot()).map_err(invalid)?;
+    Project::from_legacy_snapshot(project.snapshot()).map_err(invalid)?;
     let mut snapshot = project.snapshot();
     let mut inventory = Vec::new();
     for track in &mut snapshot.tracks {
@@ -208,7 +208,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
             Arc::make_mut(&mut edit.domain).events = None;
         }
     }
-    let legacy = Project::from_snapshot(snapshot).map_err(invalid)?;
+    let legacy = Project::from_legacy_snapshot(snapshot).map_err(invalid)?;
     let mut value = super::event_fades::encode(&legacy)?;
     let object = value
         .as_object_mut()
@@ -404,5 +404,5 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
             "grouped audio references a missing clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(invalid)
+    Project::from_legacy_snapshot(snapshot).map_err(invalid)
 }

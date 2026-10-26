@@ -6,7 +6,7 @@ use hex_project::{ClipFade, Command, Created, Editor, Project};
 use std::collections::BTreeMap;
 
 fn fixture(
-    split_at: Option<u64>,
+    cuts: &[u64],
     looping: bool,
     loop_region: (u64, u64),
 ) -> (hex_engine::Project, ClipFade) {
@@ -54,8 +54,25 @@ fn fixture(
         })
         .unwrap();
     let fade = editor.project().clip(clip).unwrap().fade();
-    if let Some(frame) = split_at {
-        editor.execute(Command::SplitClip { clip, frame }).unwrap();
+    match cuts {
+        [] => {}
+        [frame] => {
+            editor
+                .execute(Command::SplitClip {
+                    clip,
+                    frame: *frame,
+                })
+                .unwrap();
+        }
+        [start, end] => {
+            editor
+                .execute(Command::SplitTimeRange {
+                    range: hex_project::TimeRange::new(vec![track], *start, *end).unwrap(),
+                })
+                .unwrap();
+            assert_eq!(editor.project().track(track).unwrap().clips().len(), 3);
+        }
+        _ => panic!("unsupported fixture cuts"),
     }
     editor
         .execute(Command::SetLoopRegion {
@@ -88,12 +105,12 @@ fn whole_render(project: &hex_engine::Project) -> Vec<Frame> {
 
 #[test]
 fn compiled_split_keeps_source_fade_samples_and_neutral_legacy_constructors() {
-    let (whole, _) = fixture(None, false, (2, 9));
-    let (split, _) = fixture(Some(4), false, (2, 9));
+    let (whole, _) = fixture(&[], false, (2, 9));
+    let (split, _) = fixture(&[4], false, (2, 9));
     assert_eq!(whole_render(&whole), whole_render(&split));
 
-    let (whole_loop, _) = fixture(None, true, (2, 9));
-    let (split_loop, _) = fixture(Some(4), true, (2, 9));
+    let (whole_loop, _) = fixture(&[], true, (2, 9));
+    let (split_loop, _) = fixture(&[4], true, (2, 9));
     assert_eq!(whole_render(&whole_loop), whole_render(&split_loop));
 
     let audio = Audio::new(48_000, vec![[1.0, -1.0]; 4]).unwrap();
@@ -108,6 +125,15 @@ fn compiled_split_keeps_source_fade_samples_and_neutral_legacy_constructors() {
     let mut frames = [[0.0; 2]; 4];
     renderer.render(&mut frames).unwrap();
     assert_eq!(frames, [[1.0, -1.0]; 4]);
+}
+
+#[test]
+fn selected_range_edges_preserve_loop_phase_and_fade_pcm() {
+    for looping in [false, true] {
+        let (whole, _) = fixture(&[], looping, (2, 9));
+        let (split, _) = fixture(&[3, 8], looping, (2, 9));
+        assert_eq!(whole_render(&whole), whole_render(&split));
+    }
 }
 
 #[test]
@@ -175,8 +201,8 @@ fn resetting_phase_preserves_fade_and_restores_neutral_source_order() {
 
 #[test]
 fn split_source_phase_and_inherited_fade_survive_project_loop_seek_and_partitions() {
-    let (whole, _) = fixture(None, true, (2, 9));
-    let (split, _) = fixture(Some(4), true, (2, 9));
+    let (whole, _) = fixture(&[], true, (2, 9));
+    let (split, _) = fixture(&[4], true, (2, 9));
     for seek in [0, 3, 4, 8] {
         let mut expected = Playback::new(whole.clone());
         let mut actual = Playback::new(split.clone());
@@ -196,7 +222,7 @@ fn split_source_phase_and_inherited_fade_survive_project_loop_seek_and_partition
 
 #[test]
 fn fade_rendering_is_partition_invariant_with_global_loop_and_seek() {
-    let (project, fade) = fixture(None, true, (2, 9));
+    let (project, fade) = fixture(&[], true, (2, 9));
     let mut whole = Playback::new(project.clone());
     let mut chunked = Playback::new(project);
     whole.apply(PlaybackCommand::Play);
@@ -214,7 +240,7 @@ fn fade_rendering_is_partition_invariant_with_global_loop_and_seek() {
         assert_eq!(*frame, [sample; 2]);
     }
 
-    let (project, _) = fixture(None, true, (2, 9));
+    let (project, _) = fixture(&[], true, (2, 9));
     let mut seek = Playback::new(project);
     seek.apply(PlaybackCommand::Seek(4));
     seek.apply(PlaybackCommand::Play);
@@ -222,7 +248,7 @@ fn fade_rendering_is_partition_invariant_with_global_loop_and_seek() {
     seek.render(&mut frame).unwrap();
     assert_eq!(frame[0], [0.5 * fade.gain_at(4); 2]);
 
-    let (project, _) = fixture(None, true, (4, 5));
+    let (project, _) = fixture(&[], true, (4, 5));
     let mut one_frame_whole = Playback::new(project.clone());
     let mut one_frame_chunked = Playback::new(project);
     one_frame_whole.apply(PlaybackCommand::Play);

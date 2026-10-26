@@ -3,17 +3,90 @@
 //! cleanup, while a failed cell remains quarantined by its host.
 use super::*;
 use hex_project::{AssetId, Project};
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Control-only borrowed compiler context. The host retains the actual source
 /// owners behind these definitions; this view grants no native admission and
 /// never escapes into the prepared graph. Session consumers use the Engine
 /// contract without acquiring a device registry or native lifecycle of their own.
+/// The same borrowed facts may compile ordinary registered resources and file
+/// catalogs; that does not opt those owners into the closed constructor.
 pub struct AudioCandidateEffects<'a, 'definitions> {
     registry: &'a hex_lattice::NativeDeviceRegistry<'definitions>,
 }
 impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
     pub fn new(registry: &'a hex_lattice::NativeDeviceRegistry<'definitions>) -> Self {
         Self { registry }
+    }
+    /// Compose host definitions with the builtins for one synchronous control
+    /// borrow. Neither the registry nor a native owner escapes this callback.
+    pub fn with_host_definitions<T>(
+        additional: &[&dyn hex_lattice::NativeDeviceDefinition],
+        prepare: impl FnOnce(&AudioCandidateEffects<'_, '_>) -> Result<T, crate::Invalid>,
+    ) -> Result<T, crate::Invalid> {
+        let builtins = hex_devices::native_registry()
+            .map_err(|_| crate::Invalid("invalid built-in native device registry"))?;
+        let count = builtins
+            .definitions()
+            .len()
+            .checked_add(additional.len())
+            .filter(|count| *count <= hex_lattice_contract::MAX_NATIVE_DEVICE_TYPES)
+            .ok_or(crate::Invalid("host effect registry capacity exceeded"))?;
+        let mut definitions = Vec::new();
+        definitions
+            .try_reserve_exact(count)
+            .map_err(|_| crate::Invalid("effect registry allocation refused"))?;
+        definitions.extend_from_slice(builtins.definitions());
+        definitions.extend_from_slice(additional);
+        let registry = hex_lattice::NativeDeviceRegistry::new(&definitions)
+            .map_err(|_| crate::Invalid("invalid host effect registry"))?;
+        prepare(&AudioCandidateEffects::new(&registry))
+    }
+    /// Compile resident clips with the original registered instrument resource
+    /// set. This borrows facts only; native custody remains in the audio owner.
+    #[allow(clippy::too_many_arguments)] // Existing complete registered preparation inputs.
+    pub fn prepare_registered_revision(
+        &self,
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        table: Arc<crate::SineTable>,
+        previous: Option<&crate::PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<crate::PreparedRevision, crate::Invalid> {
+        crate::PreparedRevision::prepare_with_device_resources_and_effect_registry(
+            project,
+            media,
+            table,
+            previous,
+            transforms,
+            resources,
+            scan_frames,
+            cancel,
+            self.registry,
+        )
+    }
+    /// Same ordinary resource preparation with verified file-source metadata.
+    /// The host still supplies actual pages and native endpoints at publication.
+    #[allow(clippy::too_many_arguments)] // Existing mixed-file/resource inputs.
+    pub fn prepare_registered_source_revision(
+        &self,
+        project: &Project,
+        sources: &BTreeMap<AssetId, crate::compile::PreparedAudioSource>,
+        generation: u64,
+        table: Arc<crate::SineTable>,
+        previous: Option<&crate::PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<crate::PreparedRevision, crate::Invalid> {
+        crate::PreparedRevision::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
+            project, sources, generation, table, previous, transforms, resources,
+            scan_frames, cancel, self.registry,
+        )
     }
     pub fn quote(
         &self,

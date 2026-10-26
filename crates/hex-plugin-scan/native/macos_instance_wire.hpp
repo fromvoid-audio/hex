@@ -174,16 +174,19 @@ struct Packet {
     std::array<uint8_t,header_size+max_frames*8> bytes{};
     uint16_t frames=0;bool stop=false;
     uint64_t next_graph=0,next_epoch=0;
+    uint64_t capture_operation=0;
     std::optional<Presentation> resumed_presentation;
-    // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume, -1 malformed.
+    // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume,
+    // 5 quiescent capture, 6 live capture start, 7 live capture poll, -1 malformed.
     // Only the serialized processing lane reads these requests. Resume changes
     // no source/format facts, and is legal only in an acknowledged quiescence.
     int read(int fd,const Config& config,uint64_t sequence,uint64_t frame) {
         auto* p=bytes.data();const auto received=read_exact(fd,p,header_size);
         if(received!=1) return received;
         stop=!std::memcmp(p,"HXVE",4);
-        const bool quiesce=!std::memcmp(p,"HXVQ",4),resume=!std::memcmp(p,"HXVR",4);
-        if((!stop && !quiesce && !resume && std::memcmp(p,"HXVB",4)) || number(p+4,2)!=1 || number(p+8,2)) return -1;
+        const bool quiesce=!std::memcmp(p,"HXVQ",4),resume=!std::memcmp(p,"HXVR",4),capture=!std::memcmp(p,"HXVC",4);
+        const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
+        if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && std::memcmp(p,"HXVB",4)) || number(p+4,2)!=1 || number(p+8,2)) return -1;
         for(size_t n=resume?11:10;n<16;++n) if(p[n]) return -1;
         for(size_t n=0;n<4;++n) if(number(p+16+n*8,8)!=config.binding[n]) return -1;
         frames=static_cast<uint16_t>(number(p+6,2));
@@ -200,6 +203,10 @@ struct Packet {
         if(number(p+48,8)!=sequence || number(p+56,8)!=frame) return -1;
         if(stop) return frames? -1:2;
         if(quiesce) return frames? -1:3;
+        if(capture || live_start || live_poll) {
+            if(frames || read_exact(fd,p+header_size,8)!=1) return -1;
+            capture_operation=number(p+header_size,8);return capture_operation?(live_start?6:(live_poll?7:5)):-1;
+        }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
         if(read_exact(fd,p+header_size,frames*8)!=1) return -1;
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;

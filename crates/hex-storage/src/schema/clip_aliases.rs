@@ -1,5 +1,5 @@
-//! Schema45 adds explicit shared clip sources and a complete member reference
-//! inventory over strict schema44 hierarchy state. Aliased fields carry required
+//! Schema52 adds explicit shared clip sources and a complete member reference
+//! inventory over strict schema51 complete project state. Aliased fields carry required
 //! null markers, never a second editable copy of the source. One audio member
 //! validates each source through the predecessor codec; neutral wrappers keep
 //! that private composition from expanding event/warp payloads per alias. Final
@@ -218,7 +218,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
         }
     }
     let core = Project::from_snapshot(snapshot).map_err(invalid)?;
-    let mut value = super::track_groups::encode(&core)?;
+    let mut value = super::crossfades::encode(&core)?;
     let index = CodecIndex::new(&value)?;
     let mut sources = BTreeMap::new();
     for source in aliases.sources {
@@ -262,7 +262,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
         mark_member(&mut value, &index, member.clip, &source.content)?;
     }
     let object = object_mut(&mut value)?;
-    object.insert("version".into(), 45.into());
+    object.insert("version".into(), 52.into());
     object.insert(
         "alias_sources".into(),
         serde_json::to_value(sources.into_values().collect::<Vec<_>>())?,
@@ -275,7 +275,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: Value = serde_json::from_slice(bytes)?;
     let object = object_mut(&mut value)?;
-    if object.get("version").and_then(Value::as_u64) != Some(45) {
+    if object.get("version").and_then(Value::as_u64) != Some(52) {
         return Err(StorageError::Invalid("invalid clip alias version"));
     }
     let Sources(sources) = serde_json::from_value(
@@ -314,8 +314,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             first.get(&member.source) == Some(&member.clip),
         )?;
     }
-    object_mut(&mut value)?.insert("version".into(), 44.into());
-    let core = super::track_groups::decode(&serde_json::to_vec(&value)?)?;
+    object_mut(&mut value)?.insert("version".into(), 51.into());
+    let core = super::crossfades::decode(&serde_json::to_vec(&value)?)?;
     let mut snapshot = core.snapshot();
     let mut decoded = Vec::new();
     for (id, source) in by_source {

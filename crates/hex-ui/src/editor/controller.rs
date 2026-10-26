@@ -4,7 +4,6 @@ use super::play_intent::AdmissionError;
 use super::refresh::AudioFrame;
 use super::seek::seek_is_pending;
 use super::selection;
-use super::viewport::Viewport;
 use super::{
     EditorView, PendingEditorAudioResult, PendingEditorPublicationObservation, PendingPlayback,
     PendingPlaybackAction, PendingResidentPublication, Playback, PlaybackCandidate,
@@ -24,6 +23,8 @@ use std::{
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_replacement_tests;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod verified_gain_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioEventDisposition {
@@ -408,6 +409,14 @@ impl EditorView {
                 true
             }
             PublicationObservationDisposition::Apply => {
+                if let crate::EditorPublicationState::VerifiedPreviewSubmitted { identity, .. } =
+                    &pending.state
+                    && self
+                        .device_publication_view(pending.context, *identity)
+                        .is_none()
+                {
+                    return false;
+                }
                 if let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
                     &pending.state
                     && metadata.device_preview.is_some() != metadata.tuning_preview.is_some()
@@ -425,6 +434,28 @@ impl EditorView {
         }
     }
 
+    fn device_publication_view(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        identity: hex_session::service::DevicePreviewIdentity,
+    ) -> Option<Arc<ViewState>> {
+        let current = self.state.as_ref()?;
+        if context.project_generation != self.project_generation
+            || current.audio_authoring_revision(context) != Some(current.revision)
+        {
+            return None;
+        }
+        self.resident_device_preview
+            .as_ref()
+            .filter(|preview| {
+                preview.identity == identity
+                    && identity.project_generation == self.project_generation
+                    && identity.canonical_revision == current.revision
+                    && preview.state.revision == current.revision
+            })
+            .map(|preview| Arc::clone(&preview.state))
+    }
+
     fn resident_publication_view(
         &self,
         metadata: hex_session::service::ResidentPublicationMetadata,
@@ -436,16 +467,7 @@ impl EditorView {
             return None;
         }
         match (metadata.device_preview, metadata.tuning_preview) {
-            (Some(identity), None) => self
-                .resident_device_preview
-                .as_ref()
-                .filter(|preview| {
-                    preview.identity == identity
-                        && identity.project_generation == self.project_generation
-                        && identity.canonical_revision == current.revision
-                        && preview.state.revision == current.revision
-                })
-                .map(|preview| Arc::clone(&preview.state)),
+            (Some(identity), None) => self.device_publication_view(metadata.context, identity),
             (None, Some(identity)) => self
                 .resident_tuning_preview
                 .as_ref()
@@ -498,6 +520,31 @@ impl EditorView {
             return;
         };
         match state {
+            crate::EditorPublicationState::VerifiedPreviewSubmitted {
+                audio_revision,
+                identity,
+            } => {
+                if let Some(state) = self.device_publication_view(context, identity)
+                    && !self.playback_candidates.iter().any(|candidate| {
+                        candidate.audio_revision == audio_revision
+                            && candidate.project_generation == context.project_generation
+                    })
+                    && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
+                {
+                    self.playback_candidates.push_back(PlaybackCandidate {
+                        worker_requires_preroll: None,
+                        observation: None,
+                        audio_revision,
+                        project_generation: context.project_generation,
+                        state,
+                        prepared_revision: None,
+                        seek_request_id: None,
+                        device_preview_identity: Some(identity),
+                        tuning_preview_identity: None,
+                    });
+                }
+                self.status = "publishing gain preview".into();
+            }
             crate::EditorPublicationState::Preparing => self.status = "preparing audio".into(),
             crate::EditorPublicationState::Busy => {
                 self.status = "audio busy · waiting to publish".into()
@@ -969,10 +1016,11 @@ impl EditorView {
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
-                    let open_save = event.save_complete.then_some((
-                        event.error.is_none() && !event.state.unsaved,
-                        event.state.revision,
-                    ));
+                    let open_save = (event.save_complete && !event.save_confirmation_required)
+                        .then_some((
+                            event.error.is_none() && !event.state.unsaved,
+                            event.state.revision,
+                        ));
                     let saved_project_path =
                         (event.save_complete && event.error.is_none() && !event.state.unsaved)
                             .then(|| event.state.document_path.clone())
@@ -1005,6 +1053,8 @@ impl EditorView {
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_audio_events();
+                    visible_change |= self.retire_pending_clip_loop();
+                    visible_change |= self.cancel_audio_loop_gesture();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_track_reorder();
@@ -1031,6 +1081,7 @@ impl EditorView {
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_detail_request = self.audio_clip_controls.matches(&request);
                 let audio_events_request = self.pending_audio_events_matches(&request);
+                let clip_loop_request = self.pending_clip_loop_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
                 let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -1062,6 +1113,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             self.audio_events_submitted();
+                        }
+                        if clip_loop_request {
+                            self.clip_loop_submitted();
                         }
                         if clip_move_request {
                             self.clip_move_submitted();
@@ -1109,6 +1163,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             visible_change |= self.retire_pending_audio_events();
+                        }
+                        if clip_loop_request {
+                            visible_change |= self.retire_pending_clip_loop();
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
@@ -1180,6 +1237,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             visible_change |= self.retire_pending_audio_events();
+                        }
+                        if clip_loop_request {
+                            visible_change |= self.retire_pending_clip_loop();
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
@@ -1949,6 +2009,7 @@ impl EditorView {
         self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
+        self.plugin_effect_complete(&event);
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         if self
@@ -1958,6 +2019,7 @@ impl EditorView {
             self.retire_sample_bpm_control();
         }
         self.audio_events_request_complete(&event);
+        self.clip_loop_request_complete(&event);
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
@@ -1973,6 +2035,7 @@ impl EditorView {
         let duplicate_completion = self.take_duplicate_completion(&mut event);
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
+            self.pending_plugin_effect.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
@@ -2039,6 +2102,7 @@ impl EditorView {
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
+        self.reconcile_rendered_group_selection(&event);
         if event.bounce_complete.as_ref().is_some_and(|completed| {
             self.bounce_control
                 .as_ref()
@@ -2209,17 +2273,17 @@ impl EditorView {
             self.invalidate_prepared_seek();
             self.cancel_active_browser_audio_drag();
         }
-        if !event.project_replaced
-            && self.viewport.is_none()
-            && let Some(previous_horizon) = self.state.as_ref().map(|state| state.timeline_frames)
-            && previous_horizon > 0
-            && event_state.timeline_frames > previous_horizon
-        {
-            // Auto-fit is a one-time view choice. Once content extends the
-            // project, keep the previously visible frame span so edits do not
-            // make the Arrangement appear to zoom out unexpectedly.
-            self.viewport = Some(Viewport::fit(previous_horizon));
-        }
+        // Resize previews retain their own captured viewport through the exact
+        // terminal below. Never adopt that private extent as canonical tail.
+        let resize_owns_viewport = retired_trim.is_some()
+            || self.pending_trim.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some();
+        self.reconcile_arranger_navigation(
+            &event_state,
+            event.project_replaced,
+            resize_owns_viewport,
+        );
         if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
@@ -2258,10 +2322,15 @@ impl EditorView {
             .as_ref()
             .is_none_or(|state| state.project.tracks().is_empty())
             && !event.state.project.tracks().is_empty();
+        let save_confirmation_required =
+            event.save_confirmation_required && !event.project_replaced;
         self.state = Some(event.state);
+        if save_confirmation_required {
+            self.queue_save_confirmation();
+        }
         self.observe_midi_take_completion(event.midi_take_complete);
         if loop_complete {
-            self.pending_loop = None;
+            self.loop_state_installed(event.error.is_none());
         }
         if event.project_replaced {
             self.loop_rail_gesture = None;
@@ -3038,6 +3107,7 @@ impl EditorView {
             self.cancel_midi_stroke();
         }
         if request.is_project_open() {
+            self.cancel_plugin_effect();
             self.retire_sampler_parameter();
             self.cancel_first_sampler_load(None);
             if let Some(control) = &self.audio_batch {
@@ -3070,6 +3140,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::InsertPluginEffect(_)
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::CompareDevice { .. }
@@ -3165,6 +3236,7 @@ impl EditorView {
         let group_copy_request = self.pending_group_copy_matches(&request);
         let clip_detail_request = self.audio_clip_controls.matches(&request);
         let audio_events_request = self.pending_audio_events_matches(&request);
+        let clip_loop_request = self.pending_clip_loop_matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
         let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -3191,6 +3263,9 @@ impl EditorView {
                 }
                 if audio_events_request {
                     self.audio_events_submitted();
+                }
+                if clip_loop_request {
+                    self.clip_loop_submitted();
                 }
                 if clip_move_request {
                     self.clip_move_submitted();
@@ -3350,16 +3425,12 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let playhead = self.cursor_position();
         let viewport = self
             .visible_viewport(horizon)
             .zoom(horizon, playhead, inward);
-        self.viewport = if viewport == Viewport::fit(horizon) {
-            None
-        } else {
-            Some(viewport)
-        };
+        self.install_arranger_navigation(viewport);
     }
 
     pub(super) fn zoom_timeline_wheel_at(
@@ -3385,7 +3456,7 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let current = self.visible_viewport(horizon);
         let Some(anchor) = super::seek::pointer_to_frame(
             f32::from(pointer_x),
@@ -3402,11 +3473,12 @@ impl EditorView {
         if next == current {
             return false;
         }
-        self.viewport = (next != Viewport::fit(horizon)).then_some(next);
+        self.install_arranger_navigation(next);
         true
     }
 
     pub(super) fn fit_timeline(&mut self) {
+        self.clear_retained_navigation();
         self.viewport = None;
     }
 
@@ -3414,14 +3486,10 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let horizon = state.timeline_frames;
+        let horizon = self.viewport_horizon(state.timeline_frames);
         let current = self.visible_viewport(horizon);
         let panned = current.pan_half(horizon, right);
-        self.viewport = if self.viewport.is_none() && panned == current {
-            None
-        } else {
-            Some(panned)
-        };
+        self.install_arranger_navigation(panned);
     }
 
     pub(super) fn queue_audio_command(&mut self, command: PlaybackCommand) {

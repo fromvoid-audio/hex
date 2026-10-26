@@ -93,6 +93,22 @@ pub(super) fn bounded_midi<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Vec<MidiDto>, D::Error> {
     bounded(d, hex_project::MAX_MIDI_ROUTES)
 }
+#[derive(Deserialize)]
+struct MidiRoutes(#[serde(deserialize_with = "bounded_midi")] Vec<MidiDto>);
+
+pub(super) fn decode_midi_routes(
+    value: serde_json::Value,
+) -> Result<Vec<MidiRouteSnapshot>, StorageError> {
+    let MidiRoutes(routes) = serde_json::from_value(value)?;
+    Ok(routes
+        .into_iter()
+        .map(|route| MidiRouteSnapshot {
+            id: route.id,
+            source: route.source,
+            destination: route.destination,
+        })
+        .collect())
+}
 
 impl DocumentV24 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
@@ -150,7 +166,7 @@ impl DocumentV24 {
             ));
         }
         Self::into_snapshot(doc).and_then(|snapshot| {
-            Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+            Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
         })
     }
     pub(super) fn into_snapshot(doc: Self) -> Result<Snapshot, StorageError> {
@@ -171,7 +187,7 @@ impl DocumentV24 {
             routing: doc.routing,
         };
         let mut snapshot = base.into_snapshot()?;
-        let owners = Project::from_snapshot(snapshot.clone())
+        let owners = Project::from_legacy_snapshot(snapshot.clone())
             .map_err(|error| StorageError::Invalid(error.0))?;
         snapshot.audio_feeds = doc
             .audio_feeds

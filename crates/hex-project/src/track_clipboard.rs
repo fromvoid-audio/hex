@@ -166,9 +166,15 @@ pub(crate) fn paste(
             .parent_group
             .and_then(|parent| remap.get(&parent).copied())
             .or(destination.parent_group);
-        for device in track.devices.iter_mut().chain(track.instrument.iter_mut()) {
+        for device in &mut track.devices {
             device.id = DeviceId(project.allocate_id()?);
         }
+        if let Some(binding) = &track.instrument {
+            // Duplicating a track is an explicit independent-copy operation;
+            // it receives a new source and device identity, unlike linking.
+            track.instrument = Some(project.copy_source_binding(binding, track.id)?);
+        }
+
         for clip in &mut track.content.audio_clips {
             clip.id = ClipId(project.allocate_id()?);
         }

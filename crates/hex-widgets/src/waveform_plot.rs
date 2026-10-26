@@ -7,6 +7,10 @@ use gpui::{
 };
 use std::ops::Deref;
 
+#[cfg(test)]
+#[path = "waveform_band_tests.rs"]
+mod band_tests;
+
 /// Visible peak-column budget, shared with the host's bounded projection.
 pub const MAX_WAVEFORM_COLUMNS: usize = 4096;
 /// A full-source envelope may add its two exact boundary points.
@@ -70,6 +74,7 @@ impl WaveformChannel {
                 .iter()
                 .zip(lower)
                 .any(|(top, bottom)| !f32::from(bottom.y - top.y).is_finite())
+            || !valid_vertical_extent(upper, lower)
         {
             return None;
         }
@@ -84,20 +89,13 @@ impl WaveformChannel {
         } else {
             None
         };
-        let path = if let Some(first) = upper.first().copied() {
-            let mut path = match mode {
-                WaveformEnvelopeMode::Filled => PathBuilder::fill(),
-                WaveformEnvelopeMode::Trace => PathBuilder::stroke(trace_width),
-            };
+        let path = if mode == WaveformEnvelopeMode::Filled && !upper.is_empty() {
+            filled_band(upper, lower)
+        } else if let Some(first) = upper.first().copied() {
+            let mut path = PathBuilder::stroke(trace_width);
             path.move_to(first);
             for point in upper.iter().skip(1) {
                 path.line_to(*point);
-            }
-            if mode == WaveformEnvelopeMode::Filled {
-                for point in lower.iter().rev() {
-                    path.line_to(*point);
-                }
-                path.close();
             }
             path.build().ok()?
         } else {
@@ -131,8 +129,47 @@ impl WaveformChannel {
         self.zero_ranges.is_some()
     }
 }
+
+// A validated envelope is an x-monotone band. Adjacent columns form an exact
+// trapezoid, so no general polygon tessellation is needed. Keep the original
+// vertices, including fractional positions; omit only zero-area triangles.
+fn band_triangles(
+    upper: &[Point<Pixels>],
+    lower: &[Point<Pixels>],
+    mut emit: impl FnMut([Point<Pixels>; 3]),
+) {
+    for (top, bottom) in upper.windows(2).zip(lower.windows(2)) {
+        if top[0].x == top[1].x {
+            continue;
+        }
+        if top[0].y < bottom[0].y {
+            emit([top[0], top[1], bottom[0]]);
+        }
+        if top[1].y < bottom[1].y {
+            emit([top[1], bottom[1], bottom[0]]);
+        }
+    }
+}
+
+fn filled_band(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> Path<Pixels> {
+    let mut path = None;
+    let solid = gpui::point(0.0, 1.0);
+    band_triangles(upper, lower, |[a, b, c]| {
+        // Seeding at the first triangle preserves tight bounds even when the
+        // envelope begins with a distant zero-area tail.
+        path.get_or_insert_with(|| Path::new(a))
+            .push_triangle((a, b, c), (solid, solid, solid));
+    });
+    path.unwrap_or_else(|| Path::new(Point::default()))
+}
 fn valid_point(point: Point<Pixels>) -> bool {
     f32::from(point.x).is_finite() && f32::from(point.y).is_finite()
+}
+fn valid_vertical_extent(upper: &[Point<Pixels>], lower: &[Point<Pixels>]) -> bool {
+    let min = upper.iter().map(|p| f32::from(p.y)).reduce(f32::min);
+    let max = lower.iter().map(|p| f32::from(p.y)).reduce(f32::max);
+    min.zip(max)
+        .is_none_or(|(min, max)| (max - min).is_finite())
 }
 fn valid_width(width: Pixels) -> bool {
     f32::from(width).is_finite() && width > px(0.0)

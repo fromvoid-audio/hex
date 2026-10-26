@@ -155,7 +155,12 @@ impl ClipEdit {
             Self::Active { .. } | Self::Flavor { .. } | Self::Rename { .. } | Self::Delete
         )
     }
-    pub(crate) fn command(&self, project: &Project, clip: ClipId, midi: bool) -> Result<Command, Invalid> {
+    pub(crate) fn command(
+        &self,
+        project: &Project,
+        clip: ClipId,
+        midi: bool,
+    ) -> Result<Command, Invalid> {
         Ok(match self {
             Self::Active { active } => Command::SetClipActive {
                 clip,
@@ -383,7 +388,9 @@ pub(crate) fn apply(
     for (track, original) in candidate.tracks.iter_mut().zip(rows) {
         track.content = original;
     }
-    if candidate.aliases.sources.is_empty() { Project::from_snapshot(candidate.snapshot())?; }
+    if candidate.aliases.sources.is_empty() {
+        Project::from_snapshot(candidate.snapshot())?;
+    }
     *project = candidate;
     Ok(Created::None)
 }
@@ -443,6 +450,8 @@ impl Command {
                 ClipCommandScope::FocusedSnapshot { clip: *clip }
             }
             Self::EditAudioEvents { clip, .. }
+            | Self::CreateAudioEventFades { clip, .. }
+            | Self::SetSessionAudioClipLoop { clip, .. }
             | Self::SetSessionAudioClipSource { clip, .. }
             | Self::SetSessionMidiClipSource { clip, .. }
             | Self::SetMidiClipSource { clip, .. }
@@ -504,6 +513,8 @@ impl Command {
             | Self::MoveTimeRange { .. }
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
+            | Self::SplitTimeRange { .. }
+            | Self::CreateArrangementFades { .. }
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupTimeRange(_)
@@ -528,6 +539,7 @@ impl Command {
             | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
+            | Self::DuplicateArrangementSectionAt { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
@@ -552,6 +564,7 @@ impl Command {
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::ReplaceDeviceAutomation { .. }
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }
@@ -605,6 +618,7 @@ impl Command {
             | Self::BalanceBy { .. }
             | Self::MasterGainBy { .. }
             | Self::ToggleMute(..)
+            | Self::ToggleTracksMute(..)
             | Self::AddMidiTrack { .. }
             | Self::AddScene { .. }
             | Self::InsertScene { .. }
@@ -620,6 +634,11 @@ impl Command {
             | Self::ClearSessionCell { .. }
             | Self::SetSessionStopCell { .. }
             | Self::PlaceMidiClip { .. }
+            | Self::BindTrackSource { .. }
+            | Self::SetNativeSourceReceiver { .. }
+            | Self::CreateNativeSource { .. }
+            | Self::RenameNativeSource { .. }
+            | Self::RemoveNativeSource(_)
             | Self::PlaceMidiClipWithOverwrite { .. } => ClipCommandScope::Unrelated,
         }
     }
