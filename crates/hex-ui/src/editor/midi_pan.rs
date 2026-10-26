@@ -268,3 +268,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_pan_capture_tests.rs"]
+mod capture_tests;
