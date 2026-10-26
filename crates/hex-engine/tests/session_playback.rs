@@ -538,12 +538,32 @@ fn pause_empty_render_stop_all_and_seek_have_distinct_transport_effects() {
     playback.render(&mut output).expect("initial render");
     assert_eq!(playback.performance_frame(), 31);
 
+    let mut released = SessionPlayback::new(Arc::clone(&fixture.revision)).expect("release oracle");
+    released
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: fixture.session_clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    released.apply(SessionPlaybackCommand::Play).unwrap();
+    released.render(&mut [[0.0; 2]; 31]).unwrap();
+    released
+        .apply(SessionPlaybackCommand::StopTrack {
+            track: fixture.track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
     playback
         .apply(SessionPlaybackCommand::Pause)
         .expect("pause");
     output.fill([7.0; 2]);
     playback.render(&mut output).expect("paused render");
-    assert_eq!(output, [[0.0; 2]; 31]);
+    let mut expected_release = [[0.0; 2]; 31];
+    released.render(&mut expected_release).unwrap();
+    assert_eq!(
+        output, expected_release,
+        "pause releases notes through the existing source instead of freezing its audio"
+    );
     let frame = playback.performance_frame();
     playback.render(&mut []).expect("empty render");
     assert_eq!(playback.performance_frame(), frame);

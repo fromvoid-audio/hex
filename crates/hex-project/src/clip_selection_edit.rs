@@ -621,6 +621,7 @@ impl Command {
             | Self::SetSessionStopCell { .. }
             | Self::PlaceMidiClip { .. }
             | Self::BindTrackSource { .. }
+            | Self::SetNativeSourceReceiver { .. }
             | Self::CreateNativeSource { .. }
             | Self::RenameNativeSource { .. }
             | Self::RemoveNativeSource(_)

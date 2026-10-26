@@ -313,8 +313,7 @@ fn resident_sampler_console_bounce_case(whole_track: bool) {
         created
     }
     let files = sampler_export::tests::Files::new(false);
-    let (mut session, snapshot) = sampler_export::tests::direct_sampler(&files);
-    drop(snapshot);
+    let mut session = interactive_sampler_session(&files);
     if whole_track {
         // Whole-device bakes reserve the bounded 30-second tail/decode horizon;
         // the tiny clip-conversion fixture otherwise admits only 1024 frames.
@@ -534,8 +533,16 @@ fn resident_sampler_console_bounce_case(whole_track: bool) {
         );
     }
     assert_eq!(session.project().main_devices(), original.main_devices());
+    let mut retained_sources = original.snapshot().native_sources;
+    if whole_track {
+        for source in &mut retained_sources {
+            if source.receiver == Some(track.value()) {
+                source.receiver = None;
+            }
+        }
+    }
     assert_eq!(
-        session.project().native_sources(),
-        original.native_sources()
+        session.project().snapshot().native_sources,
+        retained_sources
     );
 }

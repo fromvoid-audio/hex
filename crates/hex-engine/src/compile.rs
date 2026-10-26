@@ -1,7 +1,7 @@
 //! Control-side compilation of a canonical edit snapshot into offline playback.
 //! This allocates and retains PCM references; it must never run in a callback.
 use crate::{Audio, Invalid, Project, StreamedSourceMetadata, Track};
-use hex_project::{Asset, AssetId};
+use hex_project::{Asset, AssetId, DeviceId};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub use crate::midi_compile::midi_events;
@@ -32,6 +32,119 @@ impl<'a> SourceBank<'a> {
             Self::Mixed(sources, generation) => resolve_prepared(asset, rate, sources, generation),
         }
     }
+}
+
+/// One source provider and mutable factory per preparation pass. Contributor
+/// tracks borrow this configuration; only the selected receiver takes custody
+/// of the factory. This temporary map never enters callback ownership.
+pub(crate) struct PreparedSourceInstrument {
+    pub(crate) config: Arc<dyn hex_lattice::PreparedNativeInstrument>,
+    pub(crate) mutable_runtime: Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>,
+    pub(crate) mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    latency: Option<u32>,
+    runtime_latency: Option<u32>,
+}
+
+pub(crate) fn prepare_source_instruments(
+    project: &hex_project::Project,
+    registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+    contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+    samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+) -> Result<BTreeMap<DeviceId, PreparedSourceInstrument>, Invalid> {
+    let mut instruments = BTreeMap::new();
+    for source in project
+        .native_sources()
+        .iter()
+        .filter(|source| project.source_contributors(source.id()).next().is_some())
+    {
+        if source.devices().count() != 1 {
+            return Err(Invalid("native source device chains are not prepared"));
+        }
+    }
+    for track in project.tracks() {
+        let Some(device) = track.instrument() else {
+            continue;
+        };
+        if instruments.contains_key(&device.id()) {
+            continue;
+        }
+        let receiver = track
+            .source_id()
+            .and_then(|id| project.native_source(id))
+            .and_then(hex_project::NativeSource::receiver);
+        if receiver.is_none() {
+            // A retained but disconnected source has no generator or resource
+            // lease. Validate its state without demanding playable resources.
+            registry
+                .migrate_state(device.state())
+                .map_err(|_| Invalid("disconnected native source state is invalid"))?;
+            continue;
+        }
+        let config: Arc<dyn hex_lattice::PreparedNativeInstrument> =
+            Arc::from(crate::native_device_resources::prepare_instrument(
+                registry,
+                device.id(),
+                device.state(),
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: project.sample_rate(),
+                    tuning: contexts.tuning(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+                samplers,
+            )?);
+        let enabled = !device.bypassed();
+        let latency = if enabled {
+            config.algorithmic_latency_frames()
+        } else {
+            Some(0)
+        };
+        let mutable_runtime = if let Some(receiver) = receiver.filter(|_| enabled) {
+            if contexts.requires_mutable_continuation(receiver, device.id()) {
+                config.prepare_mutable_continuation_runtime()
+            } else {
+                config.prepare_mutable_runtime()
+            }
+            .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
+        } else {
+            None
+        };
+        let runtime_latency = mutable_runtime
+            .as_deref()
+            .map_or(latency, |factory| factory.algorithmic_latency_frames());
+        let mutable_limits = mutable_runtime
+            .as_deref()
+            .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
+            .transpose()?;
+        instruments.insert(
+            device.id(),
+            PreparedSourceInstrument {
+                config,
+                mutable_runtime,
+                mutable_limits,
+                latency,
+                runtime_latency,
+            },
+        );
+    }
+    Ok(instruments)
+}
+
+/// Refuse the same selected MIDI root entering one source twice. Its independent
+/// route identities cannot currently distinguish an intentional duplicate stream.
+pub(crate) fn validate_source_midi_roots(project: &hex_project::Project) -> Result<(), Invalid> {
+    for source in project
+        .native_sources()
+        .iter()
+        .filter(|source| source.receiver().is_some())
+    {
+        let mut roots = std::collections::BTreeSet::new();
+        for track in project.source_contributors(source.id()) {
+            if !roots.insert(project.midi_source_track(track.id())) {
+                return Err(Invalid("shared source has ambiguous duplicate midi roots"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A decoded media bank is separate from editable metadata and undo history.
@@ -362,6 +475,7 @@ fn compile_project_inner<'a>(
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
     crate::gain_envelope::validate_project(snapshot)?;
+    validate_source_midi_roots(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
     // Fanout is real work: bound expanded destination occurrences before note-bank allocation.
@@ -403,6 +517,8 @@ fn compile_project_inner<'a>(
         tuning: shared_contexts.tuning(),
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
+    let source_instruments =
+        prepare_source_instruments(snapshot, instrument_registry, &shared_contexts, samplers)?;
     let mut audio_clip_views = Vec::new();
     let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
     let mut tracks = Vec::new();
@@ -421,51 +537,30 @@ fn compile_project_inner<'a>(
             .position(|track| track.id() == source_id)
             .ok_or(Invalid("midi source root is missing"))?;
         let midi_source = &snapshot.tracks()[source_index];
-        // Validate a present slot even when it is bypassed or has no current
-        // MIDI clips; unknown/future definitions must refuse graph publication.
-        let instrument_config = track
+        let source_config = track
             .instrument()
-            .map(|slot| {
-                crate::native_device_resources::prepare_instrument(
-                    instrument_registry,
-                    slot.id(),
-                    slot.state(),
-                    &device_context,
-                    samplers,
-                )
-            })
-            .transpose()?;
-        let instrument_latency = track
-            .instrument()
-            .filter(|device| !device.bypassed())
-            .and(instrument_config.as_deref())
-            .map_or(Some(0), |instrument| {
-                instrument.algorithmic_latency_frames()
-            });
-        let mut instrument_runtime_latency = instrument_latency;
-        let mutable_limits = if let Some(instrument) = track
-            .instrument()
-            .filter(|device| !device.bypassed())
-            .and(instrument_config.as_ref())
-        {
-            (if track.instrument().is_some_and(|device| {
-                shared_contexts.requires_mutable_continuation(track.id(), device.id())
-            }) {
-                instrument.prepare_mutable_continuation_runtime()
-            } else {
-                instrument.prepare_mutable_runtime()
-            })
-            .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
-            .map(|factory| {
-                instrument_runtime_latency = factory.algorithmic_latency_frames();
-                crate::midi_compile::MutableInstrumentLimits::from_factory(factory.as_ref())
-            })
-            .transpose()?
+            .and_then(|device| source_instruments.get(&device.id()));
+        let has_receiver = track
+            .source_id()
+            .and_then(|id| snapshot.native_source(id))
+            .and_then(hex_project::NativeSource::receiver)
+            .is_some();
+        let instrument_config = source_config
+            .filter(|_| has_receiver)
+            .map(|prepared| &prepared.config);
+        let instrument_latency = if track.receives_source_audio() {
+            source_config.map_or(Some(0), |prepared| prepared.latency)
         } else {
-            None
+            Some(0)
         };
+        let instrument_runtime_latency = if track.receives_source_audio() {
+            source_config.map_or(Some(0), |prepared| prepared.runtime_latency)
+        } else {
+            Some(0)
+        };
+        let mutable_limits = source_config.and_then(|prepared| prepared.mutable_limits);
         if mutable_limits.is_some()
-            && let Some(instrument) = instrument_config.as_deref()
+            && let Some(instrument) = instrument_config.map(Arc::as_ref)
         {
             for clip in midi_source.midi_clips().iter().filter(|clip| clip.active()) {
                 for note in clip.source().notes() {
@@ -475,10 +570,21 @@ fn compile_project_inner<'a>(
                 }
             }
         }
-        let mutable_looping_source = midi_source
-            .midi_clips()
-            .iter()
-            .any(|clip| clip.active() && clip.source().looping());
+        let mutable_looping_source = if track.receives_source_audio() {
+            track.source_id().is_some_and(|source| {
+                snapshot.source_contributors(source).any(|contributor| {
+                    snapshot
+                        .track(snapshot.midi_source_track(contributor.id()))
+                        .is_some_and(|root| {
+                            root.midi_clips()
+                                .iter()
+                                .any(|clip| clip.active() && clip.source().looping())
+                        })
+                })
+            })
+        } else {
+            false
+        };
         let mutable_instrument = mutable_limits.is_some();
         let clips = track
             .clips()
@@ -530,7 +636,22 @@ fn compile_project_inner<'a>(
             .into_iter()
             .flatten()
             .collect();
-        let muted = crate::effective_track_mute(track, any_soloed);
+        let input_muted = crate::effective_track_mute(track, any_soloed);
+        let shared_source = track
+            .source_id()
+            .filter(|source| snapshot.source_contributors(*source).count() > 1);
+        let muted = if track.receives_source_audio()
+            && let Some(source) = shared_source
+        {
+            (track.muted() && !track.soloed())
+                || (any_soloed
+                    && !snapshot
+                        .source_contributors(source)
+                        .any(|contributor| contributor.soloed()))
+        } else {
+            input_muted
+        };
+        let local_content_enabled = shared_source.is_none() || !input_muted;
         if source_index != track_index && previews.is_some() && !track.midi_clips().is_empty() {
             // Authored preview remains on its canonical owner even when that owner's
             // instrument listens to a different root.
@@ -550,7 +671,7 @@ fn compile_project_inner<'a>(
             let prepared_instrument = track
                 .instrument()
                 .filter(|device| !device.bypassed())
-                .and_then(|_| instrument_config.as_ref().map(Box::as_ref));
+                .and_then(|_| instrument_config.map(Arc::as_ref));
             Some(
                 crate::midi_compile::compile_instrument_track(
                     snapshot,
@@ -636,11 +757,29 @@ fn compile_project_inner<'a>(
                 device_chain,
             )?
             .with_track_id(track.id())
+            .with_source_audio_receiver(track.receives_source_audio())
+            .with_source_mix_scope(local_content_enabled, local_content_enabled)
+            .with_source_binding(
+                track.source_id(),
+                track
+                    .source_id()
+                    .and_then(|source| snapshot.native_source(source))
+                    .and_then(hex_project::NativeSource::receiver)
+                    .and_then(|receiver| {
+                        snapshot
+                            .tracks()
+                            .iter()
+                            .position(|track| track.id() == receiver)
+                    }),
+            )
             .with_midi_source_index((source_index != track_index).then_some(source_index))
-            .with_instrument_config(track.instrument())
+            .with_instrument_config(track.instrument().filter(|_| track.receives_source_audio()))
             .with_tuning_identity(shared_contexts.tuning_identity())
             .with_instrument_latency(instrument_latency, instrument_runtime_latency)
-            .with_mutable_instrument(mutable_instrument, mutable_looping_source)
+            .with_mutable_instrument(
+                mutable_instrument && track.receives_source_audio(),
+                mutable_looping_source,
+            )
             .with_sends(sends)
             .with_gain_envelope(
                 track.gain_lane(),
@@ -650,6 +789,7 @@ fn compile_project_inner<'a>(
             )?,
         );
     }
+    validate_shared_arrangement_density(snapshot, &tracks, &source_instruments)?;
     let mut return_buses = Vec::new();
     return_buses
         .try_reserve_exact(snapshot.return_tracks().len())
@@ -775,6 +915,90 @@ fn compile_project_inner<'a>(
         }
     }
     Ok((project, previews.map(std::mem::take).unwrap_or_default()))
+}
+
+/// Independently valid contributor spans share one voice/event owner. Sweep
+/// their combined intervals without moving or rewriting canonical clip IDs.
+fn validate_shared_arrangement_density(
+    snapshot: &hex_project::Project,
+    tracks: &[Track],
+    sources: &BTreeMap<DeviceId, PreparedSourceInstrument>,
+) -> Result<(), Invalid> {
+    for source in snapshot
+        .native_sources()
+        .iter()
+        .filter(|source| source.receiver().is_some())
+    {
+        if snapshot.source_contributors(source.id()).count() < 2 {
+            continue;
+        }
+        let limits = sources
+            .get(&source.instrument().id())
+            .and_then(|prepared| prepared.mutable_limits);
+        let mut onsets = Vec::new();
+        let mut ends = Vec::new();
+        let mut events = Vec::new();
+        for (canonical, track) in snapshot.tracks().iter().zip(tracks) {
+            if canonical.source_id() != Some(source.id()) {
+                continue;
+            }
+            if let Some(instrument) = &track.instrument {
+                onsets
+                    .try_reserve(instrument.spans.len())
+                    .map_err(|_| Invalid("could not reserve shared source onsets"))?;
+                ends.try_reserve(instrument.spans.len() * 2)
+                    .map_err(|_| Invalid("could not reserve shared source voices"))?;
+                events
+                    .try_reserve(instrument.spans.len() * 2)
+                    .map_err(|_| Invalid("could not reserve shared source events"))?;
+                for span in &instrument.spans {
+                    onsets.push(span.start);
+                    ends.push((span.start, true));
+                    ends.push((span.end, false));
+                    events.push(span.start);
+                    events.push(span.gate_end);
+                }
+            }
+        }
+        let max_voices = limits.map_or(
+            crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+            |limits| limits.max_active_occurrences,
+        );
+        ends.sort_unstable();
+        let mut active = 0usize;
+        for (_, starts) in ends {
+            if starts {
+                active += 1;
+            } else {
+                active = active.saturating_sub(1);
+            }
+            if active > max_voices {
+                return Err(Invalid(
+                    "shared source exceeds its aggregate voice capacity",
+                ));
+            }
+        }
+        onsets.sort_unstable();
+        validate_shared_windows(&onsets, crate::midi_compile::MAX_ONSETS_PER_WINDOW)?;
+        if let Some(limits) = limits {
+            events.sort_unstable();
+            validate_shared_windows(&events, limits.max_events_per_query)?;
+        }
+    }
+    Ok(())
+}
+fn validate_shared_windows(frames: &[u64], max: usize) -> Result<(), Invalid> {
+    for (index, frame) in frames.iter().enumerate() {
+        let end = frame
+            .checked_add(crate::midi_compile::RENDER_QUERY_FRAMES)
+            .ok_or(Invalid("shared source event window exceeds frame range"))?;
+        if frames.partition_point(|frame| *frame < end) - index > max {
+            return Err(Invalid(
+                "shared source exceeds its aggregate event capacity",
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct CompiledEffectPlan {

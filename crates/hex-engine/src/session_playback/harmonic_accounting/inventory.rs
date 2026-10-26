@@ -285,10 +285,19 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
         base = base
             .checked_sub(owner.accounted_storage_bytes().unwrap())
             .unwrap();
-        let ledgers = owner.ledger_capacity_bytes().unwrap();
+        let source_live_bytes = if owner.is_source_owner() {
+            MutableInstrumentTrackRuntime::source_live_storage_upper_bound()
+        } else {
+            0
+        };
+        let ledgers = owner
+            .ledger_capacity_bytes()
+            .unwrap()
+            .checked_add(source_live_bytes)
+            .unwrap();
         assert_eq!(
             ledgers,
-            128 * size_of::<crate::mutable_instrument::MutableOccurrence>()
+            128 * size_of::<crate::mutable_instrument::MutableOccurrence>() + source_live_bytes
         );
         OwnerCharge {
             header: if proposed {

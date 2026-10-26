@@ -79,6 +79,33 @@ impl VoiceCoefficients {
         age_frames: u64,
         gate_frames: u64,
     ) -> StereoFrame {
+        // u64 * u64 fits u128 exactly, even at u64::MAX age. Stateless
+        // public queries retain their original age-relative source law.
+        let position = u128::from(age_frames) * u128::from(self.step);
+        self.sample_position_inner::<CHECK_FINITE>(pcm, age_frames, gate_frames, position)
+    }
+
+    /// Mutable gated voices carry actual source distance through tuning changes;
+    /// envelope age and gate remain independent output-frame clocks.
+    #[inline]
+    pub(super) fn sample_at_position(
+        &self,
+        pcm: DeviceResourcePcm<'_>,
+        age_frames: u64,
+        gate_frames: u64,
+        position: u128,
+    ) -> StereoFrame {
+        self.sample_position_inner::<true>(pcm, age_frames, gate_frames, position)
+    }
+
+    #[inline]
+    fn sample_position_inner<const CHECK_FINITE: bool>(
+        &self,
+        pcm: DeviceResourcePcm<'_>,
+        age_frames: u64,
+        gate_frames: u64,
+        mut position: u128,
+    ) -> StereoFrame {
         let channels = match pcm {
             DeviceResourcePcm::Mono(_) => SampleChannels::Mono,
             DeviceResourcePcm::Stereo(_) => SampleChannels::Stereo,
@@ -93,9 +120,8 @@ impl VoiceCoefficients {
         if envelope == 0.0 {
             return [0.0; 2];
         }
-        // u64 * u64 fits u128 exactly, even at u64::MAX age. Integer modulo
-        // preserves loop phase where conversion of age to f64 would lose it.
-        let mut position = u128::from(age_frames) * u128::from(self.step);
+        // Integer modulo preserves loop phase without converting the carried
+        // source cursor (or a stateless age-derived position) to f64.
         if let Some((start, end)) = self.loop_offsets {
             let end = end as u128 * ONE;
             let start = start as u128 * ONE;

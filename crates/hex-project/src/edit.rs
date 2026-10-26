@@ -23,16 +23,23 @@ pub enum Command {
         devices: Vec<hex_lattice_contract::NativeDeviceState>,
         instrument_index: usize,
     },
-    /// Assign an existing singleton source, or unlink without deleting it.
+    /// Link this track to a singleton source, or unlink without deleting it.
+    /// Additional linked tracks share the same immutable instrument instance.
     BindTrackSource {
         track: TrackId,
         source: Option<crate::SourceId>,
+    },
+    /// Select the sole track that emits a source's audio, or leave it unselected.
+    /// A selected track must already be linked to this source.
+    SetNativeSourceReceiver {
+        source: crate::SourceId,
+        track: Option<TrackId>,
     },
     RenameNativeSource {
         source: crate::SourceId,
         name: String,
     },
-    /// Explicit authored-state deletion. Track bindings are not admitted yet.
+    /// Explicit authored-state deletion. The source must be unlinked from every track.
     RemoveNativeSource(crate::SourceId),
     /// Create one effects-only group around normalized sibling subtrees.
     GroupTracks {
@@ -1675,6 +1682,7 @@ impl Project {
         match command {
             source_command @ (Command::CreateNativeSource { .. }
             | Command::BindTrackSource { .. }
+            | Command::SetNativeSourceReceiver { .. }
             | Command::RenameNativeSource { .. }
             | Command::RemoveNativeSource(_)) => crate::native_sources::apply(self, source_command),
             Command::CommitArrangementBounce {
