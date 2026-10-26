@@ -69,6 +69,8 @@ mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
+#[cfg(all(test, feature = "allocation-probe"))]
+mod alias_tests;
 mod applied_source;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod delay_tests;
@@ -4321,6 +4323,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
@@ -4494,6 +4497,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let make_state = || state.clone();
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -4626,6 +4630,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -4777,6 +4782,7 @@ mod tests {
         const RETURN_DEVICE_ID: u64 = 8;
         const FRAMES: u64 = 512;
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -7969,6 +7975,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -8480,6 +8487,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),

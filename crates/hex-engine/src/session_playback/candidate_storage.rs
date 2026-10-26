@@ -192,6 +192,10 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
+        let (ids, lanes, points) = entry.automation().storage_vectors();
+        l.vec(ids)?;
+        l.vec(lanes)?;
+        l.vec(points)?;
         let foreign = match &prepared.definition {
             Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
             _ => None,

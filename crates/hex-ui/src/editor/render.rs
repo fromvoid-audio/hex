@@ -16,6 +16,60 @@ use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
 impl EditorView {
+    fn duplicate_key(
+        &mut self,
+        kind: super::duplicate::DuplicateKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if kind == super::duplicate::DuplicateKind::Independent
+            && self.computer_keyboard.accepts_key("d")
+        {
+            return;
+        }
+        if window
+            .context_stack()
+            .iter()
+            .any(|context| context.contains("hex_text_editing"))
+        {
+            return;
+        }
+        if self.track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Duplicate) {
+            cx.notify();
+            return;
+        }
+        if self.duplicate_section(window) {
+            cx.notify();
+            return;
+        }
+        if self.midi_focus.is_focused(window) {
+            if !self.duplicate_midi_time_selection() {
+                self.duplicate_piano_notes();
+            }
+            cx.notify();
+            return;
+        }
+        if self.duplicate_time_selection(window) {
+            cx.notify();
+            return;
+        }
+        if !self.focus.is_focused(window) && !self.midi_focus.is_focused(window) {
+            return;
+        }
+        if self.mode == super::EditorMode::Session
+            && !self.midi_focus.is_focused(window)
+            && self.selected_cell.is_none()
+            && self.selected_scene.is_some()
+        {
+            self.duplicate_selected_scene();
+        } else if kind == super::duplicate::DuplicateKind::Independent {
+            self.duplicate_selected();
+        } else {
+            self.duplicate_selected_with_kind(kind);
+        }
+        cx.notify();
+    }
+
     pub(super) fn step_frames(&self) -> u64 {
         self.state
             .as_ref()
@@ -1236,49 +1290,30 @@ impl Render for EditorView {
                 }),
             )
             .on_action(cx.listener(|view, _: &DuplicateClip, window, cx| {
-                if window
-                    .context_stack()
-                    .iter()
-                    .any(|context| context.contains("hex_text_editing"))
+                view.duplicate_key(super::duplicate::DuplicateKind::Independent, window, cx);
+            }))
+            .on_action(
+                cx.listener(|view, _: &super::DuplicateAliasClip, window, cx| {
+                    view.duplicate_key(super::duplicate::DuplicateKind::Alias, window, cx);
+                }),
+            )
+            .on_action(cx.listener(|view, _: &super::MakeClipUnique, window, cx| {
+                if view.focus.is_focused(window)
+                    && !view.track_header_focused(window)
+                    && !view.selection_intent_epoch.is_some_and(|epoch| {
+                        view.track_clipboard_context == Some((view.project_generation, epoch))
+                    })
+                    && !view.computer_keyboard.accepts_key("i")
+                    && !window.context_stack().iter().any(|context| {
+                        context.contains("hex_text_editing")
+                            || context.contains("hex_audio_events")
+                            || context.contains("hex_midi")
+                            || context.contains("hex_device_selection")
+                    })
                 {
-                    return;
-                }
-                if view
-                    .track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Duplicate)
-                {
+                    view.make_selected_clips_unique();
                     cx.notify();
-                    return;
                 }
-                if view.duplicate_section(window) {
-                    cx.notify();
-                    return;
-                }
-                if view.midi_focus.is_focused(window) {
-                    if !view.duplicate_midi_time_selection() {
-                        view.duplicate_piano_notes();
-                    }
-                    cx.notify();
-                    return;
-                }
-                if view.duplicate_time_selection(window) {
-                    cx.notify();
-                    return;
-                }
-                if !view.focus.is_focused(window) && !view.midi_focus.is_focused(window) {
-                    return;
-                }
-                if view.mode == super::EditorMode::Session
-                    && !view.midi_focus.is_focused(window)
-                    && view.selected_cell.is_none()
-                    && view.selected_scene.is_some()
-                {
-                    view.duplicate_selected_scene();
-                } else if view.mode == super::EditorMode::Session {
-                    view.error = Some("session cell duplication is not available yet".into());
-                } else {
-                    view.duplicate_selected();
-                }
-                cx.notify();
             }))
             .on_action(cx.listener(|view, _: &super::MoveSceneUp, window, cx| {
                 if super::session_navigation::session_editor_has_focus(

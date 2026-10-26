@@ -196,6 +196,8 @@ pub(super) fn bind_keys(cx: &mut App) {
             "cmd-x",
             "cmd-v",
             "cmd-d",
+            "d",
+            "i",
             "cmd-r",
             "h",
             "l",

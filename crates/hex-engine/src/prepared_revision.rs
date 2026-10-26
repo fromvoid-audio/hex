@@ -1504,6 +1504,7 @@ fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevis
                                 && a.bypassed == b.bypassed
                                 && a.sample_rate == b.sample_rate
                                 && a.matrix == b.matrix
+                                && a.automation == b.automation
                                 && match (&a.configuration, &b.configuration) {
                                     (Some(a), Some(b)) => a.processing_eq(b),
                                     (None, None) => true,

@@ -120,6 +120,18 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
             .unwrap()
             .is_empty()
     );
+    for field in ["alias_sources", "alias_members"] {
+        assert!(
+            schema46
+                .as_object_mut()
+                .unwrap()
+                .remove(field)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
     schema46["version"] = 46.into();
     for source in schema46["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
@@ -535,6 +547,18 @@ fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
             .unwrap()
             .is_empty()
     );
+    for field in ["alias_sources", "alias_members"] {
+        assert!(
+            old46
+                .as_object_mut()
+                .unwrap()
+                .remove(field)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
     old46["version"] = 46.into();
     old46
         .as_object_mut()

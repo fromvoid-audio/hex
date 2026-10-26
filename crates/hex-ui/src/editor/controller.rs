@@ -3184,6 +3184,8 @@ impl EditorView {
                 | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. }
                 | Request::GroupClips { .. }
                 | Request::GroupTimeRange { .. }
                 | Request::GroupAudioEvents { .. }

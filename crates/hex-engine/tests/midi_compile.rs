@@ -67,6 +67,63 @@ fn rendered_excerpt(project: &Project, frame: u64) -> [hex_engine::Frame; 64] {
 }
 
 #[test]
+fn alias_notes_keep_distinct_occurrences_and_make_unique_preserves_sound() {
+    let (mut editor, track) = setup_at_rate(8_000);
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(2, 1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let Created::Clips { first: alias, .. } = editor
+        .execute(Command::DuplicateAliasClips(vec![clip]))
+        .unwrap()
+    else {
+        panic!("alias")
+    };
+    let events = midi_events(editor.project()).unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0].clip, clip);
+    assert_eq!(events[2].clip, alias);
+    assert_eq!(events[0].note, events[2].note);
+    assert_eq!(events[1].frame, events[2].frame);
+    let render = |project: &Project, block: usize| {
+        let compiled = compile::project(project, &BTreeMap::new()).unwrap();
+        let mut renderer = Renderer::new(&compiled);
+        renderer.play();
+        let mut output = vec![[0.0; 2]; 20_000];
+        for chunk in output.chunks_mut(block) {
+            renderer.render(chunk).unwrap();
+        }
+        output
+    };
+    let expected = render(editor.project(), 127);
+    for start in [0, 8_000] {
+        assert!(
+            expected[start..start + 8_000]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 0.02)
+        );
+    }
+    editor
+        .execute(Command::MakeClipsUnique(vec![alias]))
+        .unwrap();
+    let unique_events = midi_events(editor.project()).unwrap();
+    assert_ne!(unique_events[0].note, unique_events[2].note);
+    for block in [1, 17, 257] {
+        assert_eq!(render(editor.project(), block), expected);
+    }
+    assert!(editor.undo());
+    assert_eq!(render(editor.project(), 257), expected);
+}
+
+#[test]
 fn note_edges_convert_across_tempo_changes_and_sort_off_before_on() {
     let (mut editor, track) = setup();
     editor

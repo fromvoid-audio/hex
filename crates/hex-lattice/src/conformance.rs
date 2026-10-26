@@ -178,6 +178,7 @@ fn chain(
         definition,
         "runtime admission",
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            automation: Default::default(),
             meter: Arc::new(DeviceMeter::default()),
             owner: ProcessorChainOwner::Track(1),
             device_id: 1,

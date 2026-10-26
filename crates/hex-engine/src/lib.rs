@@ -108,7 +108,9 @@ pub use native_device_view::{
 };
 
 mod device_automation;
-pub use device_automation::DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED;
+pub use device_automation::{
+    DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, native_parameter_automation_supported,
+};
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
