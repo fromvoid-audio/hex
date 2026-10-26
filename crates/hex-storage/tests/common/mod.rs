@@ -2,10 +2,11 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// Restore the frozen inline-instrument representation when comparing a current
-/// schema46 writer with an evidenced pre-binding document. This removes only the
-/// schema46 representation layer; device IDs, states, references and placements
-/// are reconstructed from the canonical source inventory.
+/// writer with an evidenced pre-binding document. Later cycle/automation layers
+/// must be empty; device IDs, states, references and placements are reconstructed
+/// from the canonical source inventory.
 pub fn restore_pre_binding_instruments(value: &mut Value) -> usize {
+    remove_audio_cycles(value);
     let sources = value["native_sources"].as_array().unwrap().clone();
     let bindings = value["track_source_bindings"].as_array().unwrap().clone();
     let mut tracks = std::mem::take(value["tracks"].as_array_mut().unwrap());
@@ -96,4 +97,54 @@ pub fn restore_pre_binding_instruments(value: &mut Value) -> usize {
     let current_next_id = value["next_id"].as_u64().unwrap();
     value["next_id"] = json!(current_next_id.checked_sub(promoted as u64).unwrap());
     promoted
+}
+
+/// Historical comparisons may omit only an actually empty alias inventory.
+pub fn remove_empty_aliases(value: &mut Value) {
+    for field in ["alias_sources", "alias_members"] {
+        if let Some(rows) = value.as_object_mut().unwrap().remove(field) {
+            assert_eq!(
+                rows,
+                json!([]),
+                "historical comparison cannot discard clip aliases"
+            );
+        }
+    }
+}
+
+/// Historical comparisons may omit only an actually empty schema53 host inventory.
+pub fn remove_empty_host_automation(value: &mut Value) {
+    assert_eq!(
+        value.get("host_automation"),
+        Some(&json!([])),
+        "historical comparison cannot discard host automation"
+    );
+    value.as_object_mut().unwrap().remove("host_automation");
+}
+
+/// Remove the schema48 cycle layer and any newer empty automation inventory
+/// when constructing a frozen pre-cycle envelope. Never discard authored data.
+pub fn remove_audio_cycles(value: &mut Value) {
+    remove_empty_host_automation(value);
+    remove_empty_aliases(value);
+    if let Some(automation) = value.as_object_mut().unwrap().remove("device_automation") {
+        assert_eq!(
+            automation,
+            json!([]),
+            "historical comparison cannot discard device automation"
+        );
+    }
+    let cycles = value
+        .as_object_mut()
+        .unwrap()
+        .remove("session_audio_cycles")
+        .unwrap();
+    assert!(
+        cycles
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["cycle"].is_null()),
+        "historical comparison cannot discard audio cycles"
+    );
 }

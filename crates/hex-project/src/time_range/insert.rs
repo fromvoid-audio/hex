@@ -430,13 +430,15 @@ fn materialize_shifted_midi(
         start,
         length,
         source: Arc::new(MidiSource {
+            content: std::sync::Arc::new(crate::MidiContent {
+                source_length: length,
+                notes,
+            }),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-            source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
-            notes,
         }),
     })
 }

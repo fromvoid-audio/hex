@@ -474,6 +474,31 @@ fn toggle_tracks_section_selection_and_ignores_loop_changes(cx: &mut TestAppCont
         assert!(v.arrangement_clip_visible(f.clips[4]));
         assert!(!v.arrangement_clip_visible(f.clips[3]));
     });
+    let first = visual
+        .debug_bounds(selector("arrangement-lane", f.tracks[1].value()))
+        .unwrap();
+    let last = visual
+        .debug_bounds(selector("arrangement-lane", f.tracks[3].value()))
+        .unwrap();
+    let start = point(
+        first.left() + first.size.width * 0.8,
+        first.top() + first.size.height * 0.75,
+    );
+    let end = point(
+        last.left() + last.size.width * 0.9,
+        last.top() + last.size.height * 0.75,
+    );
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.selected_track_ids(),
+            [f.tracks[1], f.tracks[3]],
+            "painting selects crossed visible rows without adding filtered tracks"
+        );
+    });
     f.model
         .execute(Command::SetLoopRegion {
             start: 300_000,

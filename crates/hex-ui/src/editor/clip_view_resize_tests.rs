@@ -92,7 +92,7 @@ fn shared_splitters_cancel_button_loss_and_replaced_source_without_edits(cx: &mu
 }
 
 #[gpui::test]
-fn starting_spectrum_splitter_retires_detail_capture_before_new_preview(cx: &mut TestAppContext) {
+fn held_splitter_isolates_second_press_until_cancellation(cx: &mut TestAppContext) {
     let (project, track, _, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -121,6 +121,15 @@ fn starting_spectrum_splitter_retires_detail_capture_before_new_preview(cx: &mut
         .debug_bounds("project-spectrum-resize")
         .unwrap()
         .center();
+    visual.simulate_mouse_down(spectrum, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(view.clip_detail_resize.is_active());
+        assert!(!view.project_spectrum.resize_is_active());
+    });
+    // A second press cannot steal a held gesture. After actual button loss,
+    // the next independent press starts the other sizing owner normally.
+    visual.simulate_mouse_move(spectrum, None, Modifiers::default());
+    visual.simulate_mouse_up(spectrum, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_down(spectrum, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
         assert!(!view.clip_detail_resize.is_active());

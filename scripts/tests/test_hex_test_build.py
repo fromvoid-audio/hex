@@ -554,6 +554,8 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(delivery.ci.build_inputs, "workspace_snapshot", return_value={"packages": [], "observed_ns": 1}), \
                 patch.object(runner, "_path_dependency_inputs", return_value=[]), \
                 patch.object(runner, "_check_disk_headroom", return_value=True), \
+                patch.object(delivery.ci.ci_target_storage, "inspect", return_value={
+                    "platform": "darwin", "status": "identified", "filesystem_type": "apfs"}), \
                 patch.object(delivery, "optimized_artifact", side_effect=artifact_guard), \
                 patch.object(delivery, "native_signature", return_value=SIGNED), \
                 patch.object(delivery, "run", side_effect=tool), \
@@ -651,6 +653,7 @@ class DeliveryTests(unittest.TestCase):
                         delivery.recover(self.app)
                 else:
                     receipt = delivery.build(args)
+                    self.assertEqual(receipt["diagnostic_capabilities"], ["actions-v1", "audio-v1"])
                     if rmdir_member:
                         self.assertEqual(rmdir_calls, 2)
             if finder_metadata in ("unknown", "symlink"):

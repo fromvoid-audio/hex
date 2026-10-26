@@ -494,6 +494,17 @@ impl Callback {
         if self.active.is_some() && self.retired.is_full() {
             return;
         }
+        let Some(next) = self.deferred_eligible.as_ref() else {
+            return;
+        };
+        let revision = next.revision();
+        let context = next.diagnostic_context();
+        self.trace_audio(
+            AudioDiagnosticKind::PublicationAttempt,
+            revision,
+            context,
+            frames.unwrap_or(0),
+        );
         let decision = if self
             .active
             .as_ref()
@@ -519,8 +530,29 @@ impl Callback {
         } else {
             return;
         };
+        if let Some(handoff) = self
+            .deferred_eligible
+            .as_mut()
+            .and_then(|next| next.take_handoff_diagnostic())
+        {
+            self.trace_audio(
+                AudioDiagnosticKind::StreamPreflightFailed {
+                    detail: "stream handoff demand refused",
+                    handoff: Some(handoff),
+                },
+                revision,
+                context,
+                frames.unwrap_or(0),
+            );
+        }
         match decision {
             InstallDecision::Retry => {
+                self.trace_audio(
+                    AudioDiagnosticKind::PublicationWaiting,
+                    revision,
+                    context,
+                    frames.unwrap_or(0),
+                );
                 if self.active.is_some()
                     && let Some(next) = self.deferred_eligible.as_mut()
                 {
@@ -530,8 +562,7 @@ impl Callback {
             InstallDecision::Refused(reason) => {
                 if let Some(mut value) = self.deferred_eligible.take() {
                     value.cancel_stream_readiness(&mut self.domain_pages);
-                    self.status
-                        .publish_rejected_revision(value.revision(), reason);
+                    self.reject_publication(value.revision(), reason);
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
@@ -548,6 +579,12 @@ impl Callback {
                 }
             }
             InstallDecision::Ready => {
+                self.trace_audio(
+                    AudioDiagnosticKind::PublicationPrepared,
+                    revision,
+                    context,
+                    frames.unwrap_or(0),
+                );
                 // Every fallible operation happened while both State Boxes
                 // remained in their persistent callback slots. Fixed moves only.
                 if let Some(next) = self.deferred_eligible.take() {
@@ -583,6 +620,12 @@ impl Callback {
                             _ => None,
                         });
                     self.status.applied_revision.store(revision, Release);
+                    self.trace_audio(
+                        AudioDiagnosticKind::PublicationApplied,
+                        revision,
+                        context,
+                        frames.unwrap_or(0),
+                    );
                     self.status.publication_pending.store(false, Release);
                 }
             }

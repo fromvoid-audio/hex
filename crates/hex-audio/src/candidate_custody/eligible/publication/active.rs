@@ -38,6 +38,13 @@ impl Queued {
             .as_mut()?
             .test_set_owned_runtime_reservation(bytes)
     }
+    /// Resource-free observations only; these never grant publication authority.
+    pub(crate) fn diagnostic_context(&self) -> Option<hex_engine::AudioSourceContext> {
+        self.state.runtime.as_ref()?.source_context()
+    }
+    pub(crate) fn take_handoff_diagnostic(&mut self) -> Option<hex_engine::PlaybackHandoffError> {
+        self.state.streaming.as_mut()?.take_handoff_diagnostic()
+    }
     pub(crate) fn revision(&self) -> u64 {
         self.state.revision
     }

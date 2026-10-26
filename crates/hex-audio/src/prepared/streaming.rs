@@ -171,6 +171,14 @@ impl Callback {
             self.status.pending_stop_marker.swap(0, AcqRel),
         );
         if let Some(stop) = cut.stop_through {
+            self.trace_audio(
+                AudioDiagnosticKind::PriorityStop {
+                    through_ticket: stop,
+                },
+                self.status.applied_revision.load(Relaxed),
+                None,
+                0,
+            );
             self.finish_midi_before_stop();
             self.revoke_output_transport();
             self.revoke_current_sampler_keyboard();
@@ -205,6 +213,7 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
+            self.trace_command_dequeued(queued, cut);
             self.stream_prefix = self.stream_prefix.max(queued.ticket);
             if cut.stop_through.is_some_and(|stop| queued.ticket <= stop) {
                 continue;

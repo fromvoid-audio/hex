@@ -28,6 +28,12 @@ and 4000 characters from the last 64 KiB of the log. Earlier or unrecognized
 diagnostics remain in the complete log; unreadable logs have a controlled fallback.
 Console text removes terminal controls and redacts known sensitive environment
 values and credential-like assignments/options; retained logs and argv stay intact.
+
+If report publication fails, stderr identifies the failed write/publication phase
+and retains the actual command result and raw log path when work already ran.
+The last summary may remain incomplete; even successful commands cannot qualify
+without the report. Keep those original bytes and logs, restore storage, and run
+fresh checks. A publication failure does not authorize checkpoint continuation.
 Commands over 2000 characters are explicitly truncated and refer to the summary.
 
 The printed rerun is diagnostic only and partial, even when its original step was
@@ -111,6 +117,30 @@ Explicit native acceptance inputs (any nonempty `HEX_VST3_*`, including partial
 SDK/fixture/receipt setup, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
 Python discovery for app-only merges too. Native suites retain their own opt-in
 requirements; a skipped fixture is not native acceptance.
+
+## macOS target storage
+
+Use a persistent Cargo target on APFS. Set `CARGO_TARGET_DIR` to a fresh directory
+on that volume before the normal local-CI command. For an existing populated
+target, retain the ordinary ownership checks; do not adopt or delete another
+executor's cache merely to bypass a refusal.
+
+The dev and release guards identify the nearest existing target ancestor's local
+device with `df -P`, then read `diskutil info -plist`. Each subprocess has a
+five-second timeout. Missing, failed or malformed macOS volume metadata refuses
+preparation before cleanup or owner publication. macOS ExFAT targets refuse
+explicitly: observed AppleDouble cleanup failures and test-executable launch
+stalls make that storage unsuitable for these checks. The launch-stall cause
+is unproven; the guard does not change OS security or relocate executables.
+Other platforms retain their existing storage behavior without a new filesystem
+qualification claim.
+
+The summary records the identified filesystem, probe duration and dev cleanup
+duration (including failed cleanup). A target
+preparation failure names that phase and the next unstarted stage; a failed
+cleanup links `target-handoff-clean.log`. It does not blame the preceding passing
+format or test stage. Preserve the failed report and original target contents,
+choose an APFS target, and rerun with normal provenance and deadlines.
 
 ## Continue after a disk refusal
 

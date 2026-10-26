@@ -143,7 +143,7 @@ impl EditorView {
 
     fn range_input_available(&self) -> bool {
         self.mode == EditorMode::Arrangement
-            && !self.automation_view.enabled
+            && (!self.automation_view.enabled || self.time_selection_key_held)
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.track_name.is_editing()
@@ -417,7 +417,9 @@ impl EditorView {
             return false;
         };
         let (ordinary_handle, priority_control) = self.clip_pointer_handles(track, x, y, viewport);
-        if priority_control || ((extend || !inside_selection) && ordinary_handle) {
+        if !self.time_selection_key_held
+            && (priority_control || ((extend || !inside_selection) && ordinary_handle))
+        {
             return false;
         }
         let anchor = self.time_selection_cursor_anchor(extend);
@@ -450,7 +452,7 @@ impl EditorView {
             last_tick: Instant::now(),
         });
         self.retain_clip_detail_for_time_selection();
-        self.select_lane_track(track);
+        self.select_lane_span(selection.anchor_track, track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
         true
@@ -1020,7 +1022,7 @@ impl EditorView {
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
         if !self.time_selection_project_scope {
-            self.select_lane_track(track);
+            self.select_lane_span(next.anchor_track, track);
         }
         self.selected_clip = None;
         true
@@ -1141,7 +1143,7 @@ impl EditorView {
         let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
             return (true, false);
         };
-        let handle_hit = |start: u64, end: u64, minimum: f32| {
+        let handle_hit = |start: u64, end: u64| {
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
             if visible_start >= visible_end {
@@ -1151,7 +1153,7 @@ impl EditorView {
                 + lane.width
                     * ((visible_start - viewport.start) as f64 / viewport.length as f64) as f32;
             let fraction = (visible_end - visible_start) as f64 / viewport.length as f64;
-            let width = super::trim::rendered_clip_width(lane.width, fraction, minimum);
+            let width = super::trim::rendered_clip_width(lane.width, fraction);
             if x < left || x >= left + width {
                 return None;
             }
@@ -1173,7 +1175,7 @@ impl EditorView {
                     return None;
                 }
                 let preview = state.midi_preview.get(clip.id())?;
-                handle_hit(preview.frame_start, preview.frame_end, 4.0).map(|ordinary| {
+                handle_hit(preview.frame_start, preview.frame_end).map(|ordinary| {
                     (
                         ordinary,
                         super::trim::loop_handles::midi_controls(
@@ -1192,7 +1194,7 @@ impl EditorView {
                         return None;
                     }
                     let end = clip.start().checked_add(clip.duration())?;
-                    handle_hit(clip.start(), end, 3.0).map(|ordinary| {
+                    handle_hit(clip.start(), end).map(|ordinary| {
                         (
                             ordinary,
                             self.fade_handle_hit(state, track.id(), clip, x, y, viewport)

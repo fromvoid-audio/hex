@@ -24,6 +24,7 @@ fn device(next: &mut u64) -> DeviceSnapshot {
     let id = *next;
     *next += 1;
     DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id,
         bypassed: false,

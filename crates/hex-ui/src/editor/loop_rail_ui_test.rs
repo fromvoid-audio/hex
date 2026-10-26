@@ -311,7 +311,7 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
     wait_for_loop(cx, handle, &editor, Some((96_000, 288_000, true)));
 
     let toggle = visual
-        .debug_bounds("toggle loop · l/w/cmd+l: set selection or toggle existing loop")
+        .debug_bounds("transport-loop-toggle")
         .expect("rendered loop toolbar control");
     visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());

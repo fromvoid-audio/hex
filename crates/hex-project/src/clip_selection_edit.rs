@@ -155,7 +155,12 @@ impl ClipEdit {
             Self::Active { .. } | Self::Flavor { .. } | Self::Rename { .. } | Self::Delete
         )
     }
-    fn command(&self, project: &Project, clip: ClipId, midi: bool) -> Result<Command, Invalid> {
+    pub(crate) fn command(
+        &self,
+        project: &Project,
+        clip: ClipId,
+        midi: bool,
+    ) -> Result<Command, Invalid> {
         Ok(match self {
             Self::Active { active } => Command::SetClipActive {
                 clip,
@@ -383,7 +388,9 @@ pub(crate) fn apply(
     for (track, original) in candidate.tracks.iter_mut().zip(rows) {
         track.content = original;
     }
-    Project::from_snapshot(candidate.snapshot())?;
+    if candidate.aliases.sources.is_empty() {
+        Project::from_snapshot(candidate.snapshot())?;
+    }
     *project = candidate;
     Ok(Created::None)
 }
@@ -443,6 +450,8 @@ impl Command {
                 ClipCommandScope::FocusedSnapshot { clip: *clip }
             }
             Self::EditAudioEvents { clip, .. }
+            | Self::CreateAudioEventFades { clip, .. }
+            | Self::SetSessionAudioClipLoop { clip, .. }
             | Self::SetSessionAudioClipSource { clip, .. }
             | Self::SetSessionMidiClipSource { clip, .. }
             | Self::SetMidiClipSource { clip, .. }
@@ -504,11 +513,17 @@ impl Command {
             | Self::MoveTimeRange { .. }
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
+            | Self::SplitTimeRange { .. }
+            | Self::CreateArrangementFades { .. }
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupTimeRange(_)
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
+            | Self::DuplicateAliasClips(_)
+            | Self::MakeClipsUnique(_)
+            | Self::ApplyClipSettingsToAliases(_)
+            | Self::DuplicateSessionCell { .. }
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
@@ -524,6 +539,7 @@ impl Command {
             | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
+            | Self::DuplicateArrangementSectionAt { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
@@ -548,6 +564,8 @@ impl Command {
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
             | Self::MoveTrackDevice { .. }
+            | Self::ReplaceDeviceAutomationTarget { .. }
+            | Self::ReplaceDeviceAutomation { .. }
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }
@@ -588,6 +606,7 @@ impl Command {
             | Self::SetMeterPoint { .. }
             | Self::Mute { .. }
             | Self::ToggleSolo { .. }
+            | Self::ToggleSoloTracks { .. }
             | Self::SetLoopRegion { .. }
             | Self::ToggleLoopRegion
             | Self::ClearLoopRegion
@@ -618,6 +637,7 @@ impl Command {
             | Self::SetSessionStopCell { .. }
             | Self::PlaceMidiClip { .. }
             | Self::BindTrackSource { .. }
+            | Self::SetNativeSourceReceiver { .. }
             | Self::CreateNativeSource { .. }
             | Self::RenameNativeSource { .. }
             | Self::RemoveNativeSource(_)

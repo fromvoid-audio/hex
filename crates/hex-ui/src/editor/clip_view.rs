@@ -158,33 +158,17 @@ impl EditorView {
         true
     }
 
-    fn bounce_selection(&self) -> Option<hex_project::ClipId> {
-        let project = &self.state.as_ref()?.project;
-        if self.mode == EditorMode::Session {
-            let (track, scene) = self.selected_cell?;
-            match project.session_cell(track, scene)? {
-                hex_project::SessionCellContent::Midi(clip) => Some(clip.id()),
-                hex_project::SessionCellContent::Audio(_) => None,
-                hex_project::SessionCellContent::Stop => None,
-            }
-        } else {
-            let clip = self.detail_clip_id()?;
-            if project.midi_clip(clip).is_some() {
-                Some(clip)
-            } else {
-                None
-            }
-        }
-    }
-
     pub(super) fn clip_detail_view(
         &mut self,
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
         self.reconcile_clip_detail_resize(window, cx);
+        self.reconcile_velocity_size(window, cx);
+        self.reconcile_piano_pitch_zoom(window, cx);
         self.reconcile_piano_pan();
         self.reconcile_midi_ruler();
+        self.reconcile_audio_loop();
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.detail_clip_id()
@@ -335,59 +319,6 @@ impl EditorView {
                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text(label)),
         );
-        if !self.device_panel_active
-            && let Some(clip) = self.bounce_selection()
-        {
-            let enabled = !self.edit_pending();
-            let generation = self.project_generation;
-            let revision = self.state.as_ref().map_or(0, |state| state.revision);
-            row = row.child(
-                div()
-                    .id("convert-clip")
-                    .debug_selector(|| "convert-clip".into())
-                    .h(px(18.0))
-                    .px(px(5.0))
-                    .flex()
-                    .items_center()
-                    .text_color(rgb(theme::color(if enabled {
-                        theme::PaletteRole::SecondaryText
-                    } else {
-                        theme::PaletteRole::Muted
-                    })))
-                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
-                    .child(theme::text("→ audio"))
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| super::transport::MiniTooltip {
-                            kind: crate::tooltips::Kind::Identification,
-                            description: "bounce clip to audio in place".into(),
-                        })
-                        .into()
-                    })
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        if !enabled
-                            || view.edit_pending()
-                            || view.project_generation != generation
-                            || view.bounce_selection() != Some(clip)
-                        {
-                            return;
-                        }
-                        if !view.focus_clip_details(window, cx) {
-                            return;
-                        }
-                        view.cancel_time_selection_gesture();
-                        view.clip_view_open = true;
-                        if view.enqueue(hex_session::service::Request::ConvertClip {
-                            project_generation: generation,
-                            revision,
-                            clip,
-                            to_audio: true,
-                        }) {
-                            view.status = "bouncing clip to audio".into();
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
         row = row.child(
             div()
                 .id("clip-detail-tab")

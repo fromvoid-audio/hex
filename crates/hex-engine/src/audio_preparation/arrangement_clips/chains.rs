@@ -1,4 +1,4 @@
-//! Closed Utility/reverb/foreign chain metadata. No registry/provider owner
+//! Closed Utility/reverb/Saturator/Auto Pan/foreign chain metadata. No registry/provider owner
 //! is adopted and no owning Arc escapes this private preparation path.
 use crate::{
     AudioStorageError,
@@ -14,6 +14,7 @@ use hex_lattice_contract::NativeDeviceMetadata;
 use std::sync::Arc;
 
 struct Entry {
+    automation_bytes: usize,
     device_id: u64,
     owner: ProcessorChainOwner,
     device_type: hex_lattice_contract::DeviceTypeId,
@@ -54,6 +55,9 @@ impl ChainCustody {
             .ok_or(AudioStorageError::Overflow)?;
         let mut largest_copy = 0;
         for device in devices {
+            retained = retained
+                .checked_add(crate::device_automation::quote(device)?)
+                .ok_or(AudioStorageError::Overflow)?;
             let state = device.state();
             state
                 .require_asset_free_processing()
@@ -62,10 +66,21 @@ impl ChainCustody {
                 let migrated = hex_devices::utility::UTILITY_DEFINITION
                     .migrate_state(state)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-                let processor =
+                let processor = if !device
+                    .automation()
+                    .iter()
+                    .any(|lane| lane.target.provider_parameter().is_some())
+                {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?
-                        .is_some();
+                        .is_some()
+                } else {
+                    hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter(
+                        &migrated, rate,
+                    )
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                    true
+                };
                 let bytes = processor
                     .then(|| {
                         parts(OwnedShared::<
@@ -74,6 +89,32 @@ impl ChainCustody {
                     })
                     .transpose()?;
                 (migrated.payload().len(), bytes)
+            } else if state.type_id() == hex_devices::saturator::SATURATOR_TYPE_ID {
+                let migrated = hex_devices::saturator::SATURATOR_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::saturator::SaturatorDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(OwnedShared::<
+                        hex_devices::saturator::PreparedSaturator,
+                    >::declared_parts())?),
+                )
+            } else if state.type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID {
+                let migrated = hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::auto_pan::AutoPanDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::auto_pan::PreparedAutoPan>::declared_parts(),
+                    )?),
+                )
             } else if state.type_id() == hex_devices::reverb::REVERB_TYPE_ID {
                 let migrated = hex_devices::reverb::REVERB_DEFINITION
                     .migrate_state(state)
@@ -106,10 +147,37 @@ impl ChainCustody {
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
+        let automation_overlap = devices
+            .iter()
+            .try_fold(0usize, |sum, device| {
+                sum.checked_add(crate::device_automation::quote(device).ok()?)
+            })
+            .ok_or(AudioStorageError::Overflow)?;
+        let automation_staging = devices
+            .iter()
+            .map(|device| {
+                let provider = device
+                    .automation()
+                    .iter()
+                    .filter(|lane| !lane.target.is_host())
+                    .count();
+                hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
+                    provider,
+                    device.automation().len().checked_sub(provider)?,
+                    device
+                        .automation()
+                        .iter()
+                        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
+                )
+            })
+            .try_fold(0usize, |largest, value| Some(largest.max(value?)))
+            .ok_or(AudioStorageError::Overflow)?;
         let overlap = devices
             .len()
             .checked_mul(std::mem::size_of::<PreparedRuntimeInstance>())
             .and_then(|n| n.checked_add(largest_copy))
+            .and_then(|n| n.checked_add(automation_overlap))
+            .and_then(|n| n.checked_add(automation_staging))
             .ok_or(AudioStorageError::Overflow)?;
         Ok((retained, overlap))
     }
@@ -145,6 +213,25 @@ impl ChainCustody {
         prepared
             .try_reserve_exact(devices.len())
             .map_err(|_| AudioStorageError::Allocation)?;
+        let automation_staging = devices
+            .iter()
+            .map(|device| {
+                let provider = device
+                    .automation()
+                    .iter()
+                    .filter(|lane| !lane.target.is_host())
+                    .count();
+                hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
+                    provider,
+                    device.automation().len().checked_sub(provider)?,
+                    device
+                        .automation()
+                        .iter()
+                        .try_fold(0usize, |sum, lane| sum.checked_add(lane.points.len()))?,
+                )
+            })
+            .try_fold(0usize, |largest, value| Some(largest.max(value?)))
+            .ok_or(AudioStorageError::Overflow)?;
         self.construction_overlap = prepared
             .capacity()
             .checked_mul(std::mem::size_of::<PreparedRuntimeInstance>())
@@ -165,21 +252,32 @@ impl ChainCustody {
                 )
             })
             .ok_or(AudioStorageError::Overflow)?;
+        self.construction_overlap = self
+            .construction_overlap
+            .checked_add(automation_staging)
+            .ok_or(AudioStorageError::Overflow)?;
         if prepared.capacity() != devices.len() {
             return Err(AudioStorageError::UnknownStorage);
         }
         let mut admission = StereoMatrix::identity();
         for device in devices {
+            let automation = crate::device_automation::prepare(device)
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let automation_bytes = automation
+                .storage_bytes()
+                .ok_or(AudioStorageError::Overflow)?;
             device
                 .state()
                 .require_asset_free_processing()
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             let utility = device.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID;
             let reverb = device.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID;
-            let native = utility || reverb;
+            let saturator = device.state().type_id() == hex_devices::saturator::SATURATOR_TYPE_ID;
+            let auto_pan = device.state().type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID;
+            let native = utility || reverb || saturator || auto_pan;
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
-            // Never adopt a provider's state/processor owner. The Utility
-            // and reverb constructors are closed; foreign factories may return scalar facts
+            // Never adopt a provider's state/processor owner. The Utility,
+            // Reverb, Saturator and Auto Pan constructors are closed; foreign factories return scalar facts
             // only, matched later to the audio owner's original source.
             let foreign_definition = if native {
                 None
@@ -190,7 +288,17 @@ impl ChainCustody {
                         .ok_or(AudioStorageError::UnsupportedGraph)?,
                 )
             };
-            let migrated = if utility {
+            let migrated = if auto_pan {
+                hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if saturator {
+                hex_devices::saturator::SATURATOR_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if utility {
                 definition
                     .migrate_state(device.state())
                     .and_then(|s| s.with_host_metadata_from(device.state()))
@@ -227,7 +335,12 @@ impl ChainCustody {
                     _ => return Err(AudioStorageError::UnsupportedGraph),
                 }
             };
-            let matrix = if device.bypassed() || !native {
+            let matrix = if device.bypassed()
+                || !native
+                || !automation.parameter_ids().is_empty()
+                || saturator
+                || auto_pan
+            {
                 StereoMatrix::identity()
             } else if reverb {
                 hex_devices::reverb::REVERB_DEFINITION
@@ -249,10 +362,41 @@ impl ChainCustody {
                     .then(trim)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let processor = if utility {
-                hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
-                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
-                    .map(|value| OwnedShared::new_owned(value).into_processor_parts_on_control())
+            let processor = if auto_pan {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::auto_pan::AutoPanDefinition::prepare_owned(
+                            &migrated,
+                            rate,
+                            automation.parameter_ids(),
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if saturator {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::saturator::SaturatorDefinition::prepare_owned(
+                            &migrated,
+                            rate,
+                            automation.parameter_ids(),
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if utility {
+                (if automation.parameter_ids().is_empty() {
+                    hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
+                } else {
+                    hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter_for_parameters(
+                        &migrated, rate, automation.parameter_ids(),
+                    )
+                    .map(Some)
+                })
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                .map(|value| OwnedShared::new_owned(value).into_processor_parts_on_control())
             } else if reverb {
                 Some(
                     OwnedShared::new_owned(
@@ -287,6 +431,7 @@ impl ChainCustody {
             let (meter, meter_declaration) = meter.into_paired_parts_on_control();
             let handles = [handle()?, handle()?, handle()?, handle()?];
             self.entries.push(Entry {
+                automation_bytes,
                 device_id: device.id().value(),
                 owner,
                 device_type: migrated_type,
@@ -298,6 +443,7 @@ impl ChainCustody {
                 handles,
             });
             prepared.push(PreparedRuntimeInstance {
+                automation,
                 meter,
                 owner,
                 device_id: device.id().value(),
@@ -322,7 +468,8 @@ impl ChainCustody {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (value, pair) in chain.iter().zip(&self.entries) {
-            if value.device_id != pair.device_id
+            if value.automation.storage_bytes() != Some(pair.automation_bytes)
+                || value.device_id != pair.device_id
                 || value.owner != pair.owner
                 || value.device_type != pair.device_type
                 || match (&value.definition, pair.foreign, pair.processor.is_some()) {
@@ -361,6 +508,9 @@ impl ChainCustody {
             .checked_mul(std::mem::size_of::<Entry>())
             .ok_or(AudioStorageError::Overflow)?;
         for (value, pair) in chain.iter().zip(&self.entries) {
+            bytes = bytes
+                .checked_add(pair.automation_bytes)
+                .ok_or(AudioStorageError::Overflow)?;
             let state = value
                 .configuration
                 .as_ref()
@@ -424,6 +574,10 @@ impl ChainCustody {
         use crate::audio_storage::{Location, Owner};
         self.validate(chain)?;
         for (value, pair) in chain.iter().zip(&self.entries) {
+            let (ids, lanes, points) = value.automation.storage_vectors();
+            l.vec(ids)?;
+            l.vec(lanes)?;
+            l.vec(points)?;
             let state = value
                 .configuration
                 .as_ref()
@@ -494,98 +648,202 @@ mod tests {
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     #[test]
-    fn sealed_utility_graph_matches_canonical_pcm_reports_nested_payload_and_recovers_original_bank()
-     {
+    fn sealed_native_graphs_match_canonical_pcm_report_nested_payload_and_recover_original_bank() {
         if !crate::audio_storage_constructor_layout_supported() {
             return;
         }
-        let (project, mut bank) = crate::audio_preparation::tests::fixture(2);
-        bank.reservation.handle_obligations = 32;
-        let original = bank.sources.as_ptr();
-        let original_capacity = bank.sources.capacity();
-        let mut snapshot = project.snapshot();
-        snapshot.tracks[0].gain = 0.5;
-        snapshot.tracks[0].balance = -0.25;
-        let definition = &hex_devices::utility::UTILITY_DEFINITION;
-        let state = definition
-            .patch_parameter(
-                &definition.default_state().unwrap(),
-                hex_devices::utility::parameter::DC_REMOVE,
-                ParameterValue::Bool(true),
-            )
-            .unwrap()
-            .with_input_gain_millidb(-6000)
-            .unwrap()
-            .with_output_gain_millidb(3000)
-            .unwrap();
-        snapshot.tracks[0]
-            .devices
-            .push(hex_project::DeviceSnapshot {
-                comparison: None,
-                id: snapshot.next_id,
-                bypassed: false,
-                state,
-            });
-        snapshot.next_id += 1;
-        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
-        let mut media = std::collections::BTreeMap::new();
-        let (asset, source) = &bank.sources[0];
-        let SourceKind::Resident(audio) = &source.kind else {
-            panic!("resident fixture")
-        };
-        media.insert(*asset, audio.clone());
-        let reference = crate::PreparedRevision::prepare(
-            &project,
-            &media,
-            std::sync::Arc::new(hex_devices::SineTable::new()),
-            None,
-        )
-        .unwrap();
-        let mut reference = crate::SessionPlayback::new(std::sync::Arc::new(reference)).unwrap();
-        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
-        let token = custody
-            .begin_input_on_control(
-                AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision(),
-            )
-            .unwrap_or_else(|refusal| panic!("Utility root preflight: {:?}", refusal.reason));
-        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
-            crate::AudioStorageLedgerReservation {
-                data_rows: 1024,
-                handle_rows: 256,
-                root_rows: 8,
-                max_retained_bytes: usize::MAX,
-                max_construction_peak_bytes: usize::MAX,
-            },
-        )
-        .unwrap();
-        ledger
-            .borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)
-            .unwrap();
-        let summary = ledger.summary().unwrap();
-        assert_eq!(summary.unknown_storage, 0);
-        assert!(summary.require_complete().is_err());
-        drop(ledger);
-        let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
-            .ok()
-            .unwrap();
-        owner
-            .test_apply_action(crate::PlaybackAction::Transport(
-                crate::PlaybackCommand::Play,
-            ))
-            .unwrap();
-        reference
-            .apply(crate::SessionPlaybackCommand::Play)
-            .unwrap();
-        let mut actual = [[0.0; 2]; 256];
-        let mut expected = actual;
-        owner.test_render(&mut actual).unwrap();
-        reference.render(&mut expected).unwrap();
-        assert_eq!(actual, expected);
-        assert!(actual[16..].iter().any(|f| f[0] != 0.0));
-        owner.dispose_on_control().unwrap();
-        let inputs = owner.recover_inputs_on_control().unwrap();
-        assert_eq!(inputs.sources.as_ptr(), original);
-        assert_eq!(inputs.sources.capacity(), original_capacity);
+        for family in 0..3 {
+            let saturator = family == 1;
+            let auto_pan = family == 2;
+            let mut static_bytes = None;
+            for automated in [false, true] {
+                let (project, mut bank) = crate::audio_preparation::tests::fixture(2);
+                bank.reservation.handle_obligations = 32;
+                let original = bank.sources.as_ptr();
+                let original_capacity = bank.sources.capacity();
+                let mut snapshot = project.snapshot();
+                snapshot.tracks[0].gain = 0.5;
+                snapshot.tracks[0].balance = -0.25;
+                let state = if auto_pan {
+                    hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                        .default_state()
+                        .unwrap()
+                } else if saturator {
+                    let definition = &hex_devices::saturator::SATURATOR_DEFINITION;
+                    definition
+                        .patch_parameter(
+                            &definition.default_state().unwrap(),
+                            hex_devices::saturator::parameter::DRIVE,
+                            ParameterValue::Float(12.0),
+                        )
+                        .unwrap()
+                } else {
+                    let definition = &hex_devices::utility::UTILITY_DEFINITION;
+                    definition
+                        .patch_parameter(
+                            &definition.default_state().unwrap(),
+                            hex_devices::utility::parameter::DC_REMOVE,
+                            ParameterValue::Bool(true),
+                        )
+                        .unwrap()
+                }
+                .with_input_gain_millidb(-6000)
+                .unwrap()
+                .with_output_gain_millidb(3000)
+                .unwrap();
+                snapshot.tracks[0]
+                    .devices
+                    .push(hex_project::DeviceSnapshot {
+                        automation: if automated {
+                            vec![hex_project::DeviceAutomation {
+                                target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
+                                    if auto_pan {
+                                        hex_devices::auto_pan::parameter::AMOUNT
+                                    } else if saturator {
+                                        hex_devices::saturator::parameter::DRIVE
+                                    } else {
+                                        hex_devices::utility::parameter::GAIN
+                                    },
+                                ),
+                                points: vec![
+                                    hex_project::AutomationPoint {
+                                        beat: hex_project::BeatTime::ZERO,
+                                        value: hex_project::AutomationValue::new(
+                                            if saturator || auto_pan { 0.5 } else { 0.005 },
+                                        )
+                                        .unwrap(),
+                                        outgoing: hex_project::AutomationInterpolation::Linear,
+                                    },
+                                    hex_project::AutomationPoint {
+                                        beat: hex_project::BeatTime::from_raw(1 << 26),
+                                        value: hex_project::AutomationValue::new(
+                                            if saturator || auto_pan { 0.75 } else { 0.015 },
+                                        )
+                                        .unwrap(),
+                                        outgoing: hex_project::AutomationInterpolation::Step,
+                                    },
+                                ],
+                            }]
+                        } else {
+                            Vec::new()
+                        },
+                        comparison: None,
+                        id: snapshot.next_id,
+                        bypassed: false,
+                        state,
+                    });
+                if automated {
+                    let device = snapshot.tracks[0].devices.last_mut().unwrap();
+                    for target in [
+                        hex_lattice_contract::DeviceAutomationTarget::HostInputGain,
+                        hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
+                    ] {
+                        device.automation.push(hex_project::DeviceAutomation {
+                            target,
+                            points: vec![
+                                hex_project::AutomationPoint {
+                                    beat: hex_project::BeatTime::ZERO,
+                                    value: hex_project::AutomationValue::new(0.65).unwrap(),
+                                    outgoing: hex_project::AutomationInterpolation::Linear,
+                                },
+                                hex_project::AutomationPoint {
+                                    beat: hex_project::BeatTime::from_raw(1 << 26),
+                                    value: hex_project::AutomationValue::new(0.75).unwrap(),
+                                    outgoing: hex_project::AutomationInterpolation::Step,
+                                },
+                            ],
+                        });
+                    }
+                }
+                snapshot.next_id += 1;
+                let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+                let mut media = std::collections::BTreeMap::new();
+                let (asset, source) = &bank.sources[0];
+                let SourceKind::Resident(audio) = &source.kind else {
+                    panic!("resident fixture")
+                };
+                media.insert(*asset, audio.clone());
+                let reference = crate::PreparedRevision::prepare(
+                    &project,
+                    &media,
+                    std::sync::Arc::new(hex_devices::SineTable::new()),
+                    None,
+                )
+                .unwrap();
+                let mut reference =
+                    crate::SessionPlayback::new(std::sync::Arc::new(reference)).unwrap();
+                let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+                let registry = hex_devices::native_registry().unwrap();
+                let input =
+                    AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision();
+                let input = if saturator || auto_pan {
+                    input.with_effect_registry(&registry)
+                } else {
+                    input
+                };
+                let token = custody
+                    .begin_input_on_control(input)
+                    .unwrap_or_else(|refusal| {
+                        panic!("native root preflight: {:?}", refusal.reason)
+                    });
+                let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+                    crate::AudioStorageLedgerReservation {
+                        data_rows: 1024,
+                        handle_rows: 256,
+                        root_rows: 8,
+                        max_retained_bytes: usize::MAX,
+                        max_construction_peak_bytes: usize::MAX,
+                    },
+                )
+                .unwrap();
+                ledger
+                    .borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)
+                    .unwrap();
+                let summary = ledger.summary().unwrap();
+                assert_eq!(summary.unknown_storage, 0);
+                if automated {
+                    let program_bytes =
+                        crate::device_automation::quote(&project.tracks()[0].devices()[0]).unwrap();
+                    assert!(
+                        summary.data_bytes >= static_bytes.unwrap() + program_bytes,
+                        "closed program backing is charged in physical inventory"
+                    );
+                } else {
+                    static_bytes = Some(summary.data_bytes);
+                }
+                assert!(summary.require_complete().is_err());
+                drop(ledger);
+                let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
+                    .ok()
+                    .unwrap();
+                owner
+                    .test_apply_action(crate::PlaybackAction::Transport(
+                        crate::PlaybackCommand::Play,
+                    ))
+                    .unwrap();
+                reference
+                    .apply(crate::SessionPlaybackCommand::Play)
+                    .unwrap();
+                let mut actual = [[0.0; 2]; 256];
+                let mut expected = actual;
+                owner.test_render(&mut actual).unwrap();
+                reference.render(&mut expected).unwrap();
+                assert_eq!(actual, expected);
+                if saturator || auto_pan {
+                    assert!(actual[..16].iter().any(|frame| frame[0] != 0.0));
+                    assert!(
+                        actual[16..].iter().all(|frame| *frame == [0.0; 2]),
+                        "memoryless Saturator/Auto Pan has no output tail"
+                    );
+                } else {
+                    assert!(actual[16..].iter().any(|f| f[0] != 0.0));
+                }
+                owner.dispose_on_control().unwrap();
+                let inputs = owner.recover_inputs_on_control().unwrap();
+                assert_eq!(inputs.sources.as_ptr(), original);
+                assert_eq!(inputs.sources.capacity(), original_capacity);
+            }
+        }
     }
 }
 

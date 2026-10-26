@@ -865,3 +865,6 @@ fn selected_group_noop_escape_and_stationary_click_keep_existing_selection_contr
         assert_eq!(v.worker_requests_pending, 0);
     });
 }
+
+#[path = "track_reorder/capture_tests.rs"]
+mod capture_tests;

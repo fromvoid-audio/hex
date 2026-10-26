@@ -5,6 +5,8 @@
 //! Uses hex-ui/GPUI, hex-session, hex-audio, hex-engine, hex-stream, hex-media, hex-diagnostics,
 //! hex-midi and hex-mts at their existing boundaries. Injects hex-export
 //! with independently verified control-worker stream pages for offline output.
+//! Reads hex-plugin-catalog's copied source metadata at hex-preferences' existing
+//! application-support location; neither grants native source admission.
 //!
 //! # Does not own
 //! Does not implement project edits, codecs or musical DSP. Native source/publication adapters
@@ -31,8 +33,26 @@ fn main() {
         return;
     }
 
-    let mut session_log =
-        hex_diagnostics::default_directory().and_then(hex_diagnostics::SessionLog::start);
+    let (audio_diagnostics, action_diagnostics) =
+        match diagnostic_options(std::env::args_os().skip(1)) {
+            Ok(flags) => flags,
+            Err(error) => {
+                let _ = writeln!(std::io::stderr().lock(), "{error}");
+                std::process::exit(1);
+            }
+        };
+
+    let mut session_log = hex_diagnostics::default_directory().and_then(|directory| {
+        hex_diagnostics::SessionLog::start_with_context(
+            directory,
+            &format!(
+                "build={} platform={}-{} audio={audio_diagnostics:?} actions={action_diagnostics}",
+                hex_ui::diagnostic_build_identity(),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ),
+        )
+    });
     let log_handle = session_log
         .as_ref()
         .map(|log| log.handle())
@@ -56,13 +76,16 @@ fn main() {
             hex_ui::install_mts_publisher(cx, handle.clone());
         }
         hex_ui::install_session_log(cx, log_handle.clone());
+        hex_ui::install_audio_diagnostics(cx, audio_diagnostics);
+        hex_ui::install_action_diagnostics(cx, action_diagnostics);
         let demo = std::env::args_os()
             .skip(1)
             .any(|argument| argument == "--demo");
         let result = if demo {
             hex_ui::open(cx, hex_audio::AudioOutput::open())
         } else {
-            native_audio::backend().and_then(|backend| hex_ui::open_editor_backend(cx, backend))
+            native_audio::backend(audio_diagnostics)
+                .and_then(|backend| hex_ui::open_editor_backend(cx, backend))
         };
         if let Err(error) = result {
             eprintln!("{}", error.to_lowercase());
@@ -79,5 +102,99 @@ fn main() {
         if let Err(error) = log.shutdown() {
             eprintln!("session logging shutdown failed: {error}");
         }
+    }
+}
+
+/// Current development default: recommended failure/action tracing, including
+/// optimized builds. Startup-only overrides deliberately use the last value;
+/// audio-only flags retain their separate category scope.
+fn diagnostic_options(
+    arguments: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(hex_audio::audio_diagnostics::AudioDiagnosticsFlags, bool), &'static str> {
+    use hex_audio::audio_diagnostics::AudioDiagnosticsFlags;
+    let recommended = "publication,transport,readiness".parse::<AudioDiagnosticsFlags>()?;
+    let mut flags = recommended;
+    let mut actions = true;
+    for argument in arguments {
+        if argument == "--diagnostics" {
+            // Raw timing floods the bounded trace on every callback; request it explicitly.
+            flags = recommended;
+            actions = true;
+        } else if argument == "--diagnostics=off" {
+            flags = AudioDiagnosticsFlags::OFF;
+            actions = false;
+        } else if argument == "--diagnostics=all" {
+            flags = AudioDiagnosticsFlags::ALL;
+            actions = true;
+        } else if argument
+            .to_str()
+            .is_some_and(|arg| arg.starts_with("--diagnostics="))
+        {
+            return Err("use --diagnostics, --diagnostics=all or --diagnostics=off");
+        } else if argument == "--audio-diagnostics" {
+            flags = AudioDiagnosticsFlags::ALL;
+        } else if let Some(value) = argument
+            .to_str()
+            .and_then(|arg| arg.strip_prefix("--audio-diagnostics="))
+        {
+            flags = value.parse()?;
+        }
+    }
+    Ok((flags, actions))
+}
+
+#[cfg(test)]
+mod diagnostics_flag_tests {
+    use super::*;
+    use hex_audio::audio_diagnostics::AudioDiagnosticsFlags as Flags;
+    #[test]
+    fn ordinary_development_startup_enables_failure_and_action_diagnostics() {
+        for args in [vec![], vec!["--demo"]] {
+            let (flags, actions) =
+                diagnostic_options(args.into_iter().map(std::ffi::OsString::from)).unwrap();
+            assert!(actions);
+            assert!(flags.contains(Flags::PUBLICATION));
+            assert!(flags.contains(Flags::TRANSPORT));
+            assert!(flags.contains(Flags::READINESS));
+            assert!(!flags.contains(Flags::TIMING));
+        }
+    }
+
+    #[test]
+    fn audio_categories_and_explicit_off_survive_other_flags() {
+        let parse = |args: &[&str]| {
+            diagnostic_options(args.iter().map(|arg| std::ffi::OsString::from(*arg)))
+                .map(|options| options.0)
+        };
+        assert_eq!(parse(&["--audio-diagnostics"]), Ok(Flags::ALL));
+        assert_eq!(
+            parse(&["--audio-diagnostics", "--audio-diagnostics=off"]),
+            Ok(Flags::OFF)
+        );
+        let flags = parse(&["--demo", "--audio-diagnostics=publication,readiness"]).unwrap();
+        assert!(flags.contains(Flags::PUBLICATION));
+        assert!(!flags.contains(Flags::TIMING));
+        assert!(parse(&["--audio-diagnostics=wat"]).is_err());
+        let options = diagnostic_options(["--diagnostics".into()].into_iter()).unwrap();
+        assert!(options.1);
+        assert!(options.0.contains(Flags::READINESS));
+        assert!(!options.0.contains(Flags::TIMING));
+        assert_eq!(
+            diagnostic_options(["--diagnostics".into(), "--diagnostics=off".into()].into_iter()),
+            Ok((Flags::OFF, false))
+        );
+        assert_eq!(
+            diagnostic_options(["--diagnostics=off".into()].into_iter()),
+            Ok((Flags::OFF, false))
+        );
+        assert_eq!(
+            diagnostic_options(["--audio-diagnostics=off".into()].into_iter()),
+            Ok((Flags::OFF, true))
+        );
+        assert_eq!(
+            diagnostic_options(["--diagnostics=off".into(), "--diagnostics".into()].into_iter()),
+            Ok(("publication,transport,readiness".parse().unwrap(), true))
+        );
+        assert!(diagnostic_options(["--diagnostics=wat".into()].into_iter()).is_err());
     }
 }

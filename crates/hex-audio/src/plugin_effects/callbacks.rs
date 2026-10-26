@@ -43,6 +43,7 @@ impl NativeEffectEntry {
         node: ForeignProcessorNode<'_>,
         offset: usize,
         frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.staged {
@@ -51,7 +52,8 @@ impl NativeEffectEntry {
                 .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
             self.staged = true;
         }
-        self.callback.process_segment(node, offset, frames, clock)
+        self.callback
+            .process_segment_with_parameters(node, offset, frames, parameters, clock)
     }
     pub(crate) fn finish(&mut self) -> Result<(), Fault> {
         if self.staged {
@@ -198,6 +200,16 @@ impl ForeignProcessors for NativeEffectCallbacks {
         frames: &mut [[f32; 2]],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_parameters(node, offset, frames, &[], clock)
+    }
+    fn process_segment_with_parameters(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
         let selected = node.prepared.binding().and_then(|binding| {
             self.entries
                 .binary_search_by_key(&binding, NativeEffectEntry::binding)
@@ -205,7 +217,7 @@ impl ForeignProcessors for NativeEffectCallbacks {
         });
         let result = match (self.cycle.extent(), selected) {
             (Some(extent), Some(index)) => {
-                self.entries[index].process(extent, node, offset, frames, clock)
+                self.entries[index].process(extent, node, offset, frames, parameters, clock)
             }
             _ => Err(DeviceContractError::ForeignProcessingUnavailable),
         };

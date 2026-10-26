@@ -250,6 +250,8 @@ impl EditorView {
         }
     }
     pub(super) fn toggle_arrangement_focus(&mut self) {
+        // An explicit Q/toolbar choice supersedes a delayed automatic focus.
+        self.cancel_pending_loop_focus();
         self.reconcile_arrangement_focus();
         if self.arrangement_focus.enabled {
             self.arrangement_focus.enabled = false;

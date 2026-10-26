@@ -95,6 +95,21 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
         });
         assert_brace(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        let terminal = crate::editor::clip_editor_loop_ui_tests::hold(&editor, &mut visual);
+        assert!(
+            terminal.request_complete && terminal.error.is_none(),
+            "{:?}",
+            terminal.error
+        );
+        for _ in 0..3 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_brace(&mut visual, first as f32 / 4.0, last as f32 / 4.0, false);
+        }
+        editor.update(&mut visual, |v, cx| {
+            v.receive(terminal);
+            cx.notify();
+        });
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let s = v.state.as_ref().unwrap();

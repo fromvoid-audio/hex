@@ -26,8 +26,10 @@ impl SessionPlayback {
             midi_admission,
             periodic_tempo: _,
             anchor: _,
+            interactive_start_frame: _,
             historical_floor: _,
             route_historical_floors: _,
+            source_voice_envelopes: _,
             routes,
             route_scratch,
             device_chains,
@@ -64,6 +66,7 @@ impl SessionPlayback {
             arrangement_frame: _,
             arrangement_loop_pass: _,
             playing: _,
+            monitor_source_releases: _,
             linear_arrangement_export,
             current_sampler_console: _,
             route_state_generation: _,
@@ -189,6 +192,10 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
+        let (ids, lanes, points) = entry.automation().storage_vectors();
+        l.vec(ids)?;
+        l.vec(lanes)?;
+        l.vec(points)?;
         let foreign = match &prepared.definition {
             Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
             _ => None,

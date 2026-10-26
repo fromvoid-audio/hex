@@ -161,6 +161,108 @@ fn transport_loop_project(expanded: bool) -> Project {
     legacy_project_from_snapshot(snapshot).expect("valid transport-loop fixture")
 }
 
+#[test]
+fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope() {
+    let mut snapshot = transport_loop_project(false).snapshot();
+    let mut contributor = snapshot.tracks[0].clone();
+    contributor.id = snapshot.next_id;
+    snapshot.next_id += 1;
+    let note_count = 11_u64;
+    let first_note_id = snapshot.next_id;
+    match &mut snapshot.tracks[0].content {
+        TrackContentSnapshot::Hybrid { midi_clips, .. }
+        | TrackContentSnapshot::Instrument(midi_clips) => {
+            let clip = midi_clips.first_mut().expect("receiver clip");
+            clip.notes = (0..note_count)
+                .map(|index| MidiNoteSnapshot {
+                    id: first_note_id + index,
+                    start_raw: 2 * Q,
+                    duration_raw: Q,
+                    pitch: 36 + (index % 48) as u8,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .collect();
+        }
+        TrackContentSnapshot::Audio(_) => panic!("MIDI source track"),
+    };
+    let second_clip_id = first_note_id + note_count;
+    let second_note_id = second_clip_id + 1;
+    match &mut contributor.content {
+        TrackContentSnapshot::Hybrid { midi_clips, .. }
+        | TrackContentSnapshot::Instrument(midi_clips) => {
+            let clip = midi_clips.first_mut().expect("contributor clip");
+            clip.id = second_clip_id;
+            clip.notes = (0..note_count)
+                .map(|index| MidiNoteSnapshot {
+                    id: second_note_id + index,
+                    start_raw: 2 * Q,
+                    duration_raw: Q,
+                    pitch: 36 + (index % 48) as u8,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .collect();
+        }
+        TrackContentSnapshot::Audio(_) => panic!("MIDI source track"),
+    }
+    snapshot.next_id = second_note_id + note_count;
+    snapshot.loop_region = Some(LoopRegion::new(48_000, 48_128, true).expect("short loop"));
+    snapshot.tracks.push(contributor);
+    let project = Project::from_snapshot(snapshot).expect("shared source loop project");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback"),
+            levels: [0.2, 0.4],
+            release_frames: 256,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry =
+        hex_lattice::NativeInstrumentRegistry::new(&definitions).expect("instrument registry");
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &project,
+            &BTreeMap::new(),
+            Arc::new(crate::SineTable::new()),
+            None,
+            &registry,
+        )
+        .expect("statically admitted shared source"),
+    );
+
+    let region = revision.arrangement().loop_region().expect("fixture loop");
+    let receiver = revision.arrangement().tracks()[0]
+        .canonical_track_id()
+        .expect("receiver id");
+    let factory = revision
+        .session()
+        .mutable_instrument_factory(receiver)
+        .expect("receiver runtime factory");
+    for track in revision.arrangement().tracks() {
+        assert_eq!(
+            super::transport_loop_admission::admit_track(
+                track,
+                region,
+                factory.max_release_tail_frames(),
+                factory.max_events_per_block(),
+                factory.max_active_occurrences(),
+            ),
+            Ok(44),
+            "each contributor stays below the 64 voice limit"
+        );
+    }
+
+    // Each authored track peaks at 11 voices, so static source admission is
+    // valid at 22. At the first seam, the initial 11 releases overlap three
+    // repeated 11-note tails (44 per contributor); the combined 88 must be
+    // charged to one runtime even though either track is individually below 64.
+    assert_eq!(
+        SessionPlayback::new(revision).err(),
+        Some(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+}
+
 fn render_transport_project(project: &Project, frames: usize, partitions: &[usize]) -> Vec<Frame> {
     let revision = prepare_mutable(project);
     let mut playback = SessionPlayback::new(revision).expect("mutable loop admitted");

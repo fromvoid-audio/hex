@@ -122,6 +122,27 @@ fn fixture(
         old.as_object_mut().unwrap().remove("track_source_bindings"),
         Some(serde_json::json!([]))
     );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("session_audio_cycles"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("device_automation"),
+        Some(serde_json::json!([]))
+    );
+    for key in ["alias_sources", "alias_members"] {
+        assert_eq!(
+            old.as_object_mut().unwrap().remove(key),
+            Some(serde_json::json!([]))
+        );
+    }
+    // Schema53 host automation must be empty before comparing this old envelope.
+    assert_eq!(
+        old.get("host_automation"),
+        Some(&serde_json::json!([])),
+        "historical fixture cannot discard host automation"
+    );
+    old.as_object_mut().unwrap().remove("host_automation");
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();

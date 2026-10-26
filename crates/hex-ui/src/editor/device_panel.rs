@@ -1512,6 +1512,44 @@ fn device_selection_listener(
     })
 }
 
+fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
+    let device_id = device.id();
+    let foreign = view
+        .audible_playback
+        .as_ref()
+        .filter(|audible| audible.project_generation == view.project_generation)
+        .filter(|audible| {
+            audible
+                .state
+                .project
+                .device(device_id)
+                .is_some_and(|current| current.state().processing_eq(device.state()))
+        })
+        .and_then(|audible| audible.observation.as_ref())
+        .and_then(|observation| {
+            observation.foreign_processor(device_id.value(), device.state().type_id())
+        });
+    let (message, status) = match foreign {
+        Some(true) => (
+            theme::text("vst3 effect · parameter controls unavailable"),
+            "active",
+        ),
+        Some(false) => (
+            theme::text("vst3 unavailable · saved state preserved"),
+            "unavailable",
+        ),
+        None => (theme::text("vst3 · awaiting audio status"), "pending"),
+    };
+    let content = crate::device_composition::unsupported_body(message)
+        .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()));
+    div()
+        .child(content)
+        .id(ElementId::Name(
+            format!("device-body-{}", device_id.value()).into(),
+        ))
+        .debug_selector(move || format!("device-body-{}", device_id.value()))
+}
+
 fn render_effect(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -1536,6 +1574,22 @@ fn render_effect(
     let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
+        _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
+            let body = vst3_status_body(view, device);
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text("vst3"),
+                ),
+                theme::device_frame_style(selected),
+                leading,
+                header_actions,
+                body,
+            )
+        }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 utility_panel::render_body(view, cx, device_id, device_view)
@@ -2641,7 +2695,7 @@ fn parameter_control_with_presentation(
     display: ControlText,
 ) -> Div {
     let compact_toggle_width = match display.label {
-        Some("bass mono" | "mono") => 64.0,
+        Some("bass mono" | "mono" | "maximize" | "auto") => 64.0,
         Some("bass mono audition" | "r" | "q") => 14.0,
         Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "on" | "fix" | "") => 18.0,
         Some("ø l" | "ø r" | "mute" | "dc") => 31.0,

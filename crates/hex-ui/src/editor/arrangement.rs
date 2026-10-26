@@ -1,5 +1,4 @@
 use super::drag::BrowserAudioDrag;
-use super::tracks::TRACK_ROW_HEIGHT;
 use super::viewport::Viewport;
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -80,8 +79,10 @@ impl EditorView {
             let frame_delta = frame_delta
                 .round()
                 .clamp(i128::MIN as f64, i128::MAX as f64) as i128;
-            let next = current.pan_by_frames(state.timeline_frames, frame_delta);
-            self.viewport = (next != Viewport::fit(state.timeline_frames)).then_some(next);
+            let next =
+                current.pan_by_frames(self.viewport_horizon(state.timeline_frames), frame_delta);
+            self.viewport = (next != Viewport::fit(self.viewport_horizon(state.timeline_frames)))
+                .then_some(next);
         }
         if dy != 0.0 {
             let base_handle = self.track_scroll.clone();
@@ -94,7 +95,14 @@ impl EditorView {
     }
 
     pub(super) fn cancel_arrangement_pan(&mut self) -> bool {
-        self.arrangement_pan.take().is_some()
+        if self.arrangement_pan.take().is_none() {
+            return false;
+        }
+        if let Some(state) = self.state.as_ref() {
+            let visible = self.visible_viewport(state.timeline_frames);
+            self.install_arranger_navigation(visible);
+        }
+        true
     }
 
     pub(super) fn arrangement(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -146,6 +154,7 @@ impl EditorView {
                     &self.overview_cache,
                     self.project_generation,
                     &state,
+                    self.viewport_horizon(state.timeline_frames),
                     self.arrangement_focus_ranges(),
                     self.arrangement_revealed_track(),
                 ),
@@ -217,6 +226,7 @@ impl EditorView {
                 &self.overview_cache,
                 self.project_generation,
                 &state,
+                self.viewport_horizon(state.timeline_frames),
                 self.arrangement_focus_ranges(),
                 self.arrangement_revealed_track(),
             ),
@@ -259,7 +269,10 @@ impl EditorView {
         })
         .w_full()
         .flex_1()
-        .min_h_0();
+        .min_h_0()
+        // Scroll past the final real row without inventing a track. A fraction
+        // preserves usable track space even in a very short arranger viewport.
+        .pb(relative(super::track_layout::BOTTOM_SCROLL_SPACE_RATIO));
         let mut content = div()
             .relative()
             .flex_1()
@@ -351,6 +364,7 @@ impl EditorView {
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                         if !phase.capture()
+                            || Self::row_size_wheel(event)
                             || !bounds.contains(&event.position)
                             || f32::from(event.position.x)
                                 >= f32::from(bounds.origin.x)
@@ -445,6 +459,24 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            if view.time_selection_key_held {
+                                let started = view.begin_main_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                    event.modifiers.shift,
+                                ) || view.begin_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                    event.modifiers.shift,
+                                );
+                                if started {
+                                    view.focus.focus(window);
+                                    cx.notify();
+                                }
+                                return (started, false);
+                            }
                             if view.begin_section_pointer(
                                 x,
                                 y,
@@ -453,6 +485,9 @@ impl EditorView {
                                 cx,
                             ) {
                                 view.focus.focus(window);
+                                if !view.capture_section_drag(window, cx) {
+                                    view.cancel_section_pointer();
+                                }
                                 cx.notify();
                                 return (true, false);
                             }
@@ -634,7 +669,10 @@ impl EditorView {
                 }
             }
         }
-        body
+        body.children(
+            self.time_selection_cursor_layer()
+                .map(|layer| layer.right(px(header_width))),
+        )
     }
 
     fn arrangement_surface(
@@ -730,6 +768,16 @@ impl EditorView {
         lines: &[super::musical_time::GridLine],
         cx: &mut Context<Self>,
     ) -> Div {
+        let state = self.state.clone();
+        let automation = state.as_ref().and_then(|state| {
+            super::device_automation::overlay(
+                self,
+                state,
+                super::device_panel::DevicePanelOwner::Main,
+                viewport,
+                cx,
+            )
+        });
         let lane_entity = cx.entity();
         let lane = div()
             .id("main-track-lane")
@@ -742,6 +790,7 @@ impl EditorView {
             .children(self.main_time_selection_overlay(viewport))
             .children(self.section_elements(viewport, cx))
             .children([self.section_pointer_events(cx)])
+            .children(automation)
             .child(
                 canvas(
                     |_, _, _| (),
@@ -759,11 +808,16 @@ impl EditorView {
                 )
                 .absolute()
                 .inset_0(),
-            );
-        div()
+            )
+            .children(self.time_selection_cursor_layer());
+        let row = div()
+            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+                view.resize_row_wheel(None, event, cx);
+            }))
             .debug_selector(|| "pinned-main-track".to_owned())
-            .h(px(TRACK_ROW_HEIGHT))
-            .flex_shrink_0()
+            .h(px(self.main_track_height()))
+            .min_h(px(super::track_layout::HEADER_ONLY_HEIGHT))
+            .flex_shrink()
             .flex()
             .border_t_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
@@ -772,17 +826,30 @@ impl EditorView {
             .child(
                 div()
                     .id("main-track-header")
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|view, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            view.open_automation_owner_menu(
+                                super::device_panel::DevicePanelOwner::Main,
+                                event.position,
+                                window,
+                                cx,
+                            );
+                        }),
+                    )
                     .on_click(cx.listener(|view, _, window, cx| {
                         super::device_panel::select_main(view, window, cx)
                     }))
                     .relative()
-                    .child(self.track_width_resize_handle(None, cx))
+                    .children(self.main_track_resize_handles(cx))
                     .debug_selector(|| "main-track-header".to_owned())
                     .w(px(self.track_header_width()))
                     .h_full()
                     .flex_shrink_0()
                     .flex()
                     .items_center()
+                    .pt(px(3.))
                     .gap_1()
                     .px_1()
                     .border_l_1()
@@ -790,10 +857,39 @@ impl EditorView {
                     .bg(rgb(theme::color(theme::PaletteRole::Raised)))
                     .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                     .text_xs()
-                    .child(theme::text("main"))
+                    .child(
+                        div()
+                            .debug_selector(|| "main-track-name".into())
+                            .child(theme::text("main")),
+                    )
                     .child(div().flex_1())
-                    .children([self.main_track_controls(cx)]),
+                    .children(
+                        (self.main_track_height() > super::track_layout::HEADER_ONLY_HEIGHT)
+                            .then(|| self.main_track_controls(cx)),
+                    ),
+            );
+        let extra = state.as_ref().map(|state| {
+            super::device_automation::rows(
+                self,
+                state,
+                super::device_panel::DevicePanelOwner::Main,
+                viewport,
+                cx,
             )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink()
+            .min_h(px(super::track_layout::HEADER_ONLY_HEIGHT))
+            .child(row)
+            .children(extra.map(|rows| {
+                div()
+                    .id("main-automation-rows")
+                    .max_h(px(super::device_automation::LANE_HEIGHT))
+                    .overflow_y_scroll()
+                    .child(rows)
+            }))
     }
 
     fn ruler(&self, state: &ViewState, ruler_width: f32, cx: &mut Context<Self>) -> Div {

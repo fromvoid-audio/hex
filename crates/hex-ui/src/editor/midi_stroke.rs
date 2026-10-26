@@ -282,6 +282,11 @@ impl MidiStroke {
         }
     }
 
+    /// Immutable frame and down anchor retained across preview/traversal updates.
+    pub(super) fn admission(&self) -> (StrokeContext, u64, u8) {
+        (self.context, self.anchor, self.down_pitch)
+    }
+
     pub(super) fn shared_preview(&self) -> Arc<StrokePreview> {
         Arc::clone(&self.preview)
     }
@@ -536,6 +541,7 @@ impl MidiStroke {
             }
         }
         preview.removed.sort_unstable();
+        preview.removed.dedup();
         preview
             .inserted
             .sort_unstable_by_key(|note| (note.start.raw(), note.pitch));
@@ -1079,6 +1085,70 @@ mod tests {
         );
         let preview = stroke.shared_preview();
         assert_eq!(preview.inserted[0].start.raw(), beat(1));
+    }
+
+    #[test]
+    fn erasing_multiple_cells_of_one_note_has_unique_valid_preview_and_command() {
+        let (mut editor, clip) = fixture(beat(4));
+        let Created::Note(note) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 2,
+                velocity: 93,
+            })
+            .unwrap()
+        else {
+            panic!("note expected");
+        };
+        let c = context(clip, beat(4), MidiGrid::Sixteenth, false);
+        let mut stroke = MidiStroke::begin_with_hit(
+            c,
+            beat(4),
+            baseline(&editor, clip),
+            StrokePoint {
+                beat_raw: 0,
+                pitch: 60,
+            },
+            Some(note),
+        )
+        .unwrap();
+        stroke
+            .update(
+                c,
+                false,
+                StrokePoint {
+                    beat_raw: beat(1),
+                    pitch: 60,
+                },
+            )
+            .unwrap();
+        let preview = stroke.shared_preview();
+        assert_eq!(preview.removed, [note]);
+        assert!(preview.inserted.is_empty());
+        assert!(
+            editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .preview_note_overwrite(&preview.removed, &preview.inserted)
+                .is_ok()
+        );
+        let command = stroke.finish(c, false).unwrap().unwrap();
+        let (_, remove, insert) = command_parts(command.clone());
+        assert_eq!(remove, preview.removed);
+        assert!(insert.is_empty());
+        editor.execute(command).unwrap();
+        assert!(
+            editor
+                .project()
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .is_empty()
+        );
     }
 
     #[test]

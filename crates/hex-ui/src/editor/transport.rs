@@ -12,6 +12,18 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
+        let automation_active =
+            self.automation_view.enabled && self.mode == EditorMode::Arrangement;
+        let automation_hint = "automation view · a · all arrangement tracks · track gain";
+        let mut automation_style = theme::action_style();
+        automation_style.text = theme::color(theme::PaletteRole::Muted);
+        if automation_active {
+            let style = theme::control_style();
+            automation_style.background = style.accent;
+            automation_style.text = style.accent_text;
+            automation_style.hover_background = style.accent;
+            automation_style.hover_text = Some(style.accent_text);
+        }
         let output_label = self.output_label();
         let keyboard_description = format!(
             "computer midi keyboard · m · base midi {} · velocity {} · z/x octave · c/v velocity",
@@ -105,6 +117,7 @@ impl EditorView {
                     "⌨",
                     "computer midi keyboard",
                     keyboard_description.into(),
+                    theme::action_style(),
                     |view, window, cx| view.toggle_computer_keyboard(window, cx),
                     cx,
                 )
@@ -133,10 +146,11 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "↻",
-                    "toggle loop · l/w/cmd+l: set selection or toggle existing loop",
+                    "toggle loop · cmd+l · l/w set selection or toggle matching loop",
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
+                .debug_selector(|| "transport-loop-toggle".into())
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(
                     if self
@@ -150,7 +164,12 @@ impl EditorView {
                     },
                 )),
             )
-            .child(self.icon("✂", "split at playback cursor · e", SplitClip, cx))
+            .child(self.icon(
+                "✂",
+                "split selection edges or edit cursor · e",
+                SplitClip,
+                cx,
+            ))
             .child(
                 self.icon("↶", "undo · cmd+z", Undo, cx)
                     .opacity(if can_undo { 1.0 } else { 0.45 }),
@@ -199,23 +218,18 @@ impl EditorView {
                 cx,
             ))
             .child(
-                self.control_icon(
+                self.control_icon_description(
                     "a",
-                    "arrangement automation view · a · track gain",
+                    automation_hint,
+                    automation_hint.into(),
+                    automation_style,
                     |view, _, cx| {
                         view.toggle_automation_view(cx);
                     },
                     cx,
                 )
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
-                .debug_selector(|| "automation-view-toggle".into())
-                .text_color(rgb(theme::color(
-                    if self.automation_view.enabled && self.mode == EditorMode::Arrangement {
-                        theme::PaletteRole::Primary
-                    } else {
-                        theme::PaletteRole::Muted
-                    },
-                ))),
+                .debug_selector(|| "automation-view-toggle".into()),
             )
             .children([self.snap_control(cx)])
             .children([self.section_focus_toggle(cx)])
@@ -389,7 +403,14 @@ impl EditorView {
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        self.control_icon_description(label, description, description.into(), handler, cx)
+        self.control_icon_description(
+            label,
+            description,
+            description.into(),
+            theme::action_style(),
+            handler,
+            cx,
+        )
     }
 
     fn control_icon_description(
@@ -397,10 +418,11 @@ impl EditorView {
         label: &'static str,
         description: &'static str,
         tooltip_description: gpui::SharedString,
+        style: hex_widgets::ActionStyle,
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        hex_widgets::action(theme::text(label), theme::action_style())
+        hex_widgets::action(theme::text(label), style)
             .id(description)
             .debug_selector(move || description.into())
             .w(px(header::CONTROL_SIZE))
@@ -456,6 +478,7 @@ impl EditorView {
         let previous_focus = window.focused(cx);
         focus.focus(window);
         self.context_menu = Some(crate::context_menu::PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             position,
             icon_grid: None,
             selected: hex_engine::LaunchQuantization::GLOBAL_CHOICES

@@ -783,3 +783,109 @@ fn time_range_group_prepares_identical_audio_and_roundtrips_complete_state() {
         assert_eq!(render(&redone, 127), expected);
     }
 }
+
+#[test]
+fn clip_loop_cycle_range_repeats_retained_pcm_without_changing_placement_or_history_custody() {
+    use hex_project::{AudioViewMode, AudioViewResizeOperation};
+    fn render(revision: &hex_engine::PreparedRevision) -> Vec<hex_engine::Frame> {
+        let mut r = hex_engine::Renderer::new(revision.arrangement());
+        r.play();
+        let mut frames = vec![[0.0; 2]; 8000];
+        for block in frames.chunks_mut(113) {
+            r.render(block).unwrap();
+        }
+        frames
+    }
+    for (musical, pitched) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (mut session, clip, mut previous) = fixture();
+        if musical {
+            previous = session
+                .command_prepared_revision(
+                    Command::SetAudioClipMusical {
+                        clip,
+                        enabled: true,
+                    },
+                    Some(&previous),
+                )
+                .unwrap()
+                .1;
+        }
+        if pitched {
+            session.max_resident_frames = 100_000;
+            previous = session
+                .command_prepared_revision(
+                    Command::SetAudioClipPitch { clip, cents: 700 },
+                    Some(&previous),
+                )
+                .unwrap()
+                .1;
+        }
+        let original = session.project().snapshot();
+        let original_clip = session.project().clip(clip).unwrap().clone();
+        let root = original_clip.audio_event_root();
+        let expected = render(&previous);
+        let first = root.domain.clock.length() / 4;
+        let last = first * 3;
+        let (_, bounced) = session
+            .command_prepared_revision(
+                Command::ResizeAudioClipView {
+                    clip,
+                    operation: AudioViewResizeOperation::CycleRange {
+                        start: first,
+                        end: last,
+                        looping: true,
+                    },
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let c = session.project().clip(clip).unwrap();
+        let edited = c.audio_event_root();
+        assert_eq!(
+            (c.start(), c.duration()),
+            (original_clip.start(), original_clip.duration())
+        );
+        assert_eq!(edited.domain, root.domain);
+        assert_eq!((edited.view_start, edited.view_end), (first, last));
+        assert_eq!(edited.placement.unwrap().mode, AudioViewMode::Repeat);
+        let actual = render(&bounced);
+        for (i, frame) in actual.iter().enumerate() {
+            assert_eq!(*frame, expected[2000 + i % 4000], "{musical} frame {i}");
+        }
+        let saved = session.project().snapshot();
+        let bytes = hex_storage::encode(session.project()).unwrap();
+        assert_eq!(hex_storage::decode(&bytes).unwrap().snapshot(), saved);
+        let resident = session.resident_frames;
+        for (start, end) in [(first, first), (0, u64::MAX)] {
+            assert!(
+                session
+                    .command_prepared_revision(
+                        Command::ResizeAudioClipView {
+                            clip,
+                            operation: AudioViewResizeOperation::CycleRange {
+                                start,
+                                end,
+                                looping: true
+                            },
+                        },
+                        Some(&bounced)
+                    )
+                    .is_err()
+            );
+            assert_eq!(session.project().snapshot(), saved);
+            assert_eq!(session.resident_frames, resident);
+        }
+        let undo = session
+            .undo_prepared_revision(Some(&bounced))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().snapshot().tracks, original.tracks);
+        assert_eq!(render(&undo), expected);
+        let redo = session
+            .redo_prepared_revision(Some(&undo))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().snapshot().tracks, saved.tracks);
+        assert_eq!(render(&redo), actual);
+    }
+}

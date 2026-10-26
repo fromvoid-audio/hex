@@ -198,7 +198,7 @@ pub(super) fn view(
         .on_click(cx.listener(|view, _, window, cx| {
             view.audio_event_editor.gesture = None;
             view.audio_event_editor.source_view = true;
-            view.focus.focus(window);
+            view.audio_event_focus.focus(window);
             cx.notify();
         }))
     };
@@ -250,7 +250,12 @@ pub(super) fn view(
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .border_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .debug_selector(|| "arrangement-audio-waveform".into());
+        .debug_selector(|| "arrangement-audio-waveform".into())
+        .track_focus(&view.audio_event_focus)
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|view, _, window, _| view.audio_event_focus.focus(window)),
+        );
     if let Some(waveform) = waveform {
         canvas_region =
             canvas_region.child(super::waveform::waveform_source_segment_gain_view_cached(
@@ -314,6 +319,17 @@ pub(super) fn view(
                 theme::color(theme::PaletteRole::Primary),
             ));
         }
+    }
+    if let Some(position) = view
+        .audio_playhead_media_frame()
+        .filter(|frame| *frame < window.asset_frames)
+    {
+        canvas_region = canvas_region.child(source_marker(
+            position,
+            window.asset_frames,
+            "audio-source-playback-position",
+            theme::color(theme::PaletteRole::Text),
+        ));
     }
     waveform_panel = waveform_panel.child(canvas_region).child(
         div()

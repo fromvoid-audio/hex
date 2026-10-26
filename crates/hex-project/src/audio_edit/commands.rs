@@ -317,7 +317,11 @@ pub(crate) fn apply(
             if enabled {
                 edit.anchor(clip.start, project.tempo_map())?;
             } else {
-                edit.unanchor(project.tempo_map())?;
+                if project.clip_alias(id).is_some() {
+                    super::aliases::freeze(edit, project.tempo_map())?;
+                } else {
+                    edit.unanchor(project.tempo_map())?;
+                }
             }
         }
         Command::SetAudioClipWarp { settings, .. } => {
@@ -372,7 +376,7 @@ pub(crate) fn apply(
     validate_clip(project, &clip)?;
     crate::clip_group::replace_audio(project, clip)
 }
-fn validate_clip(project: &crate::Project, clip: &Clip) -> Result<(), Invalid> {
+pub(crate) fn validate_clip(project: &crate::Project, clip: &Clip) -> Result<(), Invalid> {
     let frames = project
         .asset(clip.asset)
         .ok_or(Invalid("audio domain media is missing"))?
@@ -510,10 +514,51 @@ pub(crate) fn source_policy(
     looping: Option<bool>,
     phase: Option<u64>,
 ) -> Result<crate::Created, Invalid> {
+    let direct = looping.is_some()
+        && project
+            .clip(id)
+            .and_then(|c| c.audio_edit())
+            .is_some_and(|e| e.placement.is_some());
+    let clip = preview_source_policy(project, id, looping, phase)?;
+    if direct {
+        *project.clip_mut(id)? = clip;
+        Ok(crate::Created::None)
+    } else {
+        crate::clip_group::replace_audio(project, clip)
+    }
+}
+impl crate::Project {
+    /// Metadata-only preview of SetClipLooping, including legacy source loops
+    /// and retained Once/Repeat views. Uses the canonical edit law without I/O
+    /// or project/history mutation; controls cannot publish this replacement.
+    pub fn preview_audio_clip_looping(
+        &self,
+        clip: crate::ClipId,
+        looping: bool,
+    ) -> Result<Clip, Invalid> {
+        preview_source_policy(self, clip, Some(looping), None)
+    }
+}
+fn preview_source_policy(
+    project: &crate::Project,
+    id: crate::ClipId,
+    looping: Option<bool>,
+    phase: Option<u64>,
+) -> Result<Clip, Invalid> {
     let mut clip = project
         .clip(id)
         .cloned()
         .ok_or(Invalid("audio clip is missing"))?;
+    if clip.edit.is_none() {
+        if let Some(looping) = looping {
+            clip.looping = looping;
+            if !looping {
+                clip.source_phase = 0;
+            }
+        }
+        validate_clip(project, &clip)?;
+        return Ok(clip);
+    }
     let mut owned_edit = clip
         .edit
         .clone()
@@ -532,8 +577,7 @@ pub(crate) fn source_policy(
         // Turning the view off must not reveal another portion of that root.
         clip.edit = Some(owned_edit);
         validate_clip(project, &clip)?;
-        *project.clip_mut(id)? = clip;
-        return Ok(crate::Created::None);
+        return Ok(clip);
     }
     let domain = Arc::make_mut(&mut edit.domain);
     if let Some(looping) = looping {
@@ -554,5 +598,5 @@ pub(crate) fn source_policy(
     clip.source_phase = domain.source_phase;
     clip.edit = Some(owned_edit);
     validate_clip(project, &clip)?;
-    crate::clip_group::replace_audio(project, clip)
+    Ok(clip)
 }

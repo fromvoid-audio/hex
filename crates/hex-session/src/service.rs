@@ -49,11 +49,17 @@ pub use sampler_parameter::SamplerEdit;
 mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
+mod plugin_state_save;
+pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
+pub mod diagnostics;
+mod request_cancellation;
 pub use plugin_effect::{
     NativeDeviceState, PluginEffectCompletion, PluginEffectControl, PluginEffectDestination,
     PluginEffectInsertion, PluginEffectPreparation, PluginEffectPreparationState,
     PluginEffectSelection,
 };
+use request_cancellation::QueuedRequest;
+pub use request_cancellation::RequestCancellation;
 #[cfg(test)]
 mod effect_bus_tests;
 #[cfg(test)]
@@ -69,10 +75,10 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
+use recovery::absolute_document_path;
 pub use recovery::{
     ProjectSource, RecoveryFailure, RecoveryRestart, missing_assets, untitled_recovery_path,
 };
-use recovery::{absolute_document_path, project_for_save};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -459,6 +465,18 @@ pub enum Request {
         revision: u64,
         clips: Vec<hex_project::ClipId>,
     },
+    DuplicateAliasClips {
+        project_generation: u64,
+        revision: u64,
+        clips: Vec<hex_project::ClipId>,
+    },
+    DuplicateSessionCell {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        scene: hex_project::SceneId,
+        alias: bool,
+    },
     /// Captured Arrangement selection to consolidate as one clip. The project
     /// command validates track and media-kind representability atomically.
     GroupClips {
@@ -526,6 +544,8 @@ pub enum Request {
     InsertPluginEffect(PluginEffectInsertion),
     /// Worker-internal wakeup; never a FIFO request completion.
     ContinuePluginEffect,
+    /// Internal fresh-output state restoration; no authored edit or revision.
+    ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
     InsertEffectBusDevice {
         project_generation: u64,
@@ -572,6 +592,14 @@ pub enum Request {
         revision: u64,
         track: hex_project::TrackId,
         edit: GainLaneEdit,
+    },
+    /// Resolve source stamps before any gesture barrier or canonical edit.
+    DeviceAutomation {
+        project_generation: u64,
+        revision: u64,
+        device: hex_project::DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        points: Vec<hex_project::AutomationPoint>,
     },
     DeviceGesture(GestureRequest),
     TuningGesture(TuningGestureRequest),
@@ -862,8 +890,9 @@ type ExportTestHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 pub struct Service {
     #[cfg(test)]
     export_test_hook: ExportTestHook,
-    requests: SyncSender<Request>,
-    events: Receiver<Event>,
+    requests: request_cancellation::Sender,
+    events: diagnostics::EventReceiver,
+    diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
@@ -1120,6 +1149,10 @@ impl Service {
             (Some(arrangement_seek), None)
         };
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
+        let diagnostics = Arc::new(diagnostics::Hooks::default());
+        let worker_diagnostics = Arc::clone(&diagnostics);
+        let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
@@ -1152,7 +1185,12 @@ impl Service {
             // Structural stopped publications reuse the bounded preroll constructor.
             .stack_size(crate::arrangement_seek::SEEK_WORKER_STACK_BYTES)
             .spawn(move || {
-                let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
+                let mut events = WorkerEvents::new_with_diagnostics(
+                    event_tx,
+                    Arc::clone(&worker_shutdown),
+                    audio,
+                    worker_diagnostics,
+                );
                 let session = match session {
                     Some(session) => session,
                     None => {
@@ -1204,6 +1242,7 @@ impl Service {
                     session,
                     history_capacity,
                     request_rx,
+                    worker_document_intent,
                     events,
                     ExportLane::new(export_work_tx, finished_rx, export_worker),
                     actor_export_events,
@@ -1215,8 +1254,9 @@ impl Service {
         Ok(Self {
             #[cfg(test)]
             export_test_hook,
-            requests: request_tx,
-            events: event_rx,
+            requests: request_cancellation::Sender::new(request_tx, document_intent),
+            diagnostics: Arc::clone(&diagnostics),
+            events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             export_events: export_event_rx,
             export_busy,
             shutdown,
@@ -1230,6 +1270,27 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        let diagnostic = self.diagnostics.begin(&request);
+        let result = self.submit_traced(request, diagnostic);
+        self.diagnostics.returned(diagnostic, &result);
+        result
+    }
+
+    /// Install one read-only control observer. Logging has no effect on request
+    /// admission, canonical state, cancellation or publication authority.
+    pub fn set_diagnostic_observer(
+        &self,
+        observer: Arc<diagnostics::DiagnosticObserver>,
+    ) -> Result<(), &'static str> {
+        self.diagnostics.install(observer)
+    }
+
+    #[allow(clippy::result_large_err)] // Original bounded request returned for caller retry.
+    fn submit_traced(
+        &self,
+        request: Request,
+        diagnostic: Option<diagnostics::DiagnosticRequest>,
+    ) -> Result<(), SubmitError> {
         if let Request::BounceArrangement {
             target:
                 hex_project::BounceTarget::Clips(ids)
@@ -1255,7 +1316,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            return match try_submit(&self.requests, request) {
+            return match try_submit_traced(&self.requests, request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.resident_seek_count.fetch_sub(1, Ordering::AcqRel);
@@ -1271,7 +1332,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            match try_submit(&self.requests, request) {
+            match try_submit_traced(&self.requests, request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.export_busy.store(false, Ordering::Release);
@@ -1279,7 +1340,7 @@ impl Service {
                 }
             }
         } else {
-            try_submit(&self.requests, request)
+            try_submit_traced(&self.requests, request, diagnostic)
         }
     }
 
@@ -1373,12 +1434,17 @@ impl Service {
 }
 
 #[allow(clippy::result_large_err)] // Preserve the exact bounded request on queue refusal.
-fn try_submit(sender: &SyncSender<Request>, request: Request) -> Result<(), SubmitError> {
-    match sender.try_send(request) {
-        Ok(()) => Ok(()),
-        Err(TrySendError::Full(request)) => Err(SubmitError::Full(request)),
-        Err(TrySendError::Disconnected(request)) => Err(SubmitError::Closed(request)),
-    }
+#[cfg(test)]
+fn try_submit(sender: &request_cancellation::Sender, request: Request) -> Result<(), SubmitError> {
+    sender.submit(request)
+}
+#[allow(clippy::result_large_err)]
+fn try_submit_traced(
+    sender: &request_cancellation::Sender,
+    request: Request,
+    diagnostic: Option<diagnostics::DiagnosticRequest>,
+) -> Result<(), SubmitError> {
+    sender.submit_traced(request, diagnostic)
 }
 
 fn view_state(
@@ -1740,7 +1806,8 @@ fn run_tuning_library_operation_in_using(
 fn run_worker(
     mut session: Session,
     history_capacity: usize,
-    requests: Receiver<Request>,
+    requests: Receiver<QueuedRequest>,
+    document_intent: Arc<std::sync::atomic::AtomicU64>,
     mut events: WorkerEvents,
     mut export_lane: ExportLane,
     export_events: SyncSender<ExportEvent>,
@@ -1985,8 +2052,9 @@ fn run_worker(
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
     let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
     let mut pending_stopped_restore = None;
-    while let Some(request) = events.next_request_with_control_poll(
+    while let Some(queued) = events.next_request_with_control_poll(
         &requests,
+        &document_intent,
         session.native_reservation.is_some(),
         pending_plugin_effect
             .as_ref()
@@ -2055,6 +2123,9 @@ fn run_worker(
             )
         },
     ) {
+        events.begin_diagnostics(&queued, project_generation, revision);
+        events.begin_request(&document_intent, queued.document_intent);
+        let request = queued.request;
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
@@ -2064,6 +2135,7 @@ fn run_worker(
             &request,
             Request::ContinueSamplerEdit
                 | Request::ContinuePluginEffect
+                | Request::ContinuePluginStateRestore
                 | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
@@ -2134,6 +2206,36 @@ fn run_worker(
         // including Created selection and keyboard/tuning preparation.
         let mut cut_clipboard = None;
         let resolved_edit = match &request {
+            Request::DeviceAutomation {
+                project_generation: generation,
+                revision: source_revision,
+                device,
+                target,
+                points,
+            } => {
+                Some(
+                    if *generation != project_generation || *source_revision != revision {
+                        Err("automation edit refused · project changed".into())
+                    } else if !hex_engine::project_device_automation_target_supported(
+                        session.project(),
+                        *device,
+                        *target,
+                    ) {
+                        Err("automation edit refused · target no longer available".into())
+                    } else if pending_sampler_parameter.is_some()
+                        || device_gesture.snapshot().is_some()
+                        || tuning_gesture.snapshot().is_some()
+                    {
+                        Err("finish or cancel the active parameter gesture before editing automation".into())
+                    } else {
+                        Ok(Command::ReplaceDeviceAutomationTarget {
+                            device: *device,
+                            target: *target,
+                            points: points.clone(),
+                        })
+                    },
+                )
+            }
             Request::TrackClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -2341,6 +2443,11 @@ fn run_worker(
                 project_generation: captured_generation,
                 revision: captured_revision,
                 clips,
+            }
+            | Request::DuplicateAliasClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                clips,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("clip duplication canceled · project changed".to_owned())
@@ -2352,7 +2459,33 @@ fn run_worker(
                 {
                     Err("finish or cancel the active gesture before duplicating clips".into())
                 } else {
-                    Ok(Command::DuplicateClips(clips.clone()))
+                    Ok(if matches!(&request, Request::DuplicateAliasClips { .. }) {
+                        Command::DuplicateAliasClips(clips.clone())
+                    } else {
+                        Command::DuplicateClips(clips.clone())
+                    })
+                },
+            ),
+            Request::DuplicateSessionCell {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                scene,
+                alias,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("console duplication canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before duplicating clips".into())
+                } else {
+                    Ok(Command::DuplicateSessionCell {
+                        track: *track,
+                        scene: *scene,
+                        alias: *alias,
+                    })
                 },
             ),
             Request::GroupClips {
@@ -2747,6 +2880,7 @@ fn run_worker(
                     | Request::ContinueSamplerEdit
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
+                    | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
@@ -3281,11 +3415,16 @@ fn run_worker(
                 Request::CopyArrangementClipToConsoleTrack { .. } => {
                     error = Some("console clip target was not resolved".into());
                 }
-                Request::DuplicateClips { .. } => {
+                Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. } => {
                     error = Some("clip duplication target was not resolved".into());
                 }
                 Request::GroupClips { .. } | Request::GroupTimeRange { .. } => {
                     error = Some("clip grouping target was not resolved".into());
+                }
+                Request::DeviceAutomation { .. } => {
+                    error = Some("automation target was not resolved".into());
                 }
                 Request::GroupAudioEvents { .. } => {
                     error = Some("audio event grouping target was not resolved".into());
@@ -5437,7 +5576,24 @@ fn run_worker(
                 },
                 Request::SaveNew(path) => {
                     save_complete = true;
-                    match project_for_save(&session, media_base.as_deref()) {
+                    // Earlier source intent may cancel the edit ahead of Save,
+                    // but FIFO still saves its resulting canonical project.
+                    // Only a new intent during this capture cancels this Save.
+                    let save_cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
+                    match plugin_state_save::project_for_save_with_capture(
+                        &session,
+                        media_base.as_deref(),
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        &save_cancellation,
+                        events.sampler_edit_audio(),
+                    ) {
                         Ok(project) => match absolute_document_path(&path) {
                             Ok(path) => match hex_storage::save_new_with_token(&path, &project) {
                                 Ok(token) => {
@@ -5465,6 +5621,14 @@ fn run_worker(
                 }
                 request @ (Request::SaveCurrent | Request::SaveCurrentWithFormatUpgrade { .. }) => {
                     save_complete = true;
+                    // Earlier source intent may cancel the edit ahead of Save,
+                    // but FIFO still saves its resulting canonical project.
+                    // Only a new intent during this capture cancels this Save.
+                    let save_cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
                     let consent = match &request {
                         Request::SaveCurrentWithFormatUpgrade {
                             project_generation: expected,
@@ -5477,10 +5641,23 @@ fn run_worker(
                     };
                     let stale_consent =
                         matches!(request, Request::SaveCurrentWithFormatUpgrade { .. }) && !consent;
-                    match (
-                        document.as_mut(),
-                        project_for_save(&session, media_base.as_deref()),
-                    ) {
+                    let save_project = if stale_consent {
+                        Err("project changed · format upgrade cancelled".to_owned())
+                    } else if document.is_none() {
+                        Err("cannot save current project before it has a file path".to_owned())
+                    } else {
+                        plugin_state_save::project_for_save_with_capture(
+                            &session,
+                            media_base.as_deref(),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            &save_cancellation,
+                            events.sampler_edit_audio(),
+                        )
+                    };
+                    match (document.as_mut(), save_project) {
                         (None, _) => {
                             error =
                                 Some("cannot save current project before it has a file path".into())
@@ -5636,6 +5813,43 @@ fn run_worker(
                                 path,
                                 result: Err(reason),
                             })
+                        }
+                    }
+                }
+                Request::ContinuePluginStateRestore => {
+                    if let Some(sink) = events.resident_audio()
+                        && let Some(context) = sink.plugin_state_restore_ready()
+                    {
+                        // Metadata-only A/B edits retain this exact preparation source through
+                        // the sealed comparison binding. Keep its original native correlation;
+                        // a literal authored-revision match would discard a valid restore.
+                        let result = if context.project_generation != project_generation
+                            || state.audio_authoring_revision(context) != Some(revision)
+                        {
+                            Err(SessionError::Invalid(
+                                "vst3 state restoration source changed",
+                            ))
+                        } else if device_gesture.snapshot().is_some()
+                            || tuning_gesture.snapshot().is_some()
+                        {
+                            Err(SessionError::Invalid(
+                                "finish the active gesture before restoring vst3 state",
+                            ))
+                        } else {
+                            session.restore_plugin_state_snapshot(
+                                context, sink,
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None),
+                                resident_snapshot.as_ref(),
+                            )
+                        };
+                        sink.finish_plugin_state_restore(context, result.is_ok());
+                        match result {
+                            Ok(snapshot) => {
+                                compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                                resident_snapshot = Some(snapshot);
+                                status = Some("vst3 playback prepared".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string()),
                         }
                     }
                 }
@@ -10606,9 +10820,16 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let service = Service {
+            diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
-            requests,
-            events,
+            requests: request_cancellation::Sender::new(
+                requests,
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ),
+            events: diagnostics::EventReceiver::new(
+                events,
+                Arc::new(diagnostics::Hooks::default()),
+            ),
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),

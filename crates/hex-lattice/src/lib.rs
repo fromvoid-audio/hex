@@ -14,8 +14,14 @@ pub mod conformance;
 mod foreign_processor;
 mod meter;
 mod owned_processor;
+mod parameter_automation;
 pub use foreign_processor::{
     ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+};
+pub use parameter_automation::{
+    HostAutomationLane, NativeParameterAutomation, ParameterAutomationBlock,
+    ParameterAutomationLane, ParameterAutomationPoint, PreparedParameterAutomation,
+    PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
 };
 mod resources;
 mod runtime_ownership;
@@ -47,6 +53,28 @@ pub use analytic_continuation::{
 /// A registered memoryless linear effect definition. Implementations own their
 /// parameter codec in the contract trait and prepare a validated matrix here.
 pub trait NativeDeviceDefinition: NativeDeviceMetadata {
+    /// Control-only explicit shared-envelope capability, independent of older
+    /// device-local envelope metadata. Default providers do not opt in.
+    fn supports_parameter_automation(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        Ok(false)
+    }
+    /// Prepare a full identity-matrix processing law for shared automation.
+    /// Factories/runtimes must independently confirm every current target;
+    /// immutable program ownership remains with the host, never the provider.
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: ProcessorInstanceIdentity,
+        _state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+        _parameters: &[hex_lattice_contract::ParameterId],
+    ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -131,6 +159,15 @@ pub use instrument_runtime::{
 /// lookahead; `None` means the latency is unknown. Filter phase/group delay,
 /// audio-interface latency and intended effect tails are not declared here.
 pub trait PreparedNativeProcessor: Send + Sync {
+    fn parameter_automation_descriptor(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterDescriptor> {
+        None
+    }
+    fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
+        false
+    }
     fn runtime_version(&self) -> u32;
     /// Total bytes owned by one runtime: object plus every heap allocation,
     /// including reserved capacities, buffers and nested owned allocations.
@@ -184,9 +221,49 @@ pub enum OutputTail {
     Unbounded,
 }
 
-/// Audio-owned state with allocation-free, infallible block processing and
-/// history operations once the prepared configurations have been admitted.
+/// Audio-owned state with allocation-free ordinary processing/history after
+/// admission. Prepared automation normally succeeds; malformed borrowed delivery
+/// or a derived-control failure returns through the host's existing rollback.
 pub trait NativeProcessorRuntime: StdAny + Send {
+    fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
+        false
+    }
+    fn process_block_with_automation(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+        _automation: &dyn NativeParameterAutomation,
+        _resources: &dyn DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        automation: &dyn NativeParameterAutomation,
+        resources: &dyn DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let dry = *frame;
+            let shifted = clock.map(|clock| OffsetClock { clock, offset });
+            let values = OffsetAutomation {
+                values: automation,
+                offset,
+            };
+            let result = self.process_block_with_automation(
+                std::slice::from_mut(frame),
+                shifted
+                    .as_ref()
+                    .map(|clock| clock as &dyn NativeInstrumentClock),
+                &values,
+                resources,
+            );
+            *frame = dry;
+            result?;
+        }
+        Ok(())
+    }
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
@@ -411,6 +488,12 @@ impl fmt::Debug for PreparedProcessorInstance {
 }
 
 struct RuntimeEntry {
+    automation: PreparedParameterAutomation,
+    automation_frozen: bool,
+    // Host effective trims are transactional too: a late render refusal cannot
+    // freeze speculative controls into a retained output suffix.
+    committed_host_gains: [f32; 2],
+    scratch_host_gains: [f32; 2],
     meter: std::sync::Arc<DeviceMeter>,
     metering: bool,
     input_gain: f32,
@@ -428,6 +511,34 @@ struct RuntimeEntry {
     runtime: RuntimeOwnership,
 }
 
+struct OffsetAutomation<'a> {
+    values: &'a dyn NativeParameterAutomation,
+    offset: usize,
+}
+impl NativeParameterAutomation for OffsetAutomation<'_> {
+    fn parameter_ids(&self) -> &[hex_lattice_contract::ParameterId] {
+        self.values.parameter_ids()
+    }
+    fn value_at(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+        offset: usize,
+    ) -> Option<hex_lattice_contract::ParameterValue> {
+        self.values.value_at(id, self.offset.checked_add(offset)?)
+    }
+    fn values_at(
+        &self,
+        offset: usize,
+        output: &mut [Option<hex_lattice_contract::ParameterValue>],
+    ) -> Result<(), DeviceContractError> {
+        self.values.values_at(
+            self.offset
+                .checked_add(offset)
+                .ok_or(DeviceContractError::InvalidParameterValue)?,
+            output,
+        )
+    }
+}
 struct OffsetClock<'a> {
     clock: &'a dyn NativeInstrumentClock,
     offset: usize,
@@ -484,23 +595,27 @@ pub struct NativeRuntimeStorage<'a> {
 pub struct NativeRuntimeEntryStorage<'a> {
     entry: &'a RuntimeEntry,
 }
-impl NativeRuntimeStorage<'_> {
+impl<'a> NativeRuntimeStorage<'a> {
     pub fn entry_capacity_bytes(&self) -> Option<usize> {
         self.chain
             .entries
             .capacity()
             .checked_mul(std::mem::size_of::<RuntimeEntry>())
     }
-    pub fn entries(&self) -> impl Iterator<Item = NativeRuntimeEntryStorage<'_>> {
+    pub fn entries(&self) -> impl Iterator<Item = NativeRuntimeEntryStorage<'a>> + use<'a> {
         self.chain
             .entries
             .iter()
             .map(NativeRuntimeEntryStorage::new)
     }
 }
-impl NativeRuntimeEntryStorage<'_> {
+impl<'a> NativeRuntimeEntryStorage<'a> {
     fn new(entry: &RuntimeEntry) -> NativeRuntimeEntryStorage<'_> {
         let RuntimeEntry {
+            automation: _,
+            automation_frozen: _,
+            committed_host_gains: _,
+            scratch_host_gains: _,
             meter: _,
             metering: _,
             input_gain: _,
@@ -521,6 +636,9 @@ impl NativeRuntimeEntryStorage<'_> {
     }
     /// Only scalar addresses leave this view. They are observations, not origin
     /// receipts; equal bytes or addresses alone never establish provenance.
+    pub fn automation(&self) -> &'a PreparedParameterAutomation {
+        &self.entry.automation
+    }
     pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
         self.entry
             .runtime
@@ -574,7 +692,8 @@ impl NativeRuntimeEntryStorage<'_> {
             .is_some_and(|(a, b)| a.as_any().is::<T>() && b.as_any().is::<T>())
     }
     pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
-        self.entry.owner == prepared.owner
+        self.entry.automation == prepared.automation
+            && self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
             && self.entry.sample_rate == prepared.sample_rate
@@ -652,7 +771,19 @@ impl NativeRuntimeChain {
             .map_err(|_| DeviceContractError::RuntimeAllocation)?;
         let mut declared_pair_bytes = 0_usize;
         let mut stateful_count = 0_usize;
+        let mut automation_bytes = 0usize;
         for instance in instances {
+            automation_bytes = automation_bytes
+                .checked_add(
+                    instance
+                        .automation
+                        .storage_bytes()
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?,
+                )
+                .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+            if automation_bytes > MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2 {
+                return Err(DeviceContractError::RuntimeBudgetExceeded);
+            }
             if let Some(configuration) = &instance.configuration {
                 configuration.require_asset_free_processing()?;
             }
@@ -680,7 +811,9 @@ impl NativeRuntimeChain {
                         .checked_add(pair)
                         .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
                     if stateful_count > MAX_STATEFUL_PROCESSORS
-                        || declared_pair_bytes > MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2
+                        || declared_pair_bytes
+                            .checked_add(automation_bytes)
+                            .is_none_or(|bytes| bytes > MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2)
                     {
                         return Err(DeviceContractError::RuntimeBudgetExceeded);
                     }
@@ -703,8 +836,34 @@ impl NativeRuntimeChain {
             {
                 return Err(DeviceContractError::ForeignProcessingUnavailable);
             }
+            if instance.automation.has_host_targets()
+                && (matches!(
+                    instance.definition,
+                    Some(PreparedProcessorFactory::Foreign(_))
+                ) || instance.configuration.is_none())
+            {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
+            for &parameter in instance.automation.parameter_ids() {
+                if instance.definition.as_ref().is_none_or(|factory| {
+                    !factory.supports_parameter_automation(parameter)
+                        || factory.parameter_automation_descriptor(parameter)
+                            != instance.automation.descriptor(parameter)
+                }) || !runtime.supports_parameter_automation(parameter)
+                {
+                    return Err(DeviceContractError::UnsupportedProcessingClass);
+                }
+            }
             entries.push(RuntimeEntry {
+                automation: instance.automation,
+                automation_frozen: false,
+                committed_host_gains: instance.configuration.as_ref().map_or([1.0; 2], |state| {
+                    [state.input_gain_linear(), state.output_gain_linear()]
+                }),
+                scratch_host_gains: instance.configuration.as_ref().map_or([1.0; 2], |state| {
+                    [state.input_gain_linear(), state.output_gain_linear()]
+                }),
                 meter: instance.meter,
                 metering: false,
                 input_gain: instance
@@ -776,7 +935,10 @@ impl NativeRuntimeChain {
                     .capacity()
                     .checked_mul(std::mem::size_of::<RuntimeEntry>())?,
             )?
-            .checked_add(self.declared_pair_bytes)
+            .checked_add(self.declared_pair_bytes)?
+            .checked_add(self.entries.iter().try_fold(0usize, |sum, entry| {
+                sum.checked_add(entry.automation.storage_bytes()?)
+            })?)
     }
 
     /// Declared payload preflight estimate for building a chain from instances.
@@ -808,7 +970,10 @@ impl NativeRuntimeChain {
                     .map_or(Some(0), PreparedProcessorFactory::declared_pair_bytes)?,
             )
         })?;
-        Self::preflight_bytes(instances.len(), payloads)
+        let programs = instances.iter().try_fold(0usize, |sum, instance| {
+            sum.checked_add(instance.automation.storage_bytes()?)
+        })?;
+        Self::preflight_bytes(instances.len(), payloads)?.checked_add(programs)
     }
     fn preflight_bytes(count: usize, payloads: usize) -> Option<usize> {
         std::mem::size_of::<Self>()
@@ -821,7 +986,9 @@ impl NativeRuntimeChain {
     }
 
     pub fn has_stateful_processors(&self) -> bool {
-        self.entries.iter().any(|entry| entry.runtime.is_stateful())
+        self.entries
+            .iter()
+            .any(|entry| entry.runtime.is_stateful() || !entry.automation.is_empty())
     }
 
     /// Preflight and apply a transient audition to the exact current processor
@@ -973,6 +1140,7 @@ impl NativeRuntimeChain {
                         || matches!((&left.runtime, &right.runtime),
                             (RuntimeOwnership::Foreign(left), RuntimeOwnership::Foreign(right))
                                 if left.prepared == right.prepared))
+                    && left.automation == right.automation
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
                         (Some(left), Some(right)) => {
@@ -1012,7 +1180,9 @@ impl NativeRuntimeChain {
                         .runtime
                         .foreign_configuration_matches(&old.runtime)
                     && candidate.bypassed == old.bypassed
-                    && candidate.matrix == old.matrix;
+                    && (candidate.matrix == old.matrix
+                        || ((!candidate.automation.is_empty() || !old.automation.is_empty())
+                            && candidate.runtime.can_retarget_from(&old.runtime)));
                 if !stable_processing_identity {
                     return false;
                 }
@@ -1129,6 +1299,29 @@ impl NativeRuntimeChain {
         previous: &Self,
         excluded_old_range: std::ops::Range<usize>,
     ) -> bool {
+        self.can_inherit_preflight(previous, excluded_old_range, false)
+    }
+
+    /// Preflight a completed foreign suffix without retaining its old endpoint.
+    /// The range is only a hint: each excluded entry must be an actual foreign
+    /// runtime whose committed provider observation is quiescent. Speculative
+    /// silence, owned DSP and incompatible nonforeign histories remain subject
+    /// to the ordinary inheritance checks. This grants no host resource return
+    /// or native source/admission authority.
+    pub fn can_inherit_with_completed_foreign_range(
+        &self,
+        previous: &Self,
+        completed_old_range: std::ops::Range<usize>,
+    ) -> bool {
+        self.can_inherit_preflight(previous, completed_old_range, true)
+    }
+
+    fn can_inherit_preflight(
+        &self,
+        previous: &Self,
+        excluded_old_range: std::ops::Range<usize>,
+        completed_foreign_only: bool,
+    ) -> bool {
         if excluded_old_range.start > excluded_old_range.end
             || excluded_old_range.end > previous.entries.len()
         {
@@ -1143,7 +1336,11 @@ impl NativeRuntimeChain {
             }) else {
                 return true;
             };
-            excluded_old_range.contains(&index) || entry.runtime.can_inherit_from(&old.runtime)
+            (excluded_old_range.contains(&index)
+                && (!completed_foreign_only
+                    || (matches!(&old.runtime, RuntimeOwnership::Foreign(_))
+                        && old.runtime.committed_is_quiescent())))
+                || entry.runtime.can_inherit_from(&old.runtime)
         })
     }
     fn same_runtime_identity(a: &RuntimeEntry, b: &RuntimeEntry) -> bool {
@@ -1233,6 +1430,7 @@ impl NativeRuntimeChain {
     /// history and all storage stay with this chain until control retirement.
     pub fn begin_output_tail(&mut self) {
         for entry in &mut self.entries {
+            entry.automation_frozen = true;
             entry.runtime.begin_output_tail();
         }
     }
@@ -1240,13 +1438,14 @@ impl NativeRuntimeChain {
     /// Start a transactional block by copying committed histories into twins.
     pub fn begin_block(&mut self) {
         for entry in &mut self.entries {
+            entry.scratch_host_gains = entry.committed_host_gains;
             entry.runtime.begin();
         }
     }
 
     /// Process the summed track signal through all registered stateful entries.
     pub fn process_block(&mut self, frames: &mut [StereoFrame]) -> Result<(), DeviceContractError> {
-        Self::process_entries(&mut self.entries, frames, None)
+        Self::process_entries(&mut self.entries, frames, None, None)
     }
 
     /// Process the full chain while observing each entry's output in order.
@@ -1259,7 +1458,14 @@ impl NativeRuntimeChain {
         frame_offset: usize,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
-        Self::process_entries_observed(&mut self.entries, frames, frame_offset, None, observer)
+        Self::process_entries_observed(
+            &mut self.entries,
+            frames,
+            frame_offset,
+            None,
+            None,
+            observer,
+        )
     }
 
     /// Process a control-prevalidated effect segment without ending the
@@ -1270,23 +1476,29 @@ impl NativeRuntimeChain {
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
     ) -> Result<(), DeviceContractError> {
-        self.process_range_with_clock(range, frames, None)
+        self.process_range_with_clock(range, frames, None, None)
     }
 
-    /// Process a segment with the compensated content-origin clock. A host
-    /// processing entries with different arrivals must call one entry at a time
-    /// and supply each input's origin clock; this method does not shift clocks.
+    /// Process a segment with explicit content origins for both host stages.
+    /// `clock` describes entering content: provider controls and host input gain
+    /// use it. `output_clock` describes emitted content after each processor's
+    /// own algorithmic latency and drives host output gain. Each unavailable
+    /// origin remains independently None; neither stage borrows the other's clock.
+    /// The clocks must describe every entry in the range. Different arrivals
+    /// require single-entry calls; zero-latency ranges explicitly reuse a clock.
+    /// This method never shifts clocks or grants foreign automation support.
     pub fn process_range_with_clock(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         let entries = self
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries(entries, frames, clock)?;
+        Self::process_entries(entries, frames, clock, output_clock)?;
         Ok(())
     }
 
@@ -1301,23 +1513,33 @@ impl NativeRuntimeChain {
         frame_offset: usize,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
-        self.process_range_observed_with_clock(range, frames, frame_offset, None, observer)
+        self.process_range_observed_with_clock(range, frames, frame_offset, None, None, observer)
     }
 
     /// Clock-aware segment processing with the same borrowed post-node tap.
+    /// Stage origins follow `process_range_with_clock`; output observation does
+    /// not change which content origin drives provider/input or output controls.
     pub fn process_range_observed_with_clock(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
         let entries = self
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries_observed(entries, frames, frame_offset, clock, observer)?;
+        Self::process_entries_observed(
+            entries,
+            frames,
+            frame_offset,
+            clock,
+            output_clock,
+            observer,
+        )?;
         Ok(())
     }
 
@@ -1336,7 +1558,14 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
-        Self::process_entries_tapped(&mut self.entries, frames, frame_offset, None, observer)
+        Self::process_entries_tapped(
+            &mut self.entries,
+            frames,
+            frame_offset,
+            None,
+            None,
+            observer,
+        )
     }
 
     /// Process a prepared range with input/output taps and no content clock.
@@ -1354,17 +1583,19 @@ impl NativeRuntimeChain {
             &[StereoFrame],
         ),
     ) -> Result<(), DeviceContractError> {
-        self.process_range_tapped_with_clock(range, frames, frame_offset, None, observer)
+        self.process_range_tapped_with_clock(range, frames, frame_offset, None, None, observer)
     }
 
     /// Clock-aware paired taps. Input is before host trim, Output after the
     /// entire entry. Both phases have the same identity, offset and frame count.
+    /// The independent stage-origin contract is `process_range_with_clock`.
     pub fn process_range_tapped_with_clock(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -1378,17 +1609,20 @@ impl NativeRuntimeChain {
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries_tapped(entries, frames, frame_offset, clock, observer)?;
+        Self::process_entries_tapped(entries, frames, frame_offset, clock, output_clock, observer)?;
         Ok(())
     }
 
     /// Process a segment without observation through the same borrowed path.
+    /// Stage origins follow `process_range_with_clock`; foreign DSP continues
+    /// to receive only its entering-content clock and existing host trim law.
     pub fn process_range_with_foreign(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), DeviceContractError> {
         self.process_range_tapped_with_foreign(
@@ -1396,6 +1630,7 @@ impl NativeRuntimeChain {
             frames,
             frame_offset,
             clock,
+            output_clock,
             foreign,
             &mut |_, _, _, _, _, _| {},
         )
@@ -1405,12 +1640,15 @@ impl NativeRuntimeChain {
     /// Successful processing still grants no dispatch: final host-format
     /// acceptance remains exclusively with the audio owner. On error all
     /// foreign work for this callback is revoked; owned DSP can then roll back.
+    /// Independent stage origins follow `process_range_with_clock`.
+    #[allow(clippy::too_many_arguments)] // Two explicit borrowed stage clocks and existing foreign/tap endpoints.
     pub fn process_range_tapped_with_foreign(
         &mut self,
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
@@ -1435,7 +1673,14 @@ impl NativeRuntimeChain {
                     frame_offset,
                     frames,
                 );
-                Self::process_entry_with_foreign(entry, frames, frame_offset, clock, foreign)?;
+                Self::process_entry_with_foreign(
+                    entry,
+                    frames,
+                    frame_offset,
+                    clock,
+                    output_clock,
+                    foreign,
+                )?;
                 observer(
                     entry.owner,
                     entry.device_id,
@@ -1458,6 +1703,7 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -1476,7 +1722,7 @@ impl NativeRuntimeChain {
                 frame_offset,
                 frames,
             );
-            Self::process_entry(entry, frames, clock)?;
+            Self::process_entry(entry, frames, clock, output_clock)?;
             observer(
                 entry.owner,
                 entry.device_id,
@@ -1493,9 +1739,10 @@ impl NativeRuntimeChain {
         entries: &mut [RuntimeEntry],
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         for entry in entries {
-            Self::process_entry(entry, frames, clock)?;
+            Self::process_entry(entry, frames, clock, output_clock)?;
         }
         Ok(())
     }
@@ -1505,10 +1752,11 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
         for entry in entries {
-            Self::process_entry(entry, frames, clock)?;
+            Self::process_entry(entry, frames, clock, output_clock)?;
             observer(
                 entry.owner,
                 entry.device_id,
@@ -1524,8 +1772,9 @@ impl NativeRuntimeChain {
         entry: &mut RuntimeEntry,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        Self::process_entry_with_foreign(entry, frames, 0, clock, &mut RefuseForeign)
+        Self::process_entry_with_foreign(entry, frames, 0, clock, output_clock, &mut RefuseForeign)
     }
 
     fn process_entry_with_foreign(
@@ -1533,14 +1782,12 @@ impl NativeRuntimeChain {
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), DeviceContractError> {
         let is_foreign = matches!(entry.runtime, RuntimeOwnership::Foreign(_));
-        if !entry.bypassed && !is_foreign && entry.input_gain != 1.0 {
-            for frame in frames.iter_mut() {
-                frame[0] *= entry.input_gain;
-                frame[1] *= entry.input_gain;
-            }
+        if !entry.bypassed && !is_foreign {
+            Self::apply_host_gain(entry, frames, clock, true);
         }
         if entry.metering {
             if is_foreign {
@@ -1576,7 +1823,14 @@ impl NativeRuntimeChain {
         } else if entry.bypassed {
             if entry.runtime.is_stateful() {
                 if entry.matrix.is_identity() {
-                    entry.runtime.process_bypassed_with_clock(frames, clock)?;
+                    if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
+                        let values = entry.automation.block(clock, frames.len());
+                        entry
+                            .runtime
+                            .process_automation(frames, clock, &values, true)?;
+                    } else {
+                        entry.runtime.process_bypassed_with_clock(frames, clock)?;
+                    }
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
                         let audible = *frame;
@@ -1599,13 +1853,17 @@ impl NativeRuntimeChain {
             }
         } else {
             entry.matrix.apply_block(frames);
-            entry.runtime.process_with_clock(frames, clock)?;
-        }
-        if !entry.bypassed && entry.output_gain != 1.0 {
-            for frame in frames.iter_mut() {
-                frame[0] *= entry.output_gain;
-                frame[1] *= entry.output_gain;
+            if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
+                let values = entry.automation.block(clock, frames.len());
+                entry
+                    .runtime
+                    .process_automation(frames, clock, &values, false)?;
+            } else {
+                entry.runtime.process_with_clock(frames, clock)?;
             }
+        }
+        if !entry.bypassed {
+            Self::apply_host_gain(entry, frames, output_clock, false);
         }
         if entry.metering {
             entry.meter.observe_output(frames);
@@ -1613,9 +1871,55 @@ impl NativeRuntimeChain {
         Ok(())
     }
 
+    fn apply_host_gain(
+        entry: &mut RuntimeEntry,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        input: bool,
+    ) {
+        let index = if input { 0 } else { 1 };
+        let base = if input {
+            entry.input_gain
+        } else {
+            entry.output_gain
+        };
+        let target = if input {
+            hex_lattice_contract::DeviceAutomationTarget::HostInputGain
+        } else {
+            hex_lattice_contract::DeviceAutomationTarget::HostOutputGain
+        };
+        if entry.automation_frozen || !entry.automation.has_host_target(target) {
+            let gain = if entry.automation_frozen {
+                entry.committed_host_gains[index]
+            } else {
+                base
+            };
+            if gain != 1.0 {
+                for frame in frames.iter_mut() {
+                    frame[0] *= gain;
+                    frame[1] *= gain;
+                }
+            }
+            if !frames.is_empty() {
+                entry.scratch_host_gains[index] = gain;
+            }
+            return;
+        }
+        let values = entry.automation.block(clock, frames.len());
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let gain = values.host_gain_at(target, offset).unwrap_or(base);
+            if gain != 1.0 {
+                frame[0] *= gain;
+                frame[1] *= gain;
+            }
+            entry.scratch_host_gains[index] = gain;
+        }
+    }
+
     /// Commit histories after all render chunks and source reads succeeded.
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
+            entry.committed_host_gains = entry.scratch_host_gains;
             entry.runtime.commit();
             let reading = entry.runtime.take_dynamics_meter();
             if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
@@ -1626,6 +1930,7 @@ impl NativeRuntimeChain {
     /// Restore every speculative effect after a later host render stage refuses.
     pub fn rollback_block(&mut self) {
         for entry in &mut self.entries {
+            entry.scratch_host_gains = entry.committed_host_gains;
             entry.runtime.rollback();
         }
     }
@@ -1633,6 +1938,8 @@ impl NativeRuntimeChain {
     /// Reset both committed and speculative state at a hard discontinuity.
     pub fn reset(&mut self) {
         for entry in &mut self.entries {
+            entry.committed_host_gains = [entry.input_gain, entry.output_gain];
+            entry.scratch_host_gains = entry.committed_host_gains;
             entry.runtime.reset();
         }
     }
@@ -1834,6 +2141,60 @@ impl<'a> NativeDeviceRegistry<'a> {
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
         self.prepare_runtime_device_for(Some(identity), state, context)
+    }
+    pub fn prepare_runtime_instance_with_automation(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+        parameters: &[hex_lattice_contract::ParameterId],
+    ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        if parameters.is_empty() {
+            return self.prepare_runtime_instance(identity, state, context);
+        }
+        if parameters.len() > parameter_automation::MAX_AUTOMATION_LANES
+            || parameters.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        state.require_asset_free_processing()?;
+        context.validate_for(state)?;
+        let definition = self
+            .definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
+        for &parameter in parameters {
+            parameter.validate()?;
+            if !definition.supports_parameter_automation(&current, parameter)?
+                || !hex_lattice_contract::validated_parameter_semantics(
+                    definition, &current, parameter,
+                )?
+                .is_some_and(|semantics| {
+                    semantics.access == hex_lattice_contract::ParameterAccess::ReadWrite
+                        && semantics.automation
+                            == hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+                })
+            {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
+        }
+        let result = definition
+            .prepare_automated_runtime_instance(identity, &current, context, parameters)?;
+        if !result.matrix.is_identity()
+            || result.processor.as_ref().is_none_or(|factory| {
+                parameters
+                    .iter()
+                    .any(|id| !factory.supports_parameter_automation(*id))
+            })
+        {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        Ok(result)
     }
     fn prepare_runtime_device_for(
         &self,

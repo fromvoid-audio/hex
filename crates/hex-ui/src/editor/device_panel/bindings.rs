@@ -31,6 +31,21 @@ pub(super) struct BindingPresentation {
     pub(super) compact_toggle_width: f32,
 }
 
+// This is the sole edge translating view-only host control keys into neutral
+// authored targets. Reserved widget IDs never enter provider/model persistence.
+fn automation_target(
+    parameter: hex_lattice_contract::ParameterId,
+) -> hex_lattice_contract::DeviceAutomationTarget {
+    use hex_lattice_contract::DeviceAutomationTarget as Target;
+    if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
+        Target::HostInputGain
+    } else if parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
+        Target::HostOutputGain
+    } else {
+        Target::Parameter(parameter)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct CapturedBinding {
     generation: u64,
@@ -186,6 +201,8 @@ pub(super) enum ControlPresentation {
     MicroDial,
     InlineValue,
     DeviceMeters,
+    MeterFader,
+    ChoiceDial,
     CompactButton,
     CompactSelector,
     CompactWideSelector,
@@ -337,7 +354,7 @@ pub(super) fn render_parameter(
             })
             .unwrap_or(false)
     });
-    match view.device_panel.controls.get(&key) {
+    let rendered = match view.device_panel.controls.get(&key) {
         Some(ParameterControl::Float { entity, .. }) => {
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
@@ -395,6 +412,7 @@ pub(super) fn render_parameter(
                     hex_widgets::INLINE_VALUE_HEIGHT,
                 ),
                 ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
+                ControlPresentation::MeterFader => (60.0, 154.0),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -497,6 +515,7 @@ pub(super) fn render_parameter(
                 });
             }
             let (width, height) = match presentation {
+                ControlPresentation::ChoiceDial => (64.0, 52.0),
                 ControlPresentation::CompactSelector => (64.0, 14.0),
                 ControlPresentation::CompactWideSelector => (120.0, 14.0),
                 ControlPresentation::CompactSegments { columns } => (
@@ -508,7 +527,34 @@ pub(super) fn render_parameter(
             div().w(px(width)).h(px(height)).child(entity.clone())
         }
         None => unsupported_parameter(descriptor.label),
-    }
+    };
+    let menu_binding = CapturedBinding {
+        generation,
+        owner: view.device_panel.owner,
+        key,
+        identity,
+        descriptor,
+    };
+    rendered.capture_any_mouse_down(cx.listener(
+        move |view, event: &gpui::MouseDownEvent, window, cx| {
+            if event.button == gpui::MouseButton::Right
+                && menu_binding.current(view, false)
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision)
+                && view.open_parameter_automation_menu(
+                    event.position,
+                    key.device,
+                    automation_target(key.parameter),
+                    window,
+                    cx,
+                )
+            {
+                cx.stop_propagation();
+            }
+        },
+    ))
 }
 
 fn create_parameter_control(
@@ -582,6 +628,7 @@ fn create_parameter_control(
                 ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
                 ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
                 ControlPresentation::DeviceMeters => NumericControlPresentation::DeviceMeters,
+                ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
                 _ => NumericControlPresentation::HorizontalSlider,
             };
             let config = NumericControlConfig::new(
@@ -629,6 +676,12 @@ fn create_parameter_control(
                     }
                     if !is_current(view) {
                         return;
+                    }
+                    if event.phase == NumericEventPhase::Begin {
+                        view.remember_automation_parameter(
+                            key.device,
+                            automation_target(key.parameter),
+                        );
                     }
                     let value = ParameterValue::Float(event.value as f32);
                     if let Err(error) = dispatch_bound_numeric_gesture(
@@ -704,6 +757,7 @@ fn create_parameter_control(
                     }
                     return;
                 }
+                view.remember_automation_parameter(key.device, automation_target(key.parameter));
                 let value = ParameterValue::Bool(event.checked);
                 view.device_panel.pending_values.insert(target, value);
                 if !view.enqueue_device_barrier(Request::SetDeviceParameter {
@@ -745,6 +799,8 @@ fn create_parameter_control(
                 ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
             ) {
                 SelectorAppearance::CompactSelector
+            } else if presentation == ControlPresentation::ChoiceDial {
+                SelectorAppearance::CompactDial
             } else {
                 SelectorAppearance::Standard
             };
@@ -770,6 +826,7 @@ fn create_parameter_control(
                     if !finalize_controls(view, cx) {
                         return;
                     }
+                    view.remember_automation_parameter(key.device, automation_target(key.parameter));
                     let value = ParameterValue::Choice(value);
                     view.device_panel.pending_values.insert(target, value);
                     if !view.enqueue_device_barrier(Request::SetDeviceParameter {
