@@ -179,6 +179,17 @@ impl<K: Copy + PartialEq> RectangleCapture<K> {
     }
 }
 
+/// Standard rectangle border inset in logical pixels. Narrow intervals keep
+/// their authored width; native child hit regions use this same inset rather
+/// than assuming that every surface has a one-point border.
+pub fn rectangle_border_width(pixel_width: f32) -> f32 {
+    if pixel_width.is_finite() && pixel_width >= 2.0 {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// Display-only composition. Fractions are projected by the owner; invalid
 /// geometry is hidden instead of emitting nonfinite layout values. Children,
 /// styling, selection paint and held/released preview content remain composable.
@@ -199,7 +210,10 @@ pub fn rectangle_surface(left: f32, width: f32, pixel_width: f32) -> Div {
         .overflow_hidden()
         .left(relative(if valid { left } else { 0.0 }))
         .w(relative(if valid { width } else { 0.0 }))
-        .when(valid && pixel_width >= 2.0, |surface| surface.border_1())
+        .when(
+            valid && rectangle_border_width(pixel_width) > 0.0,
+            |surface| surface.border_1(),
+        )
         .when(!valid, |this| this.invisible())
 }
 
@@ -270,6 +284,8 @@ pub fn rectangle_surface_pixels(left: f32, top: f32, width: f32, height: f32) ->
         .top(px(if valid { top } else { 0.0 }))
         .w(px(if valid { width } else { 0.0 }))
         .h(px(if valid { height.max(3.0) } else { 0.0 }))
-        .when(valid && width >= 2.0, |surface| surface.border_1())
+        .when(valid && rectangle_border_width(width) > 0.0, |surface| {
+            surface.border_1()
+        })
         .when(!valid, |this| this.invisible())
 }

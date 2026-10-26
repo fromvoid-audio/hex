@@ -957,6 +957,43 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                 );
                 editor.read_with(&visual, |v, _| assert!(v.clip_is_selected(audio)));
             }
+            if offset == 0 && width == 1280.0 {
+                for (selector, clip) in [(audio_selector, audio), (midi_selector, midi)] {
+                    let bounds = visual.debug_bounds(selector).unwrap();
+                    let move_bounds = visual
+                        .debug_bounds(Box::leak(
+                            format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+                        ))
+                        .unwrap();
+                    assert!(
+                        move_bounds.size.width >= px(0.5),
+                        "narrow clip must retain a visible move body: clip={bounds:?}, body={move_bounds:?}"
+                    );
+                    let down = point(bounds.center().x, bounds.top() + px(4.0));
+                    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+                    visual.simulate_mouse_move(
+                        point(down.x + px(12.0), down.y),
+                        MouseButton::Left,
+                        Modifiers::default(),
+                    );
+                    visual.run_until_parked();
+                    editor.read_with(&visual, |v, _| {
+                        assert_eq!(
+                            v.active_clip_drag.as_ref().map(|drag| drag.clip),
+                            Some(clip)
+                        );
+                        assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+                    });
+                    visual.simulate_keystrokes("escape");
+                    visual.simulate_mouse_up(
+                        point(down.x + px(12.0), down.y),
+                        MouseButton::Left,
+                        Modifiers::default(),
+                    );
+                    pump(&editor, &mut visual);
+                    assert_eq!(visual.debug_bounds(selector), Some(bounds));
+                }
+            }
             editor.read_with(&visual, |v, _| {
                 for track in v.state.as_ref().unwrap().project.tracks() {
                     let measured = v.drag_lanes.get(&track.id()).unwrap();

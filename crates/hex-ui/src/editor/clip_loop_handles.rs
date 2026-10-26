@@ -162,19 +162,20 @@ pub(in crate::editor) fn midi_controls(
 }
 
 pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>) -> Div {
+    let border = hex_widgets::rectangle_border_width(width);
     let Some(control) = control else {
         return hex_widgets::rectangle_edge(
             super::super::drag::rectangle_part(Some(edge)),
             handle_width(width),
-            -1.0,
+            -border,
         );
     };
     // Absolute children start inside border_1; the shared hit zones use outer
     // clip coordinates, so remove that border inset exactly once here.
     div()
         .absolute()
-        .left(px(control.left - 1.0))
-        .top(px(control.top - 1.0))
+        .left(px(control.left - border))
+        .top(px(control.top - border))
         .w(px(WIDTH))
         .h(px(control.height))
         .cursor(CursorStyle::Loop)

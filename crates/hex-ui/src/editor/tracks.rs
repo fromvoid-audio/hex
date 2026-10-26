@@ -1829,6 +1829,7 @@ impl EditorView {
                 ))
             });
             if let Some((payload, lane)) = midi_drag_payload {
+                let border = hex_widgets::rectangle_border_width(pixel_width);
                 let move_surface = self
                     .clip_drag_surface(
                         payload,
@@ -1841,16 +1842,18 @@ impl EditorView {
                         clip.id(),
                         cx,
                     )
-                    .left(px(if !trim_handles.is_empty() && visible_start == start {
-                        super::trim::handle_width(pixel_width)
-                    } else {
-                        0.0
-                    }))
-                    .right(px(if !trim_handles.is_empty() && visible_end == end {
-                        super::trim::handle_width(pixel_width)
-                    } else {
-                        0.0
-                    }));
+                    .left(px(-border
+                        + if !trim_handles.is_empty() && visible_start == start {
+                            super::trim::handle_width(pixel_width)
+                        } else {
+                            0.0
+                        }))
+                    .right(px(-border
+                        + if !trim_handles.is_empty() && visible_end == end {
+                            super::trim::handle_width(pixel_width)
+                        } else {
+                            0.0
+                        }));
                 midi = midi.children([move_surface]).children(trim_handles);
             }
             clip_area = clip_area.children([midi]);
@@ -2222,6 +2225,7 @@ impl EditorView {
                 }),
             );
         if let Some((payload, lane)) = drag_payload {
+            let border = hex_widgets::rectangle_border_width(clip_pixel_width);
             let move_surface = self
                 .clip_drag_surface(
                     payload,
@@ -2235,18 +2239,18 @@ impl EditorView {
                     cx,
                 )
                 // Edge strips retain trimming beside the upper-third move header.
-                .left(px(
-                    if !trim_handles.is_empty() && visible_start == clip.start() {
+                .left(px(-border
+                    + if !trim_handles.is_empty() && visible_start == clip.start() {
                         super::trim::handle_width(clip_pixel_width)
                     } else {
                         0.0
-                    },
-                ))
-                .right(px(if !trim_handles.is_empty() && visible_end == clip_end {
-                    super::trim::handle_width(clip_pixel_width)
-                } else {
-                    0.0
-                }));
+                    }))
+                .right(px(-border
+                    + if !trim_handles.is_empty() && visible_end == clip_end {
+                        super::trim::handle_width(clip_pixel_width)
+                    } else {
+                        0.0
+                    }));
             content = content.children([move_surface]).children(trim_handles);
         }
         if !active_trim_preview
@@ -2518,7 +2522,9 @@ impl EditorView {
         let source_generation = payload.project_generation;
         let mouse_down_payload = payload.clone();
         let mouse_up_payload = payload.clone();
-        hex_widgets::rectangle_body(-1.0, super::time_selection::header_hit_height(lane.height))
+        let border = hex_widgets::rectangle_border_width(element_width);
+        let header_height = super::time_selection::header_hit_height(lane.height);
+        hex_widgets::rectangle_body(-border, header_height)
             .id(("clip-move", clip_id.value()))
             .debug_selector(|| format!("clip-drag-surface-{}", clip_id.value()))
             .on_click(
