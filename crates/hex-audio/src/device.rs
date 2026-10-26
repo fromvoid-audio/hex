@@ -1154,4 +1154,4 @@ mod midi_recording_tests;
 
 #[cfg(test)]
 #[path = "device_native_parameter_input_tests.rs"]
-mod native_parameter_input_tests;
+pub(crate) mod native_parameter_input_tests;
