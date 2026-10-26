@@ -203,6 +203,7 @@ fn snapshot_stale_domain_and_parameter_refusal_preserves_overlay() {
                 .handle(
                     &mut session,
                     GestureRequest::ChangeSnapshot {
+                        touched_parameters: TouchedParameters::default(),
                         key,
                         sequence,
                         snapshot
