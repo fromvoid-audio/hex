@@ -164,8 +164,7 @@ pub(super) fn render(
         .map(|(_, frame)| frame);
     let hit_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
     let measured_bounds = Rc::clone(&hit_bounds);
-    let move_entity = cx.entity();
-    let up_entity = cx.entity();
+    let pointer_entity = cx.entity();
     let waveform = div()
         .relative()
         .w_full()
@@ -186,7 +185,7 @@ pub(super) fn render(
                 if !bounds.contains(&event.position) {
                     return;
                 }
-                if boundary::begin(view, target, bounds, event.position, cx) {
+                if boundary::begin(view, target, bounds, event.position, window, cx) {
                     view.focus.focus(window);
                     window.prevent_default();
                     cx.stop_propagation();
@@ -293,29 +292,13 @@ pub(super) fn render(
                 move |bounds, _, _| {
                     measured_bounds.set(Some(bounds));
                 },
-                move |bounds, _, window, _| {
-                    let entity = move_entity.clone();
-                    window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
-                        if phase.capture() {
-                            entity.update(cx, |view, cx| {
-                                if boundary::move_pointer(view, bounds, event, cx) {
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    });
-                    let entity = up_entity.clone();
-                    window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
-                        if phase.capture() && event.button == MouseButton::Left {
-                            entity.update(cx, |view, cx| {
-                                if boundary::release(view, bounds, event.position, cx) {
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    });
+                move |bounds, _, window, cx| {
+                    boundary::renew(
+                        pointer_entity.read(cx),
+                        bounds,
+                        pointer_entity.entity_id(),
+                        window,
+                    );
                 },
             )
             .absolute()
