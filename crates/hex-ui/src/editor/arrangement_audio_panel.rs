@@ -141,7 +141,17 @@ pub(super) fn view(
         controls = controls.child(super::musical_audio_controls::warp_header(
             view, clip_id, cx,
         ));
-        controls = controls.child(controls::number(view, window, Field::Pitch, "pitch", cx));
+        let pitch = controls::number(view, window, Field::Pitch, "pitch", cx);
+        let gain = controls::number(view, window, Field::Gain, "gain", cx);
+        controls = controls.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .flex_shrink_0()
+                .children([pitch])
+                .child(gain.flex_1().min_w_0()),
+        );
     }
     for (field, label) in [
         (Field::Position, "pos"),
@@ -151,6 +161,9 @@ pub(super) fn view(
         (Field::SourceEnd, "src end"),
         (Field::Gain, "gain"),
     ] {
+        if field == Field::Gain && !grouped_audio {
+            continue; // Already beside the pitch dial; grouped sources retain their gain row.
+        }
         if !grouped_audio || matches!(field, Field::Position | Field::Length | Field::Gain) {
             controls = controls.child(controls::number(view, window, field, label, cx));
         }
