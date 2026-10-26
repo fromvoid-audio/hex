@@ -689,7 +689,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn unavailable_output_discards_uncommitted_take_and_releases_edit_fence(
+    fn unavailable_output_retains_captured_take_until_explicit_discard(
         cx: &mut TestAppContext,
     ) {
         let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
@@ -711,6 +711,15 @@ mod tests {
             view.gain_recorder.generation = view.project_generation;
             view.gain_recorder.revision = revision;
             view.gain_recorder.serial = 7;
+            view.gain_recorder.target = Some(Target {
+                track_id: track.value(), project_generation: view.project_generation,
+                canonical_revision: revision, audio_revision: 1, recording_epoch: 1,
+                transport_epoch: 1, gesture_serial: 7, sample_rate: 48_000,
+                view.discard_gain_take();
+            assert!(!view.gain_recorder.blocks_edits());
+            assert!(view.gain_recorder.events.is_empty());
+            assert_eq!(view.gain_recorder.serial, 7);
+        });
             view.gain_recorder.pending_gain = Some(1.5);
             view.gain_recorder.events.push(AppliedGain {
                 sequence: 1,
@@ -721,10 +730,11 @@ mod tests {
             });
             assert!(view.gain_recorder.blocks_edits());
             assert!(view.tick_gain_recording());
-            assert!(!view.gain_recorder.blocks_edits());
+            assert!(view.gain_recorder.blocks_edits());
             assert!(view.gain_recorder.pending_gain.is_none());
-            assert!(view.gain_recorder.events.is_empty());
-            assert!(view.gain_recorder.track.is_none());
+            assert_eq!(view.gain_recorder.events.len(), 1);
+            assert!(!view.gain_recorder.sealed.as_ref().unwrap().complete());
+            assert!(!view.gain_take_retry_available());
             assert_eq!(
                 view.gain_recorder.serial, 7,
                 "discard never reuses gesture identity"
@@ -735,7 +745,7 @@ mod tests {
                 view.error
                     .as_deref()
                     .unwrap()
-                    .contains("original lane retained")
+                    .contains("incomplete gain take retained")
             );
         });
     }
