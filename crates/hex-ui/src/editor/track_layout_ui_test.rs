@@ -356,7 +356,7 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     drag(&mut visual, from, point(from.x - px(64.0), from.y));
     assert_eq!(
         visual.debug_bounds("main-track-header").unwrap().size.width,
-        px(TRACK_HEADER_WIDTH + 64.0)
+        original_width + px(64.0)
     );
     visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
