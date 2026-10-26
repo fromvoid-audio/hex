@@ -30,7 +30,8 @@ pub(super) fn warp_command(
     }
 }
 /// A numeric pitch draft preserves the former relative selected-clip semantics.
-/// The existing action owner validates/prepares audio; the UI stores no pitch model.
+/// Project/session retain canonical validation and audio preparation; this UI
+/// constructs their existing commands without owning a separate pitch model.
 pub(super) fn pitch_command(
     project: &hex_project::Project,
     clip: ClipId,
