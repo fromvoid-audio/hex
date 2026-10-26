@@ -373,6 +373,18 @@ recorded track-gain touch spans are displayed but read-only: leave automation
 view and use the track's gain editor to clear the lane before editing its base
 curve.
 
+## audio clip pitch
+
+for an ordinary audio clip, drag the **pitch** dial beside the warp controls.
+its readout is in cents; 100 cents is one semitone. click the readout to type a
+value between -4800 and +4800 cents. **up/down** steps by 100 cents;
+**shift+up/down** steps by one cent. double-click the dial to reset to zero.
+**escape** cancels a held draft; one undo restores a completed change.
+
+with several clips selected, pitch changes remain relative to each clip's
+existing value. in **re-pitch** mode the dial is unavailable: tempo determines
+the audible pitch while the stored transpose value is retained.
+
 ## clip loop resizing
 
 hover the lower part of a clip's right edge to show the circular-arrow cursor, then drag
