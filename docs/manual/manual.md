@@ -277,7 +277,7 @@ audio shares its events, pitch and warp edits; linked midi shares its notes.
 each copy keeps its own arrangement position, trims, loop window and fades.
 
 press **i** or choose **make unique** from the clip menu to detach the selected
-copies. their current content and sound stay unchanged. **apply to parent** in
+copies. their current content and sound stay unchanged. **apply settings to aliases** in
 the clip menu copies the picked alias's local settings to every member of its
 group, preserving each arrangement position. there is no privileged original:
 removing the first clip leaves the other aliases intact. these edits support
