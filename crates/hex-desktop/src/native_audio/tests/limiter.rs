@@ -150,16 +150,30 @@ fn first_track_limiter_after_play_or_pause_publishes_and_parameter_edits_are_aud
         for frame in h.render() {
             assert!(frame.into_iter().all(|v| v > 0.025 && v < 0.04));
         }
-        h.run(Request::Undo);
+        let undone = h.run(Request::Undo);
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Effect,
+                undone.state.project.device(device).unwrap().state(),
+                ParameterId::from_static(1),
+            )
+            .unwrap(),
+            ParameterValue::Float(0.0)
+        );
         (applied, _) = h.applied(applied);
-        for _ in 0..16 {
+        // The exponential input ramp and lookahead precede this steady-state oracle.
+        for _ in 0..100 {
             h.render();
         }
+        let undo_output = h.render();
         assert!(
-            h.render()
+            undo_output
                 .iter()
                 .flatten()
-                .all(|v| (*v - ceiling).abs() < 1e-5)
+                .all(|v| (*v - ceiling).abs() < 1e-5),
+            "undo ceiling {ceiling}; first={:?}, last={:?}",
+            undo_output.first(),
+            undo_output.last()
         );
         h.run(Request::Redo);
         h.applied(applied);
@@ -169,4 +183,60 @@ fn first_track_limiter_after_play_or_pause_publishes_and_parameter_edits_are_aud
         assert!(h.render().iter().flatten().all(|v| *v > 0.025 && *v < 0.04));
         assert!(h.publication_refusals.is_empty());
     }
+}
+
+#[test]
+fn first_track_limiter_keeps_active_reverb_prefix_through_native_publication() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(65_536);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    let track = imported.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.reverb")),
+        before: None,
+    });
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..16 {
+        h.render();
+    }
+    let added = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    });
+    let device = added.state.project.track(track).unwrap().devices()[1].id();
+    (applied, _) = h.applied(applied);
+    h.run(Request::SetDeviceParameter {
+        device,
+        parameter: ParameterId::from_static(2),
+        value: ParameterValue::Float(-18.0),
+    });
+    h.applied(applied);
+    for _ in 0..16 {
+        h.render();
+    }
+    let frames = h.render();
+    let ceiling = 10.0_f32.powf(-18.0 / 20.0);
+    assert!(
+        frames
+            .iter()
+            .flatten()
+            .all(|sample| sample.abs() <= ceiling + 1e-6)
+    );
+    assert!(frames.iter().flatten().any(|sample| sample.abs() > 0.02));
+    assert!(h.publication_refusals.is_empty());
+    // Every h.render also measures total and signed-net callback allocations/bytes.
 }
