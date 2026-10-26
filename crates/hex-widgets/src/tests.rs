@@ -1233,6 +1233,25 @@ fn owner_finalization_returns_typed_value_without_emitting_protocol_events(
     );
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    let passive = control
+        .update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx))
+        .unwrap()
+        .unwrap();
+    assert!(
+        !passive.explicit_edit,
+        "passive owner finalization is not a touch"
+    );
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0");
+    let same = control
+        .update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(same.previous, same.value);
+    assert!(
+        same.explicit_edit,
+        "modified equal-value text retains edit intent"
+    );
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("0.625");
     let finalized = control.update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx));
@@ -1240,6 +1259,7 @@ fn owner_finalization_returns_typed_value_without_emitting_protocol_events(
         .expect("valid draft prepares")
         .expect("draft value");
     assert_eq!((finalized.previous, finalized.value), (0.0, 0.625));
+    assert!(finalized.explicit_edit);
     assert!(
         phases.borrow().is_empty(),
         "owner emits protocol exactly once"

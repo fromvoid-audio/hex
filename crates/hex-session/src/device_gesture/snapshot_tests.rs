@@ -79,6 +79,7 @@ fn snapshot_atomic_preview_commit_cancel_noop_and_history() {
     let change = machine.handle(
         &mut session,
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 1,
             snapshot: values(1500.0, 6.0),
@@ -121,6 +122,8 @@ fn snapshot_atomic_preview_commit_cancel_noop_and_history() {
             .handle(
                 &mut session,
                 GestureRequest::CommitSnapshot {
+                    touched_parameters: crate::device_gesture::TouchedParameters::default(),
+                    manual_edit: false,
                     key,
                     sequence: 1,
                     snapshot: values(1500.0, 6.0)
@@ -243,6 +246,7 @@ fn snapshot_save_finalization_rebases_latest_unrelated_state() {
             .handle(
                 &mut session,
                 GestureRequest::ChangeSnapshot {
+                    touched_parameters: crate::device_gesture::TouchedParameters::default(),
                     key,
                     sequence: 1,
                     snapshot: values(1500.0, 6.0)
@@ -349,6 +353,7 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
     let a = machine.handle(
         &mut session,
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 1,
             snapshot: values(1500.0, 6.0),
@@ -359,6 +364,7 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
     let b = machine.handle(
         &mut session,
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 2,
             snapshot: values(1200.0, 2.0),
@@ -372,6 +378,7 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
             .handle(
                 &mut session,
                 GestureRequest::ChangeSnapshot {
+                    touched_parameters: crate::device_gesture::TouchedParameters::default(),
                     key,
                     sequence: 1,
                     snapshot: values(1500.0, 6.0)
@@ -393,6 +400,8 @@ fn snapshot_removed_owner_and_rapid_reversal_do_not_commit_stale_values() {
             .handle(
                 &mut session,
                 GestureRequest::CommitSnapshot {
+                    touched_parameters: crate::device_gesture::TouchedParameters::default(),
+                    manual_edit: false,
                     key,
                     sequence: 3,
                     snapshot: values(1600.0, 8.0)
@@ -502,16 +511,20 @@ fn actual_harmonic_stroke_is_one_history_edit_and_hidden_partials_survive_reopen
             snapshot: spectrum(0.0),
         },
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 1,
             snapshot: spectrum(0.25),
         },
         GestureRequest::ChangeSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
             key,
             sequence: 2,
             snapshot: spectrum(0.75),
         },
         GestureRequest::CommitSnapshot {
+            touched_parameters: crate::device_gesture::TouchedParameters::default(),
+            manual_edit: false,
             key,
             sequence: 3,
             snapshot: spectrum(0.5),

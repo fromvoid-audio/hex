@@ -3201,6 +3201,7 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::DeviceAutomation { .. }
+                | Request::DeviceAutomationControl { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::TrackClipboard {
                     action: hex_session::service::TrackClipboardAction::Cut(_)

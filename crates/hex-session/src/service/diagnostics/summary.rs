@@ -473,6 +473,23 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("replace_device_automation"; ["device" => device.value(), "parameter" => parameter.value(), "points_count" => points.len()]; omitted="")
         }
+        Command::ManualDeviceEdit {
+            device,
+            state,
+            targets,
+        } => {
+            describe!("manual_device_edit"; ["device" => device.value(), "state_type" => state.type_id().as_str(), "state_payload_bytes" => state.payload().len(), "targets_count" => targets.len()]; omitted="")
+        }
+        Command::SetDeviceAutomationReadSelection {
+            device,
+            target,
+            selection,
+        } => {
+            describe!("device_automation_read_selection"; ["device" => device.value(), "target" => target, "selection" => format!("{selection:?}")]; omitted="")
+        }
+        Command::ReenableDeviceAutomation => {
+            describe!("reenable_device_automation"; []; omitted="")
+        }
         Command::ReplaceDeviceState { device, state } => {
             describe!("replace_device_state"; ["device" => device.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
         }
@@ -1301,6 +1318,13 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("device_automation"; ["project_generation" => project_generation, "revision" => revision, "device" => device.value(), "target" => target, "points_count" => points.len()]; omitted="")
         }
+        Request::DeviceAutomationControl {
+            project_generation,
+            revision,
+            edit,
+        } => {
+            describe!("device_automation_control"; ["project_generation" => project_generation, "revision" => revision, "edit" => format!("{edit:?}")]; omitted="")
+        }
         Request::DeviceGesture(value0) => {
             let mut description = describe!("device_gesture"; []; omitted="");
             description.nested("value0", self::gesture(value0));
@@ -1537,18 +1561,20 @@ pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Descript
             describe!("change_pair"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "value_first" => Parameter(&value.first), "value_second" => Parameter(&value.second)]; omitted="")
         }
         crate::device_gesture::GestureRequest::Commit {
+            manual_edit,
             key,
             sequence,
             value,
         } => {
-            describe!("commit"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "value" => Parameter(value)]; omitted="")
+            describe!("commit"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "manual_edit" => manual_edit, "value" => Parameter(value)]; omitted="")
         }
         crate::device_gesture::GestureRequest::CommitPair {
+            manual_edit,
             key,
             sequence,
             value,
         } => {
-            describe!("commit_pair"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "value_first" => Parameter(&value.first), "value_second" => Parameter(&value.second)]; omitted="")
+            describe!("commit_pair"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "manual_edit" => manual_edit, "value_first" => Parameter(&value.first), "value_second" => Parameter(&value.second)]; omitted="")
         }
         crate::device_gesture::GestureRequest::BeginSnapshot {
             key,
@@ -1558,18 +1584,21 @@ pub(super) fn gesture(value: &crate::device_gesture::GestureRequest) -> Descript
             describe!("begin_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "device" => device.value(), "snapshot_count" => snapshot.entries().len(), "snapshot" => Snapshot(snapshot)]; omitted="")
         }
         crate::device_gesture::GestureRequest::ChangeSnapshot {
+            touched_parameters,
             key,
             sequence,
             snapshot,
         } => {
-            describe!("change_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "snapshot_count" => snapshot.entries().len(), "snapshot" => Snapshot(snapshot)]; omitted="")
+            describe!("change_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "snapshot_count" => snapshot.entries().len(), "touched_count" => touched_parameters.ids().len(), "snapshot" => Snapshot(snapshot)]; omitted="")
         }
         crate::device_gesture::GestureRequest::CommitSnapshot {
+            touched_parameters,
+            manual_edit,
             key,
             sequence,
             snapshot,
         } => {
-            describe!("commit_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "snapshot_count" => snapshot.entries().len(), "snapshot" => Snapshot(snapshot)]; omitted="")
+            describe!("commit_snapshot"; ["key_generation" => key.generation, "key_token" => key.token, "sequence" => sequence, "manual_edit" => manual_edit, "snapshot_count" => snapshot.entries().len(), "touched_count" => touched_parameters.ids().len(), "snapshot" => Snapshot(snapshot)]; omitted="")
         }
         crate::device_gesture::GestureRequest::BeginEqCreation { key, device, .. } => {
             describe!("begin_eq_creation"; ["key_generation" => key.generation, "key_token" => key.token, "device" => device.value()]; omitted="snapshot")
