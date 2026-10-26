@@ -196,6 +196,7 @@ runtime storage or midi density limits, is refused while current playback contin
 hold **2** to force time selection over arrange clips, audio events, piano-roll
 notes or velocity bars, even with midi draw mode enabled. release **2** to return
 to ordinary editing. a range already being dragged continues until mouse release.
+an i-beam cursor marks the time-selection tool while **2** is held.
 text and numeric fields keep normal number entry.
 
 a time selection shows a dark dot when its musical length is a power of two,

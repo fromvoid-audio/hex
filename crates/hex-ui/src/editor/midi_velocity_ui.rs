@@ -701,6 +701,7 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             );
+        let content = content.children(self.time_selection_cursor_layer());
         row = row.child(content);
         let splitter = self.velocity_size_input(cx);
         let pointer_layer = splitter.pointer_layer();
