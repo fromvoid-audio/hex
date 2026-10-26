@@ -65,6 +65,9 @@ pub(in crate::editor) fn rows(
         .iter()
         .filter(|entry| entry.target.owner == owner)
         .count();
+    if count == 0 {
+        return div();
+    }
     let range = view
         .automation_view
         .devices
@@ -617,7 +620,7 @@ impl EditorView {
         if draft.revision != state.revision
             || draft
                 .target
-                .current(&state.project, self.project_generation)
+                .identity_current(&state.project, self.project_generation)
                 .is_none()
         {
             self.automation_view.devices.draft = None;

@@ -903,6 +903,20 @@ impl EditorView {
             return None;
         }
         self.context_menu.as_ref().map(|menu| {
+            if !menu
+                .items
+                .iter()
+                .any(|item| matches!(item.action, EditorContextAction::Automation(_)))
+            {
+                return crate::context_menu::popup(
+                    menu,
+                    window,
+                    cx,
+                    Self::select_context_item,
+                    Self::dismiss_context_menu,
+                    Self::navigate_context_menu,
+                );
+            }
             crate::context_menu::popup_with_labels(
                 menu,
                 window,

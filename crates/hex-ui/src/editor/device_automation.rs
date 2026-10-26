@@ -53,6 +53,7 @@ pub(super) enum Action {
         owner: Owner,
         device: DeviceId,
         class: NativeDeviceClass,
+        provider: DeviceTypeId,
         label: SharedString,
     },
     Reveal {
@@ -142,20 +143,55 @@ fn owner_exists(project: &Project, owner: Owner) -> bool {
 }
 
 impl Target {
-    fn current(self, project: &Project, generation: u64) -> Option<&Device> {
+    fn identity_current(self, project: &Project, generation: u64) -> Option<&Device> {
         if self.generation != generation {
             return None;
         }
-        let (device, class) = devices(project, self.owner)
-            .into_iter()
-            .find(|(device, _)| device.id() == self.device)?;
-        (class == self.class
-            && device.state().type_id() == self.provider
-            && hex_engine::native_parameter_automation_supported(
-                class,
-                device.state(),
-                self.parameter,
-            ))
+        let (device, class) = match self.owner {
+            Owner::Track(id) => {
+                let track = project.track(id)?;
+                if let Some(device) = track
+                    .devices()
+                    .iter()
+                    .find(|device| device.id() == self.device)
+                {
+                    (device, NativeDeviceClass::Effect)
+                } else {
+                    (
+                        track
+                            .instrument()
+                            .filter(|device| device.id() == self.device)?,
+                        NativeDeviceClass::Instrument,
+                    )
+                }
+            }
+            Owner::Main => (
+                project
+                    .main_devices()
+                    .iter()
+                    .find(|device| device.id() == self.device)?,
+                NativeDeviceClass::Effect,
+            ),
+            Owner::Return(id) => (
+                project
+                    .return_tracks()
+                    .iter()
+                    .find(|track| track.id() == id)?
+                    .devices()
+                    .iter()
+                    .find(|device| device.id() == self.device)?,
+                NativeDeviceClass::Effect,
+            ),
+        };
+        (class == self.class && device.state().type_id() == self.provider).then_some(device)
+    }
+    fn current(self, project: &Project, generation: u64) -> Option<&Device> {
+        let device = self.identity_current(project, generation)?;
+        hex_engine::native_parameter_automation_supported(
+            self.class,
+            device.state(),
+            self.parameter,
+        )
         .then_some(device)
     }
 }
@@ -212,7 +248,7 @@ impl Entry {
         })
     }
     fn refreshed(&self, project: &Project, generation: u64) -> Option<Self> {
-        self.target.current(project, generation)?;
+        self.target.identity_current(project, generation)?;
         Self::read(
             project,
             generation,
@@ -493,7 +529,7 @@ impl EditorView {
             Action::Show(entry, _) => self.state.as_ref().is_none_or(|state| {
                 entry
                     .target
-                    .current(&state.project, self.project_generation)
+                    .identity_current(&state.project, self.project_generation)
                     .is_none()
             }),
             Action::Hide(target)
@@ -501,7 +537,7 @@ impl EditorView {
             | Action::Clear(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
-                    .current(&state.project, self.project_generation)
+                    .identity_current(&state.project, self.project_generation)
                     .is_none()
             }),
             Action::Pick { generation, owner }
@@ -519,13 +555,18 @@ impl EditorView {
                 owner,
                 device,
                 class,
+                provider,
                 ..
             } => {
                 *generation != self.project_generation
                     || self.state.as_ref().is_none_or(|state| {
                         !devices(&state.project, *owner)
                             .iter()
-                            .any(|(source, kind)| source.id() == *device && kind == class)
+                            .any(|(source, kind)| {
+                                source.id() == *device
+                                    && kind == class
+                                    && source.state().type_id() == *provider
+                            })
                     })
             }
         }
@@ -596,6 +637,7 @@ impl EditorView {
                                 owner,
                                 device: device.id(),
                                 class,
+                                provider: device.state().type_id(),
                                 label: format!("{} {}", metadata.name, index + 1).into(),
                             },
                         ));

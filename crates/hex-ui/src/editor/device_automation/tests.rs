@@ -73,6 +73,252 @@ mod native {
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, px, size};
     use std::sync::Arc;
     #[gpui::test]
+    fn device_drop_in_attached_lane_keeps_track_owner_and_true_insertion_boundary(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(super::super::super::bind_editor_keys);
+        let (project, track, device, parameter) = project();
+        let mut model = Editor::new(project, 16).unwrap();
+        let Created::Track(next) = model
+            .execute(Command::AddTrack {
+                name: "next".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let (handle, entity) = super::super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1100.0), px(760.0)));
+        visual.update(|window, cx| {
+            entity.update(cx, |view, cx| {
+                let entry = Entry::read(
+                    &view.state.as_ref().unwrap().project,
+                    view.project_generation,
+                    Owner::Track(track),
+                    device,
+                    parameter,
+                )
+                .unwrap();
+                view.automation_menu_action(Action::Show(entry, true), window, cx);
+                view.browser.section = super::super::super::browser::BrowserSection::Instruments;
+                view.clip_view_open = false;
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let plot = visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "automation-plot-{}-{}-false",
+                    device.value(),
+                    parameter.value()
+                )
+                .into_boxed_str(),
+            ))
+            .unwrap();
+        let landing = plot.center();
+        entity.read_with(&visual,|view,_|{
+            let body=view.drag_lanes[&track];
+            let total=view.painted_track_drop_lane(track).unwrap();
+            assert_eq!(body.height,super::super::super::tracks::TRACK_ROW_HEIGHT);
+            assert_eq!(total.height,body.height+LANE_HEIGHT);
+            assert!(view.hovered_drag_target(f32::from(landing.x),f32::from(landing.y)).is_none(),"clip editing retains its base body bounds");
+            assert!(matches!(view.painted_arrangement_drop_target(f32::from(landing.x),f32::from(landing.y)),Some(super::super::super::arrangement_device_drop::ArrangementDropTarget::ExistingTrack { track:target,.. }) if target==track));
+            let next_lane=view.painted_track_drop_lane(next).unwrap();
+            assert_eq!(view.painted_track_insertion_target(f32::from(landing.x),next_lane.top).unwrap().0,Some(next));
+        });
+        let source = visual
+            .debug_bounds("browser-device-effect-hex.utility")
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            source + gpui::point(px(12.0), px(0.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        visual.simulate_mouse_move(landing, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
+        entity.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.last_enqueued_arrangement_device_drop,
+                Some(
+                    hex_session::service::ArrangementDeviceDestination::ExistingTrack {
+                        track,
+                        instrument: None
+                    }
+                )
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn track_main_and_return_rows_keep_compact_geometry_and_empty_reveal_is_view_only(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(super::super::super::bind_editor_keys);
+        let (project, track, device, parameter) = project();
+        let mut model = Editor::new(project, 16).unwrap();
+        let Created::ReturnTrack(return_id) = model
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        let state = || {
+            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
+                .unwrap()
+        };
+        let Created::Device(return_device) = model
+            .execute(Command::InsertReturnDevice {
+                return_track: return_id,
+                before: None,
+                state: state(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let Created::Device(main_device) = model
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let (handle, entity) = super::super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1000.0), px(760.0)));
+        visual.update(|window, cx| {
+            entity.update(cx, |view, cx| {
+                for (owner, device) in [
+                    (Owner::Track(track), device),
+                    (Owner::Main, main_device),
+                    (Owner::Return(return_id), return_device),
+                ] {
+                    let entry = Entry::read(
+                        &view.state.as_ref().unwrap().project,
+                        view.project_generation,
+                        owner,
+                        device,
+                        parameter,
+                    )
+                    .unwrap();
+                    view.automation_menu_action(Action::Show(entry, true), window, cx);
+                }
+                let target = view
+                    .automation_view
+                    .devices
+                    .extra
+                    .iter()
+                    .find(|entry| entry.target.owner == Owner::Main)
+                    .unwrap()
+                    .target;
+                view.automation_menu_action(Action::Hide(target), window, cx);
+                view.automation_menu_action(
+                    Action::Reveal {
+                        generation: view.project_generation,
+                        owner: Owner::Main,
+                        used_only: true,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(view.automation_view.devices.extra_height(Owner::Main), 0.0);
+                view.automation_menu_action(
+                    Action::Reveal {
+                        generation: view.project_generation,
+                        owner: Owner::Main,
+                        used_only: false,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    view.automation_view.devices.extra_height(Owner::Main),
+                    LANE_HEIGHT
+                );
+                assert!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .automation_devices()
+                        .all(|device| device.automation().is_empty())
+                );
+                assert_eq!(view.worker_requests_pending, 0);
+                view.clip_view_open = false;
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let track_header = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        assert_eq!(
+            track_header.size.height,
+            px(super::super::super::tracks::TRACK_ROW_HEIGHT)
+        );
+        let main_header = visual.debug_bounds("main-track-header").unwrap();
+        for device in [device, return_device, main_device] {
+            let plot = visual
+                .debug_bounds(Box::leak(
+                    format!(
+                        "automation-plot-{}-{}-false",
+                        device.value(),
+                        parameter.value()
+                    )
+                    .into_boxed_str(),
+                ))
+                .unwrap();
+            assert_eq!(plot.right(), main_header.left());
+            let row = visual
+                .debug_bounds(Box::leak(
+                    format!("automation-lane-{}-{}", device.value(), parameter.value())
+                        .into_boxed_str(),
+                ))
+                .unwrap();
+            assert_eq!(row.size.height, px(LANE_HEIGHT));
+            assert_eq!(plot.size.height, row.size.height - px(1.0));
+        }
+        visual.simulate_resize(size(px(880.0), px(540.0)));
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("arrangement-content")
+                .unwrap()
+                .size
+                .height
+                > px(1.0)
+        );
+        assert!(
+            visual
+                .debug_bounds("pinned-return-tracks")
+                .unwrap()
+                .size
+                .height
+                <= px(88.0)
+        );
+    }
+
+    #[gpui::test]
     fn owned_parameter_labels_scroll_with_keyboard_and_deleted_target_menu_retires(
         cx: &mut TestAppContext,
     ) {
@@ -112,7 +358,7 @@ mod native {
         assert!(panel.bottom() <= px(540.0));
         visual.simulate_keystrokes("up");
         visual.run_until_parked();
-        entity.update(&mut visual, |view, _| {
+        entity.update(&mut visual, |view, cx| {
             let menu = view.context_menu.as_ref().unwrap();
             assert_eq!(menu.selected, 63);
             assert!(
@@ -128,6 +374,7 @@ mod native {
             event.request_complete = false;
             Arc::get_mut(&mut event.state).unwrap().project = Arc::new(model.project().clone());
             view.receive(event);
+            cx.notify();
         });
         visual.run_until_parked();
         entity.read_with(&visual, |view, _| assert!(view.context_menu.is_none()));
@@ -146,7 +393,8 @@ mod native {
         visual.update(|window, cx| {
             entity.update(cx, |view, cx| {
                 view.select_track(track, window);
-                view.clip_view_open = false;
+                view.device_panel_active = true;
+                view.clip_view_open = true;
                 cx.notify();
             })
         });

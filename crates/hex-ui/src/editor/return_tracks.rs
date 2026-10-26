@@ -322,14 +322,14 @@ impl EditorView {
                         view.open_return_name_context_menu(event.position, id, window, cx);
                     }),
                 );
-            let extra = super::device_automation::rows(
+            let panel = super::device_automation::rows(
                 self,
                 &state,
                 super::device_panel::DevicePanelOwner::Return(id),
                 viewport,
                 cx,
             );
-            rows = rows.child(row).child(extra);
+            rows = rows.child(row).child(panel);
         }
         rows
     }

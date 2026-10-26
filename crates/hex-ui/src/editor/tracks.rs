@@ -466,6 +466,7 @@ impl EditorView {
             );
         }
         let lane_entity = cx.entity();
+        let track_drop_height = self.track_height(track_id);
         clip_area = clip_area.children([canvas(
             move |bounds, _, cx| {
                 let lane = LaneBounds {
@@ -479,6 +480,13 @@ impl EditorView {
                         .drag_lanes
                         .insert(track_id, lane)
                         .is_none_or(|old| old.left != lane.left || old.width != lane.width);
+                    view.track_drop_lanes.insert(
+                        track_id,
+                        LaneBounds {
+                            height: track_drop_height,
+                            ..lane
+                        },
+                    );
                     view.drag_lane_epochs
                         .insert(track_id, view.drag_layout_generation);
                     if changed {
@@ -1539,7 +1547,7 @@ impl EditorView {
                 cx,
             ));
         }
-        let base = div()
+        let row = div()
             .w_full()
             .h(px(self.track_body_height(track_id)))
             .flex_shrink_0()
@@ -1553,20 +1561,21 @@ impl EditorView {
                     view.open_track_context_menu(event.position, Some(track_id), window, cx);
                 }),
             );
+        let rows = super::device_automation::rows(
+            self,
+            state,
+            super::device_panel::DevicePanelOwner::Track(track_id),
+            viewport,
+            cx,
+        );
         div()
             .w_full()
             .h(px(self.track_height(track_id)))
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .child(base)
-            .child(super::device_automation::rows(
-                self,
-                state,
-                super::device_panel::DevicePanelOwner::Track(track_id),
-                viewport,
-                cx,
-            ))
+            .child(row)
+            .child(rows)
     }
 
     pub(super) fn build_clip_contents(

@@ -782,7 +782,7 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             );
-        let base = div()
+        let row = div()
             .debug_selector(|| "pinned-main-track".to_owned())
             .h(px(TRACK_ROW_HEIGHT))
             .flex_shrink_0()
@@ -841,7 +841,7 @@ impl EditorView {
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .child(base)
+            .child(row)
             .children(extra.map(|rows| {
                 div()
                     .id("main-automation-rows")
