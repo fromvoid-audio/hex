@@ -15,7 +15,7 @@ use gpui::{
     Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
-use hex_project::{Command, NoteId};
+use hex_project::NoteId;
 use std::sync::Arc;
 
 pub(super) struct State {
