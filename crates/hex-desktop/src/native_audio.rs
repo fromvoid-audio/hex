@@ -68,6 +68,7 @@ struct Preparation {
     cancelling: bool,
 }
 pub(super) struct NativeAudioSink {
+    audio_diagnostics: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
     plugins: plugins::Plugins,
     request_cancellation: Option<hex_session::service::RequestCancellation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -121,6 +122,7 @@ pub(super) struct NativeAudioSink {
 impl NativeAudioSink {
     fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
+            audio_diagnostics: Default::default(),
             plugins: plugins::Plugins::default(),
             request_cancellation: None,
             #[cfg(all(test, feature = "allocation-probe"))]
@@ -312,6 +314,9 @@ impl NativeAudioSink {
                 error,
             });
             return;
+        }
+        if let Some(control) = output.publication.control() {
+            control.set_audio_diagnostics(self.audio_diagnostics);
         }
         let Some(client) = output.take_client() else {
             return;
@@ -1367,16 +1372,20 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 }
 
-pub(super) fn backend() -> Result<EditorBackend, String> {
+pub(super) fn backend(
+    flags: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
+) -> Result<EditorBackend, String> {
     let source_reservation = AudioPolicy::source_reservation();
     let resident_native = AudioPolicy::new()?.resident_native;
     let (events, audio_events) = mpsc::sync_channel(4);
     let recovery = hex_session::service::untitled_recovery_path()?;
+    let mut sink = NativeAudioSink::new(events);
+    sink.audio_diagnostics = flags;
     let service = Service::with_audio_sink_and_native_reservation(
         32,
         MAX_RESIDENT_FRAMES,
         Some(recovery),
-        Box::new(NativeAudioSink::new(events)),
+        Box::new(sink),
         resident_native,
     )
     .map_err(|e| e.to_string())?;

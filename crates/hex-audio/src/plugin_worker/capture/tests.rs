@@ -45,6 +45,109 @@ fn fixture_child(fault: u32, name: &str) -> bool {
 fn trace_path() -> PathBuf {
     PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap())
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_worker_edit_receipts_preserve_gestures_and_revoke_with_source() {
+    use hex_plugin_host::protocol::ParameterEditKind;
+    const NAME: &str = "plugin_worker::capture::tests::actual_worker_edit_receipts_preserve_gestures_and_revoke_with_source";
+    if fixture_child(90, NAME) {
+        return;
+    }
+    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let storage = owner.constructor_storage_on_control(&callback).unwrap();
+    // This actual SDK controller admits its gesture from the state read.
+    // The joining worker must service receipts while capture remains pending,
+    // then finish capture only after the one real accepted audio block.
+    let request = begin(&mut owner);
+    let mut edits = Vec::new();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let batch = match owner.poll_parameter_edits_on_control() {
+            Ok(batch) => batch,
+            Err("native edit observation is busy") => None,
+            Err(error) => panic!("gesture observation failed: {error}"),
+        };
+        if let Some(batch) = batch {
+            edits.extend_from_slice(batch.as_slice());
+            if batch.ready > 0 && edits.len() == 1 {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < until,
+            "actual GUI perform must remain pending until PCM"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(owner.published_blocks_on_control(), 0);
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].kind, ParameterEditKind::Begin);
+    callback_block(&owner, &mut callback, 0);
+    let until = Instant::now() + Duration::from_secs(3);
+    while edits.len() < 3 {
+        let batch = match owner.poll_parameter_edits_on_control() {
+            Ok(batch) => batch,
+            Err("native edit observation is busy") => None,
+            Err(error) => panic!("gesture observation failed: {error}"),
+        };
+        if let Some(batch) = batch {
+            edits.extend_from_slice(batch.as_slice());
+        }
+        assert!(
+            Instant::now() < until,
+            "actual applied gesture must reach control"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(edits.len(), 3);
+    for (index, kind) in [
+        ParameterEditKind::Begin,
+        ParameterEditKind::Perform,
+        ParameterEditKind::End,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let edit = edits[index];
+        assert_eq!(
+            (edit.sequence, edit.gesture, edit.id, edit.kind),
+            (index as u64 + 1, 1, 7, kind)
+        );
+        // The main dispatcher can enqueue End after this one real block.
+        // Begin/Perform are known admitted before processing; End retains
+        // its actual consumed prefix instead of borrowing Perform's offset.
+        assert!(edit.first_frame <= 8);
+        if kind != ParameterEditKind::End {
+            assert_eq!(edit.first_frame, 0);
+        }
+        assert_eq!(
+            edit.normalized,
+            if kind == ParameterEditKind::Perform {
+                0.75
+            } else {
+                0.0
+            }
+        );
+    }
+    let captured = complete(&mut owner, &request);
+    assert_eq!(
+        &hex_plugin_state::decode(&captured)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    assert_eq!(owner.published_blocks_on_control(), 1);
+    assert_eq!(
+        owner.constructor_storage_on_control(&callback),
+        Some(storage)
+    );
+    callback.reject(Fault::Revoked);
+    assert!(owner.poll_parameter_edits_on_control().is_err());
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+}
 fn wait_held() {
     let until = Instant::now() + Duration::from_secs(2);
     loop {
@@ -300,4 +403,115 @@ fn actual_worker_capture_failure_retains_original_error_and_native_reap() {
     assert!(matches!(retired.failure, Some(Error::Worker(6))));
     assert!(!retired.native.status.success() && retired.native.terminal.is_none());
     assert!(owner.owns_callback(&callback));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_parameter_feedback_survives_busy_capture_slot_and_callback_replies_without_allocations() {
+    const NAME: &str = "plugin_worker::capture::tests::actual_parameter_feedback_survives_busy_capture_slot_and_callback_replies_without_allocations";
+    if fixture_child(37, NAME) {
+        return;
+    }
+    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let signal = Arc::clone(&owner.reaper.completed);
+    let slot = signal.capture.lock().unwrap();
+    for sequence in 0..4 {
+        let mut output = [[9.0; 2]; 8];
+        let point = ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: (sequence + 1) as f64 / 8.0,
+        };
+        let run = || {
+            callback.begin_physical_callback(8).unwrap();
+            let reply = callback
+                .stage_segment_with_parameters(0, &[[0.5, -0.25]; 8], &[], &[point], &mut output)
+                .unwrap();
+            if sequence >= 2 {
+                assert_eq!(
+                    reply.parameters.as_slice(),
+                    &[ParameterPoint {
+                        frame: 7,
+                        id: 7,
+                        normalized: (sequence - 1) as f64 / 8.0,
+                    }]
+                );
+            }
+            callback.finish(true).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(run);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut run = run;
+            run();
+        }
+        let expected = if sequence < 2 {
+            [0.0; 2]
+        } else {
+            let gain = (sequence - 1) as f32 / 2.0 * (0.5 + (sequence - 2) as f32 * 0.125);
+            [0.5 * gain, -0.25 * gain]
+        };
+        assert_eq!(output, [expected; 8]);
+        let until = Instant::now() + Duration::from_secs(2);
+        while owner.published_blocks_on_control() <= sequence {
+            assert!(
+                Instant::now() < until,
+                "capture contention cannot block PCM"
+            );
+            thread::yield_now();
+        }
+        assert!(
+            owner.parameter_values_on_control().is_err(),
+            "busy is an explicit read refusal"
+        );
+    }
+    drop(slot);
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Ok(values) = owner.parameter_values_on_control()
+            && values.completed_blocks() == 4
+        {
+            assert_eq!(
+                values.as_slice(),
+                &[super::super::NativeParameterValue {
+                    id: 7,
+                    normalized: 0.5
+                }]
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "retained worker observation must publish after contention"
+        );
+        thread::yield_now();
+    }
+    let request = begin(&mut owner);
+    let captured = complete(&mut owner, &request);
+    assert_eq!(
+        &hex_plugin_state::decode(&captured)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &2.0_f32.to_le_bytes()
+    );
+    callback.reject(Fault::Revoked);
+    assert!(
+        owner.parameter_values_on_control().is_err(),
+        "old epoch cannot publish observations"
+    );
+    let retirement = owner.retire_on_control().unwrap();
+    assert!(retirement.failure.is_none());
 }

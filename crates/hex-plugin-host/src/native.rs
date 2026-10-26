@@ -1,5 +1,6 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+mod edits;
 mod epoch;
 mod live_capture;
 pub use epoch::Quiescent;
@@ -186,6 +187,9 @@ pub struct Prepared {
     faulted: bool,
     live_capture: Option<live_capture::PendingCapture>,
     live_capture_sequence: u64,
+    edit_query_sequence: u64,
+    last_edit_sequence: u64,
+    last_edit_frame: u64,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -555,6 +559,9 @@ impl Pending {
             faulted: false,
             live_capture: None,
             live_capture_sequence: 0,
+            edit_query_sequence: 0,
+            last_edit_sequence: 0,
+            last_edit_frame: 0,
         })
     }
 }

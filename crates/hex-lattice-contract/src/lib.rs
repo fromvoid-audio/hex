@@ -1,6 +1,7 @@
 //! # Purpose
 //! Own neutral bounded native-device metadata, identifiers and authored state envelopes.
-//! Also owns the shared immutable foreign-processing binding; it grants no native custody.
+//! Also owns shared foreign-processing bindings and copied parameter data;
+//! neither grants native custody.
 //!
 //! # Dependencies
 //! Uses only the standard library; no DSP or other workspace dependency.
@@ -10,7 +11,9 @@
 //! Opaque payloads and asset references require provider and host validation before processing.
 mod device_assets;
 mod foreign_binding;
+mod foreign_parameter;
 pub use foreign_binding::ForeignProcessorBinding;
+pub use foreign_parameter::ForeignParameterPoint;
 #[cfg(test)]
 mod device_assets_tests;
 pub use device_assets::{

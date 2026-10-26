@@ -17,6 +17,7 @@
 //! graph replacement. Queued explicit Stop, foreign/unbound inputs and lifecycle shutdown remain
 //! terminal. Epoch transitions and note snapshots perform no callback allocation or reclamation.
 use crate::{
+    audio_diagnostics::{self, AudioDiagnosticEvent, AudioDiagnosticKind, AudioDiagnosticsFlags},
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
 };
@@ -463,6 +464,8 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    diagnostics_flags: AtomicU32,
+    diagnostics_dropped: AtomicU64,
     sampler_edit: sampler_edit::Fence,
     sampler_keyboard: sampler_keyboard::Mailbox,
     keyboard_activation: Arc<hex_engine::computer_keyboard::KeyboardActivationClock>,
@@ -653,6 +656,8 @@ impl Status {
             device_fault: AtomicBool::new(false),
             render_fault: AtomicBool::new(false),
             render_fault_record: crate::render_fault::RenderFaultRecord::default(),
+            diagnostics_flags: AtomicU32::new(0),
+            diagnostics_dropped: AtomicU64::new(0),
             callback_max_ns: AtomicU64::new(0),
             deadline_misses: AtomicU64::new(0),
             peak_left: AtomicU32::new(0),
@@ -698,6 +703,14 @@ impl Status {
 }
 
 impl Status {
+    /// Current diagnostic configuration; this observation grants no authority.
+    pub fn audio_diagnostics_flags(&self) -> AudioDiagnosticsFlags {
+        AudioDiagnosticsFlags::from_bits(self.diagnostics_flags.load(Relaxed))
+    }
+    /// Number of callback trace records lost to the bounded diagnostic queue.
+    pub fn audio_diagnostics_dropped(&self) -> u64 {
+        self.diagnostics_dropped.load(Relaxed)
+    }
     /// Read bounded diagnostic telemetry on control/UI, never in a callback.
     pub fn render_fault_snapshot(&self) -> Option<crate::RenderFaultSnapshot> {
         if !self.render_fault.load(Acquire) {
@@ -1013,6 +1026,7 @@ impl std::fmt::Debug for PublishError {
 /// Legacy unsplit control. Native worker composition consumes this exactly once
 /// before delivering its nonowning client. Resident callers retain these APIs.
 pub struct Control {
+    diagnostics: audio_diagnostics::TraceReader,
     pub sample_preview: crate::sample_preview::Control,
     commands: Producer<QueuedCommand>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
@@ -1042,6 +1056,20 @@ pub struct PublicationControl {
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
     latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
 }
+impl PublicationControl {
+    /// Configure optional tracing on control. Default is off; old records may
+    /// still be drained after disabling. The music/fault queues are independent.
+    pub fn set_audio_diagnostics(&self, flags: AudioDiagnosticsFlags) {
+        self.status.diagnostics_flags.store(flags.bits(), Relaxed);
+    }
+}
+impl Control {
+    /// Take one non-owning Copy event; callers bound each drain.
+    pub fn take_audio_diagnostic(&mut self) -> Option<AudioDiagnosticEvent> {
+        self.diagnostics.pop()
+    }
+}
+
 impl std::ops::Deref for Control {
     type Target = PublicationControl;
     fn deref(&self) -> &Self::Target {
@@ -1064,6 +1092,7 @@ pub(crate) enum OutputTransportDelivery {
 }
 
 pub struct Callback {
+    diagnostics: audio_diagnostics::TraceWriter,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_sources: crate::candidate_custody::NativeEndpointBank,
     requested_physical_callback_frames: Option<u16>,
@@ -1143,6 +1172,7 @@ pub fn channel_with_spectrum(
     let (publications, incoming) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
+    let (trace_writer, trace_reader) = audio_diagnostics::channel();
     let status = Arc::new(Status::try_new()?);
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
@@ -1157,9 +1187,11 @@ pub fn channel_with_spectrum(
         .capacity()
         .checked_mul(std::mem::size_of::<QueuedCommand>())
         .and_then(|n| n.checked_add(std::mem::size_of_val(commands.buffer())))
+        .and_then(|n| n.checked_add(trace_writer.storage_bytes()?))
         .ok_or(Invalid("command queue storage overflow"))?;
     Ok((
         Control {
+            diagnostics: trace_reader,
             sample_preview,
             commands,
             spectrum_target,
@@ -1188,6 +1220,7 @@ pub fn channel_with_spectrum(
             },
         },
         Callback {
+            diagnostics: trace_writer,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
             requested_physical_callback_frames: None,
@@ -2533,7 +2566,7 @@ impl Callback {
                 if let Some(publication) = self.deferred.take() {
                     if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
                         if cancellation.finish_for_shutdown() {
-                            self.status.publish_rejected_revision(
+                            self.reject_publication(
                                 publication.revision,
                                 PlaybackHandoffRejection::FreshRuntimeCancelled,
                             );
@@ -2588,7 +2621,7 @@ impl Callback {
                     };
                     if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
                         if cancellation.finish_for_shutdown() {
-                            self.status.publish_rejected_revision(
+                            self.reject_publication(
                                 publication.revision,
                                 PlaybackHandoffRejection::FreshRuntimeCancelled,
                             );
@@ -2694,6 +2727,67 @@ impl Callback {
         self.consume_commands();
     }
 
+    fn reject_publication(&mut self, revision: u64, reason: PlaybackHandoffRejection) {
+        self.status.publish_rejected_revision(revision, reason);
+        self.trace_audio(
+            AudioDiagnosticKind::PublicationRejected { reason },
+            revision,
+            None,
+            0,
+        );
+    }
+
+    fn trace_audio(
+        &mut self,
+        kind: AudioDiagnosticKind,
+        revision: u64,
+        context: Option<hex_engine::AudioSourceContext>,
+        frames: usize,
+    ) {
+        if !self
+            .status
+            .audio_diagnostics_flags()
+            .contains(kind.category())
+        {
+            return;
+        }
+        let event = AudioDiagnosticEvent {
+            sequence: 0,
+            output: self.candidate_root.root_id(),
+            revision,
+            context,
+            applied_revision: self.status.applied_revision.load(Relaxed),
+            consumed_command: self.status.consumed_command.load(Relaxed),
+            performance_frame: self.status.performance_frame.load(Relaxed),
+            arrangement_frame: self.status.position.load(Relaxed),
+            rate: self.rate,
+            frames,
+            commands_pending: self.commands.slots(),
+            retirement_slots: self.retired.slots(),
+            kind,
+        };
+        self.diagnostics
+            .push(event, &self.status.diagnostics_dropped);
+    }
+    /// Native adapter supplies its already measured whole-host-callback time.
+    /// Reading the clock and formatting remain outside this record operation.
+    pub(crate) fn trace_callback_timing(
+        &mut self,
+        elapsed_ns: u64,
+        deadline_ns: u64,
+        frames: usize,
+    ) {
+        self.trace_audio(
+            AudioDiagnosticKind::CallbackTiming {
+                elapsed_ns,
+                deadline_ns,
+            },
+            self.status.applied_revision.load(Relaxed),
+            None,
+            frames,
+        );
+    }
+
     fn advance_legacy_publication(&mut self, frames: Option<usize>) {
         if frames.is_none()
             && self
@@ -2712,6 +2806,12 @@ impl Callback {
         if (self.active.is_none() || !self.retired.is_full())
             && let Some(mut next) = self.deferred.take()
         {
+            self.trace_audio(
+                AudioDiagnosticKind::PublicationAttempt,
+                next.revision,
+                next.source_context,
+                frames.unwrap_or(0),
+            );
             if next
                 .fresh_runtime_cancellation
                 .as_ref()
@@ -2723,7 +2823,7 @@ impl Callback {
                 if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                     cancellation.finish();
                 }
-                self.status.publish_rejected_revision(
+                self.reject_publication(
                     next.revision,
                     PlaybackHandoffRejection::FreshRuntimeCancelled,
                 );
@@ -2821,7 +2921,7 @@ impl Callback {
                         })
                     })
                 {
-                    self.status.publish_rejected_revision(
+                    self.reject_publication(
                         next.revision,
                         PlaybackHandoffRejection::RuntimeFenceChanged,
                     );
@@ -2856,6 +2956,12 @@ impl Callback {
                 });
                 match prepared {
                     Some(Ok(Some(_))) => {
+                        self.trace_audio(
+                            AudioDiagnosticKind::PublicationPrepared,
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         let committed = next
                             .streams
                             .as_mut()
@@ -2872,6 +2978,12 @@ impl Callback {
                         }
                     }
                     Some(Ok(None)) => {
+                        self.trace_audio(
+                            AudioDiagnosticKind::PublicationWaiting,
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         if self.active.is_some()
                             && let Some(streams) = next.streams.as_mut()
                         {
@@ -2883,14 +2995,28 @@ impl Callback {
                         self.deferred = Some(next);
                         return;
                     }
-                    _ => {
+                    refused => {
+                        let handoff = next
+                            .streams
+                            .as_mut()
+                            .and_then(|streams| streams.take_handoff_diagnostic());
+                        let detail = match refused {
+                            Some(Err(error)) => error.0,
+                            _ => "stream preparation state unavailable",
+                        };
+                        self.trace_audio(
+                            AudioDiagnosticKind::StreamPreflightFailed { detail, handoff },
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         if let Some(streams) = next.streams.as_mut() {
                             streams.cancel_install(&mut self.domain_pages);
                         }
                         if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                             cancellation.finish();
                         }
-                        self.status.publish_rejected_revision(
+                        self.reject_publication(
                             next.revision,
                             PlaybackHandoffRejection::StreamedPagesNotReady,
                         );
@@ -2947,7 +3073,7 @@ impl Callback {
                         cancellation.finish();
                     }
                     if let Some(reason) = error.rejection() {
-                        self.status.publish_rejected_revision(next.revision, reason);
+                        self.reject_publication(next.revision, reason);
                     }
                     self.return_graph(next);
                     self.status.publication_pending.store(false, Release);
@@ -2975,7 +3101,7 @@ impl Callback {
                         if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                             cancellation.finish();
                         }
-                        self.status.publish_rejected_revision(
+                        self.reject_publication(
                             next.revision,
                             PlaybackHandoffRejection::FreshRuntimeCancelled,
                         );
@@ -3104,6 +3230,7 @@ impl Callback {
                         self.return_graph(next);
                         return;
                     }
+                    let diagnostic_context = next.source_context;
                     let previous = self.active.replace(ActivePublication::Legacy(next));
                     // Publish actual inherited-tail requirements before the
                     // old graph can be destroyed on control and release its
@@ -3133,6 +3260,12 @@ impl Callback {
                     self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);
+                    self.trace_audio(
+                        AudioDiagnosticKind::PublicationApplied,
+                        revision,
+                        diagnostic_context,
+                        frames.unwrap_or(0),
+                    );
                 }
             }
         }
@@ -3248,8 +3381,27 @@ impl Callback {
         self.acknowledge_sampler_edit();
     }
 
+    fn trace_command_dequeued(&mut self, queued: QueuedCommand, cut: CommandCut) {
+        self.trace_audio(
+            AudioDiagnosticKind::CommandDequeued {
+                ticket: queued.ticket,
+                action: queued.action,
+                discarded_by_stop: cut.stop_through.is_some_and(|stop| queued.ticket <= stop),
+            },
+            self.status.applied_revision.load(Relaxed),
+            None,
+            0,
+        );
+    }
+
     fn consume_commands_through(&mut self, cut: CommandCut) {
-        if cut.stop_through.is_some() {
+        if let Some(through_ticket) = cut.stop_through {
+            self.trace_audio(
+                AudioDiagnosticKind::PriorityStop { through_ticket },
+                self.status.applied_revision.load(Relaxed),
+                None,
+                0,
+            );
             self.finish_midi_before_stop();
             self.revoke_output_transport();
             self.revoke_current_sampler_keyboard();
@@ -3280,6 +3432,7 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
+            self.trace_command_dequeued(queued, cut);
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,
@@ -3990,8 +4143,15 @@ pub(crate) fn worker_publication_queue_storage_quote() -> Option<usize> {
     ChannelStorage::ring_bytes::<QueuedPublication>(1)?
         .checked_add(ChannelStorage::ring_bytes::<ReturnedPublication>(RETIRED)?)?
         .checked_add(ChannelStorage::ring_bytes::<QueuedCommand>(COMMANDS)?)?
+        .checked_add(ChannelStorage::ring_bytes::<AudioDiagnosticEvent>(
+            audio_diagnostics::TRACE_CAPACITY,
+        )?)?
         .checked_add(crate::native_callback_owner::worker_boundary_storage_quote()?)
 }
+
+#[cfg(all(test, feature = "allocation-probe"))]
+#[path = "prepared/diagnostics_tests.rs"]
+mod diagnostics_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4790,7 +4950,7 @@ mod tests {
         gain_db: f64,
     }
 
-    fn metronome_graph() -> Playback {
+    pub(super) fn metronome_graph() -> Playback {
         let mut project = hex_project::Project::new(8_000).unwrap().snapshot();
         project.loop_region = Some(hex_project::LoopRegion::new(0, 4_050, true).unwrap());
         let revision = hex_engine::PreparedRevision::prepare(
