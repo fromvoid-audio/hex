@@ -2,6 +2,7 @@
 //! native APIs, streaming, worker publication and physical output deadlines.
 use hex_devices::utility::{MAX_UTILITY_GAIN, UTILITY_DEFINITION, UTILITY_TYPE_ID, parameter};
 use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
+use hex_lattice::PreparedNativeProcessor;
 use hex_lattice_contract::NativeDeviceMetadata;
 use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Command, Created, Editor,
@@ -98,6 +99,36 @@ fn main() -> Result<(), Box<dyn Error>> {
             Arc::new(SineTable::new()),
             None,
         )?);
+        // Control-side layout accounting, outside warmup and measured scopes.
+        // Exact flat backing and concrete twin payloads; this deliberately does
+        // not claim complete graph/asset/allocator resident memory.
+        let lanes = if mode == "all_curves" {
+            14
+        } else {
+            usize::from(automated)
+        };
+        let points = if mode == "all_curves" {
+            15
+        } else if automated {
+            2
+        } else {
+            0
+        };
+        let program_bytes =
+            hex_lattice::PreparedParameterAutomation::quoted_storage_bytes(lanes, points)
+                .ok_or("program storage overflow")?;
+        let state = UTILITY_DEFINITION.default_state()?;
+        let pair_bytes = if automated {
+            hex_devices::utility::UtilityDefinition::prepare_owned_automated_filter(&state, RATE)?
+                .declared_runtime_bytes()
+                .checked_mul(2)
+                .ok_or("runtime storage overflow")?
+        } else {
+            0
+        };
+        println!(
+            "layout mode={mode} lanes_per_device={lanes} points_per_device={points} program_backing_per_device={program_bytes} concrete_runtime_pair_per_device={pair_bytes}"
+        );
         let mut playback = SessionPlayback::new(revision)?;
         playback.apply(SessionPlaybackCommand::Play)?;
         let mut block = [[0.0; 2]; BLOCK];
