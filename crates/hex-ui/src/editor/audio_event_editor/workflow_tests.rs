@@ -1880,5 +1880,49 @@ fn held_f_keeps_authored_fade_knots_aligned_in_an_offset_loop(cx: &mut TestAppCo
     }
 }
 
+#[gpui::test]
+fn cmd_f_fits_the_focused_event_selection_without_opening_browser(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    editor.update(&mut visual, |v, _| {
+        v.audio_event_editor.grid = SnapGrid::Off
+    });
+    focus_events(&mut visual);
+    select(&mut visual, 0.125, 0.0);
+    let (start, end, before) = editor.read_with(&visual, |v, _| {
+        let (start, end) = v.audio_loop_time_selection().unwrap();
+        assert_eq!(start, 0);
+        assert!(end > 0 && end < 96_000);
+        (start, end, v.state.as_ref().unwrap().project.snapshot())
+    });
+    visual.simulate_keystrokes("cmd-f");
+    editor.read_with(&visual, |v, _| assert!(matches!(v.last_enqueued_edit,
+        Some(Command::CreateAudioEventFades { clip: id, start: a, end: b }) if id == clip && (a,b) == (start,end))));
+    for _ in 0..3 {
+        repaint(&mut visual, &editor);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+    }
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let event = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_events()
+            .events[0];
+        assert_eq!(event.fade.unwrap().shape().fade_in(), end - start);
+        assert_eq!(v.audio_loop_time_selection(), Some((start, end)));
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
 #[path = "pointer_tests.rs"]
 mod pointer_tests;
