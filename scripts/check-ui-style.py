@@ -20,6 +20,8 @@ widgets = (
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
     'clip_waveform_body(', 'self.clip_name_preview_header(',
+    # Timeline boundary shell contains a previously constructed view and paint edges.
+    'clip_boundary_shell(',
     # Loop body wrappers contain native views; marker glyphs use theme::text.
     'loop_handles::body(', 'loop_handles::audio_markers(', 'loop_handles::midi_markers(',
     'clip_fade_layer(', 'self.clip_name_drag_header(', 'clip_name_text(',
