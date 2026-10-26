@@ -291,6 +291,7 @@ impl WorkerAudioSink for ResidentSink {
 
 pub(super) struct ResidentHarness {
     pub(super) service: Service,
+    pub(super) diagnostic_log: Option<hex_diagnostics::DiagnosticsHandle>,
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
     pub(super) callback: Arc<Mutex<Option<HeadlessBackend>>>,
@@ -469,6 +470,7 @@ impl ResidentHarness {
             event_sender: sender,
             events,
             callback,
+            diagnostic_log: None,
             audio: None,
             submitted: None,
             submitted_observation: None,
@@ -784,6 +786,10 @@ impl ResidentHarness {
                     if diagnostics.len() == hex_audio::audio_diagnostics::TRACE_CAPACITY {
                         diagnostics.pop_front();
                     }
+                    if let Some(log) = &self.diagnostic_log {
+                        let _ =
+                            log.record(&format!("audio_diag v=1 stage=callback event={event:?}"));
+                    }
                     diagnostics.push_back(event);
                 }
             }
@@ -804,6 +810,9 @@ impl ResidentHarness {
                 && let Some(audio) = self.audio.as_ref()
                 && audio.status().unwrap().applied_revision.load(Acquire) == revision
             {
+                if let Some(log) = &self.diagnostic_log {
+                    let _ = log.record(&format!("audio_audit stage=applied revision={revision} metadata={metadata:?} output={:?}", audio.control.output_identity()));
+                }
                 return (revision, metadata);
             }
             assert!(
