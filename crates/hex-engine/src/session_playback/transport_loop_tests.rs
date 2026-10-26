@@ -4,6 +4,168 @@ use super::*;
 const Q: u64 = 1_u64 << 32;
 
 #[test]
+fn paused_audio_loop_change_with_limiter_preserves_samples_and_clock() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut snapshot = audio_project(0, 32, 4).snapshot();
+    for asset in &mut snapshot.assets {
+        asset.source_frames = 8192;
+        asset.playback_frames = 8192;
+    }
+    snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        active: true,
+        name: "clip".into(),
+        flavor: hex_project::ClipFlavor::default(),
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
+        id: 6,
+        asset: 4,
+        start: 0,
+        duration: 8192,
+        source_offset: 0,
+        source_length: 8192,
+        looping: false,
+        source_phase: 0,
+        fade: ClipFade::neutral(8192).unwrap(),
+    }]);
+    snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
+        comparison: None,
+        id: 7,
+        bypassed: false,
+        state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+    });
+    snapshot.next_id = 8;
+    let linear = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+    snapshot.loop_region = Some(LoopRegion::new(400, 2400, true).unwrap());
+    let looped = legacy_project_from_snapshot(snapshot).unwrap();
+    let source = crate::Audio::new(
+        48_000,
+        (0..8192)
+            .map(|i| {
+                let value = ((i as f32) * 0.017).sin() * 0.2;
+                [value, -value * 0.7]
+            })
+            .collect(),
+    )
+    .unwrap();
+    let media = audio_media(&linear, &source, &source);
+    let prepare = |project: &Project| {
+        Arc::new(
+            PreparedRevision::prepare(
+                project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let loop_revision = prepare(&looped);
+    let mut live = SessionPlayback::new(prepare(&linear)).unwrap();
+    live.apply(SessionPlaybackCommand::Play).unwrap();
+    live.render(&mut [[0.0; 2]; 600]).unwrap();
+    let mut live_candidate = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+    assert!(matches!(
+        live_candidate.try_inherit_state_from(&mut live),
+        Err(SessionPlaybackError::Arrangement(
+            "compensated timing changed · stop transport before applying this revision"
+        ))
+    ));
+    let mut tempo_snapshot = linear.snapshot();
+    tempo_snapshot.tempo_points = vec![TempoPoint::new(
+        BeatTime::ZERO,
+        Tempo::new(90_000_000).unwrap(),
+    )];
+    let tempo_changed = legacy_project_from_snapshot(tempo_snapshot).unwrap();
+    let mut paused = SessionPlayback::new(prepare(&linear)).unwrap();
+    paused.apply(SessionPlaybackCommand::Play).unwrap();
+    paused.render(&mut [[0.0; 2]; 600]).unwrap();
+    paused.apply(SessionPlaybackCommand::Pause).unwrap();
+    let mut tempo_candidate = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+    assert!(matches!(
+        tempo_candidate.try_inherit_state_from(&mut paused),
+        Err(SessionPlaybackError::Arrangement(
+            "compensated timing changed · stop transport before applying this revision"
+        ))
+    ));
+    let mut donor = SessionPlayback::new(prepare(&linear)).unwrap();
+    let mut oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 600]).unwrap();
+        runtime.apply(SessionPlaybackCommand::Pause).unwrap();
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+    }
+    let mut candidate = SessionPlayback::new(loop_revision).unwrap();
+    candidate.try_inherit_state_from(&mut donor).unwrap();
+    for runtime in [&mut candidate, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut actual = vec![[0.0; 2]; 6000];
+    let mut expected = actual.clone();
+    for chunk in actual.chunks_mut(127) {
+        candidate.render(chunk).unwrap();
+    }
+    for chunk in expected.chunks_mut(127) {
+        oracle.render(chunk).unwrap();
+    }
+    assert_eq!(candidate.arrangement_frame(), oracle.arrangement_frame());
+    assert_eq!(candidate.performance_frame(), oracle.performance_frame());
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|value| value.abs() > 0.001));
+}
+
+#[test]
+fn paused_loop_change_with_limiter_refuses_active_instrument_tail_without_corrupting_donor() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut snapshot = project(1.0, 0, Q).snapshot();
+    let id = snapshot.next_id;
+    snapshot.next_id += 1;
+    snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
+        comparison: None,
+        id,
+        bypassed: false,
+        state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+    });
+    let linear = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+    snapshot.loop_region = Some(LoopRegion::new(400, 2400, true).unwrap());
+    let looped = legacy_project_from_snapshot(snapshot).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let loop_revision = revision(&looped, Arc::clone(&table));
+    let mut donor = SessionPlayback::new(revision(&linear, Arc::clone(&table))).unwrap();
+    let mut oracle = SessionPlayback::new(revision(&linear, Arc::clone(&table))).unwrap();
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 600]).unwrap();
+        runtime.apply(SessionPlaybackCommand::Pause).unwrap();
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+    }
+    let mut candidate = SessionPlayback::new(loop_revision).unwrap();
+    assert!(matches!(
+        candidate.try_inherit_state_from(&mut donor),
+        Err(SessionPlaybackError::Arrangement(
+            "compensated processor tails require stopping transport before changing the chain"
+        ))
+    ));
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut actual = vec![[0.0; 2]; 6000];
+    let mut expected = actual.clone();
+    for chunk in actual.chunks_mut(127) {
+        donor.render(chunk).unwrap();
+    }
+    for chunk in expected.chunks_mut(127) {
+        oracle.render(chunk).unwrap();
+    }
+    assert_eq!(donor.arrangement_frame(), oracle.arrangement_frame());
+    assert_eq!(donor.performance_frame(), oracle.performance_frame());
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|value| value.abs() > 0.001));
+}
+
+#[test]
 fn post_loop_session_launch_admits_the_faster_canonical_tempo() {
     let mut snapshot = session_only_project(&project(1.0, 0, Q)).snapshot();
     snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
