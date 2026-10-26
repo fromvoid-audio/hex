@@ -383,6 +383,7 @@ where
                 if elapsed > deadline {
                     status.deadline_misses.fetch_add(1, Relaxed);
                 }
+                callback.trace_callback_timing(elapsed, deadline, data.len() / channels);
             });
         },
         move |_| {

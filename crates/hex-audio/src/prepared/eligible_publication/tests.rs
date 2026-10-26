@@ -517,6 +517,7 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
     let mut a = stream_fixture::owner(&project, metadata.clone());
     let reservation = reservation(&mut a);
     let (mut control, mut data, errors, mut retirement) = anchored();
+    control.set_audio_diagnostics(AudioDiagnosticsFlags::ALL);
     control
         .configure_audio_candidate_publication(reservation)
         .unwrap();
@@ -567,6 +568,20 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
     assert_eq!(
         control.status.rejected_revision(),
         Some((1, PlaybackHandoffRejection::StreamedPagesNotReady))
+    );
+    let diagnostic_events: Vec<_> =
+        std::iter::from_fn(|| control.take_audio_diagnostic()).collect();
+    assert!(diagnostic_events.iter().any(|event| event.revision == 1
+        && matches!(
+            event.kind,
+            AudioDiagnosticKind::PublicationRejected {
+                reason: PlaybackHandoffRejection::StreamedPagesNotReady,
+            }
+        )));
+    assert!(
+        !diagnostic_events
+            .iter()
+            .any(|event| event.kind == AudioDiagnosticKind::PublicationApplied)
     );
     let b = stream_fixture::owner(&project, metadata);
     let b_ticket = control
