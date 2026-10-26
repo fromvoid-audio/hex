@@ -1,4 +1,4 @@
-//! Closed Utility/reverb/foreign chain metadata. No registry/provider owner
+//! Closed Utility/reverb/Saturator/Auto Pan/foreign chain metadata. No registry/provider owner
 //! is adopted and no owning Arc escapes this private preparation path.
 use crate::{
     AudioStorageError,
@@ -101,6 +101,19 @@ impl ChainCustody {
                     Some(parts(OwnedShared::<
                         hex_devices::saturator::PreparedSaturator,
                     >::declared_parts())?),
+                )
+            } else if state.type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID {
+                let migrated = hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::auto_pan::AutoPanDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::auto_pan::PreparedAutoPan>::declared_parts(),
+                    )?),
                 )
             } else if state.type_id() == hex_devices::reverb::REVERB_TYPE_ID {
                 let migrated = hex_devices::reverb::REVERB_DEFINITION
@@ -260,10 +273,11 @@ impl ChainCustody {
             let utility = device.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID;
             let reverb = device.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID;
             let saturator = device.state().type_id() == hex_devices::saturator::SATURATOR_TYPE_ID;
-            let native = utility || reverb || saturator;
+            let auto_pan = device.state().type_id() == hex_devices::auto_pan::AUTO_PAN_TYPE_ID;
+            let native = utility || reverb || saturator || auto_pan;
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
             // Never adopt a provider's state/processor owner. The Utility,
-            // Reverb and Saturator constructors are closed; foreign factories return scalar facts
+            // Reverb, Saturator and Auto Pan constructors are closed; foreign factories return scalar facts
             // only, matched later to the audio owner's original source.
             let foreign_definition = if native {
                 None
@@ -274,7 +288,12 @@ impl ChainCustody {
                         .ok_or(AudioStorageError::UnsupportedGraph)?,
                 )
             };
-            let migrated = if saturator {
+            let migrated = if auto_pan {
+                hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if saturator {
                 hex_devices::saturator::SATURATOR_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
@@ -320,6 +339,7 @@ impl ChainCustody {
                 || !native
                 || !automation.parameter_ids().is_empty()
                 || saturator
+                || auto_pan
             {
                 StereoMatrix::identity()
             } else if reverb {
@@ -342,7 +362,19 @@ impl ChainCustody {
                     .then(trim)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let processor = if saturator {
+            let processor = if auto_pan {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::auto_pan::AutoPanDefinition::prepare_owned(
+                            &migrated,
+                            rate,
+                            automation.parameter_ids(),
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_processor_parts_on_control(),
+                )
+            } else if saturator {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::saturator::SaturatorDefinition::prepare_owned(

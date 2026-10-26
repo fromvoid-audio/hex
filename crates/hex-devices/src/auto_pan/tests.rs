@@ -563,6 +563,8 @@ fn independent_quarter_cycle_channel_oracles_and_zero_amount_cover_all_shapes() 
 }
 fn copy_runtime(p: &AutoPanRuntime) -> AutoPanRuntime {
     AutoPanRuntime {
+        base: p.base,
+        controls: p.controls,
         sample_rate: p.sample_rate,
         ramp_frames: p.ramp_frames,
         phase_cycles: p.phase_cycles,
