@@ -13,8 +13,8 @@ use super::midi_draw::StrokeModifiers;
 use super::{EditorView, midi::NoteField};
 use crate::theme;
 use gpui::{
-    Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ScrollWheelEvent, Window, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, ScrollWheelEvent, Window,
+    canvas, div, fill, point, prelude::*, px, relative, rgb, size,
 };
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
@@ -848,6 +848,11 @@ impl EditorView {
                     pitch_locked: draw_pitch_locked,
                     draw_mode,
                 };
+                entity.read(cx).renew_midi_draw_pointer(
+                    rendered_context,
+                    entity.entity_id(),
+                    window,
+                );
                 let Some(authoring_length) = rendered_context.authoring_length() else {
                     return;
                 };
@@ -908,7 +913,8 @@ impl EditorView {
                         if view.project_generation == generation
                             && view.state.as_ref().is_some_and(|s| s.revision == revision)
                             && view.detail_clip_id() == Some(clip_id)
-                            && (event.button == MouseButton::Middle || view.midi_pan.enabled)
+                            && (event.button == MouseButton::Middle
+                                || (view.midi_pan.enabled && !view.time_selection_key_held))
                         {
                             view.midi_focus.focus(window);
                             if view.begin_piano_pan(
@@ -932,6 +938,21 @@ impl EditorView {
                         {
                             return;
                         }
+                        if view.time_selection_key_held {
+                            view.cancel_all_midi_marquees();
+                            view.midi_focus.focus(window);
+                            if view.begin_midi_grid_time_selection(
+                                rendered_context.bounds,
+                                f32::from(event.position.x),
+                                event.modifiers.platform,
+                                window,
+                                view_cx,
+                            ) {
+                                view_cx.stop_propagation();
+                                view_cx.notify();
+                            }
+                            return;
+                        }
                         view.cancel_all_midi_marquees();
                         view.midi_focus.focus(window);
                         let mut hit_cycle = view.midi_hit_cycle;
@@ -950,7 +971,9 @@ impl EditorView {
                                 hit.map(|note| note.id),
                                 StrokeModifiers::from_platform(event.modifiers),
                                 window,
+                                view_cx,
                             ) {
+                                view_cx.stop_propagation();
                                 view_cx.notify();
                             }
                             return;
@@ -1212,84 +1235,34 @@ impl EditorView {
                 let hover_scene = std::sync::Arc::clone(&canvas_scene_events);
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     // GPUI's dragging() recognizes only the left button.
-                    if !matches!(
+                    if matches!(
                         event.pressed_button,
                         Some(MouseButton::Left | MouseButton::Middle)
-                    ) {
-                        // Observe exit before another control consumes bubble-phase motion.
-                        if !phase.capture() {
-                            return;
-                        }
-                        mouse_move_entity.update(cx, |view, view_cx| {
-                            let target = if hover_allowed
-                                && hitbox.is_hovered(window)
-                                && view.project_generation == generation
-                                && view.state.as_ref().is_some_and(|s| s.revision == revision)
-                                && view.detail_clip_id() == Some(clip_id)
-                                && !view.edit_pending()
-                            {
-                                hover_scene.hover(
-                                    f32::from(event.position.x - bounds.origin.x),
-                                    f32::from(event.position.y - bounds.origin.y),
-                                    width,
-                                    height,
-                                    view.midi_hit_cycle,
-                                    view.midi_selection.ids(),
-                                )
-                            } else {
-                                None
-                            };
-                            if view.midi_hover != target {
-                                view.midi_hover = target;
-                                view_cx.notify();
-                            }
-                        });
-                        return;
-                    }
-                    if !phase.bubble() {
+                    ) || !phase.capture()
+                    {
                         return;
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
-                        if event.pressed_button == Some(MouseButton::Middle) {
-                            return;
-                        }
-                        if view.midi_stroke.is_some()
-                            && view.update_midi_draw(
-                                [
-                                    f32::from(bounds.origin.x),
-                                    f32::from(bounds.origin.y),
-                                    f32::from(bounds.size.width),
-                                    f32::from(bounds.size.height),
-                                ],
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                StrokeModifiers::from_platform(event.modifiers),
-                            )
+                        let target = if hover_allowed
+                            && hitbox.is_hovered(window)
+                            && view.project_generation == generation
+                            && view.state.as_ref().is_some_and(|s| s.revision == revision)
+                            && view.detail_clip_id() == Some(clip_id)
+                            && !view.edit_pending()
                         {
-                            view_cx.notify();
-                        }
-                    });
-                });
-                let mouse_up_entity = entity.clone();
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                    if !phase.bubble() {
-                        return;
-                    }
-                    mouse_up_entity.update(cx, |view, view_cx| {
-                        if event.button != MouseButton::Left {
-                            return;
-                        }
-                        if view.midi_stroke.is_some() {
-                            view.finish_midi_draw(
-                                [
-                                    f32::from(bounds.origin.x),
-                                    f32::from(bounds.origin.y),
-                                    f32::from(bounds.size.width),
-                                    f32::from(bounds.size.height),
-                                ],
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                bounds.contains(&event.position),
-                                StrokeModifiers::from_platform(event.modifiers),
-                            );
+                            hover_scene.hover(
+                                f32::from(event.position.x - bounds.origin.x),
+                                f32::from(event.position.y - bounds.origin.y),
+                                width,
+                                height,
+                                view.midi_hit_cycle,
+                                view.midi_selection.ids(),
+                            )
+                        } else {
+                            None
+                        };
+                        if view.midi_hover != target {
+                            view.midi_hover = target;
                             view_cx.notify();
                         }
                     });

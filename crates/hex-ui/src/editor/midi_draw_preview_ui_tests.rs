@@ -231,3 +231,6 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
         history(&editor, &visual, expected);
     }
 }
+
+#[path = "midi_draw_capture_ui_tests.rs"]
+mod capture_tests;
