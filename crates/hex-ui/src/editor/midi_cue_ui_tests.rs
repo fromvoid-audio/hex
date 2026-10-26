@@ -163,6 +163,20 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
         );
         assert_eq!(view.midi_selection.ids(), before.3.as_slice());
     });
+    editor.update(cx, |view, cx| {
+        view.retain_clip_detail_for_time_selection();
+        view.selected_clip = None;
+        view.selected_track = None;
+        assert_eq!(view.detail_clip_id(), Some(clip));
+        assert_eq!(
+            view.midi_playhead_source_beat(),
+            Some(BeatTime::ONE.raw()),
+            "retained inspector playback belongs to its clip, independent of track focus"
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_playhead(&mut visual, 0.25);
     editor.update(cx, |view, _| {
         view.audio.take();
     });
