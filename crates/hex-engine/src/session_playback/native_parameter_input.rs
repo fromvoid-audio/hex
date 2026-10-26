@@ -2,7 +2,27 @@
 use crate::{Invalid, NativeParameterApplication};
 use hex_lattice::{NativeTransientInput, NativeTransientOperation};
 
+/// One control-allocated backing for the armed runtime. Callback operations
+/// overwrite only Copy fields; they never replace or retire this Box.
+#[derive(Clone, Copy, Default)]
+pub(super) struct State {
+    pub(super) input: Option<NativeTransientInput>,
+    pub(super) processing: Option<crate::native_parameter_input::Processing>,
+    pub(super) application: Option<NativeParameterApplication>,
+}
+impl State {
+    pub(super) fn is_empty(&self) -> bool {
+        self.input.is_none() && self.processing.is_none() && self.application.is_none()
+    }
+}
+
 impl crate::SessionPlayback {
+    /// Fixed DATA payload of the sole armed-state Box; allocator overhead is
+    /// excluded, matching the existing boxed keyboard runtime accounting.
+    pub(crate) const fn native_parameter_input_state_bytes() -> usize {
+        std::mem::size_of::<State>()
+    }
+
     pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
         self.revision.native_parameter_input_target()
     }
@@ -51,21 +71,28 @@ impl crate::SessionPlayback {
         {
             return Err(Invalid("native parameter input target is not current"));
         }
-        self.native_parameter_input = Some(input);
-        self.native_parameter_application = None;
+        let state = self
+            .native_parameter_state
+            .as_deref_mut()
+            .ok_or(Invalid("native parameter input state is not prepared"))?;
+        state.input = Some(input);
+        state.application = None;
         Ok(())
     }
 
     /// Lifecycle invalidation drops only Copy request state. Existing prepared
     /// fallback slots restore the base or authored curve on subsequent processing.
     pub fn invalidate_native_parameter_input(&mut self) {
-        self.native_parameter_input = None;
-        self.native_parameter_processing = None;
-        self.native_parameter_application = None;
+        if let Some(state) = self.native_parameter_state.as_deref_mut() {
+            *state = State::default();
+        }
     }
 
     pub fn take_native_parameter_application(&mut self) -> Option<NativeParameterApplication> {
-        self.native_parameter_application.take()
+        self.native_parameter_state
+            .as_deref_mut()?
+            .application
+            .take()
     }
 }
 
@@ -204,6 +231,14 @@ pub(super) mod tests {
             ] {
                 let target = DeviceAutomationTarget::Parameter(id);
                 let (mut runtime, editor) = fixture(owner, target, None);
+                let state_address =
+                    runtime.native_parameter_state.as_deref().unwrap() as *const State;
+                let actual = runtime.accounted_runtime_storage_bytes().unwrap();
+                assert!(
+                    actual
+                        <= SessionPlayback::interactive_runtime_allowance(&runtime.revision)
+                            .unwrap()
+                );
                 let operation =
                     NativeTransientOperation::Set(NativeTransientValue::Parameter { id, value });
                 runtime.set_native_parameter_input(operation).unwrap();
@@ -234,6 +269,19 @@ pub(super) mod tests {
                     (8, 8)
                 );
                 assert_eq!(cleared.operation, NativeTransientOperation::Clear(target));
+                runtime.invalidate_native_parameter_input();
+                assert!(
+                    runtime
+                        .native_parameter_state
+                        .as_deref()
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(
+                    runtime.native_parameter_state.as_deref().unwrap() as *const State,
+                    state_address
+                );
+                assert_eq!(runtime.accounted_runtime_storage_bytes().unwrap(), actual);
                 assert!(
                     editor.project().tracks()[0]
                         .devices()

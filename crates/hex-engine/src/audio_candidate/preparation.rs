@@ -126,9 +126,16 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
         let growth =
             crate::device_automation::input_construction_growth_overlap(device, Some(input))?;
         let mut quote = self.quote(project, sources)?;
+        // The optional runtime Box adds one exact exclusive DATA row; it is
+        // not an independently transferable processor or shared HANDLE.
+        quote.data_rows = quote
+            .data_rows
+            .checked_add(1)
+            .ok_or(AudioStorageError::Overflow)?;
         quote.metadata_data_bytes = quote
             .metadata_data_bytes
-            .checked_add(retained)
+            .checked_add(crate::SessionPlayback::native_parameter_input_state_bytes())
+            .and_then(|bytes| bytes.checked_add(retained))
             .ok_or(AudioStorageError::Overflow)?;
         quote.compiler_workspace_bytes = quote
             .compiler_workspace_bytes
@@ -723,6 +730,94 @@ mod tests {
         assert_ne!(copy.frames().as_ptr(), original);
         assert_eq!(copy.frames(), audio.frames());
         Some((project, cell))
+    }
+    #[test]
+    fn armed_native_state_box_is_quoted_and_observed_once_in_closed_custody() {
+        use hex_lattice_contract::{DeviceAutomationTarget, NativeDeviceMetadata};
+        use hex_project::{Command, Created, Editor};
+        let mut editor =
+            Editor::new(crate::audio_preparation::candidate_test_project(), 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("native device fixture")
+        };
+        let project = editor.project();
+        let asset = project.assets().next().unwrap().id();
+        let input = crate::native_parameter_input_target(
+            project,
+            device,
+            DeviceAutomationTarget::HostInputGain,
+        )
+        .unwrap();
+        let registry = hex_devices::native_registry().unwrap();
+        let effects = AudioCandidateEffects::new(&registry);
+        let context = crate::AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 8,
+        };
+        let prepare = |armed| {
+            let quote = if armed {
+                effects
+                    .quote_with_native_parameter_input(project, 1, input)
+                    .unwrap()
+            } else {
+                effects.quote(project, 1).unwrap()
+            };
+            let limits = quote.storage_reservation(65536).unwrap();
+            let mut cell = AudioCandidatePreparation::try_new_on_control(1, limits).unwrap();
+            cell.copy_resident_source_on_control(
+                asset,
+                &crate::Audio::new(48000, vec![[0.25; 2]; 8]).unwrap(),
+            )
+            .unwrap();
+            if armed {
+                effects
+                    .prepare_with_native_parameter_input(
+                        &mut cell, project, 11, context, None, input,
+                    )
+                    .unwrap();
+            } else {
+                effects
+                    .prepare(&mut cell, project, 11, context, None)
+                    .unwrap();
+            }
+            let summary = cell
+                .owner_on_control()
+                .unwrap()
+                .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                    data_rows: quote.data_rows,
+                    handle_rows: quote.handle_rows,
+                    root_rows: 1,
+                    max_retained_bytes: limits.max_prepared_data_bytes,
+                    max_construction_peak_bytes: limits.max_construction_data_bytes,
+                })
+                .unwrap();
+            assert!(summary.data.data_allocations <= quote.data_rows);
+            assert!(summary.data.retained_bytes <= limits.max_prepared_data_bytes);
+            cell.cleanup_on_control().unwrap();
+            (quote, summary)
+        };
+        // Host arming adds no provider/curve vector: its sole new DATA backing
+        // is the control-created runtime state and the corresponding ledger row.
+        let (plain_quote, plain) = prepare(false);
+        let (armed_quote, armed) = prepare(true);
+        let bytes = crate::SessionPlayback::native_parameter_input_state_bytes();
+        assert_eq!(armed_quote.data_rows, plain_quote.data_rows + 1);
+        assert_eq!(
+            armed_quote.metadata_data_bytes,
+            plain_quote.metadata_data_bytes + bytes
+        );
+        assert_eq!(armed.data.data_allocations, plain.data.data_allocations + 1);
+        assert_eq!(armed.data.data_bytes, plain.data.data_bytes + bytes);
     }
     #[test]
     fn persistent_collection_refusal_retry_and_original_owner_cleanup_are_control_side() {

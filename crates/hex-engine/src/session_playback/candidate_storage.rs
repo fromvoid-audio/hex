@@ -19,9 +19,7 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
-            native_parameter_input: _,
-            native_parameter_processing: _,
-            native_parameter_application: _,
+            native_parameter_state,
             compensation,
             device_metering: _,
             revision,
@@ -100,6 +98,19 @@ impl SessionPlayback {
             || !mutable_onsets.candidate_storage_empty()
         {
             return Err(AudioStorageError::UnsupportedGraph);
+        }
+        if native_parameter_state.is_some() != revision.native_parameter_input_target().is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if let Some(state) = native_parameter_state.as_deref() {
+            if !state.is_empty() {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+            l.bytes(
+                Owner::exclusive(state),
+                Location("native-parameter-input-state", 0),
+                Self::native_parameter_input_state_bytes(),
+            )?;
         }
         l.existing_shared(
             revision,

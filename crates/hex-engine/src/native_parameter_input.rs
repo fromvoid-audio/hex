@@ -76,6 +76,7 @@ pub struct NativeParameterApplication {
 
 /// One inline request, borrowed by the current chains only. Frozen tails never
 /// receive this context. Discard the observation on any later render refusal.
+#[derive(Clone, Copy)]
 pub(crate) struct Processing {
     input: NativeTransientInput,
     performance_start: u64,

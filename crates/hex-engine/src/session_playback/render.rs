@@ -376,17 +376,16 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        self.native_parameter_application = None;
-        self.native_parameter_processing = self
-            .native_parameter_input
-            .filter(|_| self.playing)
-            .map(|input| {
+        if let Some(state) = self.native_parameter_state.as_deref_mut() {
+            state.application = None;
+            state.processing = state.input.filter(|_| self.playing).map(|input| {
                 crate::native_parameter_input::Processing::new(
                     input,
                     self.performance_frame,
                     self.revision.arrangement().main_latency_frames(),
                 )
             });
+        }
         self.begin_midi_capture_render(output.len());
         if self.revision.resource_scope.is_some()
             && self.revision.resource_scope != sources.map(|s| s.id())
@@ -612,10 +611,9 @@ impl SessionPlayback {
             }
         }
         if result.is_ok() {
-            self.native_parameter_application = self
-                .native_parameter_processing
-                .as_ref()
-                .and_then(|input| input.applied);
+            if let Some(state) = self.native_parameter_state.as_deref_mut() {
+                state.application = state.processing.as_ref().and_then(|input| input.applied);
+            }
             self.seal_midi_capture_render();
         }
         result
@@ -784,7 +782,9 @@ impl SessionPlayback {
                             index,
                             foreign,
                             observer,
-                            self.native_parameter_processing.as_mut(),
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     let clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -811,7 +811,9 @@ impl SessionPlayback {
                             output_offset,
                             foreign,
                             observer,
-                            self.native_parameter_processing.as_mut(),
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 } else {
@@ -827,7 +829,9 @@ impl SessionPlayback {
                         &mut output[output_offset..chunk_end],
                         output_offset,
                         Some(&main_clock),
-                        self.native_parameter_processing.as_mut(),
+                        self.native_parameter_state
+                            .as_deref_mut()
+                            .and_then(|state| state.processing.as_mut()),
                         observer,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1173,7 +1177,9 @@ impl SessionPlayback {
                     )?;
                     if stateful_effects {
                         crate::native_parameter_input::process_range(
-                            self.native_parameter_processing.as_mut(),
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                             &mut self.device_chains[index],
                             0..track.instrument_position(),
                             render_output,
@@ -1318,7 +1324,9 @@ impl SessionPlayback {
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
                         let effect_count = chain.len();
                         crate::native_parameter_input::process_range(
-                            self.native_parameter_processing.as_mut(),
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
                             chain,
                             track.instrument_position()..effect_count,
                             render_output,
@@ -1431,7 +1439,9 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
                     let range = 0..chain.len();
                     crate::native_parameter_input::process_range(
-                        self.native_parameter_processing.as_mut(),
+                        self.native_parameter_state
+                            .as_deref_mut()
+                            .and_then(|state| state.processing.as_mut()),
                         chain,
                         range,
                         render_output,
@@ -1602,7 +1612,9 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let range = 0..chain.len();
                 crate::native_parameter_input::process_range(
-                    self.native_parameter_processing.as_mut(),
+                    self.native_parameter_state
+                        .as_deref_mut()
+                        .and_then(|state| state.processing.as_mut()),
                     chain,
                     range,
                     frames,
@@ -1671,7 +1683,9 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             let range = 0..chain.len();
             crate::native_parameter_input::process_range(
-                self.native_parameter_processing.as_mut(),
+                self.native_parameter_state
+                    .as_deref_mut()
+                    .and_then(|state| state.processing.as_mut()),
                 chain,
                 range,
                 frames,

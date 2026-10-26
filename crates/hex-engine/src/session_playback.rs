@@ -429,9 +429,8 @@ pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
     gain_recording_override: Option<f32>,
-    native_parameter_input: Option<hex_lattice::NativeTransientInput>,
-    native_parameter_processing: Option<crate::native_parameter_input::Processing>,
-    native_parameter_application: Option<crate::NativeParameterApplication>,
+    // Optional control allocation; the callback mutates Copy contents only.
+    native_parameter_state: Option<Box<native_parameter_input::State>>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
@@ -818,9 +817,7 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
-            native_parameter_input: _,
-            native_parameter_processing: _,
-            native_parameter_application: _,
+            native_parameter_state: _,
             compensation,
             device_metering: _,
             revision: _,
@@ -1822,10 +1819,14 @@ impl SessionPlayback {
         let analytic_import = analytic_import::ImportPlan::new()?;
         let current_sampler_keyboards = Vec::new();
         let current_route_cut_scratch = Vec::new();
+        let native_parameter_state = revision
+            .native_parameter_input_target()
+            .map(|_| Box::new(native_parameter_input::State::default()));
         if let Some(allowance) = linear_resource_allowance {
             let actual = preroll::RuntimeStorage {
                 live_expression: false,
                 computer_keyboard: None,
+                native_parameter_state: native_parameter_state.is_some(),
                 compensation: compensation.as_ref(),
                 main_chain: &main_chain,
                 current_sampler_keyboards: &current_sampler_keyboards,
@@ -1872,9 +1873,7 @@ impl SessionPlayback {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             gain_recording_override: None,
-            native_parameter_input: None,
-            native_parameter_processing: None,
-            native_parameter_application: None,
+            native_parameter_state,
             compensation,
             device_metering: false,
             revision,
