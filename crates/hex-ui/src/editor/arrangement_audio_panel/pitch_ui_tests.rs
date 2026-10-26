@@ -16,6 +16,13 @@ fn pitch_is_a_dial_and_cancel_keeps_canonical_audio_unchanged(cx: &mut TestAppCo
         knob.top() >= sidebar.top() && knob.bottom() <= sidebar.bottom(),
         "pitch must be initially reachable: {knob:?} within {sidebar:?}"
     );
+    let gain = visual.debug_bounds("audio-clip-gain").unwrap();
+    assert!(
+        gain.left() >= knob.right()
+            && gain.right() <= sidebar.right()
+            && gain.bottom() <= sidebar.bottom(),
+        "pitch and gain must both remain reachable: {gain:?}, {knob:?}, {sidebar:?}"
+    );
     let value = visual
         .debug_bounds("audio-clip-pitch-value")
         .expect("pitch keeps editable cents readout");

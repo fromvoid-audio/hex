@@ -489,6 +489,7 @@ pub(super) fn number(
     });
     if field == Field::Pitch {
         return div()
+            .w(px(hex_widgets::COMPACT_DIAL_WIDTH))
             .h(px(hex_widgets::COMPACT_DIAL_HEIGHT))
             .flex_shrink_0()
             .flex()
