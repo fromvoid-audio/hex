@@ -14,7 +14,7 @@ use super::{
 };
 use crate::theme;
 use gpui::{
-    Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent,
     ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use hex_project::NoteId;
@@ -45,6 +45,16 @@ impl Default for State {
     }
 }
 impl State {
+    pub(super) fn is_open(&self) -> bool {
+        self.open
+    }
+    pub(super) fn marquee(&self) -> Option<&super::midi_selection::Marquee> {
+        self.marquee.as_ref()
+    }
+    pub(super) fn install_marquee(&mut self, marquee: super::midi_selection::Marquee) {
+        self.marquee = Some(marquee);
+    }
+
     pub(super) fn take_marquee(&mut self) -> Option<super::midi_selection::Marquee> {
         self.marquee.take()
     }
@@ -85,7 +95,7 @@ impl EditorView {
             selection_epoch: self.midi_selection.epoch(),
         })
     }
-    fn velocity_marquee_context(
+    pub(super) fn velocity_marquee_context(
         &self,
         bounds: CanvasBounds,
     ) -> Option<super::midi_selection::MarqueeContext> {
@@ -344,6 +354,13 @@ impl EditorView {
                         if !captured.bounds.is_valid() {
                             return;
                         }
+                        entity.read(cx).renew_midi_marquee_pointer(
+                            true,
+                            captured.bounds,
+                            key.clip,
+                            entity.entity_id(),
+                            window,
+                        );
                         entity.read(cx).renew_velocity_pointer(
                             captured,
                             entity.entity_id(),
@@ -541,7 +558,7 @@ impl EditorView {
                                     if event.modifiers.shift {
                                         view.cancel_midi_audition();
                                         view.clear_midi_time_selection();
-                                        view.midi_velocity.marquee = view
+                                        if let Some(marquee) = view
                                             .velocity_marquee_context(captured.bounds)
                                             .and_then(|context| {
                                                 super::midi_selection::Marquee::begin(
@@ -550,7 +567,18 @@ impl EditorView {
                                                     true,
                                                     &view.midi_selection,
                                                 )
-                                            });
+                                            })
+                                            && view.capture_midi_marquee_pointer(
+                                                &marquee,
+                                                super::midi_marquee::Surface::Velocity(Arc::clone(
+                                                    &down_scene,
+                                                )),
+                                                window,
+                                                cx,
+                                            )
+                                        {
+                                            view.midi_velocity.install_marquee(marquee);
+                                        }
                                     } else {
                                         view.begin_midi_velocity_time_selection(
                                             captured.bounds,
@@ -630,18 +658,12 @@ impl EditorView {
                         let movement = entity.clone();
                         let hover_scene = Arc::clone(&event_scene);
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                            if !event.dragging() {
-                                if !phase.capture() {
-                                    return;
-                                }
-                                movement.update(cx, |view, cx| {
-                                    if let Some(marquee) = view.midi_velocity.marquee.take() {
-                                        view.cancel_live_midi_marquee(marquee);
-                                        cx.notify();
-                                    }
-                                    let hover = if bounds.contains(&event.position)
-                                        && !view.edit_pending()
-                                    {
+                            if event.dragging() || !phase.capture() {
+                                return;
+                            }
+                            movement.update(cx, |view, cx| {
+                                let hover =
+                                    if bounds.contains(&event.position) && !view.edit_pending() {
                                         hover_scene.hit(
                                             [
                                                 f32::from(event.position.x - bounds.origin.x),
@@ -653,88 +675,8 @@ impl EditorView {
                                     } else {
                                         None
                                     };
-                                    if view.midi_velocity.hover != hover {
-                                        view.midi_velocity.hover = hover;
-                                        cx.notify();
-                                    }
-                                });
-                                return;
-                            }
-                            if !phase.bubble() {
-                                return;
-                            }
-                            movement.update(cx, |view, cx| {
-                                if let Some(mut marquee) = view.midi_velocity.marquee.take() {
-                                    let last = [
-                                        f32::from(event.position.x - bounds.origin.x),
-                                        f32::from(event.position.y - bounds.origin.y),
-                                    ];
-                                    let previous = marquee.hits();
-                                    let result = (event.pressed_button == Some(MouseButton::Left))
-                                        .then(|| view.velocity_marquee_context(captured.bounds))
-                                        .flatten()
-                                        .ok_or("velocity marquee context changed")
-                                        .and_then(|context| {
-                                            marquee.update_with_hits(
-                                                context,
-                                                &view.midi_selection,
-                                                last,
-                                                |first, last| {
-                                                    hover_scene
-                                                        .marquee_hits(first, last, width, height)
-                                                },
-                                            )
-                                        })
-                                        .and_then(|_| {
-                                            view.apply_live_midi_marquee(&mut marquee, &previous)
-                                        });
-                                    match result {
-                                        Ok(_) => view.midi_velocity.marquee = Some(marquee),
-                                        Err(error) => {
-                                            view.cancel_live_midi_marquee(marquee);
-                                            view.error = Some(error.into());
-                                        }
-                                    }
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }
-                            });
-                        });
-                        let release = entity.clone();
-                        let release_scene = Arc::clone(&event_scene);
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if !phase.bubble() || event.button != MouseButton::Left {
-                                return;
-                            }
-                            release.update(cx, |view, cx| {
-                                if let Some(mut marquee) = view.midi_velocity.marquee.take() {
-                                    let last = [
-                                        f32::from(event.position.x - bounds.origin.x),
-                                        f32::from(event.position.y - bounds.origin.y),
-                                    ];
-                                    let previous = marquee.hits();
-                                    let result = view
-                                        .velocity_marquee_context(captured.bounds)
-                                        .ok_or("velocity marquee context changed")
-                                        .and_then(|context| {
-                                            marquee.update_with_hits(
-                                                context,
-                                                &view.midi_selection,
-                                                last,
-                                                |first, last| {
-                                                    release_scene
-                                                        .marquee_hits(first, last, width, height)
-                                                },
-                                            )
-                                        })
-                                        .and_then(|_| {
-                                            view.apply_live_midi_marquee(&mut marquee, &previous)
-                                        });
-                                    if let Err(error) = result {
-                                        view.cancel_live_midi_marquee(marquee);
-                                        view.error = Some(error.into());
-                                    }
-                                    cx.stop_propagation();
+                                if view.midi_velocity.hover != hover {
+                                    view.midi_velocity.hover = hover;
                                     cx.notify();
                                 }
                             });

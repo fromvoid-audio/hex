@@ -275,3 +275,6 @@ fn velocity_dispatch_repaint_latency(cx: &mut TestAppContext) {
 
 #[path = "midi_velocity_size_ui_tests.rs"]
 mod sizing_tests;
+
+#[path = "midi_marquee_capture_ui_tests.rs"]
+mod marquee_tests;
