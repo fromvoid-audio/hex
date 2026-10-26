@@ -282,6 +282,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Float(1.0),
             presentation: ParameterPresentation::LinearAmplitudeDecibels,
         },
+        crate::parameter_binding::SCALAR_ENVELOPE,
         |c| c.settings.gain,
         |c, v| c.settings.gain = v,
     ),
@@ -297,6 +298,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Float(0.0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::SCALAR_ENVELOPE,
         |c| c.settings.balance,
         |c, v| c.settings.balance = v,
     ),
@@ -312,6 +314,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Float(1.0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::SCALAR_ENVELOPE,
         |c| c.settings.width,
         |c, v| c.settings.width = v,
     ),
@@ -325,6 +328,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Choice(0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::CHOICE_ENVELOPE,
         |c| match c.settings.channel_mode {
             ChannelMode::Stereo => 0,
             ChannelMode::Left => 1,
@@ -350,6 +354,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Bool(false),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
         |c| c.settings.invert_left,
         |c, v| c.settings.invert_left = v,
     ),
@@ -361,6 +366,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Bool(false),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
         |c| c.settings.invert_right,
         |c, v| c.settings.invert_right = v,
     ),
@@ -372,6 +378,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Bool(false),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
         |c| c.settings.mono,
         |c, v| c.settings.mono = v,
     ),
@@ -383,6 +390,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Bool(false),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
         |c| c.settings.mute,
         |c, v| c.settings.mute = v,
     ),
@@ -394,6 +402,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Bool(false),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
         |c| c.mid_side_enabled,
         |c, v| c.mid_side_enabled = v,
     ),
@@ -409,6 +418,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Float(0.0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::SCALAR_ENVELOPE,
         |c| c.mid_side_balance,
         |c, v| c.mid_side_balance = v,
     ),
@@ -420,6 +430,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Bool(false),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
         |c| c.settings.dc_remove,
         |c, v| c.settings.dc_remove = v,
     ),
@@ -431,6 +442,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Bool(false),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
         |c| c.settings.bass_mono,
         |c, v| c.settings.bass_mono = v,
     ),
@@ -446,6 +458,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Float(200.0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::SCALAR_ENVELOPE,
         |c| c.settings.bass_mono_cutoff_hz,
         |c, v| c.settings.bass_mono_cutoff_hz = v,
     ),
@@ -457,6 +470,7 @@ const BINDINGS: [crate::parameter_binding::Binding<UtilityControls>; 14] = [
             default: ParameterValue::Bool(false),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::BOOLEAN_ENVELOPE,
         |c| c.settings.bass_mono_audition,
         |c, v| c.settings.bass_mono_audition = v,
     ),
@@ -660,6 +674,26 @@ impl NativeDeviceMetadata for UtilityDefinition {
     }
 }
 
+// The current concrete direct-control path implements only these fixed
+// IDs, with value-only/no-smoothing updates. Other families may explicitly
+// implement structural/smoothed delivery without changing Binding metadata.
+fn runtime_parameter_automation_supported(parameter: ParameterId) -> bool {
+    let implemented = parameter
+        .value()
+        .checked_sub(1)
+        .is_some_and(|index| index < 14);
+    let Ok(binding) = crate::parameter_binding::binding(&BINDINGS, parameter) else {
+        return false;
+    };
+    implemented
+        && binding.declares_arrangement_automation()
+        && binding.semantics.normalization
+            != hex_lattice_contract::ParameterNormalization::Unspecified
+        && binding.semantics.stepping != hex_lattice_contract::ParameterStepping::Unspecified
+        && binding.semantics.change_impact == hex_lattice_contract::ParameterChangeImpact::ValueOnly
+        && binding.semantics.smoothing == hex_lattice_contract::ParameterSmoothing::None
+}
+
 impl NativeDeviceDefinition for UtilityDefinition {
     fn supports_parameter_automation(
         &self,
@@ -667,7 +701,11 @@ impl NativeDeviceDefinition for UtilityDefinition {
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
         decode_state(state)?;
-        Ok(DESCRIPTORS.iter().any(|d| d.id == parameter))
+        let Ok(binding) = crate::parameter_binding::binding(&BINDINGS, parameter) else {
+            return Ok(false);
+        };
+        binding.semantics.validate(binding.descriptor)?;
+        Ok(runtime_parameter_automation_supported(parameter))
     }
     fn prepare_automated_runtime_instance(
         &self,
@@ -780,6 +818,14 @@ impl UtilityDefinition {
         parameters: u16,
     ) -> Result<PreparedUtilityFilterRuntime, DeviceContractError> {
         state.require_asset_free_processing()?;
+        for (index, binding) in BINDINGS.iter().enumerate() {
+            if parameters & (1u16 << index) != 0 {
+                binding.semantics.validate(binding.descriptor)?;
+                if !runtime_parameter_automation_supported(binding.descriptor.id) {
+                    return Err(DeviceContractError::UnsupportedProcessingClass);
+                }
+            }
+        }
         let base = UtilityControls::decode(state)?;
         let mut automation = UtilityAutomation {
             controls: crate::parameter_binding::Controls::new(
@@ -885,7 +931,8 @@ impl UtilityAutomation {
         self.effective = previous.effective;
     }
     pub(crate) fn supports(&self, parameter: ParameterId) -> bool {
-        self.controls.supports(&BINDINGS, parameter)
+        runtime_parameter_automation_supported(parameter)
+            && self.controls.supports(&BINDINGS, parameter)
     }
     pub(crate) fn may_advance_dc(&self) -> bool {
         self.controls.base().settings.dc_remove || self.controls.admitted(10)

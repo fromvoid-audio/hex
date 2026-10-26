@@ -9,8 +9,8 @@
 //! resource custody or smoothing owner is introduced here.
 use hex_lattice::NativeParameterAutomation;
 use hex_lattice_contract::{
-    DeviceContractError as Error, ParameterDescriptor, ParameterId, ParameterKind,
-    ParameterPresentation, ParameterSemantics, ParameterValue,
+    DeviceContractError as Error, ParameterAccess, ParameterDescriptor, ParameterId,
+    ParameterSemantics, ParameterValue,
 };
 pub(crate) struct Binding<C> {
     pub descriptor: ParameterDescriptor,
@@ -34,34 +34,37 @@ enum Access<C> {
 impl<C> Binding<C> {
     pub const fn float(
         descriptor: ParameterDescriptor,
+        semantics: ParameterSemantics,
         read: fn(&C) -> f32,
         write: fn(&mut C, f32),
     ) -> Self {
         Self {
             descriptor,
-            semantics: arrangement(descriptor),
+            semantics,
             access: Access::Float { read, write },
         }
     }
     pub const fn boolean(
         descriptor: ParameterDescriptor,
+        semantics: ParameterSemantics,
         read: fn(&C) -> bool,
         write: fn(&mut C, bool),
     ) -> Self {
         Self {
             descriptor,
-            semantics: arrangement(descriptor),
+            semantics,
             access: Access::Bool { read, write },
         }
     }
     pub const fn choice(
         descriptor: ParameterDescriptor,
+        semantics: ParameterSemantics,
         read: fn(&C) -> u32,
         write: fn(&mut C, u32) -> Result<(), Error>,
     ) -> Self {
         Self {
             descriptor,
-            semantics: arrangement(descriptor),
+            semantics,
             access: Access::Choice { read, write },
         }
     }
@@ -72,7 +75,16 @@ impl<C> Binding<C> {
             Access::Choice { read, .. } => ParameterValue::Choice(read(controls)),
         }
     }
+    /// Declaration only: family runtime admission is a separate decision.
+    pub fn declares_arrangement_automation(&self) -> bool {
+        self.semantics.access == ParameterAccess::ReadWrite
+            && self.semantics.automation
+                == hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope
+    }
     pub fn write(&self, controls: &mut C, value: ParameterValue) -> Result<(), Error> {
+        if self.semantics.access == ParameterAccess::ReadOnly {
+            return Err(Error::InvalidParameterValue);
+        }
         self.descriptor.validate(value)?;
         match (&self.access, value) {
             (Access::Float { write, .. }, ParameterValue::Float(v)) => write(controls, v),
@@ -83,33 +95,28 @@ impl<C> Binding<C> {
         Ok(())
     }
 }
-const fn arrangement(descriptor: ParameterDescriptor) -> ParameterSemantics {
-    use hex_lattice_contract::{
-        ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
-        ParameterModulation as M, ParameterNormalization as N, ParameterSmoothing as S,
-        ParameterStepping as T,
-    };
-    let (normalization, stepping) = match descriptor.kind {
-        ParameterKind::Bool => (N::Discrete, T::Boolean),
-        ParameterKind::Choice { .. } => (N::Discrete, T::Choice),
-        ParameterKind::Float { .. } => (
-            match descriptor.presentation {
-                ParameterPresentation::Logarithmic => N::PositiveLogarithmic,
-                _ => N::Linear,
-            },
-            T::Continuous,
-        ),
-    };
-    ParameterSemantics {
-        access: A::ReadWrite,
-        normalization,
-        stepping,
-        automation: E::DeviceArrangementEnvelope,
-        modulation: M::Unsupported,
-        smoothing: S::None,
-        change_impact: I::ValueOnly,
-    }
-}
+/// Explicit declarations for the two currently implemented direct envelope
+/// families. Callers select each binding's declaration; presentation and table
+/// membership never grant a capability. Modulation remains unsupported.
+pub(crate) const SCALAR_ENVELOPE: ParameterSemantics = ParameterSemantics {
+    access: ParameterAccess::ReadWrite,
+    normalization: hex_lattice_contract::ParameterNormalization::Linear,
+    stepping: hex_lattice_contract::ParameterStepping::Continuous,
+    automation: hex_lattice_contract::ParameterAutomation::DeviceArrangementEnvelope,
+    modulation: hex_lattice_contract::ParameterModulation::Unsupported,
+    smoothing: hex_lattice_contract::ParameterSmoothing::None,
+    change_impact: hex_lattice_contract::ParameterChangeImpact::ValueOnly,
+};
+pub(crate) const BOOLEAN_ENVELOPE: ParameterSemantics = ParameterSemantics {
+    normalization: hex_lattice_contract::ParameterNormalization::Discrete,
+    stepping: hex_lattice_contract::ParameterStepping::Boolean,
+    ..SCALAR_ENVELOPE
+};
+pub(crate) const CHOICE_ENVELOPE: ParameterSemantics = ParameterSemantics {
+    normalization: hex_lattice_contract::ParameterNormalization::Discrete,
+    stepping: hex_lattice_contract::ParameterStepping::Choice,
+    ..SCALAR_ENVELOPE
+};
 pub(crate) const fn descriptors<C, const N: usize>(
     bindings: &[Binding<C>; N],
     seed: ParameterDescriptor,
@@ -163,7 +170,9 @@ impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
     pub fn supports(&self, bindings: &[Binding<C>; N], id: ParameterId) -> bool {
         bindings
             .binary_search_by_key(&id, |b| b.descriptor.id)
-            .is_ok_and(|i| self.admitted(i))
+            .is_ok_and(|i| {
+                self.admitted(i) && bindings[i].semantics.access == ParameterAccess::ReadWrite
+            })
     }
     pub fn resolve(
         &self,
@@ -182,7 +191,9 @@ impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
             let index = bindings
                 .binary_search_by_key(&id, |b| b.descriptor.id)
                 .map_err(|_| Error::UnknownParameter)?;
-            if !self.admitted(index) {
+            if !self.admitted(index)
+                || bindings[index].semantics.access == ParameterAccess::ReadOnly
+            {
                 return Err(Error::UnknownParameter);
             }
             *slot = index;
@@ -211,8 +222,11 @@ impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
         }
         for (index, binding) in bindings.iter().enumerate() {
             if !self.initialized || current[index] != self.last[index] {
-                let value = current[index].unwrap_or_else(|| binding.read(&self.base));
-                binding.write(&mut next.effective, value)?;
+                if let Some(value) = current[index] {
+                    binding.write(&mut next.effective, value)?;
+                } else if self.initialized && self.last[index].is_some() {
+                    binding.write(&mut next.effective, binding.read(&self.base))?;
+                }
             }
         }
         next.last = current;
@@ -252,6 +266,7 @@ impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hex_lattice_contract::{ParameterKind, ParameterPresentation};
     #[derive(Clone, Copy, Debug, PartialEq)]
     struct Pair {
         a: f32,
@@ -270,6 +285,7 @@ mod tests {
                 default: ParameterValue::Float(1.0),
                 presentation: ParameterPresentation::Linear,
             },
+            SCALAR_ENVELOPE,
             |c| c.a,
             |c, v| c.a = v,
         ),
@@ -285,6 +301,7 @@ mod tests {
                 default: ParameterValue::Float(1.0),
                 presentation: ParameterPresentation::Linear,
             },
+            SCALAR_ENVELOPE,
             |c| c.b,
             |c, v| c.b = v,
         ),
@@ -366,5 +383,110 @@ mod tests {
         );
         apply(&mut transaction, &values(None, None)).unwrap_err();
         assert_eq!(transaction.effective(), candidate.effective());
+    }
+    #[test]
+    fn declarations_are_explicit_and_readonly_is_never_written_or_admitted() {
+        use hex_lattice_contract::{ParameterAutomation as A, ParameterChangeImpact as I};
+        let readonly = Binding::float(
+            TABLE[0].descriptor,
+            ParameterSemantics {
+                access: ParameterAccess::ReadOnly,
+                automation: A::Unsupported,
+                ..SCALAR_ENVELOPE
+            },
+            |c: &Pair| c.a,
+            |c, v| c.a = v,
+        );
+        readonly.semantics.validate(readonly.descriptor).unwrap();
+        assert!(!readonly.declares_arrangement_automation());
+        let mut base = Pair { a: 1.0, b: 2.0 };
+        assert!(
+            readonly
+                .write(&mut base, ParameterValue::Float(3.0))
+                .is_err()
+        );
+        assert_eq!(base, Pair { a: 1.0, b: 2.0 });
+        let table = [readonly];
+        let controls = Controls::new(base, [true]);
+        let input = Values {
+            ids: vec![ParameterId::from_static(1)],
+            values: vec![Some(ParameterValue::Float(3.0))],
+        };
+        assert!(!controls.supports(&table, input.ids[0]));
+        assert!(controls.resolve(&table, &input).is_err());
+        // A missing writable target does not attempt to rewrite read-only base
+        // fields during initial effective-state installation.
+        let empty = Values {
+            ids: Vec::new(),
+            values: Vec::new(),
+        };
+        let map = controls.resolve(&table, &empty).unwrap();
+        assert_eq!(
+            controls
+                .sample(&table, &map, &empty, 0)
+                .unwrap()
+                .unwrap()
+                .effective(),
+            base
+        );
+        for impact in [I::ValueOnly, I::Structural] {
+            let semantics = ParameterSemantics {
+                automation: A::Unsupported,
+                change_impact: impact,
+                ..SCALAR_ENVELOPE
+            };
+            let binding = Binding::float(
+                TABLE[0].descriptor,
+                semantics,
+                |c: &Pair| c.a,
+                |c, v| c.a = v,
+            );
+            assert_eq!(binding.semantics, semantics);
+            assert!(!binding.declares_arrangement_automation());
+            // Final-value delivery is producer-neutral. Only the actual family
+            // may admit this target; the generic writer never grants envelopes.
+            let table = [binding];
+            let controls = Controls::new(base, [true]);
+            let map = controls.resolve(&table, &input).unwrap();
+            assert_eq!(
+                controls
+                    .sample(&table, &map, &input, 0)
+                    .unwrap()
+                    .unwrap()
+                    .effective(),
+                Pair { a: 3.0, b: 2.0 }
+            );
+        }
+    }
+    #[test]
+    fn explicit_logarithmic_mapping_does_not_follow_linear_presentation() {
+        use hex_lattice_contract::ParameterNormalization;
+        let descriptor = ParameterDescriptor {
+            kind: ParameterKind::Float {
+                min: 1.0,
+                max: 9.0,
+                unit: None,
+            },
+            ..TABLE[0].descriptor
+        };
+        let semantics = ParameterSemantics {
+            normalization: ParameterNormalization::PositiveLogarithmic,
+            ..SCALAR_ENVELOPE
+        };
+        let binding = Binding::float(descriptor, semantics, |c: &Pair| c.a, |c, v| c.a = v);
+        assert_eq!(
+            binding.descriptor.presentation,
+            ParameterPresentation::Linear
+        );
+        assert_eq!(binding.semantics, semantics);
+        binding.semantics.validate(binding.descriptor).unwrap();
+        assert_eq!(
+            binding
+                .semantics
+                .normalization
+                .denormalize(descriptor, 0.5)
+                .unwrap(),
+            ParameterValue::Float(3.0)
+        );
     }
 }

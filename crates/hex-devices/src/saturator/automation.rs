@@ -16,6 +16,11 @@ impl SaturatorDefinition {
         }
         let mut automation_mask = 0u8;
         for parameter in parameters {
+            let binding = crate::parameter_binding::binding(&BINDINGS, *parameter)?;
+            binding.semantics.validate(binding.descriptor)?;
+            if !runtime_parameter_automation_supported(*parameter) {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
             let shift = parameter
                 .value()
                 .checked_sub(1)
@@ -40,11 +45,12 @@ impl SaturatorDefinition {
 
 impl PreparedSaturator {
     pub(super) fn supports(&self, parameter: ParameterId) -> bool {
-        parameter
-            .value()
-            .checked_sub(1)
-            .and_then(|shift| 1u8.checked_shl(shift))
-            .is_some_and(|bit| self.automation_mask & bit != 0)
+        runtime_parameter_automation_supported(parameter)
+            && parameter
+                .value()
+                .checked_sub(1)
+                .and_then(|shift| 1u8.checked_shl(shift))
+                .is_some_and(|bit| self.automation_mask & bit != 0)
     }
     pub(super) fn check_inline_ownership(&self) {
         let Self {

@@ -39,6 +39,7 @@ const BINDINGS: [crate::parameter_binding::Binding<SaturatorSettings>; 4] = [
             default: ParameterValue::Float(0.0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::SCALAR_ENVELOPE,
         |c| c.drive_db,
         |c, v| c.drive_db = v,
     ),
@@ -54,6 +55,7 @@ const BINDINGS: [crate::parameter_binding::Binding<SaturatorSettings>; 4] = [
             default: ParameterValue::Float(0.0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::SCALAR_ENVELOPE,
         |c| c.output_db,
         |c, v| c.output_db = v,
     ),
@@ -69,6 +71,7 @@ const BINDINGS: [crate::parameter_binding::Binding<SaturatorSettings>; 4] = [
             default: ParameterValue::Float(1.0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::SCALAR_ENVELOPE,
         |c| c.dry_wet,
         |c, v| c.dry_wet = v,
     ),
@@ -82,6 +85,7 @@ const BINDINGS: [crate::parameter_binding::Binding<SaturatorSettings>; 4] = [
             default: ParameterValue::Choice(0),
             presentation: ParameterPresentation::Linear,
         },
+        crate::parameter_binding::CHOICE_ENVELOPE,
         |c| match c.curve {
             SaturationCurve::SoftClip => 0,
             SaturationCurve::DigitalClip => 1,
@@ -241,6 +245,26 @@ impl NativeDeviceMetadata for SaturatorDefinition {
     }
 }
 
+// The current concrete direct-control path implements only these fixed
+// IDs, with value-only/no-smoothing updates. Other families may explicitly
+// implement structural/smoothed delivery without changing Binding metadata.
+fn runtime_parameter_automation_supported(parameter: ParameterId) -> bool {
+    let implemented = parameter
+        .value()
+        .checked_sub(1)
+        .is_some_and(|index| index < 4);
+    let Ok(binding) = crate::parameter_binding::binding(&BINDINGS, parameter) else {
+        return false;
+    };
+    implemented
+        && binding.declares_arrangement_automation()
+        && binding.semantics.normalization
+            != hex_lattice_contract::ParameterNormalization::Unspecified
+        && binding.semantics.stepping != hex_lattice_contract::ParameterStepping::Unspecified
+        && binding.semantics.change_impact == hex_lattice_contract::ParameterChangeImpact::ValueOnly
+        && binding.semantics.smoothing == hex_lattice_contract::ParameterSmoothing::None
+}
+
 impl NativeDeviceDefinition for SaturatorDefinition {
     fn supports_parameter_automation(
         &self,
@@ -248,9 +272,11 @@ impl NativeDeviceDefinition for SaturatorDefinition {
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
         decode(state)?;
-        Ok(DESCRIPTORS
-            .iter()
-            .any(|descriptor| descriptor.id == parameter))
+        let Ok(binding) = crate::parameter_binding::binding(&BINDINGS, parameter) else {
+            return Ok(false);
+        };
+        binding.semantics.validate(binding.descriptor)?;
+        Ok(runtime_parameter_automation_supported(parameter))
     }
     fn prepare_automated_runtime_instance(
         &self,
