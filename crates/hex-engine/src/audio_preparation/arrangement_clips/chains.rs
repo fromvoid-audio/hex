@@ -652,7 +652,9 @@ mod tests {
         if !crate::audio_storage_constructor_layout_supported() {
             return;
         }
-        for saturator in [false, true] {
+        for family in 0..3 {
+            let saturator = family == 1;
+            let auto_pan = family == 2;
             let mut static_bytes = None;
             for automated in [false, true] {
                 let (project, mut bank) = crate::audio_preparation::tests::fixture(2);
@@ -662,7 +664,11 @@ mod tests {
                 let mut snapshot = project.snapshot();
                 snapshot.tracks[0].gain = 0.5;
                 snapshot.tracks[0].balance = -0.25;
-                let state = if saturator {
+                let state = if auto_pan {
+                    hex_devices::auto_pan::AUTO_PAN_DEFINITION
+                        .default_state()
+                        .unwrap()
+                } else if saturator {
                     let definition = &hex_devices::saturator::SATURATOR_DEFINITION;
                     definition
                         .patch_parameter(
@@ -691,7 +697,9 @@ mod tests {
                         automation: if automated {
                             vec![hex_project::DeviceAutomation {
                                 target: hex_lattice_contract::DeviceAutomationTarget::Parameter(
-                                    if saturator {
+                                    if auto_pan {
+                                        hex_devices::auto_pan::parameter::AMOUNT
+                                    } else if saturator {
                                         hex_devices::saturator::parameter::DRIVE
                                     } else {
                                         hex_devices::utility::parameter::GAIN
@@ -700,21 +708,17 @@ mod tests {
                                 points: vec![
                                     hex_project::AutomationPoint {
                                         beat: hex_project::BeatTime::ZERO,
-                                        value: hex_project::AutomationValue::new(if saturator {
-                                            0.5
-                                        } else {
-                                            0.005
-                                        })
+                                        value: hex_project::AutomationValue::new(
+                                            if saturator || auto_pan { 0.5 } else { 0.005 },
+                                        )
                                         .unwrap(),
                                         outgoing: hex_project::AutomationInterpolation::Linear,
                                     },
                                     hex_project::AutomationPoint {
                                         beat: hex_project::BeatTime::from_raw(1 << 26),
-                                        value: hex_project::AutomationValue::new(if saturator {
-                                            0.75
-                                        } else {
-                                            0.015
-                                        })
+                                        value: hex_project::AutomationValue::new(
+                                            if saturator || auto_pan { 0.75 } else { 0.015 },
+                                        )
                                         .unwrap(),
                                         outgoing: hex_project::AutomationInterpolation::Step,
                                     },
@@ -772,7 +776,7 @@ mod tests {
                 let registry = hex_devices::native_registry().unwrap();
                 let input =
                     AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision();
-                let input = if saturator {
+                let input = if saturator || auto_pan {
                     input.with_effect_registry(&registry)
                 } else {
                     input
@@ -825,11 +829,11 @@ mod tests {
                 owner.test_render(&mut actual).unwrap();
                 reference.render(&mut expected).unwrap();
                 assert_eq!(actual, expected);
-                if saturator {
+                if saturator || auto_pan {
                     assert!(actual[..16].iter().any(|frame| frame[0] != 0.0));
                     assert!(
                         actual[16..].iter().all(|frame| *frame == [0.0; 2]),
-                        "memoryless Saturator has no output tail"
+                        "memoryless Saturator/Auto Pan has no output tail"
                     );
                 } else {
                     assert!(actual[16..].iter().any(|f| f[0] != 0.0));

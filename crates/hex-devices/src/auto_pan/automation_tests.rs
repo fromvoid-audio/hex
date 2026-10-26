@@ -140,3 +140,72 @@ fn invalid_first_values_and_unadmitted_ids_leave_effective_controls_and_dsp_pris
     process(prepared.create_runtime().as_mut(), &mut expected, &valid);
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn inheritance_rebuilds_changed_base_and_removed_targets_but_preserves_effective_ramps() {
+    let base = AUTO_PAN_DEFINITION.default_state().unwrap();
+    // Public superset admission with an actual one-parameter borrowed producer.
+    let all = [
+        parameter::AMOUNT,
+        parameter::RATE,
+        parameter::RIGHT_PHASE,
+        parameter::WAVEFORM,
+    ];
+    let values = Values {
+        ids: vec![parameter::AMOUNT],
+        values: vec![Some(ParameterValue::Float(1.0))],
+    };
+    let prepared = factory(&base, &all);
+    let mut previous = prepared.create_runtime();
+    process(previous.as_mut(), &mut [[1.0, -0.5]; 13], &values);
+    let snapshot = *previous.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
+    let mut inherited = prepared.create_runtime();
+    inherited.copy_history_from(previous.as_ref());
+    let mut actual = [[1.0, -0.5]; 83];
+    let mut expected = actual;
+    process(inherited.as_mut(), &mut actual, &values);
+    process(previous.as_mut(), &mut expected, &values);
+    assert_eq!(
+        actual, expected,
+        "unchanged cache must not retarget to latent base"
+    );
+    // Ordinary frozen processing advances the last committed transitions.
+    let mut frozen = snapshot;
+    let mut held = snapshot;
+    frozen.process_block(&mut actual, &EMPTY_DEVICE_RESOURCES);
+    process(&mut held, &mut expected, &values);
+    assert_eq!(actual, expected);
+    let changed_base = AUTO_PAN_DEFINITION
+        .patch_parameter(&base, parameter::RATE, ParameterValue::Float(4.0))
+        .unwrap();
+    let mut changed = factory(&changed_base, &all).create_runtime();
+    changed.copy_history_from(&snapshot);
+    // Equivalent manual retarget, preserving the active amount instead of the
+    // candidate's latent .5. The unchanged producer must still rebuild rate.
+    let target = AUTO_PAN_DEFINITION
+        .patch_parameter(&changed_base, parameter::AMOUNT, ParameterValue::Float(1.0))
+        .unwrap();
+    let mut manual = factory(&target, &[]).create_runtime();
+    manual.copy_history_from(&snapshot);
+    actual.fill([1.0, -0.5]);
+    expected = actual;
+    process(changed.as_mut(), &mut actual, &values);
+    manual.process_block(&mut expected, &EMPTY_DEVICE_RESOURCES);
+    assert_eq!(actual, expected);
+    // Missing origin restores base through the same transition. A last-lane
+    // removal takes the ordinary path and must continue that identical history.
+    let absent = Values {
+        ids: values.ids.clone(),
+        values: vec![None],
+    };
+    let mut missing = prepared.create_runtime();
+    missing.copy_history_from(&snapshot);
+    let mut removed = factory(&base, &[]).create_runtime();
+    removed.copy_history_from(&snapshot);
+    actual.fill([1.0, -0.5]);
+    expected = actual;
+    process(missing.as_mut(), &mut actual, &absent);
+    removed.process_block(&mut expected, &EMPTY_DEVICE_RESOURCES);
+    assert_eq!(actual, expected);
+    assert_eq!(AUTO_PAN_DEFINITION.default_state().unwrap(), base);
+}
