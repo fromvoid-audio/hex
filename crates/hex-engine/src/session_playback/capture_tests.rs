@@ -120,6 +120,31 @@ fn metered_analytic_capture_applies_track_gain_once_and_preserves_main_pcm() {
 }
 
 #[test]
+fn track_meter_reports_post_fader_audio_including_zero_gain_and_mute() {
+    for (gain, muted) in [(1.0, false), (0.25, false), (0.0, false), (1.0, true)] {
+        let mut snapshot = audio_fixture_project(false, false, false).snapshot();
+        snapshot.tracks[0].gain = gain;
+        snapshot.tracks[0].muted = muted;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let revision = prepare_audio(&project);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        let mut runtime = linear(revision);
+        runtime.set_device_metering(true);
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+        let actual = observation
+            .track_output_meter(project.tracks()[0].id())
+            .unwrap()
+            .take_track_output();
+        let expected = if muted { 0.0 } else { 0.4 * 0.5 * gain };
+        assert!(
+            (actual - expected).abs() < 1e-7,
+            "gain={gain} muted={muted} actual={actual} expected={expected}"
+        );
+    }
+}
+
+#[test]
 fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
     for metered in [false, true] {
         use hex_devices::saturator::{SATURATOR_DEFINITION, parameter};
@@ -823,6 +848,12 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             )
             .unwrap(),
         );
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&retarget_revision).unwrap();
+        observation
+            .track_output_meter(project.tracks()[0].id())
+            .unwrap()
+            .take_track_output();
         let mut retarget = SessionPlayback::new(retarget_revision).unwrap();
         retarget.set_device_metering(metered);
         retarget.try_inherit_state_from(&mut gain_source).unwrap();
@@ -842,6 +873,16 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
             assert_eq!(*frame, expected);
             assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+        }
+        if metered {
+            let observed = observation
+                .track_output_meter(project.tracks()[0].id())
+                .unwrap()
+                .take_track_output();
+            assert!(
+                (observed - (0.4 + 0.25) * 0.125).abs() < 1e-7,
+                "track meter must follow the new post-fader gain: {observed}"
+            );
         }
         // Owner removal uses a local MIDI source, preserving the current
         // handoff contract that does not replace a live routed source layout.

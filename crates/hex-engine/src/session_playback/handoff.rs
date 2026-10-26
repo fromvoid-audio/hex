@@ -682,12 +682,15 @@ impl SessionPlayback {
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
+        // A paused loop-only edit may carry the closed compensation history;
+        // the planner below still refuses incompatible sources and active tails.
+        // An edited base tempo map or a live change still needs the old guard.
         if timing_changed
             && (self.revision.arrangement().main_latency_frames() > 0
                 || previous.revision.arrangement().main_latency_frames() > 0)
             && (previous.playing
-                || previous.performance_frame != 0
-                || previous.arrangement_frame != 0)
+                || !same_base
+                    && (previous.performance_frame != 0 || previous.arrangement_frame != 0))
         {
             return Err(SessionPlaybackError::Arrangement(
                 "compensated timing changed · stop transport before applying this revision",

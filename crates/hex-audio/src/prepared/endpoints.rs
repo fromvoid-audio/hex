@@ -5,7 +5,8 @@ use super::*;
 use crate::native_callback_owner::{Guard, Terminal, reserve};
 
 pub struct Client {
-    endpoints: Guard<ClientEndpoints>,
+    pub(super) endpoints: Guard<ClientEndpoints>,
+    pub(super) retired_receipts: Option<Arc<retired_scalar_receipts::Mailbox>>,
     worker_owned_publication: bool,
 }
 pub struct WorkerControl {
@@ -20,8 +21,9 @@ pub(crate) struct ClientEndpoints {
     commands: Producer<QueuedCommand>,
     spectrum_target: spectrum_target::SpectrumTargetControl,
     processor_audition: processor_audition::ProcessorAuditionTargetControl,
-    gain_recording: crate::gain_recording::Control,
-    native_parameter_input: crate::native_parameter_input::Control,
+    pub(super) gain_recording: crate::gain_recording::Control,
+    pub(super) native_parameter_input: crate::native_parameter_input::Control,
+    pub(crate) retained_receipt_target: Option<ScalarReceiptTarget>,
     midi_recording: crate::midi_recording::Control,
     pub(super) status: Arc<Status>,
     command_ticket: u64,
@@ -29,6 +31,7 @@ pub(crate) struct ClientEndpoints {
     probe: Option<crate::native_callback_owner::DropProbe>,
 }
 pub(crate) struct EndpointTerminals {
+    pub(crate) receipts: retired_scalar_receipts::ReceiptPublisher,
     pub(crate) client: Terminal<ClientEndpoints>,
     pub(crate) publication: Terminal<PublicationControl>,
 }
@@ -58,6 +61,7 @@ impl Control {
             .map(Arc::clone)
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
         publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
+        let (retired_receipts, receipts) = retired_scalar_receipts::channel();
         let (endpoints, client) = reserve(ClientEndpoints {
             diagnostics,
             output_identity,
@@ -72,6 +76,7 @@ impl Control {
             midi_recording,
             status,
             command_ticket,
+            retained_receipt_target: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             probe: None,
         });
@@ -79,10 +84,12 @@ impl Control {
         (
             Client {
                 endpoints,
+                retired_receipts: Some(retired_receipts),
                 worker_owned_publication: false,
             },
             WorkerControl { endpoint },
             EndpointTerminals {
+                receipts,
                 client,
                 publication,
             },
@@ -625,6 +632,13 @@ impl ClientEndpoints {
             .as_ref()
             .map_or(Some(None), |reader| reader.native_identity().map(Some))
     }
+    pub(crate) fn matches_retired_scalar_output(
+        &self,
+        status_identity: usize,
+        output: u64,
+    ) -> bool {
+        Arc::as_ptr(&self.status) as usize == status_identity && self.output_identity == output
+    }
     pub(crate) fn matches(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
     }
@@ -690,5 +704,6 @@ pub(super) fn constructor_endpoint_storage_quote() -> Option<usize> {
         >())?
         .checked_add(std::mem::size_of::<Client>())?
         .checked_add(std::mem::size_of::<WorkerControl>())?
-        .checked_add(resident_forwarding::constructor_storage_quote())
+        .checked_add(resident_forwarding::constructor_storage_quote())?
+        .checked_add(retired_scalar_receipts::storage_bytes())
 }

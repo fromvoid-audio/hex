@@ -1549,6 +1549,8 @@ impl EditorView {
             let (solo_background, solo_text) = super::track_gain::activator_colors(track.soloed());
             let utilities = div()
                 .id(("track-header-utilities", track_id.value()))
+                .w_full()
+                .min_w_0()
                 .flex()
                 .gap(px(2.0))
                 .child(
@@ -1558,6 +1560,8 @@ impl EditorView {
                         ("gain-lane", track_id.value()),
                     )
                     .h(px(18.0))
+                    .flex_shrink()
+                    .min_w(px(14.0))
                     .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
                     .on_click(cx.listener(move |view, _, window, cx| {
                         cx.stop_propagation();
@@ -1571,6 +1575,8 @@ impl EditorView {
                         ("track-return-sends", track_id.value()),
                     )
                     .h(px(18.0))
+                    .flex_shrink()
+                    .min_w(px(14.0))
                     .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
                     .on_click(cx.listener(move |view, _, _, cx| {
                         cx.stop_propagation();
@@ -1656,7 +1662,8 @@ impl EditorView {
                 .child(
                     div()
                         .id(("track-header-mixer", track_id.value()))
-                        .w(px(114.0))
+                        // Two existing 60-point numeric minima and their gap.
+                        .w(px(122.0))
                         .flex_shrink_0()
                         .flex()
                         .flex_col()
@@ -2759,8 +2766,10 @@ impl EditorView {
                 .child(
                     div()
                         .absolute()
-                        .left(px(border))
-                        .right(px(border))
+                        // Match the clip body's physical-pixel leading border
+                        // and separately painted trailing edge.
+                        .left(px(if border > 0.0 { stroke } else { 0.0 }))
+                        .right_0()
                         .top(px(border))
                         .bottom(px(border))
                         .children([foreground]),
