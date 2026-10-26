@@ -662,7 +662,10 @@ impl EditorView {
                 }
             }
         }
-        body
+        body.children(
+            self.time_selection_cursor_layer()
+                .map(|layer| layer.left(px(header_width))),
+        )
     }
 
     fn arrangement_surface(
@@ -798,7 +801,8 @@ impl EditorView {
                 )
                 .absolute()
                 .inset_0(),
-            );
+            )
+            .children(self.time_selection_cursor_layer());
         let row = div()
             .debug_selector(|| "pinned-main-track".to_owned())
             .h(px(self.main_track_height()))

@@ -2,9 +2,25 @@
 //! starts, not persisted draw/pan modes or a gesture already in custody. Each
 //! canvas retains its existing range model, snap and capture/release contract.
 use super::EditorView;
-use gpui::{Context, KeyDownEvent, KeyUpEvent, Window};
+use gpui::{Context, CursorStyle, Div, KeyDownEvent, KeyUpEvent, Window, div, prelude::*};
 
 impl EditorView {
+    /// Paint last within a selectable surface so clip headers/handles cannot
+    /// advertise a different idle tool. No hit handler or occlusion is added;
+    /// existing pointer captures retain priority over this hover cursor.
+    pub(super) fn time_selection_cursor_layer(&self) -> Option<Div> {
+        self.time_selection_key_held
+            .then(|| div().absolute().inset_0().cursor(CursorStyle::IBeam))
+    }
+
+    pub(super) fn time_selection_pointer_cursor(&self, ordinary: CursorStyle) -> CursorStyle {
+        if self.time_selection_key_held {
+            CursorStyle::IBeam
+        } else {
+            ordinary
+        }
+    }
+
     fn time_selection_tool_has_focus(&self, window: &Window) -> bool {
         self.focus.is_focused(window)
             || self.midi_focus.is_focused(window)
@@ -125,13 +141,21 @@ mod tests {
             .unwrap();
         let down = header.center();
         let end = point(down.x + px(40.), down.y);
+        visual.simulate_mouse_move(down, None, Modifiers::default());
+        visual.run_until_parked();
         key(&mut visual, true);
+        assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
+        let main = visual.debug_bounds("main-track-lane").unwrap();
+        visual.simulate_mouse_move(main.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
             assert!(v.time_selection_gesture.is_some());
             assert!(v.active_clip_drag.is_none());
         });
         key(&mut visual, false);
+        assert_ne!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
@@ -166,19 +190,27 @@ mod tests {
                         .is_empty()
                 );
                 v.midi_draw_mode = draw;
+                v.midi_pan.enabled = draw;
                 cx.notify();
                 v.state.as_ref().unwrap().project.snapshot()
             });
             visual.run_until_parked();
+            visual.simulate_mouse_move(at(0.3), None, Modifiers::default());
+            visual.run_until_parked();
             key(&mut visual, true);
+            assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
             visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
             key(&mut visual, false);
+            assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::Crosshair));
             visual.simulate_mouse_move(at(0.7), Some(MouseButton::Left), Modifiers::default());
             visual.simulate_mouse_up(at(0.7), MouseButton::Left, Modifiers::default());
             pump(&editor, &mut visual);
             editor.read_with(&visual, |v, _| {
                 assert!(v.midi_time_selection_bounds().is_some());
                 assert_eq!(v.midi_draw_mode, draw);
+                assert_eq!(v.midi_pan.enabled, draw);
                 assert!(v.midi_note_gesture.is_none());
                 assert!(v.midi_stroke.is_none());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -216,11 +248,17 @@ mod tests {
         );
         let end = point(lane.left() + lane.size.width * 0.75, down.y);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_mouse_move(down, None, Modifiers::default());
+        visual.run_until_parked();
         key(&mut visual, true);
+        assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         key(&mut visual, false);
+        assert_ne!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(v.midi_time_selection_bounds().is_some());
@@ -283,7 +321,11 @@ mod tests {
             crate::editor::midi_canvas::creation_tests::fixture(cx);
         visual.simulate_keystrokes("cmd-2");
         editor.read_with(&visual, |v, _| assert!(!v.time_selection_key_held));
+        let roll = visual.debug_bounds("midi-note-roll").unwrap();
+        visual.simulate_mouse_move(roll.center(), None, Modifiers::default());
+        visual.run_until_parked();
         key(&mut visual, true);
+        assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         editor.read_with(&visual, |v, _| assert!(v.time_selection_key_held));
         visual.update(|window, cx| {
             editor.read_with(cx, |v, _| {
@@ -292,10 +334,34 @@ mod tests {
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| assert!(!v.time_selection_key_held));
+        assert_ne!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         visual.simulate_keystrokes("2");
         editor.read_with(&visual, |v, cx| {
             assert!(!v.time_selection_key_held);
             assert_eq!(v.browser.search.read(cx).text(), "2");
         });
+    }
+    #[gpui::test]
+    fn held_two_keeps_an_existing_note_drag_cursor(cx: &mut TestAppContext) {
+        use crate::editor::midi_canvas::creation_tests::{double_down, fixture, pump};
+        let (mut visual, editor, _environment, _) = fixture(cx);
+        let roll = visual.debug_bounds("midi-note-roll").unwrap();
+        let at = |x| point(roll.left() + roll.size.width * x, roll.center().y);
+        double_down(&mut visual, at(0.25), Modifiers::default());
+        visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| assert!(v.midi_note_gesture.is_some()));
+        let captured = visual.rendered_cursor_style();
+        assert_eq!(captured, Some(CursorStyle::ClosedHand));
+        key(&mut visual, true);
+        assert_eq!(visual.rendered_cursor_style(), captured);
+        visual.simulate_mouse_up(at(0.3), MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
+        key(&mut visual, false);
+        assert_ne!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
     }
 }

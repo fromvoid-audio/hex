@@ -701,7 +701,7 @@ impl EditorView {
                 .absolute()
                 .inset_0(),
             );
-        row = row.child(content);
+        row = row.child(content.children(self.time_selection_cursor_layer()));
         let splitter = self.velocity_size_input(cx);
         let pointer_layer = splitter.pointer_layer();
         let handle = hex_widgets::SplitterHandleConfig::new(

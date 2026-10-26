@@ -443,7 +443,10 @@ pub(in crate::editor) fn view(
                 if let Some(gesture) = view.audio_event_editor.gesture.as_ref()
                     && view.audio_event_focus.is_focused(window)
                 {
-                    window.renew_pointer_capture(entity.entity_id(), gesture.kind.pointer_cursor());
+                    window.renew_pointer_capture(
+                        entity.entity_id(),
+                        view.audio_event_pointer_cursor(gesture.kind),
+                    );
                 }
             },
         )
@@ -675,7 +678,7 @@ pub(in crate::editor) fn view(
         .flex_col()
         .child(toolbar)
         .children(view.audio_loop_ruler(cx))
-        .child(body)
+        .child(body.children(view.time_selection_cursor_layer()))
         .on_action(cx.trace(|view, _: &super::super::ToggleSnapGrid, _, cx| {
             view.audio_event_editor.grid = if view.audio_event_editor.grid == SnapGrid::Off {
                 SnapGrid::Adaptive
