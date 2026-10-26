@@ -1,5 +1,7 @@
 use super::*;
 use hex_project::{BeatTime, ClipId, TrackId};
+#[path = "tests/range_print.rs"]
+mod range_print;
 struct Folder(PathBuf);
 impl Folder {
     fn new() -> Self {
