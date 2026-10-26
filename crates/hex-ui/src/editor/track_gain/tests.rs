@@ -570,13 +570,18 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
                     "track-return-sends",
                 ] {
                     let control = bounds(&mut visual, prefix, track);
+                    assert!(
+                        control.size.width >= px(14.0),
+                        "{prefix} keeps a usable target"
+                    );
                     assert!(control.left() >= header.left() && control.right() <= header.right());
                     assert!(control.bottom() <= height_handle.top());
                     assert!(
                         control.right() <= slider.left()
                             || control.left() >= slider.right()
                             || control.bottom() <= slider.top()
-                            || control.top() >= slider.bottom()
+                            || control.top() >= slider.bottom(),
+                        "midi={midi} expanded={expanded} {prefix} {control:?} overlaps volume {slider:?} in {header:?}"
                     );
                 }
             }
