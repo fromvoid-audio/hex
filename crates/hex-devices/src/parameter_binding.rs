@@ -582,8 +582,10 @@ mod tests {
     }
     #[test]
     fn sparse_restore_crosses_presence_words_without_a_new_parameter_cap() {
+        type Read = fn(&Pair) -> f32;
+        type Write = fn(&mut Pair, f32);
         let table: [Binding<Pair>; 70] = std::array::from_fn(|index| {
-            let (read, write): (fn(&Pair) -> f32, fn(&mut Pair, f32)) = if index == 0 {
+            let (read, write): (Read, Write) = if index == 0 {
                 (|c| c.b, |c, v| c.b = v)
             } else {
                 (|c| c.a, |c, v| c.a = v)

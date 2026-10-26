@@ -142,35 +142,18 @@ impl UtilitySettings {
             bass_mono_cutoff_hz,
             bass_mono_audition,
         } = self;
-        let _: (
-            &f32,
-            &f32,
-            &f32,
-            &ChannelMode,
-            &bool,
-            &bool,
-            &bool,
-            &bool,
-            &Option<f32>,
-            &bool,
-            &bool,
-            &f32,
-            &bool,
-        ) = (
-            gain,
-            balance,
-            width,
-            channel_mode,
+        let _: [&f32; 4] = [gain, balance, width, bass_mono_cutoff_hz];
+        let _: [&bool; 7] = [
             invert_left,
             invert_right,
             mono,
             mute,
-            mid_side_balance,
             dc_remove,
             bass_mono,
-            bass_mono_cutoff_hz,
             bass_mono_audition,
-        );
+        ];
+        let _: &ChannelMode = channel_mode;
+        let _: &Option<f32> = mid_side_balance;
     }
     pub const fn gain(self) -> f32 {
         self.gain
