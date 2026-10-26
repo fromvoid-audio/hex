@@ -101,6 +101,7 @@ pub fn restore_pre_binding_instruments(value: &mut Value) -> usize {
 
 /// Historical comparisons may omit only an actually empty alias inventory.
 pub fn remove_empty_aliases(value: &mut Value) {
+    remove_empty_prints(value);
     for field in ["alias_sources", "alias_members"] {
         if let Some(rows) = value.as_object_mut().unwrap().remove(field) {
             assert_eq!(
@@ -114,6 +115,7 @@ pub fn remove_empty_aliases(value: &mut Value) {
 
 /// Historical comparisons may omit only an actually empty schema53 host inventory.
 pub fn remove_empty_host_automation(value: &mut Value) {
+    remove_empty_prints(value);
     assert_eq!(
         value.get("host_automation"),
         Some(&json!([])),
@@ -147,4 +149,25 @@ pub fn remove_audio_cycles(value: &mut Value) {
             .all(|row| row["cycle"].is_null()),
         "historical comparison cannot discard audio cycles"
     );
+}
+
+/// Frozen fixtures may discard only evidenced default schema54 metadata.
+pub fn remove_empty_prints(value: &mut Value) {
+    let Some(rows) = value.get("printed_output") else {
+        return;
+    };
+    let rows = rows.as_array().unwrap();
+    let tracks = value["tracks"].as_array().unwrap();
+    assert_eq!(rows.len(), tracks.len());
+    for (row, track) in rows.iter().zip(tracks) {
+        assert_eq!(row.as_object().unwrap().len(), 3);
+        assert_eq!(row["track"], track["id"]);
+        assert_eq!(row["printed"], json!([]), "cannot discard printed roles");
+        assert_eq!(
+            row["suppressed"],
+            json!([]),
+            "cannot discard silent intervals"
+        );
+    }
+    value.as_object_mut().unwrap().remove("printed_output");
 }

@@ -336,9 +336,13 @@ fn audio(
             sources
                 .try_reserve(1)
                 .map_err(|_| Invalid("could not reserve grouped audio roots"))?;
+            // Processing position belongs to the outer Arrangement placement.
+            // A retained child is source PCM, never another output insertion.
+            let mut source = (*clip).clone();
+            source.role = crate::AudioClipRole::Input;
             sources.push(RetainedAudioRoot {
                 id,
-                clip: (*clip).clone(),
+                clip: source,
                 tempo: Arc::clone(&tempo),
             });
             if events.len() == MAX_AUDIO_EVENTS {

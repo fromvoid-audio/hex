@@ -132,6 +132,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
                 .is_empty()
         );
     }
+    super::super::printed_output::remove_empty_inventory(&mut schema46);
     schema46["version"] = 46.into();
     for source in schema46["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
@@ -559,6 +560,7 @@ fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
                 .is_empty()
         );
     }
+    super::super::printed_output::remove_empty_inventory(&mut old46);
     old46["version"] = 46.into();
     old46
         .as_object_mut()

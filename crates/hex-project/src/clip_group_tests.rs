@@ -165,6 +165,13 @@ fn retained_root_labels_are_bounded_and_independent_of_the_project() {
         .restore_retained_audio_root(1, snapshot.clone(), tempo.clone())
         .unwrap();
     assert_eq!(root.clip.retained_snapshot(), snapshot);
+    let mut invalid_role = snapshot.clone();
+    invalid_role.role = crate::AudioClipRole::PostDevice;
+    assert!(
+        project
+            .restore_retained_audio_root(1, invalid_role, tempo.clone())
+            .is_err()
+    );
     for name in [String::new(), "\n".into(), "x".repeat(MAX_NAME_BYTES + 1)] {
         let mut invalid = snapshot.clone();
         invalid.name = name;

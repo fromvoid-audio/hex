@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 53;
+pub const CURRENT_SCHEMA_VERSION: u32 = 54;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -150,12 +150,13 @@ impl From<serde_json::Error> for StorageError {
 /// directed views, activation, MIDI, tuning, device state and retained native sources
 /// with explicit per-track source bindings, Console audio cycles and bounded
 /// faded Arrangement overlaps, explicit shared clip content (schema52), and
-/// typed host gain envelopes (schema53). There is no blanket
+/// typed host gain envelopes (schema53), and persistent post-device Arrangement
+/// prints (schema54). Schemas1–53 acquire input roles and empty suppression
+/// in memory; older writers refuse printed state. There is no blanket
 /// byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    refuse_unimplemented_prints(project)?;
-    encode_document(&schema::host_automation::encode(project)?)
+    encode_document(&schema::printed_output::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -170,23 +171,22 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
     encode_document(&schema::return_feeds::DocumentV20::from_project(project)?)
 }
 
-// The new model/render boundary is intentionally not silently encoded as 52.
-// Its versioned codec must land before a printed project can be published.
-fn refuse_unimplemented_prints(project: &Project) -> Result<(), StorageError> {
+// Historical writers cannot discard output roles or persistent suppression.
+fn refuse_legacy_prints(project: &Project) -> Result<(), StorageError> {
     if project
         .tracks()
         .iter()
         .any(|track| !track.output_suppression().is_empty())
     {
         return Err(StorageError::Invalid(
-            "this build cannot save printed track output",
+            "older schema cannot save printed track output",
         ));
     }
     Ok(())
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
-    refuse_unimplemented_prints(project)?;
+    refuse_legacy_prints(project)?;
     schema::clip_aliases::require_legacy_compatible(project)?;
     schema::crossfades::require_legacy_disjoint(project)?;
     if project.has_device_automation() {
@@ -274,6 +274,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
+/// Schema54 requires complete track processing-role and suppression inventories.
+/// Its two strict placement projections retain one authored wire payload; combined
+/// admission checks global identity, aliases, counts and output occupancy.
 /// Schema53 requires a typed host-gain inventory; schema52 and older migrate
 /// with no authored host targets. Provider numeric identities are unchanged.
 /// Schema52 requires explicit shared source/member inventories; schema51 and older
@@ -322,7 +325,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::host_automation::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::printed_output::decode(bytes),
+        53 => schema::host_automation::decode(bytes),
         52 => schema::clip_aliases::decode(bytes),
         51 => schema::crossfades::decode(bytes),
         50 => schema::device_automation::decode(bytes),

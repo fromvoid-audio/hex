@@ -393,6 +393,7 @@ fn strict_schema51_writer_migrates_complete_state_and_original_bytes_are_unchang
         current.as_object_mut().unwrap().remove("host_automation"),
         Some(json!([]))
     );
+    super::super::printed_output::remove_empty_inventory(&mut current);
     current["version"] = 51.into();
     assert_eq!(current, prior, "every predecessor field survives");
     assert_eq!(bytes(&prior), original);

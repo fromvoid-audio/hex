@@ -181,6 +181,46 @@ fn representatives(
     Ok(representatives)
 }
 
+/// Partition only after checking the complete alias inventory. Every removed
+/// member is decoded in the complementary print projection; unknown members,
+/// duplicate identities and orphan sources must never disappear in a partition.
+pub(super) fn project_inventory(
+    value: &mut Value,
+    removed: &std::collections::BTreeSet<u64>,
+) -> Result<(), StorageError> {
+    let Sources(sources) = serde_json::from_value(
+        value
+            .get("alias_sources")
+            .cloned()
+            .ok_or(StorageError::Invalid("clip alias sources missing"))?,
+    )?;
+    let Members(mut members) = serde_json::from_value(
+        value
+            .get("alias_members")
+            .cloned()
+            .ok_or(StorageError::Invalid("clip alias members missing"))?,
+    )?;
+    let index = CodecIndex::new(value)?;
+    let mut by_source = BTreeMap::new();
+    for source in sources {
+        if source.id == 0 || by_source.insert(source.id, source).is_some() {
+            return Err(StorageError::Invalid(
+                "invalid or duplicate clip alias source",
+            ));
+        }
+    }
+    representatives(&members, &by_source)?;
+    for member in &members {
+        index.location(member.clip)?;
+    }
+    members.retain(|member| !removed.contains(&member.clip));
+    let used: std::collections::BTreeSet<_> = members.iter().map(|member| member.source).collect();
+    by_source.retain(|id, _| used.contains(id));
+    value["alias_sources"] = serde_json::to_value(by_source.into_values().collect::<Vec<_>>())?;
+    value["alias_members"] = serde_json::to_value(members)?;
+    Ok(())
+}
+
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
     Project::from_snapshot(project.snapshot()).map_err(invalid)?;
     let mut snapshot = project.snapshot();

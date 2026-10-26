@@ -3089,3 +3089,4 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
 }
 
 pub(crate) mod host_automation;
+pub(crate) mod printed_output;

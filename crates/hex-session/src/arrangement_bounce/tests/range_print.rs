@@ -88,6 +88,24 @@ fn exact_in_place_range_preserves_outside_history_and_deletion_stays_silent() {
             ],
         })
         .unwrap();
+    session
+        .command(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: hex_lattice_contract::DeviceAutomationTarget::HostOutputGain,
+            points: vec![
+                hex_project::AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.45).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Linear,
+                },
+                hex_project::AutomationPoint {
+                    beat: BeatTime::from_quarters(2).unwrap(),
+                    value: hex_project::AutomationValue::new(0.55).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                },
+            ],
+        })
+        .unwrap();
     let delay = hex_engine::default_native_device_state_for_class(
         hex_engine::NativeDeviceClass::Effect,
         hex_lattice_contract::DeviceTypeId::from_static("hex.delay"),
@@ -156,6 +174,9 @@ fn exact_in_place_range_preserves_outside_history_and_deletion_stays_silent() {
         actual, expected,
         "inside and outside sound must remain exact"
     );
+    let saved_print = folder.0.join("with-printed-range.hex");
+    hex_storage::save_new(&saved_print, session.project()).unwrap();
+    assert_eq!(hex_storage::load(&saved_print).unwrap(), *session.project());
     session.command(Command::RemoveClip(printed)).unwrap();
     check_source(&session);
     let mut deleted = expected.clone();

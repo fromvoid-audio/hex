@@ -84,9 +84,10 @@ impl Project {
             || clip.id.0 >= self.next_identity()
             || root.tempo.sample_rate() != self.sample_rate()
             || clip.has_retained_audio_roots()
+            || clip.role() != crate::AudioClipRole::Input
         {
             return Err(Invalid(
-                "retained audio root identity, clock or nesting is invalid",
+                "retained audio root identity, clock, role or nesting is invalid",
             ));
         }
         crate::edit::name_valid(clip.name())?;
