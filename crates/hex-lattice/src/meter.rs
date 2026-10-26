@@ -18,6 +18,7 @@ pub struct DynamicsMeter {
 pub struct DeviceMeter {
     input: AtomicU32,
     output: AtomicU32,
+    track_output: AtomicU32,
     reduction: [AtomicU32; 2],
     clipped: AtomicU32,
 }
@@ -29,6 +30,7 @@ impl DeviceMeter {
         let Self {
             input: _,
             output: _,
+            track_output: _,
             reduction: _,
             clipped: _,
         } = self;
@@ -48,6 +50,15 @@ impl DeviceMeter {
     }
     pub fn observe_output(&self, frames: &[[f32; 2]]) {
         Self::observe(&self.output, frames);
+    }
+    /// Accumulate the containing track's post-fader output independently of
+    /// the instrument's own input and output taps.
+    pub fn observe_track_output(&self, frames: &[[f32; 2]]) {
+        Self::observe(&self.track_output, frames);
+    }
+    /// Drain the track-output peak from its single display consumer.
+    pub fn take_track_output(&self) -> f32 {
+        f32::from_bits(self.track_output.swap(0, Relaxed))
     }
     /// Recover a device tap from an analytic source's already mixed lanes.
     /// Unity lanes are exact; fader normalization carries f32 rounding only.
@@ -135,11 +146,14 @@ mod tests {
         let meter = DeviceMeter::default();
         meter.observe_input(&[[0.1, -1.2]]);
         meter.observe_output(&[[0.4, -0.8]]);
+        meter.observe_track_output(&[[0.3, -0.6]]);
         for _ in 0..10 {
             meter.observe_input(&[[0.01; 2]]);
         }
         meter.observe_output(&[[f32::NAN, f32::INFINITY]]);
         assert_eq!(meter.take_peaks(), [1.2, 0.8]);
+        assert_eq!(meter.take_track_output(), 0.6);
+        assert_eq!(meter.take_track_output(), 0.0);
         assert_eq!(meter.take_peaks(), [0.0; 2]);
     }
 
