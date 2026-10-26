@@ -228,6 +228,27 @@ impl ProjectedAudioFade<'_> {
         Ok(root.filter(|frame| *frame < self.length))
     }
 
+    /// Inverse authoring coordinate for a root-output frame boundary. The
+    /// exclusive root end is accepted; negative retained context returns None.
+    /// This retains the existing fade reference clock so editing one ramp does
+    /// not re-quantize or reanchor the opposite authored ramp.
+    pub fn domain_position_at_frame(&self, frame: u64) -> Result<Option<u64>, Invalid> {
+        if frame > self.length {
+            return Err(Invalid("fade boundary is outside the prepared root"));
+        }
+        let domain = &self.edit.domain;
+        let age = if let Some(projection) = &domain.fade_projection {
+            let beat =
+                audio_projection_beat(self.tempo, self.first + i128::from(frame))? - self.origin;
+            let delta = beat - i128::from(projection.local_start_raw);
+            let start = audio_projection_frame(&projection.tempo, projection.origin_beat_raw)?;
+            audio_projection_frame(&projection.tempo, projection.origin_beat_raw + delta)? - start
+        } else {
+            i128::from(frame) - i128::from(domain.fade_start)
+        };
+        Ok(u64::try_from(i128::from(domain.fade.offset()) + age).ok())
+    }
+
     pub fn gain_at(&self, root_output_frame: u64) -> Result<f32, Invalid> {
         if root_output_frame >= self.length {
             return Err(Invalid("fade sample is outside the prepared root"));
@@ -1098,7 +1119,7 @@ pub use commands::default_audio_warp;
 mod view;
 pub(crate) use commands::{
     apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
-    set_fades, source_policy, trim_view,
+    set_fades, source_policy, trim_view, validate_clip,
 };
 pub(crate) use view::resize_view;
 pub use view::{

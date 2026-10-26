@@ -28,6 +28,12 @@ and 4000 characters from the last 64 KiB of the log. Earlier or unrecognized
 diagnostics remain in the complete log; unreadable logs have a controlled fallback.
 Console text removes terminal controls and redacts known sensitive environment
 values and credential-like assignments/options; retained logs and argv stay intact.
+
+If report publication fails, stderr identifies the failed write/publication phase
+and retains the actual command result and raw log path when work already ran.
+The last summary may remain incomplete; even successful commands cannot qualify
+without the report. Keep those original bytes and logs, restore storage, and run
+fresh checks. A publication failure does not authorize checkpoint continuation.
 Commands over 2000 characters are explicitly truncated and refer to the summary.
 
 The printed rerun is diagnostic only and partial, even when its original step was
