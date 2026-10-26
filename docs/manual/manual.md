@@ -129,6 +129,13 @@ mapping is unavailable. the audio source tab shows the corresponding original
 source position; the piano roll follows the midi source position. zooming and
 scrolling change the visible window without moving playback.
 
+the audio editor's events and source tabs keep independent zoom and scroll
+positions. use the wheel vertically to zoom around the pointer, or horizontally
+to scroll. the plus and minus controls zoom around the visible cursor. you can
+reveal blank time beyond the clip without changing its content; the view extends
+to four times the content length, or at least sixteen beats. **z** fits the event
+selection or source range, and **x** returns to the previous view.
+
 in the lower audio editor, **g** makes the selected event or time span its own
 clip and keeps the material on either side. select one visible, nonrepeating
 span. text fields, device controls and the piano editor keep their own key input;
