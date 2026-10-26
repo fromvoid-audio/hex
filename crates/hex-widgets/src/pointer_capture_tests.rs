@@ -22,15 +22,22 @@ struct Root {
 impl Render for Root {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let keys = self.keys.clone();
+        let stray_drag = self.actions.clone();
         let down = self.actions.clone();
         let up = self.actions.clone();
         let right_up = self.actions.clone();
         let scroll = self.actions.clone();
         div()
             .size_full()
+            .id("capture-container")
+            .on_drag((), move |_, _, _, cx| {
+                stray_drag.set(stray_drag.get() + 1);
+                cx.new(|_| gpui::Empty)
+            })
             .debug_selector(|| "capture-surface".into())
             .bg(gpui::rgb(0x111111))
             .hover(|style| style.bg(gpui::rgb(0xff0000)))
+            .active(|style| style.bg(gpui::rgb(0x00ff00)))
             .on_key_down(move |event, _, _| {
                 if event.keystroke.key == "space" {
                     keys.set(keys.get() + 1);
@@ -153,6 +160,13 @@ fn numeric_capture_isolates_actions_scroll_and_cursor_before_motion(cx: &mut Tes
         1
     );
     assert!(!control.read_with(cx, |c, _| c.is_interacting()));
+    v.simulate_mouse_move(other, None, Modifiers::default());
+    v.run_until_parked();
+    assert_eq!(
+        actions.get(),
+        0,
+        "an ancestor must not retain a stale drag latch after release"
+    );
     v.simulate_mouse_up(other, MouseButton::Right, Modifiers::default());
     assert_eq!(
         actions.get(),
@@ -164,6 +178,58 @@ fn numeric_capture_isolates_actions_scroll_and_cursor_before_motion(cx: &mut Tes
         actions.get(),
         1,
         "ordinary input must return immediately after release"
+    );
+    v.simulate_mouse_up(other, MouseButton::Right, Modifiers::default());
+    let before = actions.get();
+    // The lease and framework latch reset cannot depend on a repaint between
+    // input events. In particular an idle move must not start the old ancestor.
+    v.update(|window, cx| {
+        window.dispatch_input(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: start,
+                button: MouseButton::Left,
+                ..Default::default()
+            }),
+            cx,
+        );
+        window.dispatch_input(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: other,
+                pressed_button: Some(MouseButton::Left),
+                ..Default::default()
+            }),
+            cx,
+        );
+        window.dispatch_input(
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: other,
+                button: MouseButton::Left,
+                ..Default::default()
+            }),
+            cx,
+        );
+        window.dispatch_input(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: other,
+                pressed_button: None,
+                ..Default::default()
+            }),
+            cx,
+        );
+    });
+    v.run_until_parked();
+    assert_eq!(
+        actions.get(),
+        before,
+        "batched capture must not leave a click/drag latch"
+    );
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|p| **p == NumericEventPhase::Commit)
+            .count(),
+        2
     );
 }
 

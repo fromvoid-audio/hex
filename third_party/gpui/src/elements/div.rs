@@ -2133,6 +2133,10 @@ impl Interactivity {
         let drop_listeners = mem::take(&mut self.drop_listeners);
         let click_listeners = mem::take(&mut self.click_listeners);
         let can_drop_predicate = mem::take(&mut self.can_drop_predicate);
+        let tracks_pointer_click = !click_listeners.is_empty()
+            || drag_listener.is_some()
+            || self.active_style.is_some()
+            || self.group_active_style.is_some();
 
         if !drop_listeners.is_empty() {
             let hitbox = hitbox.clone();
@@ -2371,6 +2375,27 @@ impl Interactivity {
                 .clicked_state
                 .get_or_insert_with(Default::default)
                 .clone();
+            if tracks_pointer_click {
+                let pending = element_state.pending_mouse_down.clone();
+                let clicked = active_state.clone();
+                window.on_pointer_hover_change(move |window, _| {
+                    if !window.has_pointer_capture() {
+                        return false;
+                    }
+                    // An explicit gesture owns the press. Clear framework-only
+                    // click/drag latches after its initiating press propagates,
+                    // without delivering a mouse-up or invoking a user action.
+                    // These records replay with cached/deferred paint and run
+                    // during input, including a press/release with no repaint.
+                    let had_press = pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.borrow_mut().take().is_some());
+                    let mut clicked = clicked.borrow_mut();
+                    let was_clicked = clicked.is_clicked();
+                    *clicked = ElementClickedState::default();
+                    had_press || was_clicked
+                });
+            }
             if active_state.borrow().is_clicked() {
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _cx| {
                     if phase == DispatchPhase::Capture {

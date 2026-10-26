@@ -350,3 +350,9 @@ next press, preventing trailing actions. Numeric controls use weak entity handle
 and retain their existing typed events, drafts and owner-acknowledgement contracts.
 Selection-anchor loss preserves newer text/IME drafts. No native API/FFI or new
 unsafe code is added; actual OS interaction acceptance remains separate.
+
+Capture-start input notification also clears framework-only click/drag and active
+latches on affected Divs. It uses the existing cached/deferred observer range and
+never invokes an action or synthesizes mouse-up. The initiating press's ancestor
+selection still runs; an ancestor cannot retain that press and begin a phantom
+drag after the exclusive owner releases, including without an intervening repaint.

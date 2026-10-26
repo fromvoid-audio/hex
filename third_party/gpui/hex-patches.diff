@@ -813,54 +813,81 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 @@ -1845 +1893 @@
 -                                                GroupHitboxes::push(group, hitbox.id, cx);
 +                                                GroupHitboxes::push(group, hitbox, cx);
-@@ -2159 +2207 @@
+@@ -2087,0 +2136,4 @@
++        let tracks_pointer_click = !click_listeners.is_empty()
++            || drag_listener.is_some()
++            || self.active_style.is_some()
++            || self.group_active_style.is_some();
+@@ -2159 +2211 @@
 -                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
 +                            && (event.position - mouse_down.position).magnitude() > POINTER_DRAG_THRESHOLD
-@@ -2261,4 +2309 @@
+@@ -2261,4 +2313 @@
 -                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
 -                    if phase != DispatchPhase::Bubble {
 -                        return;
 -                    }
 +                window.on_pointer_hover_change(move |window, cx| {
-@@ -2266,0 +2312 @@
+@@ -2266,0 +2316 @@
 +                        && !window.is_pointer_dragging()
-@@ -2274,0 +2321,3 @@
+@@ -2274,0 +2325,3 @@
 +                        true
 +                    } else {
 +                        false
-@@ -2298 +2347,2 @@
+@@ -2298 +2351,2 @@
 -                        pending_mouse_down.borrow().is_none()
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
-@@ -2305 +2355,3 @@
+@@ -2305 +2359,3 @@
 -                        pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
 +                        !window.is_pointer_dragging()
 +                            && pending_mouse_down.borrow().is_none()
 +                            && hitbox.is_hovered(window)
-@@ -2498 +2550 @@
+@@ -2321,0 +2378,21 @@
++            if tracks_pointer_click {
++                let pending = element_state.pending_mouse_down.clone();
++                let clicked = active_state.clone();
++                window.on_pointer_hover_change(move |window, _| {
++                    if !window.has_pointer_capture() {
++                        return false;
++                    }
++                    // An explicit gesture owns the press. Clear framework-only
++                    // click/drag latches after its initiating press propagates,
++                    // without delivering a mouse-up or invoking a user action.
++                    // These records replay with cached/deferred paint and run
++                    // during input, including a press/release with no repaint.
++                    let had_press = pending
++                        .as_ref()
++                        .is_some_and(|pending| pending.borrow_mut().take().is_some());
++                    let mut clicked = clicked.borrow_mut();
++                    let was_clicked = clicked.is_clicked();
++                    *clicked = ElementClickedState::default();
++                    had_press || was_clicked
++                });
++            }
+@@ -2498 +2575 @@
 -            if !cx.has_active_drag() {
 +            if !cx.has_active_drag() && !window.is_pointer_dragging() {
-@@ -2758,0 +2811,6 @@
+@@ -2758,0 +2836,6 @@
 +                        // A capture listener can consume movement before this
 +                        // pending tooltip receives its cancellation event.
 +                        if window.is_pointer_dragging() {
 +                            active_tooltip.borrow_mut().take();
 +                            return;
 +                        }
-@@ -2874,0 +2933,4 @@
+@@ -2874,0 +2958,4 @@
 +// Bounds are conservative invalidation metadata only. Style calculation still
 +// uses the current group's actual hitbox and ordinary occlusion rules.
 +type GroupHitboxDependency = (HitboxId, Bounds<Pixels>);
 +
-@@ -2876 +2938 @@
+@@ -2876 +2963 @@
 -pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[HitboxId; 1]>>);
 +pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[GroupHitboxDependency; 1]>>);
-@@ -2881,0 +2944,4 @@
+@@ -2881,0 +2969,4 @@
 +        Self::dependency(name, cx).map(|(id, _)| id)
 +    }
 +
 +    fn dependency(name: &SharedString, cx: &mut App) -> Option<GroupHitboxDependency> {
-@@ -2886,4 +2952,4 @@
+@@ -2886,4 +2977,4 @@
 -            .cloned()
 -    }
 -
@@ -869,10 +896,10 @@ diff --git a/src/elements/div.rs b/src/elements/div.rs
 +    }
 +
 +    pub fn push(name: SharedString, hitbox: &Hitbox, cx: &mut App) {
-@@ -2894 +2960 @@
+@@ -2894 +2985 @@
 -            .push(hitbox_id);
 +            .push((hitbox.id, hitbox.bounds.intersect(&hitbox.content_mask.bounds)));
-@@ -2904,0 +2971,12 @@
+@@ -2904,0 +2996,12 @@
 +}
 +
 +impl Stateful<Div> {
@@ -5040,7 +5067,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
      }
  
-@@ -3576,6 +3821,170 @@
+@@ -3576,6 +3821,174 @@
              .unwrap_or_else(|| action.name().to_string())
      }
  
@@ -5175,6 +5202,10 @@ diff --git a/src/window.rs b/src/window.rs
 +        }
 +    }
 +
++    pub(crate) fn has_pointer_capture(&self) -> bool {
++        self.pointer_capture.is_some()
++    }
++
 +    pub(crate) fn cancel_pointer_capture(&mut self, cx: &mut App) {
 +        if let Some(mut capture) = self.pointer_capture.take() {
 +            if !self.suppressed_pointer_ups.contains(&capture.button) {
@@ -5211,7 +5242,7 @@ diff --git a/src/window.rs b/src/window.rs
      /// Dispatch a mouse or keyboard event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
-@@ -3585,6 +3994,66 @@
+@@ -3585,6 +3998,66 @@
          // Handlers may set this to true by calling `prevent_default`.
          self.default_prevented = false;
  
@@ -5278,7 +5309,7 @@ diff --git a/src/window.rs b/src/window.rs
          let event = match event {
              // Track the mouse position with our own state, since accessing the platform
              // API for the mouse position can only occur on the main thread.
-@@ -3662,10 +4131,51 @@
+@@ -3662,10 +4135,51 @@
              PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
          };
  
@@ -5331,7 +5362,7 @@ diff --git a/src/window.rs b/src/window.rs
          }
  
          DispatchEventResult {
-@@ -3674,17 +4184,50 @@
+@@ -3674,17 +4188,50 @@
          }
      }
  

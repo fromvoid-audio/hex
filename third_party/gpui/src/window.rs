@@ -3952,6 +3952,10 @@ impl Window {
         }
     }
 
+    pub(crate) fn has_pointer_capture(&self) -> bool {
+        self.pointer_capture.is_some()
+    }
+
     pub(crate) fn cancel_pointer_capture(&mut self, cx: &mut App) {
         if let Some(mut capture) = self.pointer_capture.take() {
             if !self.suppressed_pointer_ups.contains(&capture.button) {
