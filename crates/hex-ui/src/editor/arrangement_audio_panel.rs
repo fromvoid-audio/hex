@@ -257,7 +257,7 @@ pub(super) fn view(
         )));
     }
     let viewport = view.audio_source_viewport();
-    waveform_panel = waveform_panel.child(source_navigation(view, cx));
+    waveform_panel = waveform_panel.children([source_navigation(view, cx)]);
     waveform_panel = waveform_panel.child(time_ruler(window, viewport));
     let mut canvas_region = div()
         .id("arrangement-audio-waveform")
@@ -307,18 +307,16 @@ pub(super) fn view(
             cx.listener(|view, _, window, _| view.audio_event_focus.focus(window)),
         );
     let measure = cx.entity().clone();
-    canvas_region = canvas_region.child(
-        gpui::canvas(
-            |_, _, _| (),
-            move |bounds, _, _, cx| {
-                measure.update(cx, |view, _| {
-                    view.audio_event_editor.source_bounds = Some(bounds)
-                });
-            },
-        )
-        .absolute()
-        .inset_0(),
-    );
+    canvas_region = canvas_region.children([gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, _, cx| {
+            measure.update(cx, |view, _| {
+                view.audio_event_editor.source_bounds = Some(bounds)
+            });
+        },
+    )
+    .absolute()
+    .inset_0()]);
     if let Some(waveform) = waveform {
         let end = viewport
             .end()
