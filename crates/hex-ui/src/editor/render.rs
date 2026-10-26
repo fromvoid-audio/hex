@@ -1311,11 +1311,11 @@ impl Render for EditorView {
                 }),
             )
             .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
-                view.loop_selection_key(window);
+                view.loop_selection_key(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SetLoopFromClip, window, cx| {
-                view.set_loop_from_clip(window);
+                view.set_loop_from_clip(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ToggleLoop, _, cx| {
