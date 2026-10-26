@@ -616,17 +616,11 @@ pub(super) fn prepare_waveform_geometry(
                     // Limit total PCM reads per event geometry, even for a large
                     // viewport. Peak-only sources and wider views use the
                     // existing bounded summary path.
-                    const DETAIL_FRAMES_PER_COLUMN: u64 = 1_024;
-                    const DETAIL_FRAME_BUDGET: u64 = 2_097_152;
-                    let detail_budget = u64::try_from(grid.columns)
-                        .unwrap_or(u64::MAX)
-                        .saturating_mul(DETAIL_FRAMES_PER_COLUMN)
-                        .min(DETAIL_FRAME_BUDGET);
-                    if matches!(mapping, WaveformMapping::GainedSource { detail: true, .. })
-                        && frames <= detail_budget
-                    {
+                    const DETAIL_FRAME_BUDGET: usize = 4_194_304;
+                    let detail_budget = DETAIL_FRAME_BUDGET / grid.columns;
+                    if matches!(mapping, WaveformMapping::GainedSource { detail: true, .. }) {
                         waveform
-                            .exact_peaks_for_frames(start, end, DETAIL_FRAME_BUDGET as usize)
+                            .bounded_exact_peaks_for_frames(start, end, detail_budget)
                             .or_else(|| aggregate_peaks(waveform, start, end))
                     } else {
                         aggregate_peaks(waveform, start, end)
@@ -801,7 +795,13 @@ mod tests {
         let audio = hex_engine::Audio::new(48_000, samples).unwrap();
         let waveform = hex_media::waveform::summarize(&audio, 1_024).unwrap();
         let extent = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(100.0)));
-        for (start, frames_per_column) in [(0_u64, 65_u64), (1_300, 65), (1_950, 65), (0, 1_000)] {
+        for (start, frames_per_column) in [
+            (0_u64, 65_u64),
+            (1_300, 65),
+            (1_950, 65),
+            (0, 1_000),
+            (0, 1_025),
+        ] {
             let geometry = prepare_waveform_geometry(
                 &waveform,
                 &WaveformMapping::GainedSource {
@@ -825,6 +825,35 @@ mod tests {
                 .collect();
             assert_eq!(peaks, vec![((2_010 - start) / frames_per_column) as usize]);
         }
+
+        // A longer root has wider cached bins. A narrow visible event may use
+        // its share of the same total work budget rather than inheriting the
+        // per-column limit of a full-width event.
+        let mut long_samples = vec![[0.0, 0.0]; 3_072_000];
+        long_samples[6_010] = [1.0, 1.0];
+        let long_audio = hex_engine::Audio::new(48_000, long_samples).unwrap();
+        let long_waveform = hex_media::waveform::summarize(&long_audio, 1_024).unwrap();
+        let geometry = prepare_waveform_geometry(
+            &long_waveform,
+            &WaveformMapping::GainedSource {
+                timeline_origin: 0,
+                gain: hex_project::ClipGain::UNITY,
+                detail: true,
+            },
+            0,
+            205_000,
+            extent,
+            100,
+            None,
+        )
+        .unwrap();
+        let peaks: Vec<_> = geometry.channels[0].outline[..100]
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.y < px(25.0))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(peaks, vec![6_010 / 2_050]);
     }
 
     #[test]

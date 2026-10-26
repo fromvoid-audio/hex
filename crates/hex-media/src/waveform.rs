@@ -79,7 +79,7 @@ impl Waveform {
 
     /// Exact resident-PCM extrema for a caller-bounded range. Returns `None`
     /// when PCM is not retained or the range exceeds the caller's work limit.
-    pub fn exact_peaks_for_frames(
+    fn exact_peaks_for_frames(
         &self,
         start: usize,
         end: usize,
@@ -105,6 +105,79 @@ impl Waveform {
             );
         }
         Some(peaks)
+    }
+
+    /// Exact extrema using cached whole bins and at most `max_pcm_frames`
+    /// resident frames at the two partial boundaries. Returns `None` when the
+    /// source has no retained PCM or the boundary work exceeds that limit.
+    pub fn bounded_exact_peaks_for_frames(
+        &self,
+        start: usize,
+        end: usize,
+        max_pcm_frames: usize,
+    ) -> Option<[Peak; 2]> {
+        self.samples.as_ref()?;
+        let start = start.min(self.source_frames);
+        let end = end.min(self.source_frames);
+        if start >= end || self.bins.is_empty() || self.bins.len() > self.source_frames {
+            return None;
+        }
+        let count = self.bins.len();
+        let width = self.source_frames / count;
+        let extra = self.source_frames % count;
+        let wide_frames = (width + 1).saturating_mul(extra);
+        let bin_at = |frame: usize| {
+            if frame < wide_frames {
+                frame / (width + 1)
+            } else {
+                extra + (frame - wide_frames) / width
+            }
+        };
+        let boundary = |bin: usize| bin * width + bin.min(extra);
+        let first = bin_at(start);
+        let last = bin_at(end - 1);
+        if first == last {
+            if start == boundary(first) && end == boundary(first + 1) {
+                return self.bins.get(first).copied();
+            }
+            return self.exact_peaks_for_frames(start, end, max_pcm_frames);
+        }
+        let whole_start = if start == boundary(first) {
+            start
+        } else {
+            boundary(first + 1)
+        };
+        let whole_end = if end == boundary(last + 1) {
+            end
+        } else {
+            boundary(last)
+        };
+        let partial = (whole_start - start).checked_add(end - whole_end)?;
+        if partial > max_pcm_frames {
+            return None;
+        }
+        let mut result = None;
+        if start < whole_start {
+            include(
+                &mut result,
+                self.exact_peaks_for_frames(start, whole_start, max_pcm_frames)?,
+            );
+        }
+        if whole_start < whole_end {
+            let first_whole = first + usize::from(start < whole_start);
+            let after_whole = last + usize::from(whole_end == end);
+            include(
+                &mut result,
+                self.cached_peaks_for_bins(first_whole, after_whole)?,
+            );
+        }
+        if whole_end < end {
+            include(
+                &mut result,
+                self.exact_peaks_for_frames(whole_end, end, max_pcm_frames)?,
+            );
+        }
+        result
     }
 
     /// Signed channel extrema for a half-open source range, with no allocation.
@@ -147,8 +220,10 @@ impl Waveform {
                 extra + (frame - wide_frames) / width
             }
         };
-        let mut left = bin_at(start);
-        let mut right = bin_at(end - 1) + 1;
+        self.cached_peaks_for_bins(bin_at(start), bin_at(end - 1) + 1)
+    }
+
+    fn cached_peaks_for_bins(&self, mut left: usize, mut right: usize) -> Option<[Peak; 2]> {
         let mut level = 0;
         let mut result = None;
         while left < right {
@@ -254,10 +329,45 @@ mod tests {
     }
 
     #[test]
+    fn bounded_hierarchy_matches_pcm_for_partial_and_whole_bins() {
+        let frames: Vec<_> = (0..257)
+            .map(|i| [((i * 37) % 97) as f32, -(((i * 29) % 89) as f32)])
+            .collect();
+        let audio = Audio::new(48_000, frames).unwrap();
+        let resident = summarize(&audio, 17).unwrap();
+        let peak_only = summarize_peaks(&audio, 17).unwrap();
+        for start in 0..257 {
+            for end in (start + 1)..=257 {
+                assert_eq!(
+                    resident.bounded_exact_peaks_for_frames(start, end, 64),
+                    resident.exact_peaks_for_frames(start, end, 257),
+                    "range {start}..{end}"
+                );
+            }
+        }
+        // The first bin contains 16 frames. Aligned whole bins need no PCM
+        // boundary reads; a partial range must respect the supplied budget.
+        assert!(resident.bounded_exact_peaks_for_frames(0, 16, 0).is_some());
+        assert!(resident.bounded_exact_peaks_for_frames(1, 31, 1).is_none());
+        assert!(
+            peak_only
+                .bounded_exact_peaks_for_frames(0, 16, 64)
+                .is_none()
+        );
+        let mut malformed = resident.clone();
+        malformed.bins.clear();
+        assert!(
+            malformed
+                .bounded_exact_peaks_for_frames(0, 16, 64)
+                .is_none()
+        );
+    }
+
+    #[test]
     #[ignore = "manual optimized waveform query comparison"]
     fn event_detail_query_profile() {
         use std::{hint::black_box, time::Instant};
-        let frames: Vec<_> = (0..2_048_000)
+        let frames: Vec<_> = (0..4_194_000)
             .map(|i| {
                 let v = ((i % 257) as f32 / 128.0) - 1.0;
                 [v, -v]
@@ -269,10 +379,10 @@ mod tests {
             let start = Instant::now();
             for _ in 0..50 {
                 for column in 0..2_000 {
-                    let left = column * 1_024;
-                    let right = left + 1_024;
+                    let left = column * 2_097;
+                    let right = left + 2_097;
                     let peaks = if exact {
-                        waveform.exact_peaks_for_frames(left, right, 2_097_152)
+                        waveform.bounded_exact_peaks_for_frames(left, right, 2_097)
                     } else {
                         waveform.peaks_for_frames(left, right)
                     };
@@ -281,11 +391,11 @@ mod tests {
             }
             start.elapsed()
         };
-        // Warm both paths; each pass queries 2,048,000 frames.
+        // Warm both paths; each pass queries 4,194,000 frames.
         black_box(run(false));
         black_box(run(true));
         println!(
-            "summary={:?} exact={:?} passes=50 frames_per_pass=2048000 columns=2000",
+            "summary={:?} exact={:?} passes=50 frames_per_pass=4194000 columns=2000",
             run(false),
             run(true)
         );
