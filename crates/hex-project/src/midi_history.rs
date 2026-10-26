@@ -525,15 +525,15 @@ impl MidiHistoryEffect {
                 .iter()
                 .filter(|c| {
                     arrange != Some((a.id, c.id))
-                        && !self
+                        && self
                             .alias_source
-                            .is_some_and(|group| source.clip_alias(c.id) == Some(group))
+                            .is_none_or(|group| source.clip_alias(c.id) != Some(group))
                 })
                 .ne(b.content.midi_clips.iter().filter(|c| {
                     arrange != Some((b.id, c.id))
-                        && !self
+                        && self
                             .alias_source
-                            .is_some_and(|group| target.clip_alias(c.id) == Some(group))
+                            .is_none_or(|group| target.clip_alias(c.id) != Some(group))
                 }))
             {
                 return false;

@@ -257,7 +257,7 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
-/// Schema45 requires explicit shared source/member inventories; schema44 and older
+/// Schema52 requires explicit shared source/member inventories; schema51 and older
 /// acquire empty aliases while preserving their own strict format contracts.
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
