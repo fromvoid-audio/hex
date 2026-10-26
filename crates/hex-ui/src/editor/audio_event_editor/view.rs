@@ -14,33 +14,9 @@ pub(in crate::editor) fn view(
     _render_window: &gpui::Window,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
-    let (clip_id, root, revision) = view.event_context()?;
+    let (clip_id, root, _) = view.event_context()?;
+    view.sync_audio_navigation();
     let owner = (clip_id, view.project_generation);
-    if view.audio_event_editor.owner != Some(owner) {
-        let clipboard = view.audio_event_editor.clipboard.take();
-        let pending = view.audio_event_editor.pending.take();
-        view.audio_event_editor = State {
-            owner: Some(owner),
-            revision,
-            cursor: editor_bounds(&root).0,
-            clipboard,
-            pending,
-            ..State::default()
-        };
-    }
-    if view.audio_event_editor.revision != revision {
-        view.audio_event_editor.gesture = None;
-        // Loop bounds do not invalidate a source-local time selection/cursor.
-        // A retained cycle may hide part of that selection without deleting it.
-        let (first, last) = editor_bounds(&root);
-        view.audio_event_editor.cursor = view.audio_event_editor.cursor.clamp(first, last);
-        view.audio_event_editor.range = view.audio_event_editor.range.and_then(|(start, end)| {
-            let start = start.max(first);
-            let end = end.min(last);
-            (start < end).then_some((start, end))
-        });
-        view.audio_event_editor.revision = revision;
-    }
     let state = view.state.as_ref()?;
     let clip = state.project.clip(clip_id)?.clone();
     let events = match clip.editable_audio_events() {
@@ -96,6 +72,12 @@ pub(in crate::editor) fn view(
         .map_or(640.0, |bounds| f32::from(bounds.size.width));
     let mut body = div()
         .id("audio-events-waveform")
+        .on_scroll_wheel(cx.listener(|view, event, window, cx| {
+            if view.audio_navigation_wheel(event, false, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+            }
+        }))
         .debug_selector(|| "audio-events-waveform".into())
         .relative()
         .flex_1()
@@ -784,7 +766,7 @@ pub(in crate::editor) fn view(
             cx.notify();
         }))
         .on_action(cx.trace(|view, _: &super::super::FitTimeline, _, cx| {
-            view.audio_event_editor.viewport = None;
+            view.audio_fit_all();
             cx.stop_propagation();
             cx.notify();
         }))

@@ -620,6 +620,9 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                 512,
             )
             .unwrap();
+        candidate.set_device_metering(true);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&candidate.revision).unwrap();
         let arrangement_before = candidate.arrangement_frame;
         let performance_before = candidate.performance_frame;
         candidate.arrangement_frame = u64::MAX - 300;
@@ -638,6 +641,22 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         assert_eq!(candidate.arrangement_frame, u64::MAX - 300);
         assert!(refused_main.iter().flatten().all(|sample| *sample == 0.0));
         assert!(refused_capture.output(0).unwrap().is_empty());
+        if replacement {
+            assert_eq!(
+                observation
+                    .track_output_meter(track_id)
+                    .unwrap()
+                    .take_track_output(),
+                0.0
+            );
+            assert_eq!(
+                observation
+                    .return_output_meter(return_id)
+                    .unwrap()
+                    .take_track_output(),
+                0.0
+            );
+        }
         candidate.arrangement_frame = arrangement_before;
         let mut main = [[0.0; 2]; 8];
         let mut track = main;
@@ -653,6 +672,23 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                 .render_with_capture(&mut main[offset..offset + frames], &mut capture)
                 .unwrap();
             assert_eq!(capture.valid_frames(), frames);
+            if replacement {
+                for (index, meter) in [
+                    observation.track_output_meter(track_id).unwrap(),
+                    observation.return_output_meter(return_id).unwrap(),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let expected = capture
+                        .output(index)
+                        .unwrap()
+                        .iter()
+                        .flatten()
+                        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+                    assert_eq!(meter.take_track_output(), expected);
+                }
+            }
             offset += frames;
         }
         for index in 0..8 {

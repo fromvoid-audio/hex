@@ -1381,6 +1381,7 @@ impl EditorView {
                 .worker_requests_pending
                 .saturating_add(self.pending_requests.len());
             visible_change |= pending_before != pending_after;
+            visible_change |= self.tick_track_meters(Instant::now());
             return self.observe_audio_frame(None, visible_change, Instant::now());
         };
         let seek_publication_inflight = self.prepared_seek.as_ref().is_some_and(|seek| {
@@ -1877,6 +1878,7 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         visible_change |= pending_before != pending_after;
         visible_change |= self.finish_audio_recovery_tick();
+        visible_change |= self.tick_track_meters(Instant::now());
         self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 

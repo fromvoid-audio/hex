@@ -1223,3 +1223,150 @@ fn loop_brace_matches_retained_source_coordinates_during_zoom_and_pan(cx: &mut T
         );
     }
 }
+
+#[gpui::test]
+fn navigation_reveals_blank_space_and_fit_back_preserves_extended_view(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("audio-event-1").is_some());
+    editor.update(&mut visual, |v, cx| {
+        let before = v.state.as_ref().unwrap().project.snapshot();
+        let (_, root, _) = v.event_context().unwrap();
+        let fitted = v.event_viewport(&root);
+        v.event_zoom(false);
+        assert!(
+            v.event_viewport(&root).length > fitted.length,
+            "zoom out must reveal blank time"
+        );
+        v.audio_event_editor.viewport = None;
+        for _ in 0..6 {
+            v.event_pan(true);
+        }
+        let extended = v.event_viewport(&root);
+        assert!(extended.start >= fitted.length, "pan must reach blank time");
+        assert!(v.event_fit_selection(false));
+        assert_eq!(v.event_viewport(&root), fitted);
+        assert!(v.event_fit_selection(true));
+        assert_eq!(v.event_viewport(&root), extended);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(v.last_enqueued_edit.is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("audio-event-1").is_none());
+}
+
+#[gpui::test]
+fn wheel_navigation_anchors_pointer_and_keeps_tabs_independent(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent};
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let b = visual.debug_bounds("audio-events-waveform").unwrap();
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let at = point(b.left() + b.size.width * 0.75, b.center().y);
+    visual.simulate_event(ScrollWheelEvent {
+        position: at,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let events = editor.read_with(&visual, |v, _| {
+        let (_, root, _) = v.event_context().unwrap();
+        let vp = v.event_viewport(&root);
+        assert_eq!(vp.length, 76_800);
+        assert!((vp.start as f64 + 0.75 * vp.length as f64 - 72_000.0).abs() <= 1.0);
+        vp
+    });
+    let tab = visual.debug_bounds("audio-source-tab").unwrap();
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+    let b = visual.debug_bounds("arrangement-audio-waveform").unwrap();
+    visual.simulate_event(ScrollWheelEvent {
+        position: b.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let body = visual.debug_bounds("arrangement-audio-waveform").unwrap();
+    let marker = visual.debug_bounds("source-end-marker").unwrap();
+    let painted = visual
+        .debug_bounds("audio-source-visible-waveform")
+        .unwrap();
+    assert!((marker.left() - (body.left() + body.size.width * 0.8)).abs() < px(2.0));
+    assert!((painted.size.width - body.size.width * 0.8).abs() < px(2.0));
+    editor.update(&mut visual, |v, cx| {
+        assert_eq!(v.audio_source_viewport().length, 120_000);
+        assert_eq!(v.audio_event_editor.viewport, Some(events));
+        v.event_pan(true);
+        v.event_pan(true);
+        assert!(v.audio_source_viewport().start >= 96_000);
+        assert!(v.event_fit_selection(false));
+        assert!(v.event_fit_selection(true));
+        assert!(v.audio_source_viewport().start >= 96_000);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(v.last_enqueued_edit.is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("source-start-marker").is_none());
+    assert!(visual.debug_bounds("source-end-marker").is_none());
+    assert!(visual.debug_bounds("play-start-marker").is_none());
+}
+
+#[gpui::test]
+fn navigation_rejects_bad_wheel_and_held_input_and_resets_on_source_replacement(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{ScrollDelta, ScrollWheelEvent};
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let b = visual.debug_bounds("audio-events-waveform").unwrap();
+    let at = point(b.left() + b.size.width * 0.75, b.top() + px(4.0));
+    for delta in [f32::NAN, f32::INFINITY] {
+        visual.simulate_event(ScrollWheelEvent {
+            position: at,
+            delta: ScrollDelta::Pixels(point(px(0.0), px(delta))),
+            ..Default::default()
+        });
+    }
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.viewport.is_none())
+    });
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    assert!(editor.read_with(&visual, |v, _| v.audio_event_editor.gesture.is_some()));
+    visual.simulate_event(ScrollWheelEvent {
+        position: at,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        ..Default::default()
+    });
+    editor.update(&mut visual, |v, _| {
+        v.event_zoom(true);
+        v.event_pan(true);
+        assert!(!v.event_fit_selection(false));
+        assert!(v.audio_event_editor.viewport.is_none());
+        assert!(v.audio_event_editor.gesture.is_some());
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    editor.update(&mut visual, |v, cx| {
+        for _ in 0..20 {
+            v.event_zoom(true);
+        }
+        let (_, root, _) = v.event_context().unwrap();
+        assert_eq!(v.event_viewport(&root).length, 1);
+        v.audio_event_editor.source_view = true;
+        v.event_pan(true);
+        assert!(v.audio_source_viewport().start > 0);
+        v.project_generation += 1;
+        v.sync_audio_navigation();
+        assert!(v.audio_event_editor.source_view);
+        assert_eq!(v.audio_source_viewport(), Viewport::fit(96_000));
+        assert!(v.audio_event_editor.viewport.is_none());
+        assert!(v.audio_event_editor.source_fit_back.is_none());
+        assert!(v.last_enqueued_edit.is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+}

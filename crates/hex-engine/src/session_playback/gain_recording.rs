@@ -44,6 +44,9 @@ impl SessionPlayback {
         {
             return None;
         }
+        // The graph's summing arrival excludes serial Main processors. Receipt
+        // delivery must wait through the complete final output path instead.
+        let final_arrival = self.revision.arrangement().main_latency_frames();
         if let Some(compensation) = &self.compensation {
             let target = compensation
                 .graph
@@ -56,7 +59,7 @@ impl SessionPlayback {
                 .nodes()
                 .get(target.fader)?
                 .output_arrival_frames;
-            let delay = compensation.graph.main_latency().checked_sub(arrival)?;
+            let delay = final_arrival.checked_sub(arrival)?;
             let (frame, pass) = if arrival == 0 {
                 (self.arrangement_frame, self.arrangement_loop_pass)
             } else {
@@ -65,7 +68,12 @@ impl SessionPlayback {
             };
             Some((frame, u64::from(delay), pass))
         } else {
-            Some((self.arrangement_frame, 0, self.arrangement_loop_pass))
+            // A Main-only delay does not require upstream compensation rings.
+            Some((
+                self.arrangement_frame,
+                u64::from(final_arrival),
+                self.arrangement_loop_pass,
+            ))
         }
     }
 }
