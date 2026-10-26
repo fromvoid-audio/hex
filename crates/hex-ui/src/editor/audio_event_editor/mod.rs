@@ -4,6 +4,9 @@
 mod fades;
 mod paint;
 mod pending;
+mod playhead;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod playhead_tests;
 mod pointer;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
@@ -49,11 +52,6 @@ impl State {
     pub(super) fn clear_fit_back(&mut self) {
         self.fit_back = None;
     }
-}
-pub(super) struct AudioFitBaseline {
-    owner: (ClipId, u64),
-    viewport: Option<Viewport>,
-    back: Option<Option<Viewport>>,
 }
 struct Clipboard {
     owner: (ClipId, u64),
@@ -599,28 +597,12 @@ impl EditorView {
         self.event_update_pointer(pointer, platform);
         true
     }
-    pub(super) fn begin_audio_range_fit(&mut self) -> Option<AudioFitBaseline> {
-        if !self.event_context_current() {
-            return None;
-        }
-        let baseline = AudioFitBaseline {
-            owner: self.audio_event_editor.owner?,
-            viewport: self.audio_event_editor.viewport,
-            back: self.audio_event_editor.fit_back,
-        };
-        self.audio_event_editor.fit_back = Some(self.audio_event_editor.viewport);
-        Some(baseline)
-    }
-    pub(super) fn restore_audio_range_fit(&mut self, baseline: AudioFitBaseline) {
-        if self.audio_event_editor.owner == Some(baseline.owner)
-            && self.project_generation == baseline.owner.1
-            && self.detail_clip_id() == Some(baseline.owner.0)
-        {
-            self.audio_event_editor.viewport = baseline.viewport;
-            self.audio_event_editor.fit_back = baseline.back;
+    fn remember_audio_fit(&mut self) {
+        if self.event_context_current() {
+            self.audio_event_editor.fit_back = Some(self.audio_event_editor.viewport);
         }
     }
-    /// Shared manual/Arrange fit calculation in the retained root's output clock.
+    /// Manual fit calculation in the source root's output clock.
     pub(super) fn fit_audio_interval(&mut self, range: (u64, u64), remember: bool) -> bool {
         if !self.event_context_current() {
             return false;
@@ -664,7 +646,7 @@ impl EditorView {
             return false;
         }
         if remember {
-            let _ = self.begin_audio_range_fit();
+            self.remember_audio_fit();
         }
         self.audio_event_editor.gesture = None;
         self.audio_event_editor.viewport = Some(next);

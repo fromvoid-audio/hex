@@ -1149,6 +1149,7 @@ impl SessionPlayback {
                                     render_output,
                                     frame_offset,
                                     Some(&effect_clock),
+                                    Some(&effect_clock),
                                     &mut observe,
                                 )
                                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1157,6 +1158,7 @@ impl SessionPlayback {
                                 .process_range_with_clock(
                                     0..track.instrument_position(),
                                     render_output,
+                                    Some(&effect_clock),
                                     Some(&effect_clock),
                                 )
                                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1313,6 +1315,7 @@ impl SessionPlayback {
                                     render_output,
                                     frame_offset,
                                     Some(&effect_clock),
+                                    Some(&effect_clock),
                                     &mut observe,
                                 )
                                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1321,6 +1324,7 @@ impl SessionPlayback {
                                 .process_range_with_clock(
                                     track.instrument_position()..effect_count,
                                     render_output,
+                                    Some(&effect_clock),
                                     Some(&effect_clock),
                                 )
                                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1444,6 +1448,7 @@ impl SessionPlayback {
                                 render_output,
                                 frame_offset,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                                 &mut observe,
                             )
                             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1452,6 +1457,7 @@ impl SessionPlayback {
                             .process_range_with_clock(
                                 0..chain.len(),
                                 render_output,
+                                Some(&effect_clock),
                                 Some(&effect_clock),
                             )
                             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1624,6 +1630,7 @@ impl SessionPlayback {
                             frames,
                             frame_offset,
                             effect_clock,
+                            effect_clock,
                             foreign,
                             &mut observe,
                         )
@@ -1634,6 +1641,7 @@ impl SessionPlayback {
                             0..chain.len(),
                             frames,
                             frame_offset,
+                            effect_clock,
                             effect_clock,
                             foreign,
                         )
@@ -1713,6 +1721,7 @@ impl SessionPlayback {
                         frames,
                         frame_offset,
                         effect_clock,
+                        effect_clock,
                         foreign,
                         &mut observe,
                     )
@@ -1723,6 +1732,7 @@ impl SessionPlayback {
                         0..chain.len(),
                         frames,
                         frame_offset,
+                        effect_clock,
                         effect_clock,
                         foreign,
                     )

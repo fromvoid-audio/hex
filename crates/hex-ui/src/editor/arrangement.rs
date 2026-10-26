@@ -1,5 +1,4 @@
 use super::drag::BrowserAudioDrag;
-use super::tracks::TRACK_ROW_HEIGHT;
 use super::viewport::Viewport;
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -270,7 +269,10 @@ impl EditorView {
         })
         .w_full()
         .flex_1()
-        .min_h_0();
+        .min_h_0()
+        // Scroll past the final real row without inventing a track. A fraction
+        // preserves usable track space even in a very short arranger viewport.
+        .pb(relative(super::track_layout::BOTTOM_SCROLL_SPACE_RATIO));
         let mut content = div()
             .relative()
             .flex_1()
@@ -362,6 +364,7 @@ impl EditorView {
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                         if !phase.capture()
+                            || Self::row_size_wheel(event)
                             || !bounds.contains(&event.position)
                             || f32::from(event.position.x)
                                 >= f32::from(bounds.origin.x)
@@ -456,6 +459,24 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            if view.time_selection_key_held {
+                                let started = view.begin_main_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                    event.modifiers.shift,
+                                ) || view.begin_time_selection_gesture(
+                                    x,
+                                    y,
+                                    event.modifiers.platform,
+                                    event.modifiers.shift,
+                                );
+                                if started {
+                                    view.focus.focus(window);
+                                    cx.notify();
+                                }
+                                return (started, false);
+                            }
                             if view.begin_section_pointer(
                                 x,
                                 y,
@@ -464,6 +485,9 @@ impl EditorView {
                                 cx,
                             ) {
                                 view.focus.focus(window);
+                                if !view.capture_section_drag(window, cx) {
+                                    view.cancel_section_pointer();
+                                }
                                 cx.notify();
                                 return (true, false);
                             }
@@ -645,7 +669,10 @@ impl EditorView {
                 }
             }
         }
-        body
+        body.children(
+            self.time_selection_cursor_layer()
+                .map(|layer| layer.right(px(header_width))),
+        )
     }
 
     fn arrangement_surface(
@@ -781,11 +808,16 @@ impl EditorView {
                 )
                 .absolute()
                 .inset_0(),
-            );
+            )
+            .children(self.time_selection_cursor_layer());
         let row = div()
+            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+                view.resize_row_wheel(None, event, cx);
+            }))
             .debug_selector(|| "pinned-main-track".to_owned())
-            .h(px(TRACK_ROW_HEIGHT))
-            .flex_shrink_0()
+            .h(px(self.main_track_height()))
+            .min_h(px(super::track_layout::HEADER_ONLY_HEIGHT))
+            .flex_shrink()
             .flex()
             .border_t_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
@@ -810,13 +842,14 @@ impl EditorView {
                         super::device_panel::select_main(view, window, cx)
                     }))
                     .relative()
-                    .child(self.track_width_resize_handle(None, cx))
+                    .children(self.main_track_resize_handles(cx))
                     .debug_selector(|| "main-track-header".to_owned())
                     .w(px(self.track_header_width()))
                     .h_full()
                     .flex_shrink_0()
                     .flex()
                     .items_center()
+                    .pt(px(3.))
                     .gap_1()
                     .px_1()
                     .border_l_1()
@@ -824,9 +857,16 @@ impl EditorView {
                     .bg(rgb(theme::color(theme::PaletteRole::Raised)))
                     .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                     .text_xs()
-                    .child(theme::text("main"))
+                    .child(
+                        div()
+                            .debug_selector(|| "main-track-name".into())
+                            .child(theme::text("main")),
+                    )
                     .child(div().flex_1())
-                    .children([self.main_track_controls(cx)]),
+                    .children(
+                        (self.main_track_height() > super::track_layout::HEADER_ONLY_HEIGHT)
+                            .then(|| self.main_track_controls(cx)),
+                    ),
             );
         let extra = state.as_ref().map(|state| {
             super::device_automation::rows(
@@ -840,7 +880,8 @@ impl EditorView {
         div()
             .flex()
             .flex_col()
-            .flex_shrink_0()
+            .flex_shrink()
+            .min_h(px(super::track_layout::HEADER_ONLY_HEIGHT))
             .child(row)
             .children(extra.map(|rows| {
                 div()

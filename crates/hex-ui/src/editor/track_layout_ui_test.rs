@@ -326,7 +326,9 @@ fn variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_id
         let total = tracks.iter().map(|id| view.track_height(*id)).sum::<f32>();
         let height = view.arrangement_bounds.unwrap().height;
         assert!(
-            (f32::from(view.track_scroll.max_offset().height) - (total - height).max(0.0)).abs()
+            (f32::from(view.track_scroll.max_offset().height)
+                - (total + height * 0.2 - height).max(0.0))
+            .abs()
                 <= 1.0,
             "viewport width changes must retain measured nonuniform scroll extent"
         );
@@ -349,6 +351,7 @@ fn variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_id
 #[gpui::test]
 fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut TestAppContext) {
     let (mut visual, editor, _) = fixture(cx, 0);
+    let original_width = visual.debug_bounds("main-track-header").unwrap().size.width;
     let from = visual
         .debug_bounds("main-track-width-resize")
         .unwrap()
@@ -356,7 +359,7 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     drag(&mut visual, from, point(from.x - px(64.0), from.y));
     assert_eq!(
         visual.debug_bounds("main-track-header").unwrap().size.width,
-        px(TRACK_HEADER_WIDTH + 64.0)
+        original_width + px(64.0)
     );
     visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
@@ -410,6 +413,9 @@ fn option_resize_equalizes_all_ordinary_rows_and_escape_restores_each_height(
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, tracks) = fixture(cx, 3);
+    // Main participates too; keep all three enlarged rows visible for geometry assertions.
+    visual.simulate_resize(size(px(1280.), px(1000.)));
+    visual.run_until_parked();
     for (track, delta) in [(tracks[0], 40.0), (tracks[1], 80.0)] {
         let handle = bounds(&mut visual, "track-height-resize", track).center();
         drag(&mut visual, handle, point(handle.x, handle.y + px(delta)));
@@ -473,7 +479,12 @@ fn option_resize_equalizes_all_ordinary_rows_and_escape_restores_each_height(
                 );
             }
         }
-        assert_eq!(visual.debug_bounds("pinned-main-track").unwrap(), main);
+        let resized_main = visual.debug_bounds("pinned-main-track").unwrap();
+        assert_eq!(resized_main.bottom(), main.bottom());
+        assert_eq!(
+            resized_main.size.height,
+            if cancel { main.size.height } else { expected }
+        );
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project, original);
             assert_eq!(view.worker_requests_pending, 0);
@@ -565,7 +576,7 @@ fn install_layout_project(
 }
 
 #[gpui::test]
-fn h_overview_roundtrip_preserves_distinct_heights_and_fixed_return_main_rows(
+fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
     cx: &mut TestAppContext,
 ) {
     let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
@@ -633,7 +644,7 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_fixed_return_main_rows(
             .unwrap()
             .size
             .height,
-        px(44.0)
+        px(23.0)
     );
     focus_workspace(&mut visual, &editor);
     visual.simulate_keystrokes("h");
@@ -882,3 +893,168 @@ fn h_overview_topology_prunes_both_height_maps_and_generation_restarts_normal_la
 
 #[path = "track_layout/capture_tests.rs"]
 mod capture_tests;
+
+#[path = "main_track_size_ui_tests.rs"]
+mod main_size_tests;
+
+#[gpui::test]
+fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 12);
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll
+            .scroll_to_item(6, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let resize = bounds(&mut visual, "track-height-resize", tracks[6]).center();
+    drag(&mut visual, resize, point(resize.x, resize.y + px(40.0)));
+    let before = editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(tracks[7]);
+        view.track_selection.replace(&tracks[6..8]);
+        view.time_selection = Some(super::time_selection::TimeSelection {
+            anchor_track: tracks[6],
+            end_track: tracks[7],
+            anchor_frame: 48_000,
+            end_frame: 96_000,
+        });
+        view.viewport = Some(super::Viewport {
+            start: 24_000,
+            length: 192_000,
+        });
+        view.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: 2,
+            offset_in_item: px(7.0),
+        });
+        cx.notify();
+        (
+            view.track_body_height(tracks[6]),
+            view.track_body_height(tracks[7]),
+            view.main_track_height(),
+            view.viewport,
+            view.state.as_ref().unwrap().project.snapshot(),
+        )
+    });
+    visual.run_until_parked();
+    let scroll = editor.read_with(&visual, |view, _| {
+        view.track_scroll.list.logical_scroll_top()
+    });
+    visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let available = view.arrangement_bounds.unwrap().height;
+        let fitted = view.track_height(tracks[6]) + view.track_height(tracks[7]);
+        assert!(
+            (fitted - available).abs() <= 2.0,
+            "selected rows fill the vertical viewport: {fitted} != {available}"
+        );
+        assert_eq!(view.main_track_height(), before.2);
+        assert_eq!(
+            view.viewport,
+            Some(super::Viewport {
+                start: 48_000,
+                length: 48_000
+            })
+        );
+        assert_eq!(view.selected_track_ids(), tracks[6..8]);
+    });
+    let first = bounds(&mut visual, "arrangement-track-header", tracks[6]);
+    let last = bounds(&mut visual, "arrangement-track-header", tracks[7]);
+    let area = editor.read_with(&visual, |view, _| view.arrangement_bounds.unwrap());
+    assert!((f32::from(first.top()) - area.top).abs() <= 2.0);
+    assert!(f32::from(last.bottom()) <= area.top + area.height + 2.0);
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    visual.simulate_resize(size(px(1200.0), px(680.0)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.track_body_height(tracks[6]), before.0);
+        assert_eq!(view.track_body_height(tracks[7]), before.1);
+        assert_eq!(view.main_track_height(), before.2);
+        assert_eq!(view.viewport, before.3);
+        let restored = view.track_scroll.list.logical_scroll_top();
+        assert_eq!(
+            (restored.item_ix, restored.offset_in_item),
+            (scroll.item_ix, scroll.offset_in_item)
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.4);
+        assert!(view.last_enqueued_edit.is_none());
+    }); // Vertical fitting remains available when time already fits exactly.
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = Some(super::Viewport {
+            start: 48_000,
+            length: 48_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            (view.track_height(tracks[6]) + view.track_height(tracks[7])
+                - view.arrangement_bounds.unwrap().height)
+                .abs()
+                <= 2.0
+        );
+    });
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.track_body_height(tracks[6]), before.0);
+        assert_eq!(view.track_body_height(tracks[7]), before.1);
+    });
+}
+
+#[path = "track_wheel_ui_tests.rs"]
+mod wheel_tests;
+
+#[gpui::test]
+fn bottom_scroll_keeps_empty_track_space_without_synthetic_tracks(cx: &mut TestAppContext) {
+    for count in [2, 30] {
+        let (mut visual, editor, tracks) = fixture(cx, count);
+        let original = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        for compact in [false, true] {
+            if compact {
+                focus_workspace(&mut visual, &editor);
+                visual.simulate_keystrokes("h");
+            }
+            for (width, height) in [(1200., 800.), (800., 480.)] {
+                visual.simulate_resize(size(px(width), px(height)));
+                visual.run_until_parked();
+                editor.update(&mut visual, |view, cx| {
+                    let maximum = view.track_scroll.max_offset();
+                    view.track_scroll.set_offset(point(px(0.), -maximum.height));
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                let last = bounds(
+                    &mut visual,
+                    "arrangement-track-header",
+                    *tracks.last().unwrap(),
+                );
+                editor.read_with(&visual, |view, _| {
+                    let viewport = view.track_scroll.list.viewport_bounds();
+                    let gap = f32::from(viewport.bottom() - last.bottom());
+                    let reserve = f32::from(viewport.size.height) * 0.2;
+                    assert!(
+                        gap >= reserve - 1.,
+                        "bottom gap {gap} must retain at least {reserve} pixels"
+                    );
+                    if view.track_scroll.max_offset().height > px(0.) {
+                        assert!(
+                            (gap - reserve).abs() <= 1.,
+                            "scrollable bottom gap must match viewport reserve: {gap} vs {reserve}"
+                        );
+                    }
+                    assert_eq!(view.track_scroll.list.item_count(), tracks.len());
+                    assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
+                });
+            }
+        }
+    }
+}

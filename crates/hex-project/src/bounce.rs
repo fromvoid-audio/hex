@@ -3,8 +3,9 @@
 //! per source track spans selected clips (including gaps and release tails).
 //! Whole-track bakes additionally print each Console source independently. Explicit ranges
 //! have priority in the UI and adopt exactly their half-open frame interval.
-//! In-place baking removes the baked device chain only when no unselected
-//! Arrangement or Console material can be affected. Whole-track intent covers all
+//! In-place baking is restricted to complete tracks; clip and range targets
+//! only render to new tracks. Audio grouping retains its separate pre-device
+//! contract. Whole-track intent covers all
 //! active Arrangement clips and every Console cell on one ordinary root track,
 //! independent of selection. Inactive Arrangement clips, hierarchy and external
 //! routing refuse; Console activation is retained on independently rendered cells.
@@ -83,6 +84,11 @@ impl Project {
                 clips,
                 range.as_ref(),
             )?]);
+        }
+        if in_place && !matches!(target, BounceTarget::Track(_)) {
+            return Err(Invalid(
+                "bounce in place requires a complete track · use grouping for clips or time selections",
+            ));
         }
         if !self.audio_feeds.is_empty() || !self.midi_routes.is_empty() || !self.routing.is_empty()
         {
@@ -205,32 +211,6 @@ impl Project {
                 .is_none_or(|n| n == 0 || n > MAX_ARRANGEMENT_BOUNCE_FRAMES)
             {
                 return Err(Invalid("bounce exceeds its finite frame budget"));
-            }
-            if in_place && (track.instrument().is_some() || !track.devices().is_empty()) {
-                let unrelated = match target {
-                    BounceTarget::Clips(_) | BounceTarget::Track(_) => {
-                        clips.len() != track.clips().len() + track.midi_clips().len()
-                    }
-                    BounceTarget::Range(_) => {
-                        track.clips().iter().any(|c| {
-                            c.start() < start
-                                || c.start().checked_add(c.duration()).is_none_or(|e| e > end)
-                        }) || track.midi_clips().iter().any(|c| {
-                            midi_frames(self, c).map_or(true, |(s, e)| s < start || e > end)
-                        })
-                    }
-                    BounceTarget::AudioGroup { .. } => {
-                        return Err(Invalid("audio grouping plan was not resolved"));
-                    }
-                };
-                let console = self.session_cells().iter().any(|c| {
-                    c.track() == track.id() && !matches!(c.content(), SessionCellContent::Stop)
-                });
-                if unrelated || (console && !matches!(target, BounceTarget::Track(_))) {
-                    return Err(Invalid(
-                        "in-place bounce would change unselected material through baked devices · use command-b",
-                    ));
-                }
             }
             result.push(BounceTrack {
                 source: crate::BounceSource::Arrangement,
@@ -477,7 +457,7 @@ mod tests {
         else {
             panic!("source track")
         };
-        let Created::Clip(clip) = editor
+        let Created::Clip(_clip) = editor
             .execute(Command::PlaceMidiClip {
                 track,
                 start: BeatTime::ONE,
@@ -496,11 +476,11 @@ mod tests {
             .id();
         let original = editor.project().clone();
         let item = original
-            .plan_arrangement_bounce(&BounceTarget::Clips(vec![clip]), true)
+            .plan_arrangement_bounce(&BounceTarget::Track(track), true)
             .unwrap()
             .remove(0);
         let after_command = Command::CommitArrangementBounce {
-            target: BounceTarget::Clips(vec![clip]),
+            target: BounceTarget::Track(track),
             in_place: true,
             files: vec![BounceFile {
                 source: BounceSource::Arrangement,
@@ -541,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn tail_overlap_and_wrong_exact_range_refuse_without_history_mutation() {
+    fn retired_clip_and_range_in_place_refuse_without_history_mutation() {
         let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Imported { track, clip, asset } = editor
             .execute(Command::ImportAudioTrack {
@@ -580,7 +560,7 @@ mod tests {
                 files: vec![output(150)],
             })
             .unwrap_err();
-        assert!(error.to_string().contains("overlaps unselected"));
+        assert!(error.to_string().contains("complete track"));
         assert_eq!(editor.project(), &original);
         assert!(
             editor

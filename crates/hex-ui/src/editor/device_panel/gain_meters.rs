@@ -125,12 +125,13 @@ pub(super) fn dynamics(
     state.update_dynamics(routing, reading, playing, elapsed)
 }
 
-pub(super) fn render(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
-    device: &hex_project::Device,
-    class: NativeDeviceClass,
-) -> Div {
+/// Read and decay sample peaks once through the same display owner as the side strip.
+/// Multiple presentations share cached levels; no endpoint handle escapes this call.
+pub(super) fn levels(view: &mut EditorView, device: &hex_project::Device) -> [f32; 2] {
+    sample_levels(view, device).0
+}
+
+fn sample_levels(view: &mut EditorView, device: &hex_project::Device) -> ([f32; 2], [f32; 2]) {
     let id = device.id();
     // Follow the audible device through pending edits; never read a candidate or export.
     let source = audible_meter(view, device);
@@ -166,8 +167,17 @@ pub(super) fn render(
             state.held[index] = state.held[index].max(peak);
         }
     }
-    let levels = state.levels;
-    let held = state.held;
+    (state.levels, state.held)
+}
+
+pub(super) fn render(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &hex_project::Device,
+    class: NativeDeviceClass,
+) -> Div {
+    let id = device.id();
+    let (levels, held) = sample_levels(view, device);
     let mut strip = div().flex().w(px(WIDTH)).px(px(1.0)).gap(px(3.0));
     for (index, descriptor, value) in [
         (

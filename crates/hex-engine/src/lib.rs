@@ -2964,6 +2964,7 @@ impl RendererRuntime {
                                 0..track.instrument_position(),
                                 target,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -2983,6 +2984,7 @@ impl RendererRuntime {
                                 track.instrument_position()..effect_count,
                                 target,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -2994,7 +2996,12 @@ impl RendererRuntime {
                         .get_mut(index)
                         .ok_or(Invalid("native device runtime is unavailable"))?;
                     chain
-                        .process_range_with_clock(0..chain.len(), target, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            target,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 if !ordered {
@@ -3080,6 +3087,7 @@ impl RendererRuntime {
                                 0..track.instrument_position,
                                 rendered,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -3106,6 +3114,7 @@ impl RendererRuntime {
                                 track.instrument_position..effect_count,
                                 rendered,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -3117,7 +3126,12 @@ impl RendererRuntime {
                         .get_mut(track_index)
                         .ok_or(Invalid("native device runtime is unavailable"))?;
                     chain
-                        .process_range_with_clock(0..chain.len(), rendered, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            rendered,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 if !ordered {
@@ -3157,7 +3171,12 @@ impl RendererRuntime {
                         .get_mut(index)
                         .ok_or(Invalid("return runtime is unavailable"))?;
                     chain
-                        .process_range_with_clock(0..chain.len(), frames, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            frames,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared return segment is invalid"))?;
                     if let Some(matrix) = bus.matrix {
                         matrix.apply_block(frames);
@@ -3191,7 +3210,12 @@ impl RendererRuntime {
                 let frames = &mut bus_frames[..count];
                 if let Some(chain) = self.return_chains.get_mut(index) {
                     chain
-                        .process_range_with_clock(0..chain.len(), frames, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            frames,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared return segment is invalid"))?;
                 } else {
                     return Err(Invalid("return runtime is unavailable"));

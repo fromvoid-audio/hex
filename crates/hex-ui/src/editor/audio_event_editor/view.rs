@@ -11,13 +11,12 @@ const EVENT_RULER_HEIGHT: f32 = 22.0;
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
-    render_window: &gpui::Window,
+    _render_window: &gpui::Window,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
     let (clip_id, root, revision) = view.event_context()?;
     let owner = (clip_id, view.project_generation);
     if view.audio_event_editor.owner != Some(owner) {
-        view.retire_arrange_range_owner();
         let clipboard = view.audio_event_editor.clipboard.take();
         let pending = view.audio_event_editor.pending.take();
         view.audio_event_editor = State {
@@ -42,7 +41,6 @@ pub(in crate::editor) fn view(
         });
         view.audio_event_editor.revision = revision;
     }
-    view.reflect_arrange_clip_range(render_window, cx);
     let state = view.state.as_ref()?;
     let clip = state.project.clip(clip_id)?.clone();
     let events = match clip.editable_audio_events() {
@@ -353,18 +351,19 @@ pub(in crate::editor) fn view(
                     .opacity(theme::TIME_SELECTION_OPACITY)
                     .child(
                         div()
+                            .id("audio-event-range-handle")
                             .absolute()
                             .top_0()
                             .left_0()
                             .right_0()
                             .h(relative(RANGE_HANDLE_FRACTION))
                             .debug_selector(|| "audio-event-range-handle".into())
-                            .cursor(gpui::CursorStyle::OpenHand),
+                            .cursor(gpui::CursorStyle::OpenHand)
+                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
                     ),
             );
         }
     }
-    body = body.children(view.arrange_audio_highlights(first, local.start, local.length));
     let cursor = frame_at(
         view.audio_event_editor
             .cursor
@@ -424,6 +423,22 @@ pub(in crate::editor) fn view(
                 ),
         );
     }
+    if let Some(position) = view
+        .audio_playhead_root_position()
+        .and_then(frame_at)
+        .filter(|frame| (first + local.start..first + local.start + local.length).contains(frame))
+    {
+        body = body.child(
+            div()
+                .debug_selector(|| "audio-playback-position".into())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(relative(frame_to_x(position)))
+                .w(px(1.0))
+                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+        );
+    }
     let entity = cx.entity();
     body = body.child(
         canvas(
@@ -443,7 +458,10 @@ pub(in crate::editor) fn view(
                 if let Some(gesture) = view.audio_event_editor.gesture.as_ref()
                     && view.audio_event_focus.is_focused(window)
                 {
-                    window.renew_pointer_capture(entity.entity_id(), gesture.kind.pointer_cursor());
+                    window.renew_pointer_capture(
+                        entity.entity_id(),
+                        view.audio_event_pointer_cursor(gesture.kind),
+                    );
                 }
             },
         )
@@ -509,7 +527,9 @@ pub(in crate::editor) fn view(
                 .audio_event_editor
                 .range
                 .filter(|(a, b)| a <= &raw && raw < *b);
-            let kind = if target == RangeSelectionTarget::Move && range_hit.is_some() {
+            let kind = if view.time_selection_key_held {
+                Kind::Select
+            } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
                 if let Some((start, end)) = range_hit {
                     Kind::RangeMove { start, end }
                 } else {
@@ -661,6 +681,7 @@ pub(in crate::editor) fn view(
                     "drag ruler for time · drag event to move · cmd for free",
                 )),
         );
+    let body = body.children(view.time_selection_cursor_layer());
     let root = div()
         .id("audio-event-editor")
         .debug_selector(|| "audio-event-editor".into())

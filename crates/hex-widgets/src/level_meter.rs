@@ -82,6 +82,21 @@ pub fn level_meter(id: SharedString, fraction: f32, above: bool, style: LevelMet
 
 /// Shared signal well; device gain meters install their cap after the gain handle.
 pub(crate) fn meter_body(id: SharedString, fraction: f32, style: LevelMeterStyle) -> Div {
+    meter_body_direction(id, fraction, style, false)
+}
+
+/// Read-only attenuation gauge, growing down from zero at the top. No clipping
+/// cap is inferred from gain reduction; caller supplies a normalized dB extent.
+pub fn reduction_meter(id: SharedString, fraction: f32, style: LevelMeterStyle) -> Div {
+    meter_body_direction(id, fraction, style, true)
+}
+
+fn meter_body_direction(
+    id: SharedString,
+    fraction: f32,
+    style: LevelMeterStyle,
+    downward: bool,
+) -> Div {
     let fill_id = format!("{id}-fill");
     div()
         .debug_selector(move || id.to_string())
@@ -94,7 +109,8 @@ pub(crate) fn meter_body(id: SharedString, fraction: f32, style: LevelMeterStyle
             div()
                 .debug_selector(move || fill_id.clone())
                 .absolute()
-                .bottom_0()
+                .when(downward, |fill| fill.top_0())
+                .when(!downward, |fill| fill.bottom_0())
                 .w_full()
                 .h(relative(bounded_fraction(fraction)))
                 .bg(rgb(style.fill)),

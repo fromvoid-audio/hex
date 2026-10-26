@@ -97,7 +97,7 @@ pub(in crate::editor) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTe
         std::thread::yield_now();
     }
 }
-pub(super) fn double_down(
+pub(in crate::editor) fn double_down(
     visual: &mut VisualTestContext,
     at: gpui::Point<gpui::Pixels>,
     modifiers: Modifiers,

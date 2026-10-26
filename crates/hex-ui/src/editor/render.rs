@@ -6,8 +6,8 @@ use super::{
     OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
     PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
     RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
-    SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode,
-    TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    SelectAllMidiNotes, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
+    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
@@ -609,9 +609,6 @@ impl Render for EditorView {
                 super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
-                if event.button == MouseButton::Left {
-                    view.piano_pitch_zoom = None;
-                }
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_browser_audio_drag.clone()
                 {
@@ -706,13 +703,17 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                if !view.tuning_audition_down(event, window, cx)
+                if !view.time_selection_key_down(event, window, cx)
+                    && !view.tuning_audition_down(event, window, cx)
                     && !view.fade_key_down(event, window, cx)
                 {
                     view.computer_keyboard_down(event, window, cx);
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.time_selection_key_up(event, cx) {
+                    cx.stop_propagation();
+                }
                 super::device_panel::selection_key_up(view, event, window, cx);
                 if view.tuning_audition_up(&event.keystroke.key) {
                     cx.stop_propagation();
@@ -1358,24 +1359,16 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.trace(|view, _: &super::BounceInPlace, window, cx| {
-                view.bounce_arrangement_selection(true, window);
-                cx.notify();
-            }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
-                view.bounce_arrangement_selection(false, window);
+                view.bounce_arrangement_selection(window);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &LoopSelection, window, cx| {
                 view.loop_selection_key(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.trace(|view, _: &SetLoopFromClip, window, cx| {
-                view.set_loop_from_clip(window, cx);
-                cx.notify();
-            }))
-            .on_action(cx.trace(|view, _: &ToggleLoop, _, cx| {
-                view.toggle_loop();
+            .on_action(cx.trace(|view, _: &ToggleLoop, window, cx| {
+                view.toggle_active_loop_shortcut(window);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ZoomIn, _, cx| {
