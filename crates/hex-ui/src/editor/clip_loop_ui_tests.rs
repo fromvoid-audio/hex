@@ -653,6 +653,8 @@ fn repeat_boundary_cursor_retires_with_focus_and_window_loss(cx: &mut TestAppCon
     for midi in [false, true] {
         for window_loss in [false, true] {
             let mut f = fixture(cx, midi);
+            f.visual.update(|window, _| window.activate_window());
+            f.visual.run_until_parked();
             let target = drag(&mut f, "outer", 70., Modifiers::default());
             f.visual
                 .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
@@ -674,8 +676,13 @@ fn repeat_boundary_cursor_retires_with_focus_and_window_loss(cx: &mut TestAppCon
                     .update(|window, cx| f.editor.update(cx, |v, cx| v.search_browser(window, cx)));
             }
             f.visual.run_until_parked();
-            f.visual
-                .update(|_, cx| assert_eq!(cx.active_drag_cursor_style(), None));
+            f.visual.update(|_, cx| {
+                assert_eq!(
+                    cx.active_drag_cursor_style(),
+                    None,
+                    "midi={midi} window_loss={window_loss}"
+                );
+            });
             f.visual
                 .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             f.visual
