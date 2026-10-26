@@ -227,19 +227,13 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
     }
     let track = editor.update(cx, |v, cx| {
         let track = v.selected_track;
-        v.retain_clip_detail_for_time_selection();
         v.selected_clip = None;
         v.selected_track = None;
         cx.notify();
         track
     });
     visual.run_until_parked();
-    marker(
-        &mut visual,
-        "audio-playback-position",
-        "audio-events-waveform",
-        Some(0.3),
-    );
+    assert!(visual.debug_bounds("audio-events-waveform").is_none());
     editor.update(cx, |v, cx| {
         v.selected_clip = Some(clip);
         v.selected_track = track;

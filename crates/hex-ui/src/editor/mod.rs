@@ -64,9 +64,6 @@ mod test_environment;
 mod activation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod activation_ui_test;
-mod arrange_clip_range;
-#[cfg(all(test, feature = "ui-test-support"))]
-mod arrange_clip_range_ui_tests;
 mod arranger_navigation;
 mod audio_import_settings;
 pub(crate) mod changelog;
@@ -874,8 +871,6 @@ pub(super) struct EditorView {
     device_panel_active: bool,
     clip_detail_body_height: f32,
     clip_detail_resize: clip_detail_resize::State,
-    arrange_clip_range: arrange_clip_range::State,
-    retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
     loop_rail_cursor: gpui::CursorStyle,
@@ -1554,8 +1549,6 @@ impl EditorView {
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
             clip_detail_resize: clip_detail_resize::State::default(),
-            arrange_clip_range: arrange_clip_range::State::default(),
-            retained_clip_detail: None,
             loop_rail_gesture: None,
             pending_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
@@ -1924,7 +1917,6 @@ impl EditorView {
         if !self.focus_clip_details(window, cx) {
             return false;
         }
-        self.retained_clip_detail = None;
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {

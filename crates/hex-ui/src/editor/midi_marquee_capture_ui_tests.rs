@@ -191,7 +191,6 @@ fn marquee_loss_restores_owned_baseline_but_preserves_newer_selection(cx: &mut T
                 }),
                 "source" => editor.update(&mut visual, |v, cx| {
                     v.selected_clip = None;
-                    v.retained_clip_detail = None;
                     v.midi_selection.set_single(newer);
                     cx.notify();
                 }),
