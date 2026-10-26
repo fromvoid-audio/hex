@@ -21,7 +21,7 @@ pub use foreign_processor::{
 pub use parameter_automation::{
     HostAutomationLane, NativeParameterAutomation, ParameterAutomationBlock,
     ParameterAutomationLane, ParameterAutomationPoint, PreparedParameterAutomation,
-    PreparedParameterAutomationLane,
+    PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
 };
 mod resources;
 mod runtime_ownership;
@@ -221,20 +221,21 @@ pub enum OutputTail {
     Unbounded,
 }
 
-/// Audio-owned state with allocation-free, infallible block processing and
-/// history operations once the prepared configurations have been admitted.
+/// Audio-owned state with allocation-free ordinary processing/history after
+/// admission. Prepared automation normally succeeds; malformed borrowed delivery
+/// or a derived-control failure returns through the host's existing rollback.
 pub trait NativeProcessorRuntime: StdAny + Send {
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
         false
     }
     fn process_block_with_automation(
         &mut self,
-        frames: &mut [StereoFrame],
-        clock: Option<&dyn NativeInstrumentClock>,
+        _frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
         _automation: &dyn NativeParameterAutomation,
-        resources: &dyn DeviceResources,
-    ) {
-        self.process_block_with_clock(frames, clock, resources);
+        _resources: &dyn DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
     }
     fn process_bypassed_block_with_automation(
         &mut self,
@@ -242,7 +243,7 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         clock: Option<&dyn NativeInstrumentClock>,
         automation: &dyn NativeParameterAutomation,
         resources: &dyn DeviceResources,
-    ) {
+    ) -> Result<(), DeviceContractError> {
         for (offset, frame) in frames.iter_mut().enumerate() {
             let dry = *frame;
             let shifted = clock.map(|clock| OffsetClock { clock, offset });
@@ -250,7 +251,7 @@ pub trait NativeProcessorRuntime: StdAny + Send {
                 values: automation,
                 offset,
             };
-            self.process_block_with_automation(
+            let result = self.process_block_with_automation(
                 std::slice::from_mut(frame),
                 shifted
                     .as_ref()
@@ -259,7 +260,9 @@ pub trait NativeProcessorRuntime: StdAny + Send {
                 resources,
             );
             *frame = dry;
+            result?;
         }
+        Ok(())
     }
     fn process_block(
         &mut self,
@@ -522,6 +525,18 @@ impl NativeParameterAutomation for OffsetAutomation<'_> {
         offset: usize,
     ) -> Option<hex_lattice_contract::ParameterValue> {
         self.values.value_at(id, self.offset.checked_add(offset)?)
+    }
+    fn values_at(
+        &self,
+        offset: usize,
+        output: &mut [Option<hex_lattice_contract::ParameterValue>],
+    ) -> Result<(), DeviceContractError> {
+        self.values.values_at(
+            self.offset
+                .checked_add(offset)
+                .ok_or(DeviceContractError::InvalidParameterValue)?,
+            output,
+        )
     }
 }
 struct OffsetClock<'a> {
