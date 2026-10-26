@@ -474,7 +474,7 @@ fn compile_project_inner<'a>(
     }
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
-    crate::device_automation::validate_project(snapshot)?;
+    crate::device_automation::validate_project_with_registry(snapshot, registry)?;
     crate::gain_envelope::validate_project(snapshot)?;
     validate_source_midi_roots(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
@@ -1043,9 +1043,15 @@ fn compile_effect_devices(
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
+        let automation = crate::device_automation::prepare_with_registry(device, registry)?;
         let prepared_device = registry
-            .prepare_runtime_instance(identity, &migrated, context)
-            .map_err(|_| Invalid("native device state could not be prepared"))?;
+            .prepare_runtime_instance_with_automation(
+                identity,
+                &migrated,
+                context,
+                automation.parameter_ids(),
+            )
+            .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
 
         let prepared = if device.bypassed() {
@@ -1067,6 +1073,7 @@ fn compile_effect_devices(
                 .map_err(|error| Invalid(error.0))?;
         }
         devices.push(hex_lattice::PreparedRuntimeInstance {
+            automation,
             meter: Default::default(),
             owner,
             device_id: device.id().value(),
