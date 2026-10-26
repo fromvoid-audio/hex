@@ -399,7 +399,6 @@ actions!(
         DuplicateAliasClip,
         MakeClipUnique,
         SplitClip,
-        SetLoopFromClip,
         LoopSelection,
         BounceToNewTracks,
         ToggleLoop,
@@ -519,7 +518,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-up", MoveSceneUp, Some("hex_editor")),
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
-        KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
+        KeyBinding::new("cmd-l", ToggleLoop, Some("hex_editor && !hex_text_editing")),
         KeyBinding::new(
             "cmd-b",
             BounceToNewTracks,
@@ -1746,6 +1745,16 @@ impl EditorView {
     }
 
     fn playback_start_frame(&self) -> u64 {
+        // Only the acknowledged canonical loop owns the next start. Keep cursor
+        // and time selection intact for ordinary playback after disabling it.
+        if let Some(region) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .filter(|region| region.enabled())
+        {
+            return region.start();
+        }
         if let Some(selection) = self.normalized_time_selection() {
             return selection.start();
         }
