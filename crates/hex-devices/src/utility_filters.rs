@@ -230,7 +230,7 @@ impl UtilityFilterProcessor {
         let automation = self.automation;
         *self = Self::with_automation(self.prepared, automation);
         if let Some(mut automation) = self.automation
-            && let Ok((matrix, filters)) =
+            && let Ok((matrix, Some(filters))) =
                 automation.configuration(None, 0, self.prepared.sample_rate, None)
         {
             automation.matrix = matrix;
@@ -292,7 +292,7 @@ impl UtilityFilterProcessor {
         values: &dyn hex_lattice::NativeParameterAutomation,
         bypassed: bool,
     ) -> Result<(), hex_lattice_contract::DeviceContractError> {
-        let resolved = self
+        let mut resolved = self
             .automation
             .as_ref()
             .ok_or(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)?
@@ -303,12 +303,14 @@ impl UtilityFilterProcessor {
                 .as_mut()
                 .ok_or(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass)?;
             let (_, filters) = automation.configuration(
-                Some((values, &resolved)),
+                Some((values, &mut resolved)),
                 offset,
                 self.prepared.sample_rate,
-                Some(self.prepared),
+                Some(&self.prepared),
             )?;
-            self.reconfigure(filters);
+            if let Some(filters) = filters {
+                self.reconfigure(filters);
+            }
             let internal = self.process_frame(*frame);
             if !bypassed {
                 *frame = internal;

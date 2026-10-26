@@ -83,7 +83,7 @@ impl SaturatorRuntime {
     pub(super) fn apply_automation(
         &mut self,
         values: &dyn hex_lattice::NativeParameterAutomation,
-        resolved: &crate::parameter_binding::Resolved<4>,
+        resolved: &mut crate::parameter_binding::Resolved<4>,
         offset: usize,
     ) -> Result<(), DeviceContractError> {
         let Some(next) = self.controls.sample(&BINDINGS, resolved, values, offset)? else {
@@ -102,7 +102,7 @@ impl SaturatorRuntime {
         } else {
             amplitude_from_db(settings.output_db)?
         };
-        self.controls = next;
+        self.controls.install(next);
         self.settings = settings;
         self.drive_gain = drive;
         self.output_gain = output;

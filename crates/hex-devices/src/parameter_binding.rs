@@ -135,10 +135,35 @@ pub(crate) fn binding<C>(bindings: &[Binding<C>], id: ParameterId) -> Result<&Bi
         .map_err(|_| Error::UnknownParameter)?;
     bindings.get(index).ok_or(Error::UnknownParameter)
 }
+const PRESENCE_WORDS: usize =
+    hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE.div_ceil(u64::BITS as usize);
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    index: usize,
+    word: usize,
+    bit: u64,
+}
+/// One block's admitted index map and reusable bulk scratch. This is stack
+/// staging, never an envelope cursor or retained producer/program ownership.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Resolved<const N: usize> {
-    indices: [usize; N],
+    slots: [Slot; N],
+    sampled: [Option<ParameterValue>; N],
+    present: [u64; PRESENCE_WORDS],
     len: usize,
+}
+/// A derived configuration may refuse before this staged value/cache is
+/// installed. Borrowing the block scratch keeps its sampled values stable until
+/// install, without copying immutable base/admission or the full runtime cache.
+#[derive(Debug)]
+pub(crate) struct Pending<'a, C: Copy, const N: usize> {
+    effective: C,
+    resolved: &'a Resolved<N>,
+}
+impl<C: Copy, const N: usize> Pending<'_, C, N> {
+    pub fn effective(&self) -> C {
+        self.effective
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Controls<C: Copy, const N: usize> {
@@ -146,6 +171,7 @@ pub(crate) struct Controls<C: Copy, const N: usize> {
     effective: C,
     admitted: [bool; N],
     last: [Option<ParameterValue>; N],
+    present: [u64; PRESENCE_WORDS],
     initialized: bool,
 }
 impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
@@ -155,6 +181,7 @@ impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
             effective: base,
             admitted,
             last: [None; N],
+            present: [0; PRESENCE_WORDS],
             initialized: false,
         }
     }
@@ -179,86 +206,150 @@ impl<C: Copy + PartialEq, const N: usize> Controls<C, N> {
         bindings: &[Binding<C>; N],
         values: &dyn NativeParameterAutomation,
     ) -> Result<Resolved<N>, Error> {
+        // Presence follows the existing native parameter limit, not a new
+        // per-family cap. Sparse work scans only this family's actual words.
+        if N > hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE {
+            return Err(Error::RuntimeBudgetExceeded);
+        }
         let ids = values.parameter_ids();
         if ids.len() > N || ids.windows(2).any(|p| p[0] >= p[1]) {
             return Err(Error::UnknownParameter);
         }
         let mut resolved = Resolved {
-            indices: [0; N],
+            slots: [Slot {
+                index: 0,
+                word: 0,
+                bit: 0,
+            }; N],
+            sampled: [None; N],
+            present: [0; PRESENCE_WORDS],
             len: ids.len(),
         };
-        for (slot, &id) in resolved.indices.iter_mut().zip(ids) {
+        for (slot, &id) in resolved.slots.iter_mut().zip(ids) {
             let index = bindings
                 .binary_search_by_key(&id, |b| b.descriptor.id)
                 .map_err(|_| Error::UnknownParameter)?;
-            if !self.admitted(index)
-                || bindings[index].semantics.access == ParameterAccess::ReadOnly
-            {
+            if !self.admitted(index) {
                 return Err(Error::UnknownParameter);
             }
-            *slot = index;
+            if bindings[index].semantics.access == ParameterAccess::ReadOnly {
+                return Err(Error::InvalidParameterValue);
+            }
+            let shift = u32::try_from(index % (u64::BITS as usize))
+                .map_err(|_| Error::RuntimeBudgetExceeded)?;
+            *slot = Slot {
+                index,
+                word: index / (u64::BITS as usize),
+                bit: 1u64
+                    .checked_shl(shift)
+                    .ok_or(Error::RuntimeBudgetExceeded)?,
+            };
         }
         Ok(resolved)
     }
-    pub fn sample(
+    pub fn sample<'a>(
         &self,
         bindings: &[Binding<C>; N],
-        resolved: &Resolved<N>,
+        resolved: &'a mut Resolved<N>,
         values: &dyn NativeParameterAutomation,
         offset: usize,
-    ) -> Result<Option<Self>, Error> {
-        let mut sampled = [None; N];
-        values.values_at(offset, &mut sampled[..resolved.len])?;
-        let mut current = [None; N];
-        for (value, &index) in sampled.iter().zip(&resolved.indices).take(resolved.len) {
-            *current.get_mut(index).ok_or(Error::UnknownParameter)? = *value;
+    ) -> Result<Option<Pending<'a, C, N>>, Error> {
+        values.values_at(offset, &mut resolved.sampled[..resolved.len])?;
+        let words = N.div_ceil(u64::BITS as usize);
+        resolved.present[..words].fill(0);
+        let mut changed = false;
+        for (slot, &value) in resolved.slots[..resolved.len]
+            .iter()
+            .zip(&resolved.sampled[..resolved.len])
+        {
+            if value.is_some() {
+                resolved.present[slot.word] |= slot.bit;
+            }
+            changed |= value != self.last[slot.index];
         }
-        if self.initialized && current == self.last {
+        let removed = self.present[..words]
+            .iter()
+            .zip(&resolved.present[..words])
+            .any(|(&old, &now)| old & !now != 0);
+        if self.initialized && !changed && !removed {
             return Ok(None);
         }
-        let mut next = *self;
-        if !self.initialized {
-            next.effective = self.base;
+        let mut effective = if self.initialized {
+            self.effective
+        } else {
+            self.base
+        };
+        for (slot, &value) in resolved.slots[..resolved.len]
+            .iter()
+            .zip(&resolved.sampled[..resolved.len])
+        {
+            if let Some(value) = value
+                && (!self.initialized || Some(value) != self.last[slot.index])
+            {
+                bindings[slot.index].write(&mut effective, value)?;
+            }
         }
-        for (index, binding) in bindings.iter().enumerate() {
-            if !self.initialized || current[index] != self.last[index] {
-                if let Some(value) = current[index] {
-                    binding.write(&mut next.effective, value)?;
-                } else if self.initialized && self.last[index].is_some() {
-                    binding.write(&mut next.effective, binding.read(&self.base))?;
+        if self.initialized {
+            for word in 0..words {
+                let mut removed = self.present[word] & !resolved.present[word];
+                while removed != 0 {
+                    let index = word * (u64::BITS as usize) + removed.trailing_zeros() as usize;
+                    removed &= removed - 1;
+                    bindings[index].write(&mut effective, bindings[index].read(&self.base))?;
                 }
             }
         }
-        next.last = current;
-        next.initialized = true;
-        Ok(Some(next))
+        Ok(Some(Pending {
+            effective,
+            resolved,
+        }))
+    }
+    pub fn install(&mut self, pending: Pending<'_, C, N>) {
+        let words = N.div_ceil(u64::BITS as usize);
+        for word in 0..words {
+            let mut removed = self.present[word] & !pending.resolved.present[word];
+            while removed != 0 {
+                let index = word * (u64::BITS as usize) + removed.trailing_zeros() as usize;
+                removed &= removed - 1;
+                self.last[index] = None;
+            }
+            self.present[word] = pending.resolved.present[word];
+        }
+        for (slot, &value) in pending.resolved.slots[..pending.resolved.len]
+            .iter()
+            .zip(&pending.resolved.sampled[..pending.resolved.len])
+        {
+            self.last[slot.index] = value;
+        }
+        self.effective = pending.effective;
+        self.initialized = true;
     }
     pub fn reset(&mut self) {
         *self = Self::new(self.base, self.admitted);
     }
-    /// Keep candidate base/admission; same-candidate transaction copies retain
-    /// the full cache. A different base forces a full reconstruction on the
-    /// first sample, even if its surviving automated values are unchanged.
     pub fn inherit(&mut self, previous: &Self) {
         let compatible = self.base == previous.base && self.admitted == previous.admitted;
         self.effective = previous.effective;
         self.last = previous.last;
+        self.present = previous.present;
         self.initialized = compatible && previous.initialized;
     }
-    /// Exhaustive helper-field review plus a concrete provider's complete
-    /// controls review. A Copy bound alone does not prove resource ownership.
+    /// Exhaustive fields plus the concrete provider's controls proof. Copy
+    /// alone never certifies that a newly introduced field has no resource.
     pub fn check_inline(&self, check: fn(&C)) {
         let Self {
             base,
             effective,
             admitted,
             last,
+            present,
             initialized,
         } = self;
         check(base);
         check(effective);
         let _: &[bool; N] = admitted;
         let _: &[Option<ParameterValue>; N] = last;
+        let _: &[u64; PRESENCE_WORDS] = present;
         let _: &bool = initialized;
     }
 }
@@ -328,9 +419,9 @@ mod tests {
         }
     }
     fn apply(c: &mut Controls<Pair, 2>, v: &Values) -> Result<(), Error> {
-        let map = c.resolve(&TABLE, v)?;
-        if let Some(next) = c.sample(&TABLE, &map, v, 0)? {
-            *c = next;
+        let mut map = c.resolve(&TABLE, v)?;
+        if let Some(next) = c.sample(&TABLE, &mut map, v, 0)? {
+            c.install(next);
         }
         Ok(())
     }
@@ -374,7 +465,7 @@ mod tests {
             transaction
                 .sample(
                     &TABLE,
-                    &transaction.resolve(&TABLE, &subset).unwrap(),
+                    &mut transaction.resolve(&TABLE, &subset).unwrap(),
                     &subset,
                     0
                 )
@@ -420,10 +511,10 @@ mod tests {
             ids: Vec::new(),
             values: Vec::new(),
         };
-        let map = controls.resolve(&table, &empty).unwrap();
+        let mut map = controls.resolve(&table, &empty).unwrap();
         assert_eq!(
             controls
-                .sample(&table, &map, &empty, 0)
+                .sample(&table, &mut map, &empty, 0)
                 .unwrap()
                 .unwrap()
                 .effective(),
@@ -447,10 +538,10 @@ mod tests {
             // may admit this target; the generic writer never grants envelopes.
             let table = [binding];
             let controls = Controls::new(base, [true]);
-            let map = controls.resolve(&table, &input).unwrap();
+            let mut map = controls.resolve(&table, &input).unwrap();
             assert_eq!(
                 controls
-                    .sample(&table, &map, &input, 0)
+                    .sample(&table, &mut map, &input, 0)
                     .unwrap()
                     .unwrap()
                     .effective(),
@@ -488,5 +579,53 @@ mod tests {
                 .unwrap(),
             ParameterValue::Float(3.0)
         );
+    }
+    #[test]
+    fn sparse_restore_crosses_presence_words_without_a_new_parameter_cap() {
+        let table: [Binding<Pair>; 70] = std::array::from_fn(|index| {
+            let (read, write): (fn(&Pair) -> f32, fn(&mut Pair, f32)) = if index == 0 {
+                (|c| c.b, |c, v| c.b = v)
+            } else {
+                (|c| c.a, |c, v| c.a = v)
+            };
+            Binding::float(
+                ParameterDescriptor {
+                    id: ParameterId::new(u32::try_from(index + 1).unwrap()).unwrap(),
+                    ..TABLE[0].descriptor
+                },
+                SCALAR_ENVELOPE,
+                read,
+                write,
+            )
+        });
+        let mut c = Controls::new(Pair { a: 1.0, b: 2.0 }, [true; 70]);
+        for (ids, values, expected) in [
+            (
+                vec![1, 66],
+                vec![
+                    Some(ParameterValue::Float(3.0)),
+                    Some(ParameterValue::Float(4.0)),
+                ],
+                Pair { a: 4.0, b: 3.0 },
+            ),
+            (
+                vec![66],
+                vec![Some(ParameterValue::Float(4.0))],
+                Pair { a: 4.0, b: 2.0 },
+            ),
+            (vec![], vec![], Pair { a: 1.0, b: 2.0 }),
+        ] {
+            let input = Values {
+                ids: ids
+                    .into_iter()
+                    .map(|id| ParameterId::new(id).unwrap())
+                    .collect(),
+                values,
+            };
+            let mut map = c.resolve(&table, &input).unwrap();
+            let pending = c.sample(&table, &mut map, &input, 0).unwrap().unwrap();
+            c.install(pending);
+            assert_eq!(c.effective(), expected);
+        }
     }
 }

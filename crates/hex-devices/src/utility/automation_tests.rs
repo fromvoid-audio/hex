@@ -511,10 +511,10 @@ fn failed_derived_configuration_keeps_controls_cache_atomic_for_same_value_retry
         .1
         .unwrap();
     let values = Values::new(vec![(parameter::GAIN, ParameterValue::Float(2.0))]);
-    let resolved = automation.resolve(&values).unwrap();
+    let mut resolved = automation.resolve(&values).unwrap();
     assert!(
         automation
-            .configuration(Some((&values, &resolved)), 0, 0, None)
+            .configuration(Some((&values, &mut resolved)), 0, 0, None)
             .is_err()
     );
     assert_eq!(
@@ -522,7 +522,7 @@ fn failed_derived_configuration_keeps_controls_cache_atomic_for_same_value_retry
         decode_state(&base).unwrap()
     );
     let (matrix, _) = automation
-        .configuration(Some((&values, &resolved)), 0, 48_000, None)
+        .configuration(Some((&values, &mut resolved)), 0, 48_000, None)
         .unwrap();
     let expected = UTILITY_DEFINITION
         .patch_parameter(&base, parameter::GAIN, ParameterValue::Float(2.0))

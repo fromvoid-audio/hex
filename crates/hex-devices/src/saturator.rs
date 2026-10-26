@@ -410,9 +410,9 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         values: &dyn hex_lattice::NativeParameterAutomation,
         resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), DeviceContractError> {
-        let resolved = self.controls.resolve(&BINDINGS, values)?;
+        let mut resolved = self.controls.resolve(&BINDINGS, values)?;
         for (offset, frame) in frames.iter_mut().enumerate() {
-            self.apply_automation(values, &resolved, offset)?;
+            self.apply_automation(values, &mut resolved, offset)?;
             self.process_block(std::slice::from_mut(frame), resources);
         }
         Ok(())
@@ -424,9 +424,9 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         values: &dyn hex_lattice::NativeParameterAutomation,
         _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), DeviceContractError> {
-        let resolved = self.controls.resolve(&BINDINGS, values)?;
+        let mut resolved = self.controls.resolve(&BINDINGS, values)?;
         if let Some(offset) = frames.len().checked_sub(1) {
-            self.apply_automation(values, &resolved, offset)?;
+            self.apply_automation(values, &mut resolved, offset)?;
         }
         Ok(())
     }

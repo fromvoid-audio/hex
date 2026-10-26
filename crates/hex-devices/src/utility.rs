@@ -834,8 +834,11 @@ impl UtilityDefinition {
             ),
             effective: base.settings(),
             matrix: StereoMatrix::identity(),
+            pre_gain: StereoMatrix::identity(),
+            post_gain: StereoMatrix::identity(),
         };
         let (matrix, filters) = automation.configuration(None, 0, sample_rate, None)?;
+        let filters = filters.ok_or(DeviceContractError::InvalidDescriptor)?;
         let value = PreparedUtilityFilterRuntime(
             filters,
             Some(UtilityAutomation {
@@ -913,6 +916,8 @@ pub(crate) struct UtilityAutomation {
     controls: crate::parameter_binding::Controls<UtilityControls, 14>,
     pub(crate) effective: UtilitySettings,
     pub(crate) matrix: StereoMatrix,
+    pre_gain: StereoMatrix,
+    post_gain: StereoMatrix,
 }
 impl UtilityAutomation {
     pub(crate) fn check_inline(&self) {
@@ -920,14 +925,18 @@ impl UtilityAutomation {
             controls,
             effective,
             matrix,
+            pre_gain,
+            post_gain,
         } = self;
         controls.check_inline(UtilityControls::check_inline);
         effective.check_inline();
-        let _: &StereoMatrix = matrix;
+        let _: (&StereoMatrix, &StereoMatrix, &StereoMatrix) = (matrix, pre_gain, post_gain);
     }
     pub(crate) fn inherit(&mut self, previous: &Self) {
         self.controls.inherit(&previous.controls);
         self.matrix = previous.matrix;
+        self.pre_gain = previous.pre_gain;
+        self.post_gain = previous.post_gain;
         self.effective = previous.effective;
     }
     pub(crate) fn supports(&self, parameter: ParameterId) -> bool {
@@ -950,58 +959,98 @@ impl UtilityAutomation {
         &mut self,
         values: Option<(
             &dyn hex_lattice::NativeParameterAutomation,
-            &crate::parameter_binding::Resolved<14>,
+            &mut crate::parameter_binding::Resolved<14>,
         )>,
         offset: usize,
         rate: u32,
-        previous: Option<crate::utility_filters::PreparedUtilityFilters>,
-    ) -> Result<(StereoMatrix, crate::utility_filters::PreparedUtilityFilters), DeviceContractError>
-    {
-        let next = if let Some((values, resolved)) = values {
+        previous: Option<&crate::utility_filters::PreparedUtilityFilters>,
+    ) -> Result<
+        (
+            StereoMatrix,
+            Option<crate::utility_filters::PreparedUtilityFilters>,
+        ),
+        DeviceContractError,
+    > {
+        let reset = values.is_none();
+        let pending = if let Some((values, resolved)) = values {
             self.controls.sample(&BINDINGS, resolved, values, offset)?
         } else {
-            let mut next = self.controls;
-            next.reset();
-            Some(next)
+            None
         };
-        let settings = next
-            .as_ref()
-            .unwrap_or(&self.controls)
-            .effective()
-            .settings();
-        let filters = if let Some(previous) = previous.filter(|_| {
-            settings.dc_remove == self.effective.dc_remove
-                && settings.bass_mono == self.effective.bass_mono
-                && settings.bass_mono_cutoff_hz == self.effective.bass_mono_cutoff_hz
-                && settings.bass_mono_audition == self.effective.bass_mono_audition
-                && settings.mute == self.effective.mute
-        }) {
-            previous
+        if !reset && pending.is_none() && previous.is_some() {
+            return Ok((self.matrix, None));
+        }
+        let settings = if reset {
+            self.controls.base()
         } else {
-            crate::utility_filters::PreparedUtilityFilters::new(
-                rate,
-                settings.dc_remove,
-                settings.bass_mono,
-                f64::from(settings.bass_mono_cutoff_hz),
-                settings.bass_mono_audition,
-            )
-            .map_err(|_| DeviceContractError::InvalidParameterValue)?
-            .with_output_mute(settings.mute)
-        };
-        let matrix = if previous.is_some() && settings == self.effective {
-            self.matrix
+            pending
+                .as_ref()
+                .map_or_else(|| self.controls.effective(), |next| next.effective())
+        }
+        .settings();
+        let filters = if previous.is_some()
+            && settings.dc_remove == self.effective.dc_remove
+            && settings.bass_mono == self.effective.bass_mono
+            && settings.bass_mono_cutoff_hz == self.effective.bass_mono_cutoff_hz
+            && settings.bass_mono_audition == self.effective.bass_mono_audition
+            && settings.mute == self.effective.mute
+        {
+            None
         } else {
-            let mut matrix_settings = settings;
-            matrix_settings.mute = false;
-            PreparedUtility::new(matrix_settings)
+            Some(
+                crate::utility_filters::PreparedUtilityFilters::new(
+                    rate,
+                    settings.dc_remove,
+                    settings.bass_mono,
+                    f64::from(settings.bass_mono_cutoff_hz),
+                    settings.bass_mono_audition,
+                )
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?
-                .matrix()
+                .with_output_mute(settings.mute),
+            )
         };
-        if let Some(next) = next {
-            self.controls = next;
+        // Reuse only stages whose controls are unchanged. The gain stage stays
+        // between the exact original prefix and balance compositions, retaining
+        // every f32 matrix rounding/validation operation of the static law.
+        let prefix_changed = previous.is_none()
+            || settings.channel_mode != self.effective.channel_mode
+            || settings.invert_left != self.effective.invert_left
+            || settings.invert_right != self.effective.invert_right
+            || settings.width != self.effective.width
+            || settings.mid_side_balance != self.effective.mid_side_balance
+            || settings.mono != self.effective.mono;
+        let balance_changed = previous.is_none() || settings.balance != self.effective.balance;
+        let pre_gain = if prefix_changed {
+            pre_gain_matrix(settings).map_err(|_| DeviceContractError::InvalidParameterValue)?
+        } else {
+            self.pre_gain
+        };
+        let post_gain = if balance_changed {
+            balance_matrix(settings.balance)
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?
+        } else {
+            self.post_gain
+        };
+        let matrix = if prefix_changed || balance_changed || settings.gain != self.effective.gain {
+            pre_gain
+                .then(
+                    scalar_matrix(settings.gain)
+                        .map_err(|_| DeviceContractError::InvalidParameterValue)?,
+                )
+                .and_then(|m| m.then(post_gain))
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?
+        } else {
+            self.matrix
+        };
+        if reset {
+            self.controls.reset();
+        } else if let Some(pending) = pending {
+            self.controls.install(pending);
         }
         self.effective = settings;
         self.matrix = matrix;
+        self.pre_gain = pre_gain;
+        self.post_gain = post_gain;
         Ok((matrix, filters))
     }
 }
@@ -1018,25 +1067,7 @@ pub struct PreparedUtility {
 
 impl PreparedUtility {
     pub fn new(settings: UtilitySettings) -> Result<Self, UtilityError> {
-        let mut matrix = StereoMatrix::identity();
-        matrix = matrix.then(polarity_matrix(settings)?)?;
-        matrix = matrix.then(channel_matrix(settings.channel_mode)?)?;
-
-        // Left/Right monitoring duplicates one input channel; width and M/S
-        // controls have no meaningful independent signal there and are bypassed.
-        if !matches!(
-            settings.channel_mode,
-            ChannelMode::Left | ChannelMode::Right
-        ) {
-            if let Some(balance) = settings.mid_side_balance {
-                matrix = matrix.then(mid_side_balance_matrix(balance)?)?;
-            } else {
-                matrix = matrix.then(width_matrix(settings.width)?)?;
-            }
-        }
-        if settings.mono {
-            matrix = matrix.then(matrix_from_f64([[0.5, 0.5], [0.5, 0.5]])?)?;
-        }
+        let mut matrix = pre_gain_matrix(settings)?;
         matrix = matrix.then(scalar_matrix(settings.gain)?)?;
         matrix = matrix.then(balance_matrix(settings.balance)?)?;
         if settings.mute {
@@ -1065,6 +1096,29 @@ impl PreparedUtility {
     pub fn process_block(self, frames: &mut [StereoFrame]) {
         self.matrix.apply_block(frames);
     }
+}
+
+fn pre_gain_matrix(settings: UtilitySettings) -> Result<StereoMatrix, UtilityError> {
+    let mut matrix = StereoMatrix::identity();
+    matrix = matrix.then(polarity_matrix(settings)?)?;
+    matrix = matrix.then(channel_matrix(settings.channel_mode)?)?;
+
+    // Left/Right monitoring duplicates one input channel; width and M/S
+    // controls have no meaningful independent signal there and are bypassed.
+    if !matches!(
+        settings.channel_mode,
+        ChannelMode::Left | ChannelMode::Right
+    ) {
+        if let Some(balance) = settings.mid_side_balance {
+            matrix = matrix.then(mid_side_balance_matrix(balance)?)?;
+        } else {
+            matrix = matrix.then(width_matrix(settings.width)?)?;
+        }
+    }
+    if settings.mono {
+        matrix = matrix.then(matrix_from_f64([[0.5, 0.5], [0.5, 0.5]])?)?;
+    }
+    Ok(matrix)
 }
 
 fn polarity_matrix(settings: UtilitySettings) -> Result<StereoMatrix, UtilityError> {
