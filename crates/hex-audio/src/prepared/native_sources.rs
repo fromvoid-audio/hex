@@ -246,6 +246,27 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Recheck that this original live source still holds the exact staged
+    /// capture and that it approves this candidate's processing state. This
+    /// read does not authorize a document, gesture, revision, graph or terminal;
+    /// those identities remain with the canonical worker.
+    pub fn matches_staged_native_source_state_snapshot_on_control(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        candidate: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        let result = self
+            .candidate_root
+            .matches_staged_native_snapshot(binding, snapshot, candidate)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native capture output is closing");
+        }
+        Ok(result)
+    }
     /// Stage exactly the latest actual live capture as a compiler permission
     /// for this original source. It neither edits canonical state nor replaces
     /// the endpoint. At most one pending permission is retained beside the last

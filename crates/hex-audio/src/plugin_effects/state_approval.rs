@@ -155,3 +155,22 @@ pub(super) fn finalize(
     // Refused/superseded weak handles drop only on control; inline DATA capacity stays reserved.
     Ok(())
 }
+
+/// Query the exact still-staged capture without promoting or consuming it.
+/// The worker's live-source and latest-capture checks remain part of admission;
+/// matching candidate bytes alone cannot identify a native operation.
+pub(super) fn matches_staged(
+    worker: &NativeWorker,
+    configuration: &Configuration,
+    snapshot: &NativeWorkerStateSnapshot,
+    candidate: &NativeDeviceState,
+) -> Result<bool, &'static str> {
+    if !worker.matches_live_state_snapshot_on_control(snapshot)? {
+        return Ok(false);
+    }
+    Ok(configuration.pending_state.as_ref().is_some_and(|pending| {
+        pending.ordinal == snapshot.ordinal()
+            && pending.proof.matches_state(snapshot.state())
+            && pending.proof.matches_state(candidate)
+    }))
+}

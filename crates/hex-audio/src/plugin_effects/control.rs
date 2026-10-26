@@ -13,6 +13,18 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn matches_staged_state_snapshot(
+        &self,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        candidate: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        state_approval::matches_staged(
+            &self.worker,
+            &self.callback.configuration,
+            snapshot,
+            candidate,
+        )
+    }
     pub(crate) fn stage_state_snapshot(
         &mut self,
         snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
@@ -141,6 +153,13 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn matches_staged_state_snapshot(
+        &self,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        candidate: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        state_approval::matches_staged(&self.worker, &self.configuration, snapshot, candidate)
+    }
     pub(crate) fn stage_state_snapshot(
         &mut self,
         snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,

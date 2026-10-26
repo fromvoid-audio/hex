@@ -532,6 +532,16 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
             Some(initial.clone())
         );
         accepted_state_matches(&f, snapshot.state(), false);
+        snapshot_action(|| {
+            f.control
+                .matches_staged_native_source_state_snapshot_on_control(
+                    f.binding,
+                    &snapshot,
+                    snapshot.state(),
+                )
+                .map(|matches| assert!(!matches, "capture alone is not staged permission"))
+        })
+        .unwrap();
         assert_eq!(
             f.control.native_source_endpoint_status(f.binding),
             Some((true, true))
@@ -569,6 +579,36 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                 .stage_native_source_state_snapshot_on_control(f.binding, &snapshot)
         })
         .unwrap();
+        snapshot_action(|| {
+            f.control
+                .matches_staged_native_source_state_snapshot_on_control(
+                    f.binding,
+                    &snapshot,
+                    snapshot.state(),
+                )
+                .map(|matches| assert!(matches, "exact source and capture are staged"))
+        })
+        .unwrap();
+        snapshot_action(|| {
+            f.control
+                .matches_staged_native_source_state_snapshot_on_control(
+                    f.binding, &snapshot, &initial,
+                )
+                .map(|matches| assert!(!matches, "old candidate is not this staged state"))
+        })
+        .unwrap();
+        assert!(
+            f.control
+                .matches_staged_native_source_state_snapshot_on_control(
+                    Binding {
+                        epoch: f.binding.epoch + 1,
+                        ..f.binding
+                    },
+                    &snapshot,
+                    snapshot.state(),
+                )
+                .is_err()
+        );
         assert_eq!(
             snapshot_action(|| f
                 .control
@@ -620,6 +660,16 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                 .finalize_native_source_state_snapshot_on_control(f.binding, &snapshot, true)
         })
         .unwrap();
+        snapshot_action(|| {
+            f.control
+                .matches_staged_native_source_state_snapshot_on_control(
+                    f.binding,
+                    &snapshot,
+                    snapshot.state(),
+                )
+                .map(|matches| assert!(!matches, "terminal retired staged permission"))
+        })
+        .unwrap();
         accepted_state_matches(&f, snapshot.state(), true);
         accepted_state_matches(&f, &initial, false);
         assert!(
@@ -652,6 +702,16 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                 .stage_native_source_state_snapshot_on_control(f.binding, &later)
         })
         .unwrap();
+        snapshot_action(|| {
+            f.control
+                .matches_staged_native_source_state_snapshot_on_control(
+                    f.binding,
+                    &snapshot,
+                    later.state(),
+                )
+                .map(|matches| assert!(!matches, "old capture cannot claim a later stage"))
+        })
+        .unwrap();
         assert!(
             snapshot_action(|| f
                 .control
@@ -672,6 +732,16 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
         snapshot_action(|| {
             f.control
                 .finalize_native_source_state_snapshot_on_control(f.binding, &later, false)
+        })
+        .unwrap();
+        snapshot_action(|| {
+            f.control
+                .matches_staged_native_source_state_snapshot_on_control(
+                    f.binding,
+                    &later,
+                    later.state(),
+                )
+                .map(|matches| assert!(!matches, "refusal retires staged permission"))
         })
         .unwrap();
         accepted_state_matches(&f, snapshot.state(), true);
@@ -719,6 +789,18 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                     .unwrap()
                     .run(|callback, _| callback.begin_block())
             });
+            if epoch == 0 {
+                snapshot_action(|| {
+                    f.control
+                        .matches_staged_native_source_state_snapshot_on_control(
+                            f.binding,
+                            &later,
+                            later.state(),
+                        )
+                        .map(|matches| assert!(!matches, "Stop revokes selection authority"))
+                })
+                .unwrap();
+            }
             assert_eq!(
                 f.control.stopped_edit_fence_state(fence),
                 StoppedEditFenceState::Ready

@@ -271,6 +271,18 @@ impl Custody {
             _ => Err("native snapshot owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn matches_staged_native_snapshot(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        candidate: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.matches_staged_state_snapshot(snapshot, candidate),
+            Owner::Loaned(owner) => owner.matches_staged_state_snapshot(snapshot, candidate),
+            _ => Err("native snapshot owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn capture_native_source(
         &self,
         binding: Binding,
@@ -565,6 +577,20 @@ impl CandidateRoot {
             .0
             .eligible
             .matches_live_native_snapshot(binding, snapshot)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn matches_staged_native_snapshot(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        candidate: &NativeDeviceState,
+    ) -> Result<bool, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .matches_staged_native_snapshot(binding, snapshot, candidate)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }
