@@ -36,6 +36,9 @@ pub(crate) struct OrdinaryStreams {
     workspace: Option<Workspace>,
 }
 impl OrdinaryStreams {
+    pub(crate) fn take_handoff_diagnostic(&mut self) -> Option<hex_engine::PlaybackHandoffError> {
+        self.workspace.as_mut()?.handoff_diagnostic.take()
+    }
     pub(crate) fn view<'a>(
         &'a mut self,
         playback: &'a mut hex_engine::playback::Playback,

@@ -31,6 +31,26 @@ cargo run -r --locked
 cargo run -r --locked -- --demo
 ```
 
+Detailed audio diagnostics are opt-in and written to the existing session log
+(**open session log** in the app):
+
+```sh
+cargo run -r --locked -- --audio-diagnostics
+cargo run -r --locked -- --audio-diagnostics=publication,readiness,transport
+```
+
+Categories are `publication`, `readiness`, `transport` and `timing`; `all` enables
+all four. Omit the flag or use `--audio-diagnostics=off` to disable it on the next
+launch. Save and quit an existing process before starting a diagnostic run.
+Records correlate worker submission, ordinary and eligible callback
+preflight/application, command dequeue, priority stop and applied/rejected status
+using output/revision/context identities. Dequeue is distinct from application. Timing
+records use the native adapter's whole-callback measurement; they exclude the
+trace push itself. Log timestamps are control receipt times, while frame fields
+are audio observations. The callback retains at most 256 resource-free records;
+control drains at most 64 per poll. Overflow loses diagnostics only and reports
+sequence gaps/loss counters. A log does not establish physical audio deadlines.
+
 The desktop is the default workspace member. Plain `cargo build` and `cargo test`
 also select it; use `--workspace` to select all members or `-p` for a specific crate.
 Omit `-r` only for a specific debugging need.
