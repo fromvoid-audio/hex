@@ -1,9 +1,15 @@
 //! Transient arranger navigation extent, independent of canonical content/export
-//! bounds. A canonical install retains the prior view; only explicit navigation
-//! retires obsolete offscreen tail. Clip editors keep their own source clocks.
+//! bounds. Extents are project-rate frame endpoints. A canonical install retains
+//! the prior view; only explicit navigation
+//! retires obsolete offscreen tail. Captured resize viewports stay with trim's
+//! receipt owner through its exact terminal; they are never adopted as canonical
+//! tail. Clip editors keep their own source clocks.
 use super::{EditorView, ViewState, viewport::Viewport};
 
-const EXTRA_TRAILING_SECONDS: u64 = 6; // Service already supplies two seconds.
+// The existing ViewState timeline query supplies two trailing seconds and an
+// eight-second minimum. Add only the difference here; do not change that
+// existing worker query. Real worker regressions pin both projections.
+const EXTRA_TRAILING_SECONDS: u64 = 6;
 const TRAILING_SECONDS: u64 = 8;
 
 #[derive(Default)]
@@ -43,12 +49,18 @@ impl EditorView {
         self.normal_navigation_horizon(horizon).max(retained)
     }
 
-    pub(super) fn reconcile_arranger_navigation(&mut self, state: &ViewState, replaced: bool) {
+    pub(super) fn reconcile_arranger_navigation(
+        &mut self,
+        state: &ViewState,
+        replaced: bool,
+        resize_owns_viewport: bool,
+    ) {
         let owner = (self.project_generation, state.revision);
         if !replaced && self.arranger_navigation.owner == Some(owner) {
             return;
         }
-        let prior = (!replaced)
+        let retained = self.arranger_navigation.retained;
+        let prior = (!replaced && !resize_owns_viewport)
             .then(|| {
                 self.state.as_ref().map(|old| {
                     (
@@ -83,7 +95,11 @@ impl EditorView {
         self.arranger_navigation = Extent {
             owner: Some(owner),
             normal,
-            retained: 0,
+            retained: if resize_owns_viewport && !replaced {
+                retained
+            } else {
+                0
+            },
         };
         if let Some((visible, old_horizon)) = prior {
             if old_horizon != normal {

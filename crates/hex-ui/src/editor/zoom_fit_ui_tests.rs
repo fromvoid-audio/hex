@@ -441,6 +441,17 @@ fn shortening_edit_preserves_arranger_view_through_real_ack_and_repaints(cx: &mu
     });
     pump(&editor, &mut visual);
     let tail = editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert_eq!(
+            state.timeline_frames,
+            9_048_000 + 2 * 48_000,
+            "existing worker query remains unchanged"
+        );
+        assert_eq!(
+            v.normal_navigation_horizon(state.timeline_frames),
+            9_048_000 + 8 * 48_000,
+            "normal arranger allowance is exactly eight seconds after far content"
+        );
         v.state
             .as_ref()
             .unwrap()

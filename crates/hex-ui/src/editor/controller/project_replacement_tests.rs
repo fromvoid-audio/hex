@@ -452,6 +452,8 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             receive_worker_event(view);
             assert_eq!(view.viewport, None, "the initial project remains auto-fit");
             let initial_horizon = view.state.as_ref().expect("initial state").timeline_frames;
+            let initial_view = view.visible_viewport(initial_horizon);
+            assert_eq!(initial_view, Viewport::fit(14 * 48_000));
 
             view.service
                 .submit(Request::Edit(Command::AddTrack {
@@ -485,23 +487,20 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             receive_worker_event(view);
             let grown_horizon = view.state.as_ref().unwrap().timeline_frames;
             assert!(grown_horizon > initial_horizon);
-            assert_eq!(view.viewport, Some(Viewport::fit(initial_horizon)));
-            assert_eq!(
-                view.visible_viewport(grown_horizon),
-                Viewport::fit(initial_horizon)
-            );
+            assert_eq!(view.viewport, Some(initial_view));
+            assert_eq!(view.visible_viewport(grown_horizon), initial_view);
 
             view.service
                 .submit(Request::Edit(Command::Gain { track, gain: 0.5 }))
                 .expect("same-horizon edit");
             receive_worker_event(view);
-            assert_eq!(view.viewport, Some(Viewport::fit(initial_horizon)));
+            assert_eq!(view.viewport, Some(initial_view));
 
             view.fit_timeline();
             assert_eq!(view.viewport, None);
             assert_eq!(
                 view.visible_viewport(grown_horizon),
-                Viewport::fit(grown_horizon)
+                Viewport::fit(grown_horizon + 6 * 48_000)
             );
             view.zoom_timeline(true);
             let explicit_zoom = view.viewport.expect("explicit zoom");
@@ -541,7 +540,7 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             let replacement_horizon = view.state.as_ref().unwrap().timeline_frames;
             assert_eq!(
                 view.visible_viewport(replacement_horizon),
-                Viewport::fit(replacement_horizon)
+                Viewport::fit(replacement_horizon + 6 * 48_000)
             );
         })
         .expect("run viewport growth assertions");

@@ -918,7 +918,7 @@ fn captured_selection_edge_scrolls_while_pointer_is_stationary(cx: &mut TestAppC
     });
     editor.update(cx, |view, _| {
         view.viewport = Some(super::viewport::Viewport {
-            start: 284_000,
+            start: view.viewport_horizon(384_000) - 100_000,
             length: 100_000,
         });
         let _ = view.update_time_selection_gesture(

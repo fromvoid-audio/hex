@@ -2274,7 +2274,17 @@ impl EditorView {
             self.invalidate_prepared_seek();
             self.cancel_active_browser_audio_drag();
         }
-        self.reconcile_arranger_navigation(&event_state, event.project_replaced);
+        // Resize previews retain their own captured viewport through the exact
+        // terminal below. Never adopt that private extent as canonical tail.
+        let resize_owns_viewport = retired_trim.is_some()
+            || self.pending_trim.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some();
+        self.reconcile_arranger_navigation(
+            &event_state,
+            event.project_replaced,
+            resize_owns_viewport,
+        );
         if event.project_replaced {
             self.time_range_move_gesture = None;
             self.pending_time_range_move = None;
