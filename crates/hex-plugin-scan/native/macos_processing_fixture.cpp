@@ -81,7 +81,7 @@ static void arm_main_thread_tail(){static thread_local MainThreadTail tail;tail.
 const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12};
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
-static ParamID parameter_id(int variant) { return variant==80?0u:7u; }
+static ParamID parameter_id(int variant) { return variant==80 || variant==89?0u:7u; }
 static double parameter_value(int variant,double value) {
     if(variant==81) return std::round(value*3.0)/3.0;
     if(variant==82) return value>=0.5?1.0:0.0;
@@ -93,9 +93,26 @@ class RestoreController final : public IEditController {
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
+    CFRunLoopTimerRef edit_timer=nullptr;bool edits_sent=false;
+    static void edit_tick(CFRunLoopTimerRef,void* context) {
+        auto* self=static_cast<RestoreController*>(context);
+        const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
+        if(!self || self->edits_sent || !release || std::strlen(release)>4096 || ::access(release,F_OK)!=0) return;
+        self->edits_sent=true;CFRunLoopTimerInvalidate(self->edit_timer);
+        const auto id=parameter_id(self->fault);
+        if(self->fault==86) self->handler->performEdit(id,0.75);
+        else {
+            self->handler->beginEdit(id);self->component_gain=3.0;
+            const int repeats=self->fault==87?9:1;
+            for(int n=0;n<repeats;++n) self->handler->performEdit(id,0.75);
+            self->handler->endEdit(id);
+        }
+        trace(25);
+    }
 public:
     RestoreController() { ++objects;++restoration.controller_created; }
     ~RestoreController() {
+        if(edit_timer) {CFRunLoopTimerInvalidate(edit_timer);CFRelease(edit_timer);}
         if (!control() || context || handler) ++observed.violations;
         --objects;++restoration.controller_destroyed;
     }
@@ -116,7 +133,15 @@ public:
     }
     tresult PLUGIN_API setComponentHandler(IComponentHandler* value) override {
         if (!control() || !context || (value && handler)) return kResultFalse;
-        if(value)value->addRef();if(handler)handler->release();handler=value;return kResultOk;
+        if(value)value->addRef();if(handler)handler->release();handler=value;
+        if(value && fault>=85 && fault<=89) {
+            CFRunLoopTimerContext timer_context{};timer_context.info=this;
+            edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
+            if(!edit_timer) return kResultFalse;
+            CFRunLoopAddTimer(CFRunLoopGetMain(),edit_timer,kCFRunLoopDefaultMode);
+        }
+        if(!value && edit_timer) CFRunLoopTimerInvalidate(edit_timer);
+        return kResultOk;
     }
     tresult PLUGIN_API setComponentState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
@@ -149,6 +174,14 @@ public:
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_get;
+        // Original sensitivity fixture: an edit admitted during a live SDK
+        // state read must not let that pre-edit component snapshot escape.
+        if(fault==90 && restoration.controller_get>1 && !edits_sent) {
+            edits_sent=true;
+            handler->beginEdit(parameter_id(fault));component_gain=3.0;
+            handler->performEdit(parameter_id(fault),0.75);
+            handler->endEdit(parameter_id(fault));trace(25);
+        }
         std::array<unsigned char,8> data{};std::memcpy(data.data(),"HXCT",4);std::memcpy(data.data()+4,&scroll,4);
         int32 written=0;const auto result=stream->write(data.data(),data.size(),&written);
         trace(20);return result==kResultOk && written==8?kResultOk:kResultFalse;
@@ -160,7 +193,7 @@ public:
         if(fault==80 || fault==81 || fault==82) info.flags=ParameterInfo::kCanAutomate;
         if(fault==81) info.stepCount=3;
         if(fault==82) {info.stepCount=1;info.flags|=ParameterInfo::kIsBypass;}
-        if(fault==83 || fault==84) info.flags=ParameterInfo::kIsReadOnly;
+        if(fault==83 || fault==84 || fault==88) info.flags=ParameterInfo::kIsReadOnly;
         if(fault==84) info.flags|=ParameterInfo::kIsHidden;
         const char16_t name[]=u"gain";std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));return kResultOk;
     }
@@ -570,7 +603,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>84) return false;next_fault=value;
+        if (value>90) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

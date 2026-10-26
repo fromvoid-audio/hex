@@ -30,26 +30,42 @@ struct ProcessingParameterSnapshot {
 // synchronization, not an authored gesture or callback-delivery acknowledgement.
 struct ParameterFeedback {
     struct Value { ParamID id=0; ParamValue normalized=0; };
-    std::array<Value,HOST_PARAMETER_COUNT> values{};
+    // Parallel fixed arrays avoid four padding bytes per entry. This reserves
+    // space for ordered edits within the existing one MiB Host bound.
+    std::array<ParamID,HOST_PARAMETER_COUNT> ids{};
+    std::array<ParamValue,HOST_PARAMETER_COUNT> normalized{};
     uint32 count=0;
+    Value at(uint32 index) const { return {ids[index],normalized[index]}; }
     bool put(ParamID id,ParamValue value) {
         if(id>0x7FFFFFFFu || !std::isfinite(value) || value<0 || value>1) return false;
-        for(uint32 n=0;n<count;++n) if(values[n].id==id) { values[n].normalized=value;return true; }
-        if(count==values.size()) return false;
-        values[count++]={id,value};return true;
+        for(uint32 n=0;n<count;++n) if(ids[n]==id) { normalized[n]=value;return true; }
+        if(count==ids.size()) return false;
+        ids[count]=id;normalized[count++]=value;return true;
     }
 };
-enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending };
+inline constexpr size_t HOST_EDIT_COUNT=8;
+enum EditKind : uint32 { Restart=0, Begin=1, Perform=2, End=3 };
+// sequence orders all main callbacks. gesture names the exact Begin sequence;
+// normalized is meaningful only for Perform. A queued record is not a DSP ACK.
+struct EditEvent {
+    uint64 sequence=0,gesture=0;
+    ParamValue normalized=0;
+    ParamID id=0;
+    uint32 kind=Restart;
+};
+enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity, Pending, EditQueued };
 struct HostDispatch {
     uint64 sequence=0, metadata_revision=0;
     int32 flags=0;
     HostDisposition disposition=HostDisposition::Idle;
+    EditEvent edit{};
 };
 enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequired=4,
     QueueFull=8, RecursiveRestart=16, InvalidMetadata=32, Retiring=64,
-    UnsupportedCapability=128, UnsupportedEdit=256, MessagePoolFull=512, MetadataCapacity=1024 };
+    UnsupportedCapability=128, UnsupportedEdit=256, MessagePoolFull=512, MetadataCapacity=1024, InvalidEdit=2048 };
 
-// One instance's control owner. Only title/value refresh is admitted here. IO,
+// One instance's control owner. Title/value refresh and ordered parameter edits
+// are admitted here. IO,
 // latency/reload/routing require actual graph preparation and remain explicitly
 // unavailable until the product's owning runtime/bridge/PDC contracts exist.
 // Each accepted callback queues one ordered request, never recursively calls the
@@ -57,8 +73,12 @@ enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequire
 class Host final : public IHostApplication, public IComponentHandler {
     std::atomic<uint32> references{1}, refusals{0};
     std::array<HostMessage,HOST_MESSAGE_COUNT> messages{};
-    struct Request { uint64 sequence=0; int32 flags=0; };
-    std::array<Request,HOST_RESTART_COUNT> requests{};
+    std::array<EditEvent,HOST_RESTART_COUNT> requests{};
+    std::array<EditEvent,HOST_EDIT_COUNT> edits{};
+    std::atomic<uint64> edits_read{0},edits_written{0};
+    std::atomic<uint32> pending_edits{0};
+    std::array<ParamID,HOST_EDIT_COUNT> active_ids{};
+    std::array<uint64,HOST_EDIT_COUNT> active_tokens{};
     size_t first=0, count=0;
     uint64 sequence=0;
     bool accepting=true, dispatching=false, recursive=false;
@@ -151,9 +171,39 @@ public:
         }
         refuse(MessagePoolFull); return kOutOfMemory;
     }
-    tresult PLUGIN_API beginEdit(ParamID) override { refuse(UnsupportedEdit); return kNotImplemented; }
-    tresult PLUGIN_API performEdit(ParamID,ParamValue) override { refuse(UnsupportedEdit); return kNotImplemented; }
-    tresult PLUGIN_API endEdit(ParamID) override { refuse(UnsupportedEdit); return kNotImplemented; }
+    tresult PLUGIN_API beginEdit(ParamID id) override { return admit_edit(id,Begin,0); }
+    tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override { return admit_edit(id,Perform,value); }
+    tresult PLUGIN_API endEdit(ParamID id) override { return admit_edit(id,End,0); }
+private:
+    tresult admit_edit(ParamID id,uint32 kind,ParamValue value) {
+        if(![NSThread isMainThread]) {refuse(WrongThread);return kResultFalse;}
+        if(!accepting) {refuse(Retiring);return kResultFalse;}
+        if(dispatching) {recursive=true;refuse(RecursiveRestart);return kResultFalse;}
+        const ParameterSnapshot::Parameter* info=nullptr;
+        for(uint32 n=0;n<metadata.count;++n) if(metadata.parameters[n].info.id==id) info=&metadata.parameters[n];
+        if(!info || (kind!=End && (info->info.flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) ||
+            (kind==Perform && (!std::isfinite(value) || value<0 || value>1))) {
+            refuse(InvalidEdit);return kInvalidArgument;
+        }
+        size_t active=active_tokens.size(),vacant=active_tokens.size();
+        for(size_t n=0;n<active_tokens.size();++n) {
+            if(active_tokens[n] && active_ids[n]==id) active=n;
+            if(!active_tokens[n]) vacant=n;
+        }
+        if((kind==Begin && active!=active_tokens.size()) || (kind!=Begin && active==active_tokens.size())) {
+            refuse(InvalidEdit);return kResultFalse;
+        }
+        if(count==requests.size() || sequence==std::numeric_limits<uint64>::max() ||
+            (kind==Begin && vacant==active_tokens.size())) {refuse(QueueFull);return kResultFalse;}
+        const auto next=sequence+1;
+        const auto gesture=kind==Begin?next:active_tokens[active];
+        requests[(first+count)%requests.size()]={next,gesture,value,id,kind};
+        ++count;sequence=next;pending_edits.fetch_add(1,std::memory_order_release);
+        if(kind==Begin) {active_ids[vacant]=id;active_tokens[vacant]=gesture;}
+        if(kind==End) active_tokens[active]=0;
+        return kResultOk;
+    }
+public:
     tresult PLUGIN_API restartComponent(int32 flags) override {
         if (![NSThread isMainThread]) { refuse(WrongThread); return kResultFalse; }
         if (!accepting) { refuse(Retiring); return kResultFalse; }
@@ -169,7 +219,7 @@ public:
         if (count==requests.size() || sequence==std::numeric_limits<uint64>::max()) {
             refuse(QueueFull); return kResultFalse;
         }
-        requests[(first+count)%requests.size()]={++sequence,flags};
+        requests[(first+count)%requests.size()]={++sequence,0,0,static_cast<ParamID>(flags),Restart};
         ++count;
         return kResultOk;
     }
@@ -183,7 +233,19 @@ public:
         if (dispatching) { recursive=true; refuse(RecursiveRestart); result.disposition=HostDisposition::Recursive; return result; }
         if (!count) return result;
         const auto request=requests[first];
-        result.sequence=request.sequence; result.flags=request.flags;
+        result.sequence=request.sequence;
+        if(request.kind!=Restart) {
+            const auto written=edits_written.load(std::memory_order_relaxed);
+            const auto read=edits_read.load(std::memory_order_acquire);
+            if(written==std::numeric_limits<uint64>::max() || written-read==edits.size()) {
+                result.disposition=HostDisposition::Pending;return result;
+            }
+            edits[written%edits.size()]=request;
+            edits_written.store(written+1,std::memory_order_release);
+            first=(first+1)%requests.size();--count;
+            result.edit=request;result.disposition=HostDisposition::EditQueued;return result;
+        }
+        result.flags=static_cast<int32>(request.id);
         result=refresh_controller_on_control(controller,result);
         if(result.disposition!=HostDisposition::Pending) { first=(first+1)%requests.size();--count; }
         return result;
@@ -272,7 +334,7 @@ public:
             !feedback.phase.compare_exchange_strong(phase,Writing,std::memory_order_acq_rel)) return false;
         auto staged=phase==Ready?feedback.snapshot:ParameterFeedback{};
         for(uint32 n=0;n<pending.count;++n) {
-            const auto& value=pending.values[n];
+            const auto value=pending.at(n);
             if(!staged.put(value.id,value.normalized)) {
                 feedback.phase.store(phase,std::memory_order_release);return false;
             }
@@ -293,7 +355,7 @@ public:
         dispatching=true;recursive=false;
         struct Leave { bool& flag; ~Leave(){flag=false;} } leave{dispatching};
         for(uint32 n=0;n<staged.count;++n) {
-            const auto& value=staged.values[n];
+            const auto value=staged.at(n);
             ParameterSnapshot::Parameter* destination=nullptr;
             for(uint32 i=0;i<next.count;++i) if(next.parameters[i].info.id==value.id) destination=&next.parameters[i];
             if(!destination || controller->setParamNormalized(value.id,value.normalized)!=kResultOk) return false;
@@ -302,9 +364,29 @@ public:
         }
         ++next.revision;metadata=next;return true;
     }
+    // One serialized processing consumer; main never overwrites an unread
+    // record. Full handoff defers dispatch, preserving main request FIFO.
+    bool peek_edit(EditEvent& result) const {
+        const auto read=edits_read.load(std::memory_order_relaxed);
+        if(read==edits_written.load(std::memory_order_acquire)) return false;
+        result=edits[read%edits.size()];return true;
+    }
+    void consume_edit() {
+        const auto read=edits_read.load(std::memory_order_relaxed);
+        if(read!=edits_written.load(std::memory_order_acquire)) edits_read.store(read+1,std::memory_order_release);
+    }
+    uint32 ready_parameter_edits() const {
+        const auto read=edits_read.load(std::memory_order_relaxed);
+        return static_cast<uint32>(edits_written.load(std::memory_order_acquire)-read);
+    }
+    uint32 pending_parameter_edits() const { return pending_edits.load(std::memory_order_acquire); }
+    // Main-only monotonic admission revision also detects an edit that the
+    // worker has already completed during a foreign state-read callback.
+    uint64 callback_revision_on_control() const { return sequence; }
+    void complete_parameter_edit() { pending_edits.fetch_sub(1,std::memory_order_acq_rel); }
     void stop_accepting() {
         if (![NSThread isMainThread]) { refuse(WrongThread); return; }
-        accepting=false; first=0; count=0;
+        accepting=false; first=0; count=0;active_tokens.fill(0);pending_edits.store(0,std::memory_order_release);
     }
 };
 static_assert(sizeof(Host)+HOST_MESSAGE_COUNT*sizeof(HostMessage)+sizeof(ParameterSnapshot)<1024*1024,

@@ -236,6 +236,54 @@ int main(int argc,char** argv) {
                     started=instance.start_processing();if(!started) worker_failure.store(Processing);
                     startup.store(started?1:2,std::memory_order_release);
                     { std::unique_lock<std::mutex> lock(startup_mutex);startup_changed.wait(lock,[&]{return go;}); }
+                    struct CompletedEdit {hex_instance::EditEvent edit{};uint64_t first_frame=0;};
+                    std::array<CompletedEdit,hex_instance::HOST_EDIT_COUNT> completed_edits{};
+                    size_t completed_edit_count=0;uint64_t edit_query_operation=0;
+                    const auto complete_edit=[&](const hex_instance::EditEvent& event) {
+                        completed_edits[completed_edit_count++]={event,frames};instance.complete_parameter_edit();
+                    };
+                    const auto drain_edit_boundaries=[&] {
+                        // Begin/end alone do not need an invented audio call.
+                        hex_instance::EditEvent event{};
+                        while(completed_edit_count<completed_edits.size() && instance.peek_parameter_edit(event) && event.kind!=hex_instance::Perform) {
+                            instance.consume_parameter_edit();complete_edit(event);
+                        }
+                    };
+                    const auto read_edit_receipts=[&](const wire::Packet& packet) {
+                        if(edit_query_operation==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=edit_query_operation+1) return false;
+                        drain_edit_boundaries();
+                        wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
+                        const auto ready=instance.ready_parameter_edits();
+                        const auto pending=instance.pending_parameter_edits();
+                        wire::number(body,packet.capture_operation,8);wire::number(body,pending,2);wire::number(body,ready,2);wire::number(body,completed_edit_count,2);
+                        for(size_t n=0;n<completed_edit_count;++n) {
+                            const auto& record=completed_edits[n];const auto& value=record.edit;
+                            wire::number(body,value.sequence,8);wire::number(body,value.gesture,8);
+                            uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);wire::number(body,bits,8);
+                            wire::number(body,value.id,4);wire::number(body,value.kind,4);wire::number(body,record.first_frame,8);
+                        }
+                        if(!wire::send(channel,"HXVIGE01",body)) return false;
+                        ++edit_query_operation;completed_edit_count=0;return true;
+                    };
+                    std::array<hex_instance::EditEvent,hex_instance::HOST_EDIT_COUNT> applying_edits{};size_t applying_edit_count=0;
+                    const auto stage_edits=[&] {
+                        applying_edit_count=0;hex_instance::EditEvent event{};
+                        while(completed_edit_count+applying_edit_count<completed_edits.size() && instance.peek_parameter_edit(event)) {
+                            if(event.kind==hex_instance::Perform) {
+                                const auto* info=processing_parameters.find(event.id);
+                                if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden))) return false;
+                                bool duplicate=false;
+                                for(size_t n=0;n<parameter_input.size();++n) {
+                                    hex_instance::ParameterPoint point{};if(!parameter_input.point(n,point)) return false;
+                                    if(point.id==event.id && point.offset==0) duplicate=true;
+                                }
+                                if(parameter_input.size()==hex_instance::PARAMETER_POINT_COUNT && !duplicate) break;
+                                if(!parameter_input.input(event.id,0,event.normalized)) return false;
+                            }
+                            applying_edits[applying_edit_count++]=event;instance.consume_parameter_edit();
+                        }
+                        return true;
+                    };
                     wire::Packet packet{};
                     std::array<float,wire::max_frames> left{},right{},output_left{},output_right{};
                     float* input_pointers[]={left.data(),right.data()};float* output_pointers[]={output_left.data(),output_right.data()};
@@ -252,16 +300,24 @@ int main(int argc,char** argv) {
                         phase.store(1,std::memory_order_release); // receiving a complete frame
                         const auto received=packet.read(channel,*config,blocks,frames);
                         if(worker_failure.load()) break;
+                        // A late End is not DSP work. Retire its pending
+                        // custody even when the next request is save capture;
+                        // retain the ordered receipt until its consumer reads.
+                        drain_edit_boundaries();
                         instance.publish_parameter_feedback(parameter_feedback);
-                        if(live_stage.load(std::memory_order_acquire)==LiveFeedbackPending && !parameter_feedback.count)
+                        if(live_stage.load(std::memory_order_acquire)==LiveFeedbackPending && !parameter_feedback.count && !instance.pending_parameter_edits())
                             live_stage.store(LiveRequested,std::memory_order_release);
+                        if(received==9) {
+                            if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
+                            continue;
+                        }
                         if(received==6 || received==7) {
                             const auto stage=live_stage.load(std::memory_order_acquire);
                             if(received==6) {
                                 if(stage!=LiveIdle || live_operation==std::numeric_limits<uint64_t>::max() ||
                                     packet.capture_operation!=live_operation+1) { worker_failure.store(ProtocolFailure);break; }
                                 live_operation=packet.capture_operation;
-                                live_stage.store(parameter_feedback.count?LiveFeedbackPending:LiveRequested,std::memory_order_release);
+                                live_stage.store(parameter_feedback.count || instance.pending_parameter_edits()?LiveFeedbackPending:LiveRequested,std::memory_order_release);
                             } else if(stage==LiveIdle || packet.capture_operation!=live_operation) {
                                 worker_failure.store(ProtocolFailure);break;
                             }
@@ -295,7 +351,11 @@ int main(int argc,char** argv) {
                             phase.store(1,std::memory_order_release);
                             auto resumed=packet.read(channel,*config,blocks,frames);
                             uint64_t captures=0,flushes=0;
-                            while(resumed==5 || resumed==8) {
+                            while(resumed==5 || resumed==8 || resumed==9) {
+                                if(resumed==9) {
+                                    if(!read_edit_receipts(packet)) {worker_failure.store(ProtocolFailure);break;}
+                                    resumed=packet.read(channel,*config,blocks,frames);continue;
+                                }
                                 if(resumed==8) {
                                     if(flushes==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=flushes+1) { worker_failure.store(ProtocolFailure);break; }
                                     instance.refresh_processing_parameters(processing_parameters);
@@ -306,7 +366,7 @@ int main(int argc,char** argv) {
                                         if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
                                             !parameter_input.input(point.id,0,point.normalized)) valid=false;
                                     }
-                                    if(!valid) { worker_failure.store(ProtocolFailure);break; }
+                                    if(!valid || !stage_edits()) { worker_failure.store(ProtocolFailure);break; }
                                     if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) { error(channel,&*config,Processing);std::_Exit(Processing); }
                                     ProcessData flush{};flush.processMode=kRealtime;flush.symbolicSampleSize=kSample32;
                                     flush.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;flush.outputParameterChanges=&parameter_output;
@@ -316,15 +376,16 @@ int main(int argc,char** argv) {
                                     if(!input_returned || !output_returned) { error(channel,&*config,Processing);std::_Exit(Processing); }
                                     if(result!=hex_instance::FlushResult::Applied && result!=hex_instance::FlushResult::Empty) { worker_failure.store(Processing);break; }
                                     flushed_values={};
-                                    for(size_t n=0;n<packet.parameter_count;++n) {
-                                        const auto& point=packet.parameters[n];
-                                        valid=flushed_values.put(point.id,point.normalized) && valid;
+                                    for(size_t n=0;n<parameter_input.size();++n) {
+                                        hex_instance::ParameterPoint point{};
+                                        valid=parameter_input.point(n,point) && flushed_values.put(point.id,point.normalized) && valid;
                                     }
                                     for(size_t n=0;n<parameter_output.size();++n) {
                                         hex_instance::ParameterPoint point{};
                                         if(!parameter_output.point(n,point) || !processing_parameters.find(point.id) || !flushed_values.put(point.id,point.normalized)) valid=false;
                                     }
                                     if(!valid) { worker_failure.store(ProtocolFailure);break; }
+                                    for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                                     {
                                         std::unique_lock<std::mutex> lock(startup_mutex);
                                         flush_operation=packet.capture_operation;flush_applied=result==hex_instance::FlushResult::Applied;epoch_stage=FlushRequested;
@@ -382,7 +443,7 @@ int main(int argc,char** argv) {
                             if(!info || (info->flags&(ParameterInfo::kIsReadOnly|ParameterInfo::kIsHidden)) ||
                                 !parameter_input.input(point.id,point.offset,point.normalized)) valid=false;
                         }
-                        if(!valid) { worker_failure.store(ProtocolFailure);break; }
+                        if(!valid || !stage_edits()) { worker_failure.store(ProtocolFailure);break; }
                         if(!parameter_input.begin_sdk() || !parameter_output.begin_sdk()) {
                             error(channel,&*config,Processing);std::_Exit(Processing);
                         }
@@ -404,15 +465,16 @@ int main(int argc,char** argv) {
                         // never a later host point. Optional output is returned
                         // unchanged rather than manufacturing an input echo.
                         size_t incoming=0,outgoing=0;
-                        while(incoming<packet.parameter_count || outgoing<parameter_output.size()) {
-                            hex_instance::ParameterPoint output_point{};
+                        while(incoming<parameter_input.size() || outgoing<parameter_output.size()) {
+                            hex_instance::ParameterPoint output_point{},input_point{};
+                            if(incoming<parameter_input.size() && !parameter_input.point(incoming,input_point)) {valid=false;break;}
                             if(outgoing<parameter_output.size() && !parameter_output.point(outgoing,output_point)) {
                                 valid=false;break;
                             }
-                            const bool use_input=incoming<packet.parameter_count &&
-                                (outgoing==parameter_output.size() || packet.parameters[incoming].offset<=output_point.offset);
-                            const auto point=use_input?packet.parameters[incoming++]:output_point;
-                            if(!use_input) ++outgoing;
+                            const bool use_input=incoming<parameter_input.size() &&
+                                (outgoing==parameter_output.size() || input_point.offset<=output_point.offset);
+                            const auto point=use_input?input_point:output_point;
+                            if(use_input) ++incoming;else ++outgoing;
                             if(!processing_parameters.find(point.id) || !parameter_feedback.put(point.id,point.normalized)) valid=false;
                         }
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
@@ -420,6 +482,7 @@ int main(int argc,char** argv) {
                             wire::sample(packet.bytes.data()+wire::header_size+n*8,output_left[n]);
                             wire::sample(packet.bytes.data()+wire::header_size+n*8+4,output_right[n]);
                         }
+                        for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         instance.publish_parameter_feedback(parameter_feedback);
                         if(!packet.write(channel,parameter_output)) { worker_failure.store(Cancelled);break; }
                         ++blocks;frames+=packet.frames;
@@ -462,12 +525,23 @@ int main(int argc,char** argv) {
                     instance.dispatch_host_callbacks();
                     if(instance.host_refusals()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
                     if(live_stage.load(std::memory_order_acquire)==LiveRequested) {
-                        try {
-                            const bool captured=instance.synchronize_parameter_feedback_on_control() && instance.capture_current_state_on_control(live_state);
-                            instance.dispatch_host_callbacks();
-                            live_failure=captured && !instance.host_refusals()?0:Capture;
-                        } catch(...) { live_failure=Unexpected; }
-                        live_stage.store(live_failure?LiveFailed:LiveComplete,std::memory_order_release);
+                        // Admission observes only that instant's queue. Main
+                        // callbacks may arrive before or during SDK capture.
+                        // Discard that staged snapshot and retry after actual
+                        // processing, never publish pre-edit component state.
+                        if(instance.pending_parameter_edits()) {
+                            live_stage.store(LiveFeedbackPending,std::memory_order_release);
+                        } else {
+                            const auto admission_revision=instance.host_callback_revision_on_control();
+                            try {
+                                const bool captured=instance.synchronize_parameter_feedback_on_control() && instance.capture_current_state_on_control(live_state);
+                                instance.dispatch_host_callbacks();
+                                live_failure=captured && !instance.host_refusals()?0:Capture;
+                            } catch(...) { live_failure=Unexpected; }
+                            live_stage.store(live_failure?LiveFailed:
+                                (instance.pending_parameter_edits() || instance.host_callback_revision_on_control()!=admission_revision?
+                                    LiveFeedbackPending:LiveComplete),std::memory_order_release);
+                        }
                         if(live_failure) {
                             // Refusal/exception cannot admit another DSP call.
                             // The original worker reports the failure at its
@@ -511,7 +585,7 @@ int main(int argc,char** argv) {
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         wire::number(body,flush_operation,8);wire::number(body,flush_applied?1:0,1);wire::number(body,flushed_values.count,2);
                         for(uint32 n=0;n<flushed_values.count;++n) {
-                            const auto id=flushed_values.values[n].id;
+                            const auto id=flushed_values.at(n).id;
                             const hex_instance::ParameterSnapshot::Parameter* value=nullptr;
                             if(snapshot) for(uint32 i=0;i<snapshot->count;++i) if(snapshot->parameters[i].info.id==id) value=&snapshot->parameters[i];
                             if(!value) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
@@ -521,7 +595,7 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);epoch_stage=FlushSent;startup_changed.notify_all();
                     } else if(stage==CaptureRequested) {
                         hex_instance::CapturedState current{};
-                        if(!instance.capture_current_state_on_control(current)) { error(channel,&*config,Capture);std::_Exit(Capture); }
+                        if(instance.pending_parameter_edits() || !instance.capture_current_state_on_control(current)) { error(channel,&*config,Capture);std::_Exit(Capture); }
                         instance.dispatch_host_callbacks();
                         const auto current_latency=instance.reported_latency_on_control();
                         const auto current_tail=instance.reported_tail_on_control();

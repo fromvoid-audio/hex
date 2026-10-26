@@ -85,6 +85,16 @@ impl Custody {
         }
         Ok(result)
     }
+    pub(in crate::candidate_custody) fn native_parameter_edits(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_parameter_edits(),
+            Owner::Loaned(owner) => owner.poll_parameter_edits(),
+            _ => Err("native edit owner differs"),
+        })
+    }
     pub(in crate::candidate_custody) fn native_parameter_values(
         &self,
         binding: Binding,
@@ -235,6 +245,15 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    pub(crate) fn native_source_parameter_edits(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self.0.eligible.native_parameter_edits(binding)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
     pub(crate) fn native_source_parameter_values(
         &self,
         binding: Binding,

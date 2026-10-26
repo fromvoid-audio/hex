@@ -479,6 +479,143 @@ mod tests {
     }
     #[test]
     #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+    fn actual_root_edit_receipts_follow_original_loan_and_terminal() {
+        use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+        use hex_plugin_host::protocol::ParameterEditKind;
+        use std::time::{Duration, Instant};
+        if std::env::var_os("HEX_ROOT_EDIT_CHILD").is_none() {
+            let dir = std::env::temp_dir().join(format!("hex-root-edits-{}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    std::thread::current().name().unwrap(),
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("HEX_ROOT_EDIT_CHILD", "1")
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "85")
+                .env("HEX_ORIGINAL_INSTANCE_TRACE", dir.join("trace"))
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", dir.join("release"))
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let root = root();
+        let binding = ready(&root);
+        let confirmed = root.native_source_prepared_state(binding).unwrap();
+        let (identity, prepared, configuration) = {
+            let work = lock(&root.work);
+            let Some(Owner::Effect(owner)) = work.sources.cells[0].owner.as_ref() else {
+                panic!("actual effect")
+            };
+            (
+                owner.identity(),
+                owner.prepared(),
+                owner.configuration().clone(),
+            )
+        };
+        let loan = root.loan_native_endpoint(binding).unwrap();
+        let mut bank = NativeEndpointBank::new().unwrap();
+        assert!(bank.install(binding.root, loan).is_ok());
+        assert!(
+            root.native_parameter_edits(Binding {
+                epoch: binding.epoch + 1,
+                ..binding
+            })
+            .is_err()
+        );
+        {
+            let _work = lock(&root.work);
+            assert!(matches!(
+                root.native_parameter_edits(binding),
+                Err("native preparation is busy")
+            ));
+        }
+        std::fs::write(
+            std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+            b"release",
+        )
+        .unwrap();
+        let mut edits = Vec::new();
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match root.native_parameter_edits(binding) {
+                Ok(Some(batch)) => {
+                    edits.extend_from_slice(batch.as_slice());
+                    if batch.ready > 0 && edits.len() == 1 {
+                        break;
+                    }
+                }
+                Ok(None) | Err("native edit observation is busy") => {}
+                Err(error) => panic!("original edit observation: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert_eq!(edits.len(), 1);
+        let node = ForeignProcessorNode {
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: configuration.type_id(),
+            sample_rate: 48_000,
+            configuration: &configuration,
+            prepared,
+            bypassed: false,
+            input_gain: 1.0,
+        };
+        let mut frames = [[0.5, -0.25]; 8];
+        bank.begin_rendering(8).unwrap();
+        bank.process_segment(node, 0, &mut frames, None).unwrap();
+        bank.finish_rendering(true).unwrap();
+        assert_eq!(frames, [[0.0; 2]; 8]); // declared pipeline warmup
+        let until = Instant::now() + Duration::from_secs(3);
+        while edits.len() < 3 {
+            match root.native_parameter_edits(binding) {
+                Ok(Some(batch)) => edits.extend_from_slice(batch.as_slice()),
+                Ok(None) | Err("native edit observation is busy") => {}
+                Err(error) => panic!("original applied observation: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            edits
+                .iter()
+                .map(|edit| (edit.sequence, edit.gesture, edit.id, edit.kind))
+                .collect::<Vec<_>>(),
+            [
+                (1, 1, 7, ParameterEditKind::Begin),
+                (2, 1, 7, ParameterEditKind::Perform),
+                (3, 1, 7, ParameterEditKind::End)
+            ]
+        );
+        assert_eq!((edits[1].normalized, edits[1].first_frame), (0.75, 0));
+        assert_eq!(root.native_source_prepared_state(binding), Some(confirmed));
+        bank.request_epoch_return();
+        assert!(
+            root.ingest_native_endpoint(bank.take_requested(0).unwrap())
+                .is_ok()
+        );
+        root.close();
+        assert!(root.native_parameter_edits(binding).is_err());
+        dispose(&root, binding);
+        let returned = root.recover_native_source(binding).unwrap();
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks == 1 && terminal.frames == 8))
+        );
+    }
+    #[test]
+    #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
     fn equal_binding_and_state_cannot_return_another_original_endpoint() {
         let first = root();
         let second = root();

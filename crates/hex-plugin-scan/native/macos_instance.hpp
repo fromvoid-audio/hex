@@ -365,6 +365,12 @@ public:
     bool synchronize_parameter_feedback_on_control() {
         return opened && host && !quarantined.load() && host->synchronize_parameter_feedback(controller);
     }
+    bool peek_parameter_edit(EditEvent& result) const { return host && host->peek_edit(result); }
+    void consume_parameter_edit() { if(host) host->consume_edit(); }
+    uint32 ready_parameter_edits() const { return host?host->ready_parameter_edits():0; }
+    uint32 pending_parameter_edits() const { return host?host->pending_parameter_edits():0; }
+    uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
+    void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
 
     bool close() {

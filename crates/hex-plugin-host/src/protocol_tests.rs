@@ -702,3 +702,68 @@ fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_value
     .unwrap();
     assert!(flush_request(&config, 0, 1, &late).is_err());
 }
+
+#[test]
+fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalescing() {
+    let config = config();
+    let request = edit_request(&config, 2, 3).unwrap();
+    assert_eq!(&request[..4], b"HXVG");
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(2_u64.to_le_bytes());
+    body.extend(16_u64.to_le_bytes());
+    body.extend(3_u64.to_le_bytes());
+    body.extend(0_u16.to_le_bytes());
+    body.extend(0_u16.to_le_bytes());
+    body.extend(3_u16.to_le_bytes());
+    for (sequence, kind, value, frame) in [
+        (4_u64, 1_u32, 0.0_f64, 0_u64),
+        (5, 2, 0.75, 8),
+        (6, 3, 0.0, 8),
+    ] {
+        body.extend(sequence.to_le_bytes());
+        body.extend(4_u64.to_le_bytes());
+        body.extend(value.to_le_bytes());
+        body.extend(0_u32.to_le_bytes());
+        body.extend(kind.to_le_bytes());
+        body.extend(frame.to_le_bytes());
+    }
+    let result = parameter_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    assert_eq!(result.as_slice().len(), 3);
+    assert_eq!(result.as_slice()[1].kind, ParameterEditKind::Perform);
+    assert_eq!(result.as_slice()[1].id, 0);
+    for end in 0..body.len() {
+        assert!(parameter_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
+    }
+    for (offset, value) in [
+        (2, 2),
+        (34, 1),
+        (42, 15),
+        (50, 2),
+        (58, 25),
+        (60, 1),
+        (62, 9),
+        (64, 0),
+        (72, 0),
+        (92, 4),
+        (96, 17),
+    ] {
+        let mut bad = body.clone();
+        bad[offset] = value;
+        assert!(
+            parameter_edits(&bad, &config, 2, 3, (0, 0)).is_err(),
+            "field{offset}"
+        );
+    }
+    assert!(
+        parameter_edits(&body, &config, 2, 3, (4, 0)).is_err(),
+        "replayed sequence"
+    );
+    assert!(
+        parameter_edits(&body, &config, 2, 3, (0, 1)).is_err(),
+        "time reversal across polls"
+    );
+    let mut bad = body;
+    bad[80..88].copy_from_slice(&f64::NAN.to_le_bytes());
+    assert!(parameter_edits(&bad, &config, 2, 3, (0, 0)).is_err());
+}

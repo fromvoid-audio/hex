@@ -14,6 +14,25 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Request/read ordered native controller callbacks through the actual
+    /// original effect or loan control. None is pending; Some consumes at most
+    /// eight receipts. Call regularly while observing an editor: bounded full
+    /// queues backpressure, never coalesce gesture boundaries. Wrong/closed/
+    /// revoked sources refuse. Native receipts grant no canonical automation or
+    /// future-liveness authority; source terminal cancels pending observations.
+    pub fn poll_native_source_parameter_edits_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        let result = self.candidate_root.native_source_parameter_edits(binding)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        Ok(result)
+    }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
     /// refuse; busy is a read refusal, not consumption or transport cancellation.

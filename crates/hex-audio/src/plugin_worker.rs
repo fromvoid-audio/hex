@@ -13,6 +13,8 @@ use std::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod capture;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod edits;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod parameters;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
@@ -28,6 +30,8 @@ struct Signal {
     capture: std::sync::Mutex<capture::Slot>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     capture_requested: std::sync::atomic::AtomicBool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    edits_requested: std::sync::atomic::AtomicBool,
 }
 impl Signal {
     fn new() -> Self {
@@ -37,6 +41,8 @@ impl Signal {
             capture: std::sync::Mutex::new(capture::Slot::default()),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             capture_requested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            edits_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -62,6 +68,8 @@ struct State {
     capture: capture::Work,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameters: parameters::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    edits: edits::Work,
 }
 impl State {
     fn prepare_transport(&mut self) -> Result<(), Fault> {
@@ -212,6 +220,8 @@ fn spawn_processor_with(
         capture: capture::Work::default(),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         parameters: parameters::Work::default(),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        edits: edits::Work::default(),
     });
     let storage = storage::reserved_backing(&guard, &completed);
     let join = spawn(guard, published);
@@ -321,7 +331,19 @@ fn transport_runner_with_setup(
                 break;
             }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            if let Err(error) = state.advance_capture(&published) {
+            if let Err(error) = if published.edits_requested.load(Acquire)
+                && state.capture.between_polls()
+            {
+                // Drain bounded receipts between capture's timed polls so
+                // GUI backpressure cannot starve that same capture.
+                state.advance_parameter_edits(&published)
+            } else if published.capture_requested.load(Acquire) || state.capture.is_in_flight() {
+                // Save capture keeps priority and at most one native control
+                // exchange runs per worker iteration.
+                state.advance_capture(&published)
+            } else {
+                state.advance_parameter_edits(&published)
+            } {
                 let refused = matches!(error, hex_plugin_host::Error::Cancelled);
                 state.native_error = Some(error);
                 state.worker.revoke();

@@ -73,11 +73,14 @@ pub fn flushed_parameters(
     }
     let disposition = match reader.byte()? {
         0 if requested.as_slice().is_empty() => FlushDisposition::Empty,
-        1 if !requested.as_slice().is_empty() => FlushDisposition::Applied,
+        1 => FlushDisposition::Applied,
         _ => return Err(Error::Protocol("invalid stopped flush disposition")),
     };
     let len = usize::from(u16::from_le_bytes(reader.array()?));
-    if len > MAX_FLUSHED_PARAMETERS || (disposition == FlushDisposition::Empty && len != 0) {
+    if len > MAX_FLUSHED_PARAMETERS
+        || (disposition == FlushDisposition::Empty && len != 0)
+        || (disposition == FlushDisposition::Applied && len == 0)
+    {
         return Err(Error::Protocol("invalid stopped flush extent"));
     }
     let mut result = FlushedParameters {

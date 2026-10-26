@@ -473,3 +473,244 @@ fn actual_readonly_and_hidden_accept_processor_updates_but_refuse_live_and_stopp
         }
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_ui_gestures_apply_on_original_worker_live_and_stopped_with_ordered_receipts() {
+    use crate::protocol::ParameterEditKind;
+    for variant in [85, 89] {
+        for stopped in [false, true] {
+            let case = Case::new();
+            let instance = Prepared::prepare(
+                &build(),
+                source(),
+                options(),
+                PreparationCancellation::new_on_control().unwrap(),
+                case.setup_restore(variant),
+            )
+            .unwrap();
+            let child = instance.child_id_on_control();
+            let initial = instance.ready().initial_state.clone();
+            let mut live = Some(instance);
+            let mut paused = if stopped {
+                Some(live.take().unwrap().quiesce_retained_on_control().unwrap())
+            } else {
+                None
+            };
+            std::fs::write(case.release(), b"emit actual SDK callbacks").unwrap();
+            let mut records = Vec::new();
+            let until = Instant::now() + Duration::from_secs(3);
+            loop {
+                let batch = if let Some(instance) = live.as_mut() {
+                    instance.poll_parameter_edits_on_worker().unwrap()
+                } else {
+                    paused
+                        .as_mut()
+                        .unwrap()
+                        .poll_parameter_edits_on_control()
+                        .unwrap()
+                };
+                records.extend_from_slice(batch.as_slice());
+                if batch.ready > 0 && records.len() == 1 {
+                    break;
+                }
+                assert!(Instant::now() < until, "actual main callback handoff");
+                thread::yield_now();
+            }
+            if let Some(instance) = live.as_mut() {
+                let input = request(instance.configuration(), 0);
+                let output = instance.exchange_on_worker(input).unwrap();
+                for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+                    assert_eq!(*actual, input.map(|value| value * 1.5));
+                }
+            } else {
+                let (owner, values) = paused
+                    .take()
+                    .unwrap()
+                    .flush_parameters_retained_on_control(&Parameters::default())
+                    .unwrap();
+                assert_eq!(values.disposition, protocol::FlushDisposition::Applied);
+                assert_eq!(values.as_slice()[0].normalized, 0.75);
+                paused = Some(owner);
+            }
+            let until = Instant::now() + Duration::from_secs(3);
+            while records.len() < 3 {
+                let batch = if let Some(instance) = live.as_mut() {
+                    instance.poll_parameter_edits_on_worker().unwrap()
+                } else {
+                    paused
+                        .as_mut()
+                        .unwrap()
+                        .poll_parameter_edits_on_control()
+                        .unwrap()
+                };
+                records.extend_from_slice(batch.as_slice());
+                assert!(Instant::now() < until, "exact gesture terminal");
+                thread::yield_now();
+            }
+            assert_eq!(
+                records.iter().map(|edit| edit.kind).collect::<Vec<_>>(),
+                [
+                    ParameterEditKind::Begin,
+                    ParameterEditKind::Perform,
+                    ParameterEditKind::End
+                ]
+            );
+            let id = if variant == 89 { 0 } else { 7 };
+            for (index, event) in records.iter().enumerate() {
+                assert_eq!(
+                    (event.sequence, event.gesture, event.id),
+                    (index as u64 + 1, 1, id)
+                );
+            }
+            assert_eq!(records[1].normalized, 0.75);
+            assert_eq!(records[1].first_frame, 0);
+            let paused = if let Some(instance) = live.take() {
+                instance.quiesce_retained_on_control().unwrap()
+            } else {
+                paused.take().unwrap()
+            };
+            let (paused, captured) = paused.capture_state_retained_on_control().unwrap();
+            assert_eq!(paused.child_id_on_control(), child);
+            assert_eq!(paused.completed_blocks(), u64::from(!stopped));
+            assert_eq!(
+                &decode(&captured).unwrap().component.unwrap()[8..12],
+                &3.0_f32.to_le_bytes()
+            );
+            assert_eq!(
+                &decode(&initial).unwrap().component.unwrap()[8..12],
+                &1.0_f32.to_le_bytes()
+            );
+            let observed = case.observation().unwrap();
+            assert_eq!(
+                (observed[10], observed[11]),
+                if stopped { (0, 1) } else { (1, 0) }
+            );
+            assert!(paused.retire_on_control().unwrap().status.success());
+            assert_eq!(case.observation().unwrap()[1], 0);
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_invalid_or_overflowing_ui_gestures_refuse_before_dsp() {
+    for variant in [86, 87, 88] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        let child = instance.child_id_on_control();
+        let initial = instance.ready().initial_state.clone();
+        std::fs::write(case.release(), b"emit invalid actual SDK callbacks").unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match instance.poll_parameter_edits_on_worker() {
+                Ok(batch) => {
+                    // Accepted Begin or queued values may be observed before
+                    // main publishes refusal. No rejected Perform is applied.
+                    assert!(
+                        batch
+                            .as_slice()
+                            .iter()
+                            .all(|event| event.kind != protocol::ParameterEditKind::Perform)
+                    );
+                }
+                Err(Error::Worker(11)) => break,
+                Err(error) => {
+                    panic!("variant {variant}: expected actual HostControl refusal, got {error:?}")
+                }
+            }
+            assert!(
+                Instant::now() < until,
+                "variant {variant}: callback refusal must terminate the source"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(instance.child_id_on_control(), child);
+        assert_eq!(instance.completed_blocks_on_control(), 0);
+        assert_eq!(instance.ready().initial_state, initial);
+        assert!(instance.poll_parameter_edits_on_worker().is_err());
+        let retired = instance.cancel_and_reap_on_control().unwrap();
+        assert!(!retired.status.success());
+        assert_eq!(
+            case.observation().unwrap()[10],
+            0,
+            "invalid callbacks must not enter DSP"
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_sdk_edit_during_capture_defers_snapshot_until_real_processing() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(90),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    let initial = instance.ready().initial_state.clone();
+    instance.begin_state_capture_on_worker().unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let mut began = false;
+    loop {
+        let batch = instance.poll_parameter_edits_on_worker().unwrap();
+        began |= batch
+            .as_slice()
+            .iter()
+            .any(|edit| edit.kind == protocol::ParameterEditKind::Begin);
+        if began && batch.ready > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "SDK capture must admit the actual gesture"
+        );
+        thread::yield_now();
+    }
+    assert!(
+        instance.poll_state_capture_on_worker().unwrap().is_none(),
+        "pre-edit capture must not escape while Perform is pending"
+    );
+    assert_eq!(instance.completed_blocks_on_control(), 0);
+    let input = request(instance.configuration(), 0);
+    let output = instance.exchange_on_worker(input).unwrap();
+    for (actual, input) in output.pcm[..8].iter().zip(input.pcm) {
+        assert_eq!(*actual, input.map(|value| value * 1.5));
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    let captured = loop {
+        if let Some(state) = instance.poll_state_capture_on_worker().unwrap() {
+            break state;
+        }
+        assert!(
+            Instant::now() < until,
+            "capture must finish after actual SDK application"
+        );
+        thread::yield_now();
+    };
+    assert_eq!(
+        &decode(&captured).unwrap().component.unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    assert_eq!(instance.child_id_on_control(), child);
+    assert_eq!(instance.ready().initial_state, initial);
+    assert_eq!(instance.completed_blocks_on_control(), 1);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}

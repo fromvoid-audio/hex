@@ -9,7 +9,7 @@ use super::*;
 /// resume itself never recaptures or restores state. Component/controller/source
 /// custody stays in the same lease.
 pub struct Quiescent {
-    instance: Prepared,
+    pub(super) instance: Prepared,
     facts: Facts,
     capture_sequence: u64,
     flush_sequence: u64,

@@ -15,6 +15,11 @@ impl NativeEffect {
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
         self.worker.parameter_values_on_control()
     }
+    pub(crate) fn poll_parameter_edits(
+        &mut self,
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        self.worker.poll_parameter_edits_on_control()
+    }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
     }
@@ -51,6 +56,11 @@ impl NativeEffectControl {
         &self,
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
         self.worker.parameter_values_on_control()
+    }
+    pub(crate) fn poll_parameter_edits(
+        &mut self,
+    ) -> Result<Option<hex_plugin_host::protocol::ParameterEdits>, &'static str> {
+        self.worker.poll_parameter_edits_on_control()
     }
     pub(crate) fn begin_state_capture(&mut self) -> Result<NativeWorkerCapture, &'static str> {
         self.worker.begin_state_capture_on_control()
