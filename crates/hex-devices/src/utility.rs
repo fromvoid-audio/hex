@@ -502,6 +502,43 @@ impl NativeDeviceMetadata for UtilityDefinition {
             _ => true,
         })
     }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode_state(state)?;
+        let descriptor = DESCRIPTORS
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or(DeviceContractError::UnknownParameter)?;
+        use hex_lattice_contract::{
+            ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
+            ParameterModulation as M, ParameterNormalization as N, ParameterSmoothing as S,
+            ParameterStepping as T,
+        };
+        let (normalization, stepping) = match descriptor.kind {
+            ParameterKind::Bool => (N::Discrete, T::Boolean),
+            ParameterKind::Choice { .. } => (N::Discrete, T::Choice),
+            _ => (
+                if descriptor.presentation == ParameterPresentation::Logarithmic {
+                    N::PositiveLogarithmic
+                } else {
+                    N::Linear
+                },
+                T::Continuous,
+            ),
+        };
+        Ok(Some(hex_lattice_contract::ParameterSemantics {
+            access: A::ReadWrite,
+            normalization,
+            stepping,
+            automation: E::DeviceArrangementEnvelope,
+            modulation: M::Unsupported,
+            smoothing: S::None,
+            change_impact: I::ValueOnly,
+        }))
+    }
     fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -580,6 +617,33 @@ impl NativeDeviceMetadata for UtilityDefinition {
 }
 
 impl NativeDeviceDefinition for UtilityDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode_state(state)?;
+        Ok(DESCRIPTORS.iter().any(|d| d.id == parameter))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(Self::prepare_owned_automated_filter_for_parameters(
+                    state,
+                    context.sample_rate,
+                    parameters,
+                )?),
+            )),
+        })
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -623,16 +687,73 @@ impl NativeDeviceDefinition for UtilityDefinition {
 /// cannot contain caller-provided processor/storage implementations. Native
 /// graph construction can retain this exact type's allocation declaration
 /// before erasing the processor trait; this is not a generic provider receipt.
-pub struct PreparedUtilityFilterRuntime(crate::utility_filters::PreparedUtilityFilters);
+pub struct PreparedUtilityFilterRuntime(
+    crate::utility_filters::PreparedUtilityFilters,
+    Option<UtilityAutomation>,
+);
 impl PreparedUtilityFilterRuntime {
     fn check_inline_ownership(&self) {
-        let Self(filters) = self;
+        let Self(filters, automation) = self;
+        inline(automation);
         fn inline<T: Copy>(_: &T) {}
         inline(filters);
     }
 }
 
 impl UtilityDefinition {
+    /// Closed fixed-inline factory for the full Utility law. Automation always
+    /// retains filters, including dormant histories, with an identity host matrix.
+    pub fn prepare_owned_automated_filter(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<PreparedUtilityFilterRuntime, DeviceContractError> {
+        Self::prepare_automated_with_mask(state, sample_rate, 0x3fff)
+    }
+    /// Exact admitted target inventory allows dormant filters to skip work only
+    /// when this revision cannot enable them. The concrete owner stays inline.
+    pub fn prepare_owned_automated_filter_for_parameters(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedUtilityFilterRuntime, DeviceContractError> {
+        let mut mask = 0u16;
+        for parameter in parameters {
+            let index = parameter
+                .value()
+                .checked_sub(1)
+                .filter(|index| *index < 14)
+                .ok_or(DeviceContractError::UnknownParameter)?;
+            mask |= 1u16
+                .checked_shl(index)
+                .ok_or(DeviceContractError::UnknownParameter)?;
+        }
+        Self::prepare_automated_with_mask(state, sample_rate, mask)
+    }
+    fn prepare_automated_with_mask(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        parameters: u16,
+    ) -> Result<PreparedUtilityFilterRuntime, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        let (base, _, mid_side_balance) = decode_state_fields(state)?;
+        let mut automation = UtilityAutomation {
+            parameters,
+            base,
+            effective: base,
+            mid_side_balance,
+            matrix: StereoMatrix::identity(),
+        };
+        let (matrix, filters) = automation.configuration(None, 0, sample_rate, None)?;
+        let value = PreparedUtilityFilterRuntime(
+            filters,
+            Some(UtilityAutomation {
+                matrix,
+                ..automation
+            }),
+        );
+        value.check_inline_ownership();
+        Ok(value)
+    }
     /// Prepare the same registered filter through its concrete constructor.
     /// Memoryless Utility settings return None, exactly as the device registry.
     pub fn prepare_owned_filter(
@@ -653,13 +774,25 @@ impl UtilityDefinition {
         )
         .map_err(|_| DeviceContractError::MalformedState)?
         .with_output_mute(settings.mute);
-        let value = PreparedUtilityFilterRuntime(prepared);
+        let value = PreparedUtilityFilterRuntime(prepared, None);
         value.check_inline_ownership();
         Ok(Some(value))
     }
 }
 
 impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
+    fn parameter_automation_descriptor(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<ParameterDescriptor> {
+        self.1
+            .filter(|automation| automation.supports(parameter))
+            .and_then(|_| DESCRIPTORS.iter().find(|d| d.id == parameter).copied())
+    }
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.1
+            .is_some_and(|automation| automation.supports(parameter))
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -669,7 +802,7 @@ impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
     }
 
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(crate::utility_filters::UtilityFilterProcessor::new(self.0))
+        Box::new(crate::utility_filters::UtilityFilterProcessor::with_automation(self.0, self.1))
     }
 
     fn algorithmic_latency_frames(&self) -> Option<u32> {
@@ -678,6 +811,117 @@ impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
 
     fn output_tail(&self) -> OutputTail {
         OutputTail::Unbounded
+    }
+}
+
+/// Immutable authored controls plus the last effective matrix. No state codec,
+/// allocation or metadata enumeration occurs during processing.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UtilityAutomation {
+    parameters: u16,
+    base: UtilitySettings,
+    pub(crate) effective: UtilitySettings,
+    mid_side_balance: f32,
+    pub(crate) matrix: StereoMatrix,
+}
+impl UtilityAutomation {
+    pub(crate) fn supports(&self, parameter: ParameterId) -> bool {
+        parameter
+            .value()
+            .checked_sub(1)
+            .and_then(|shift| 1u16.checked_shl(shift))
+            .is_some_and(|bit| self.parameters & bit != 0)
+    }
+    pub(crate) fn may_advance_dc(&self) -> bool {
+        self.base.dc_remove || self.supports(parameter::DC_REMOVE)
+    }
+    pub(crate) fn may_advance_bass(&self) -> bool {
+        self.base.bass_mono || self.supports(parameter::BASS_MONO)
+    }
+    pub(crate) fn configuration(
+        &mut self,
+        values: Option<&dyn hex_lattice::NativeParameterAutomation>,
+        offset: usize,
+        rate: u32,
+        previous: Option<crate::utility_filters::PreparedUtilityFilters>,
+    ) -> Result<(StereoMatrix, crate::utility_filters::PreparedUtilityFilters), DeviceContractError>
+    {
+        let mut settings = self.base;
+        let mut mid_enabled = settings.mid_side_balance.is_some();
+        let mut mid_balance = self.mid_side_balance;
+        for &parameter in values.map_or(&[][..], |values| values.parameter_ids()) {
+            if !self.supports(parameter) {
+                return Err(DeviceContractError::UnknownParameter);
+            }
+            let descriptor = parameter
+                .value()
+                .checked_sub(1)
+                .and_then(|index| DESCRIPTORS.get(index as usize))
+                .filter(|descriptor| descriptor.id == parameter)
+                .ok_or(DeviceContractError::UnknownParameter)?;
+            let Some(value) = values.and_then(|values| values.value_at(parameter, offset)) else {
+                continue;
+            };
+            descriptor.validate(value)?;
+            use parameter::*;
+            match (descriptor.id, value) {
+                (GAIN, ParameterValue::Float(v)) => settings.gain = v,
+                (BALANCE, ParameterValue::Float(v)) => settings.balance = v,
+                (WIDTH, ParameterValue::Float(v)) => settings.width = v,
+                (CHANNEL, ParameterValue::Choice(v)) => {
+                    settings.channel_mode = match v {
+                        0 => ChannelMode::Stereo,
+                        1 => ChannelMode::Left,
+                        2 => ChannelMode::Right,
+                        3 => ChannelMode::Swap,
+                        _ => return Err(DeviceContractError::InvalidParameterValue),
+                    }
+                }
+                (INVERT_LEFT, ParameterValue::Bool(v)) => settings.invert_left = v,
+                (INVERT_RIGHT, ParameterValue::Bool(v)) => settings.invert_right = v,
+                (MONO, ParameterValue::Bool(v)) => settings.mono = v,
+                (MUTE, ParameterValue::Bool(v)) => settings.mute = v,
+                (MID_SIDE_ENABLED, ParameterValue::Bool(v)) => mid_enabled = v,
+                (MID_SIDE_BALANCE, ParameterValue::Float(v)) => mid_balance = v,
+                (DC_REMOVE, ParameterValue::Bool(v)) => settings.dc_remove = v,
+                (BASS_MONO, ParameterValue::Bool(v)) => settings.bass_mono = v,
+                (BASS_MONO_CUTOFF, ParameterValue::Float(v)) => settings.bass_mono_cutoff_hz = v,
+                (BASS_MONO_AUDITION, ParameterValue::Bool(v)) => settings.bass_mono_audition = v,
+                _ => return Err(DeviceContractError::InvalidParameterValue),
+            }
+        }
+        settings.mid_side_balance = mid_enabled.then_some(mid_balance);
+        let filters = if let Some(previous) = previous.filter(|_| {
+            settings.dc_remove == self.effective.dc_remove
+                && settings.bass_mono == self.effective.bass_mono
+                && settings.bass_mono_cutoff_hz == self.effective.bass_mono_cutoff_hz
+                && settings.bass_mono_audition == self.effective.bass_mono_audition
+                && settings.mute == self.effective.mute
+        }) {
+            previous
+        } else {
+            crate::utility_filters::PreparedUtilityFilters::new(
+                rate,
+                settings.dc_remove,
+                settings.bass_mono,
+                f64::from(settings.bass_mono_cutoff_hz),
+                settings.bass_mono_audition,
+            )
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?
+            .with_output_mute(settings.mute)
+        };
+        let matrix = if previous.is_some() && settings == self.effective {
+            self.matrix
+        } else {
+            let mut matrix_settings = settings;
+            matrix_settings.mute = false;
+            PreparedUtility::new(matrix_settings)
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?
+                .matrix()
+        };
+        self.effective = settings;
+        self.matrix = matrix;
+        Ok((matrix, filters))
     }
 }
 
@@ -1531,3 +1775,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "utility/automation_tests.rs"]
+mod automation_tests;
