@@ -308,3 +308,31 @@ contract changes. Deep identical-prefix click/focus and held-click repaint tests
 plus keys built in ordinary/forced-dynamic storage, exercise the retained values
 and state through the existing root-locked UI test-support graph. Source size
 alone is not navigation performance or native acceptance evidence.
+
+### Pointer drag hover state
+
+Window tracks pressed-pointer motion across the shared two-pixel drag threshold
+before mouse dispatch. This input state survives consumed move events and cached
+view replay, and ends on matching release, button loss, escape or window
+inactivation. Drag-state transitions invalidate only views with hover/tooltip paint
+dependencies whose painted/current hover can change. Their insertion ranges
+replay with cached/deferred paint; group dependencies retain clipped bounds rather
+than an external parent's transient hitbox ID. Unrelated clip scenes and ordinary
+clicks retain their caches. Div suppresses ordinary/group hover styles and tooltip eligibility
+while this state is active. Stored hover callbacks run before mouse dispatch,
+independently of propagation, and reconcile at pointer/key terminals. Focus
+changes clear drag state without synthesizing hover entry. Callbacks never
+mutate view state during paint. Already visible hoverable
+tooltips are hidden immediately, and pending tooltip builders do not run during
+the drag even when capture swallowed their cancellation event. Typed drag-over styles and
+drop handlers keep their existing hit testing and delivery. This is a bounded
+pure-Rust input/paint change in the existing dependency; there is no native API,
+unsafe Hex code, new UI framework or project/audio contract change.
+
+Window-level state is needed because ordinary Hex capture listeners can stop
+propagation without affecting GPUI's style calculation. This state does not grant
+exclusive mouse routing, own gesture cancellation or select a gesture cursor;
+consumers retain those contracts. Completed-scene regressions check consumed
+movement and repeated repaint, tooltip eligibility, release/button-loss/escape/
+deactivation recovery, and retained typed drop feedback/delivery. Native pointer
+and OS tooltip acceptance remain separate from these headless scene checks.
