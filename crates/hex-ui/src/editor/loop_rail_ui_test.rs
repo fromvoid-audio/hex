@@ -217,7 +217,7 @@ fn command_drag_uses_free_frames_and_zoomed_panned_coordinates(cx: &mut TestAppC
     let expected = editor.read_with(cx, |view, _| {
         let lane = view.arrangement_bounds.expect("arrangement bounds");
         let left = lane.left;
-        let width = lane.width - super::tracks::TRACK_HEADER_WIDTH;
+        let width = lane.width - view.track_header_width();
         let state = view.state.as_ref().unwrap();
         let start_frame =
             super::seek::pointer_to_frame(f32::from(start.x), left, width, viewport).unwrap();
