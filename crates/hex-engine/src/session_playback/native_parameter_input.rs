@@ -84,6 +84,19 @@ mod tests {
         target: DeviceAutomationTarget,
         limiter_before: Option<bool>,
     ) -> (SessionPlayback, Editor) {
+        fixture_with_state(
+            owner,
+            target,
+            limiter_before,
+            UTILITY_DEFINITION.default_state().unwrap(),
+        )
+    }
+    fn fixture_with_state(
+        owner: u8,
+        target: DeviceAutomationTarget,
+        limiter_before: Option<bool>,
+        state: hex_lattice_contract::NativeDeviceState,
+    ) -> (SessionPlayback, Editor) {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
         let Created::Imported { track, asset, .. } = editor
             .execute(Command::ImportPreparedAudioTrack {
@@ -119,11 +132,11 @@ mod tests {
             0 => Command::InsertDevice {
                 track,
                 before: None,
-                state: UTILITY_DEFINITION.default_state().unwrap(),
+                state,
             },
             1 => Command::InsertMainDevice {
                 before: None,
-                state: UTILITY_DEFINITION.default_state().unwrap(),
+                state,
             },
             2 => {
                 let Created::ReturnTrack(bus) = editor
@@ -144,7 +157,7 @@ mod tests {
                 Command::InsertReturnDevice {
                     return_track: bus,
                     before: None,
-                    state: UTILITY_DEFINITION.default_state().unwrap(),
+                    state,
                 }
             }
             _ => panic!("fixture owner"),
@@ -230,6 +243,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn saturator_provider_and_both_host_stages_match_independently_prepared_canonical_values() {
+        let definition = &hex_devices::saturator::SATURATOR_DEFINITION;
+        let drive = hex_devices::saturator::parameter::DRIVE;
+        let gain = hex_lattice_contract::HostGain::from_millidb(12_001).unwrap();
+        let base = definition.default_state().unwrap();
+        let mut host_outputs = Vec::new();
+        for (target, value, state) in [
+            (
+                DeviceAutomationTarget::Parameter(drive),
+                NativeTransientValue::Parameter {
+                    id: drive,
+                    value: ParameterValue::Float(12.0),
+                },
+                definition
+                    .patch_parameter(&base, drive, ParameterValue::Float(12.0))
+                    .unwrap(),
+            ),
+            (
+                DeviceAutomationTarget::HostInputGain,
+                NativeTransientValue::HostInputGain(gain),
+                base.clone()
+                    .with_input_gain_millidb(gain.millidb())
+                    .unwrap(),
+            ),
+            (
+                DeviceAutomationTarget::HostOutputGain,
+                NativeTransientValue::HostOutputGain(gain),
+                base.clone()
+                    .with_output_gain_millidb(gain.millidb())
+                    .unwrap(),
+            ),
+        ] {
+            let (mut transient, _) = fixture_with_state(0, target, None, base.clone());
+            let (mut canonical, _) = fixture_with_state(0, target, None, state);
+            transient
+                .set_native_parameter_input(NativeTransientOperation::Set(value))
+                .unwrap();
+            let mut actual = [[0.0; 2]; 16];
+            let mut expected = actual;
+            transient.render(&mut actual).unwrap();
+            canonical.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                transient
+                    .take_native_parameter_application()
+                    .unwrap()
+                    .operation,
+                NativeTransientOperation::Set(value)
+            );
+            if target.is_host() {
+                host_outputs.push(actual);
+            }
+        }
+        assert_ne!(
+            host_outputs[0], host_outputs[1],
+            "nonlinear input and output gain stages must remain distinct"
+        );
     }
 
     #[test]
