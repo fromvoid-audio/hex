@@ -3954,6 +3954,18 @@ impl Window {
         }
     }
 
+    /// Cancel only this owner's active lease, including an admitted press whose
+    /// host then refuses Begin. Other owners and typed drags remain untouched.
+    /// The normal cancellation callback runs immediately outside paint.
+    pub fn cancel_pointer_capture_for(&mut self, owner: EntityId, cx: &mut App) -> bool {
+        if self.pointer_capture.as_ref().is_some_and(|capture| capture.owner == owner) {
+            self.cancel_pointer_capture(cx);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn has_pointer_capture(&self) -> bool {
         self.pointer_capture.is_some()
     }
