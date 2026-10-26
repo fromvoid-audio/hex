@@ -1,5 +1,6 @@
 use super::super::waveform;
 use super::*;
+use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{
     Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
@@ -673,132 +674,118 @@ pub(in crate::editor) fn view(
         .child(toolbar)
         .children(view.audio_loop_ruler(cx))
         .child(body)
-        .on_action(
-            cx.listener(|view, _: &super::super::ToggleSnapGrid, _, cx| {
-                view.audio_event_editor.grid = if view.audio_event_editor.grid == SnapGrid::Off {
-                    SnapGrid::Adaptive
-                } else {
-                    SnapGrid::Off
-                };
-                view.audio_event_editor.gesture = None;
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_action(cx.listener(|view, _: &super::super::MoveLeft, window, cx| {
+        .on_action(cx.trace(|view, _: &super::super::ToggleSnapGrid, _, cx| {
+            view.audio_event_editor.grid = if view.audio_event_editor.grid == SnapGrid::Off {
+                SnapGrid::Adaptive
+            } else {
+                SnapGrid::Off
+            };
+            view.audio_event_editor.gesture = None;
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.trace(|view, _: &super::super::MoveLeft, window, cx| {
             view.event_nudge(false, false, window.modifiers().platform);
             cx.stop_propagation();
             cx.notify();
         }))
-        .on_action(
-            cx.listener(|view, _: &super::super::MoveRight, window, cx| {
-                view.event_nudge(true, false, window.modifiers().platform);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_action(cx.listener(|view, _: &super::super::TrimLeft, window, cx| {
+        .on_action(cx.trace(|view, _: &super::super::MoveRight, window, cx| {
+            view.event_nudge(true, false, window.modifiers().platform);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.trace(|view, _: &super::super::TrimLeft, window, cx| {
             view.event_nudge(false, true, window.modifiers().platform);
             cx.stop_propagation();
             cx.notify();
         }))
-        .on_action(
-            cx.listener(|view, _: &super::super::TrimRight, window, cx| {
-                view.event_nudge(true, true, window.modifiers().platform);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_action(cx.listener(|view, _: &super::super::DuplicateClip, _, cx| {
+        .on_action(cx.trace(|view, _: &super::super::TrimRight, window, cx| {
+            view.event_nudge(true, true, window.modifiers().platform);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.trace(|view, _: &super::super::DuplicateClip, _, cx| {
             view.event_duplicate();
             cx.stop_propagation();
             cx.notify();
         }))
         .on_action(
-            cx.listener(|view, _: &super::super::SelectAllMidiNotes, _, cx| {
+            cx.trace(|view, _: &super::super::SelectAllMidiNotes, _, cx| {
                 view.event_select_all();
                 cx.stop_propagation();
                 cx.notify();
             }),
         )
         .on_action(
-            cx.listener(|view, _: &super::super::InsertTimeSelection, _, cx| {
+            cx.trace(|view, _: &super::super::InsertTimeSelection, _, cx| {
                 view.event_paste(true);
                 cx.stop_propagation();
                 cx.notify();
             }),
         )
         .on_action(
-            cx.listener(|view, _: &super::super::CopyTimeSelection, _, cx| {
+            cx.trace(|view, _: &super::super::CopyTimeSelection, _, cx| {
                 view.event_copy(false);
                 cx.stop_propagation();
                 cx.notify();
             }),
         )
+        .on_action(cx.trace(|view, _: &super::super::CutTimeSelection, _, cx| {
+            view.event_copy(true);
+            cx.stop_propagation();
+            cx.notify();
+        }))
         .on_action(
-            cx.listener(|view, _: &super::super::CutTimeSelection, _, cx| {
-                view.event_copy(true);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_action(
-            cx.listener(|view, _: &super::super::PasteTimeSelection, _, cx| {
+            cx.trace(|view, _: &super::super::PasteTimeSelection, _, cx| {
                 view.event_paste(false);
                 cx.stop_propagation();
                 cx.notify();
             }),
         )
-        .on_action(cx.listener(|view, _: &super::super::DeleteClip, _, cx| {
+        .on_action(cx.trace(|view, _: &super::super::DeleteClip, _, cx| {
             view.event_delete();
             cx.stop_propagation();
             cx.notify();
         }))
-        .on_action(cx.listener(|view, _: &super::super::SplitClip, _, cx| {
+        .on_action(cx.trace(|view, _: &super::super::SplitClip, _, cx| {
             view.event_split();
             cx.stop_propagation();
             cx.notify();
         }))
-        .on_action(cx.listener(|view, _: &super::super::ZoomIn, _, cx| {
+        .on_action(cx.trace(|view, _: &super::super::ZoomIn, _, cx| {
             view.event_zoom(true);
             cx.stop_propagation();
             cx.notify();
         }))
-        .on_action(cx.listener(|view, _: &super::super::ZoomOut, _, cx| {
+        .on_action(cx.trace(|view, _: &super::super::ZoomOut, _, cx| {
             view.event_zoom(false);
             cx.stop_propagation();
             cx.notify();
         }))
-        .on_action(cx.listener(|view, _: &super::super::FitTimeline, _, cx| {
+        .on_action(cx.trace(|view, _: &super::super::FitTimeline, _, cx| {
             view.audio_event_editor.viewport = None;
             cx.stop_propagation();
             cx.notify();
         }))
-        .on_action(
-            cx.listener(|view, _: &super::super::PanTimelineLeft, _, cx| {
-                view.event_pan(false);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_action(
-            cx.listener(|view, _: &super::super::PanTimelineRight, _, cx| {
-                view.event_pan(true);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
-        .on_action(
-            cx.listener(|view, _: &super::super::CancelDragOrStop, _, cx| {
-                if !view.cancel_audio_loop_gesture() {
-                    view.advance_selection_intent();
-                    view.audio_event_editor.gesture = None;
-                    view.audio_event_editor.range = None;
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        );
+        .on_action(cx.trace(|view, _: &super::super::PanTimelineLeft, _, cx| {
+            view.event_pan(false);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.trace(|view, _: &super::super::PanTimelineRight, _, cx| {
+            view.event_pan(true);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.trace(|view, _: &super::super::CancelDragOrStop, _, cx| {
+            if !view.cancel_audio_loop_gesture() {
+                view.advance_selection_intent();
+                view.audio_event_editor.gesture = None;
+                view.audio_event_editor.range = None;
+            }
+            cx.stop_propagation();
+            cx.notify();
+        }));
     Some(root)
 }
 

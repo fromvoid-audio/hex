@@ -37,7 +37,7 @@ impl EditorView {
                 line,
             });
         }
-        let (track, lane) = self.hovered_drag_target(x, y)?;
+        let (track, lane) = self.hovered_track_drop_target(x, y)?;
         self.state.as_ref()?.project.track(track)?;
         Some(ArrangementDropTarget::ExistingTrack { track, lane })
     }

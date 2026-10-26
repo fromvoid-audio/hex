@@ -35,6 +35,7 @@ mod clip_name;
 mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
+mod device_automation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
@@ -711,6 +712,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 
 pub(super) struct EditorView {
     service: Service,
+    transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
     audio_events: std::sync::mpsc::Receiver<crate::EditorAudioEvent>,
     source_reservation: Option<hex_session::SourcePlanReservation>,
@@ -884,6 +886,7 @@ pub(super) struct EditorView {
     loop_rail_cursor: gpui::CursorStyle,
     clip_content_cache: clip_content_cache::TrackCache,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
+    track_drop_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
     arrangement_bounds: Option<drag::LaneBounds>,
     arrangement_bounds_epoch: u64,
@@ -1195,6 +1198,7 @@ impl EditorView {
         #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
+        crate::diagnostics::attach_service(cx, &service);
         #[cfg(test)]
         let test_environment = test_paths.existing_environment.unwrap_or_else(|| {
             test_environment::Environment::new()
@@ -1240,6 +1244,10 @@ impl EditorView {
         let keyboard_window_id = window.window_handle().window_id();
         let keyboard_entity = cx.entity().downgrade();
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle().window_id() != keyboard_window_id {
+                return;
+            }
+            crate::diagnostics::record_key(cx, event);
             if window.window_handle().window_id() == keyboard_window_id
                 && let Some(entity) = keyboard_entity.upgrade()
                 && (entity.read(cx).tuning_audition_accepts(
@@ -1383,6 +1391,7 @@ impl EditorView {
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
+            transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
             audio,
             audio_events: std::sync::mpsc::channel().1,
@@ -1552,6 +1561,7 @@ impl EditorView {
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
             clip_content_cache: clip_content_cache::TrackCache::default(),
             drag_lanes: std::collections::HashMap::new(),
+            track_drop_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
             arrangement_bounds: None,
             arrangement_bounds_epoch: 0,
@@ -1854,9 +1864,14 @@ impl EditorView {
                 })
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
+        let device_end = self
+            .state
+            .as_ref()
+            .and_then(|state| self.automation_view.devices.display_end(&state.project));
         let horizon = self
             .retained_navigation_horizon(horizon)
-            .max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+            .max(gain_end.map_or(0, |frame| frame.saturating_add(1)))
+            .max(device_end.map_or(0, |frame| frame.saturating_add(1)));
         // Only a current resize owner may extend the transient display extent.
         horizon.max(self.trim_display_end().unwrap_or(0))
     }

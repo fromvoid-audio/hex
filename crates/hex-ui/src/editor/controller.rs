@@ -986,6 +986,24 @@ impl EditorView {
     }
 
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        if crate::diagnostics::actions_enabled(cx) {
+            let query_bytes = self.browser.search.read(cx).text().len();
+            crate::diagnostics::record_view(
+                cx,
+                format!(
+                    " generation={} revision={:?} track={:?} clip={:?} scene={:?} mode={:?} viewport={:?} browser_open={} browser_query_bytes={}",
+                    self.project_generation,
+                    self.state.as_ref().map(|s| s.revision),
+                    self.selected_track.map(|id| id.value()),
+                    self.selected_clip.map(|id| id.value()),
+                    self.selected_scene.map(|id| id.value()),
+                    self.mode,
+                    self.viewport,
+                    self.browser.open,
+                    query_bytes
+                ),
+            );
+        }
         crate::diagnostics::record_audio(cx, self.audio.as_mut());
         let logging_failure =
             crate::diagnostics::record_state(cx, &self.status, self.error.as_deref());
@@ -1063,6 +1081,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
                     visible_change |= self.retire_pending_gain();
+                    visible_change |= self.retire_pending_device_automation();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
                     break;
@@ -1092,6 +1111,7 @@ impl EditorView {
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
                 let gain_request = self.pending_gain_matches(&request);
+                let device_automation_request = self.pending_device_automation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
@@ -1143,6 +1163,9 @@ impl EditorView {
                         if gain_request {
                             self.gain_submitted();
                         }
+                        if device_automation_request {
+                            self.device_automation_submitted();
+                        }
                     }
                     Err(SubmitError::Full(request)) => {
                         self.pending_requests.push_front(request);
@@ -1192,6 +1215,9 @@ impl EditorView {
                         }
                         if gain_request {
                             self.retire_pending_gain();
+                        }
+                        if device_automation_request {
+                            self.retire_pending_device_automation();
                         }
                         if time_copy_request {
                             self.pending_created_note_selection = None;
@@ -1266,6 +1292,9 @@ impl EditorView {
                         }
                         if gain_request {
                             self.retire_pending_gain();
+                        }
+                        if device_automation_request {
+                            self.retire_pending_device_automation();
                         }
                         break;
                     }
@@ -1699,7 +1728,11 @@ impl EditorView {
                 );
                 continue;
             }
-            match audio.control.action_with_ticket(pending.action) {
+            match if let Some(trace) = &self.transport_trace {
+                trace.attempt(audio, pending.action)
+            } else {
+                audio.control.action_with_ticket(pending.action)
+            } {
                 Ok(ticket) => {
                     if matches!(pending.action, PlaybackAction::SetMetronome(_)) {
                         self.pending_metronome_ticket = Some(ticket);
@@ -2028,6 +2061,7 @@ impl EditorView {
         self.midi_drag_request_complete(&event);
         self.fade_request_complete(&event);
         self.gain_request_complete(&event);
+        self.device_automation_complete(&event);
         self.eq_creation_request_complete(&event);
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
@@ -2311,6 +2345,8 @@ impl EditorView {
             .retain(|track, _| event.state.project.track(*track).is_some());
         self.drag_lane_epochs
             .retain(|track, _| event.state.project.track(*track).is_some());
+        self.track_drop_lanes
+            .retain(|track, _| event.state.project.track(*track).is_some());
         self.gain_lane.reconcile(
             self.project_generation,
             revision,
@@ -2327,6 +2363,7 @@ impl EditorView {
         let save_confirmation_required =
             event.save_confirmation_required && !event.project_replaced;
         self.state = Some(event.state);
+        self.device_automation_state_installed(event.project_replaced);
         if save_confirmation_required {
             self.queue_save_confirmation();
         }
@@ -2418,6 +2455,7 @@ impl EditorView {
             self.pending_resident_publication = None;
             self.clear_route_telemetry();
             self.drag_lanes.clear();
+            self.track_drop_lanes.clear();
             self.drag_lane_epochs.clear();
             self.arrangement_bounds = None;
             self.arrangement_bounds_epoch = 0;
@@ -3160,6 +3198,7 @@ impl EditorView {
                 | Request::NewWithAudioMode { .. }
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
+                | Request::DeviceAutomation { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::TrackClipboard {
                     action: hex_session::service::TrackClipboardAction::Cut(_)
@@ -3247,6 +3286,7 @@ impl EditorView {
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
         let gain_request = self.pending_gain_matches(&request);
+        let device_automation_request = self.pending_device_automation_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
@@ -3292,6 +3332,9 @@ impl EditorView {
                 }
                 if gain_request {
                     self.gain_submitted();
+                }
+                if device_automation_request {
+                    self.device_automation_submitted();
                 }
                 true
             }
@@ -3369,7 +3412,11 @@ impl EditorView {
 
         let command = PlaybackAction::Transport(PlaybackCommand::Seek(frame));
         if self.pending_audio_commands.is_empty() {
-            match audio.control.action_with_ticket(command) {
+            match if let Some(trace) = &self.transport_trace {
+                trace.attempt(audio, command)
+            } else {
+                audio.control.action_with_ticket(command)
+            } {
                 Ok(ticket) => self.pending_seek_ticket = Some(ticket),
                 Err(rejected) if self.pending_audio_commands.len() < UI_REQUEST_CAPACITY => {
                     self.pending_audio_commands
@@ -3688,10 +3735,13 @@ impl EditorView {
             intent_token,
         };
         if self.pending_audio_commands.is_empty() {
-            let result = self
-                .audio
-                .as_mut()
-                .map(|audio| audio.control.action_with_ticket(action));
+            let result = self.audio.as_mut().map(|audio| {
+                if let Some(trace) = &self.transport_trace {
+                    trace.attempt(audio, action)
+                } else {
+                    audio.control.action_with_ticket(action)
+                }
+            });
             match result {
                 Some(Ok(ticket)) => {
                     if matches!(action, PlaybackAction::SetMetronome(_)) {
@@ -3824,6 +3874,9 @@ impl EditorView {
         self.finish_midi_recording();
         // Publish the MIDI finish intent before any input prefix is revoked.
         if let Some(audio) = &self.audio {
+            if let Some(trace) = &self.transport_trace {
+                trace.stop(audio);
+            }
             audio.control.stop();
         }
         self.cancel_tuning_audition();
