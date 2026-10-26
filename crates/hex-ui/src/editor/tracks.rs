@@ -518,6 +518,7 @@ impl EditorView {
         // preserve their selection stroke at the viewport edge.
         clip_area = clip_area.child(
             div()
+                .debug_selector(|| format!("lane-right-divider-{}", track_id.value()))
                 .absolute()
                 .right_0()
                 .top_0()
