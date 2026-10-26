@@ -350,6 +350,17 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        self.native_parameter_application = None;
+        self.native_parameter_processing = self
+            .native_parameter_input
+            .filter(|_| self.playing)
+            .map(|input| {
+                crate::native_parameter_input::Processing::new(
+                    input,
+                    self.performance_frame,
+                    self.revision.arrangement().main_latency_frames(),
+                )
+            });
         self.begin_midi_capture_render(output.len());
         if self.revision.resource_scope.is_some()
             && self.revision.resource_scope != sources.map(|s| s.id())
@@ -575,6 +586,10 @@ impl SessionPlayback {
             }
         }
         if result.is_ok() {
+            self.native_parameter_application = self
+                .native_parameter_processing
+                .as_ref()
+                .and_then(|input| input.applied);
             self.seal_midi_capture_render();
         }
         result
@@ -743,6 +758,7 @@ impl SessionPlayback {
                             index,
                             foreign,
                             observer,
+                            self.native_parameter_processing.as_mut(),
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     let clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -769,6 +785,7 @@ impl SessionPlayback {
                             output_offset,
                             foreign,
                             observer,
+                            self.native_parameter_processing.as_mut(),
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 } else {
@@ -779,11 +796,12 @@ impl SessionPlayback {
                         arrangement_loop_pass,
                         true,
                     );
-                    crate::main_chain::process(
+                    crate::main_chain::process_with_native_input(
                         &mut self.main_chain,
                         &mut output[output_offset..chunk_end],
                         output_offset,
                         Some(&main_clock),
+                        self.native_parameter_processing.as_mut(),
                         observer,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1128,41 +1146,20 @@ impl SessionPlayback {
                         SourceStage::Audio,
                     )?;
                     if stateful_effects {
-                        if let Some(observer) = observer.as_mut() {
-                            let mut observe =
-                                |owner: hex_lattice::ProcessorChainOwner,
-                                 device_id: u64,
-                                 device_type: hex_lattice_contract::DeviceTypeId,
-                                 phase: crate::NodeSignalPhase,
-                                 offset: usize,
-                                 frames: &[Frame]| {
-                                    observer(
-                                        crate::PostNodeIdentity::new(owner, device_id, device_type),
-                                        phase,
-                                        offset,
-                                        frames,
-                                    );
-                                };
-                            self.device_chains[index]
-                                .process_range_tapped_with_clock(
-                                    0..track.instrument_position(),
-                                    render_output,
-                                    frame_offset,
-                                    Some(&effect_clock),
-                                    Some(&effect_clock),
-                                    &mut observe,
-                                )
-                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                        } else {
-                            self.device_chains[index]
-                                .process_range_with_clock(
-                                    0..track.instrument_position(),
-                                    render_output,
-                                    Some(&effect_clock),
-                                    Some(&effect_clock),
-                                )
-                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                        }
+                        crate::native_parameter_input::process_range(
+                            self.native_parameter_processing.as_mut(),
+                            &mut self.device_chains[index],
+                            0..track.instrument_position(),
+                            render_output,
+                            frame_offset,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                            0,
+                            0,
+                            &mut hex_lattice::RefuseForeign,
+                            observer,
+                        )
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     } else {
                         track.apply_ordered_prefix(render_output);
                     }
@@ -1294,41 +1291,20 @@ impl SessionPlayback {
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
                         let effect_count = chain.len();
-                        if let Some(observer) = observer.as_mut() {
-                            let mut observe =
-                                |owner: hex_lattice::ProcessorChainOwner,
-                                 device_id: u64,
-                                 device_type: hex_lattice_contract::DeviceTypeId,
-                                 phase: crate::NodeSignalPhase,
-                                 offset: usize,
-                                 frames: &[Frame]| {
-                                    observer(
-                                        crate::PostNodeIdentity::new(owner, device_id, device_type),
-                                        phase,
-                                        offset,
-                                        frames,
-                                    );
-                                };
-                            chain
-                                .process_range_tapped_with_clock(
-                                    track.instrument_position()..effect_count,
-                                    render_output,
-                                    frame_offset,
-                                    Some(&effect_clock),
-                                    Some(&effect_clock),
-                                    &mut observe,
-                                )
-                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                        } else {
-                            chain
-                                .process_range_with_clock(
-                                    track.instrument_position()..effect_count,
-                                    render_output,
-                                    Some(&effect_clock),
-                                    Some(&effect_clock),
-                                )
-                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                        }
+                        crate::native_parameter_input::process_range(
+                            self.native_parameter_processing.as_mut(),
+                            chain,
+                            track.instrument_position()..effect_count,
+                            render_output,
+                            frame_offset,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                            0,
+                            0,
+                            &mut hex_lattice::RefuseForeign,
+                            observer,
+                        )
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     } else {
                         track.apply_ordered_suffix(render_output);
                     }
@@ -1427,41 +1403,21 @@ impl SessionPlayback {
                         .device_chains
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    if let Some(observer) = observer.as_mut() {
-                        let mut observe =
-                            |owner: hex_lattice::ProcessorChainOwner,
-                             device_id: u64,
-                             device_type: hex_lattice_contract::DeviceTypeId,
-                             phase: crate::NodeSignalPhase,
-                             offset: usize,
-                             frames: &[Frame]| {
-                                observer(
-                                    crate::PostNodeIdentity::new(owner, device_id, device_type),
-                                    phase,
-                                    offset,
-                                    frames,
-                                );
-                            };
-                        chain
-                            .process_range_tapped_with_clock(
-                                0..chain.len(),
-                                render_output,
-                                frame_offset,
-                                Some(&effect_clock),
-                                Some(&effect_clock),
-                                &mut observe,
-                            )
-                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                    } else {
-                        chain
-                            .process_range_with_clock(
-                                0..chain.len(),
-                                render_output,
-                                Some(&effect_clock),
-                                Some(&effect_clock),
-                            )
-                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                    }
+                    let range = 0..chain.len();
+                    crate::native_parameter_input::process_range(
+                        self.native_parameter_processing.as_mut(),
+                        chain,
+                        range,
+                        render_output,
+                        frame_offset,
+                        Some(&effect_clock),
+                        Some(&effect_clock),
+                        0,
+                        0,
+                        &mut hex_lattice::RefuseForeign,
+                        observer,
+                    )
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 for (frame_index, source) in render_output.iter_mut().enumerate() {
                     let mix = if let Some(gain) = recording_override {
@@ -1614,39 +1570,21 @@ impl SessionPlayback {
                     .return_chains
                     .get_mut(index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                if let Some(observer) = observer.as_mut() {
-                    let mut observe =
-                        |owner, device_id, device_type, phase, offset, frames: &[Frame]| {
-                            observer(
-                                crate::PostNodeIdentity::new(owner, device_id, device_type),
-                                phase,
-                                offset,
-                                frames,
-                            );
-                        };
-                    chain
-                        .process_range_tapped_with_foreign(
-                            0..chain.len(),
-                            frames,
-                            frame_offset,
-                            effect_clock,
-                            effect_clock,
-                            foreign,
-                            &mut observe,
-                        )
-                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                } else {
-                    chain
-                        .process_range_with_foreign(
-                            0..chain.len(),
-                            frames,
-                            frame_offset,
-                            effect_clock,
-                            effect_clock,
-                            foreign,
-                        )
-                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                }
+                let range = 0..chain.len();
+                crate::native_parameter_input::process_range(
+                    self.native_parameter_processing.as_mut(),
+                    chain,
+                    range,
+                    frames,
+                    frame_offset,
+                    effect_clock,
+                    effect_clock,
+                    0,
+                    0,
+                    foreign,
+                    observer,
+                )
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 if let Some(matrix) = bus.matrix {
                     matrix.apply_block(frames);
                 }
@@ -1701,43 +1639,21 @@ impl SessionPlayback {
                 .return_chains
                 .get_mut(index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            if let Some(observer) = observer.as_mut() {
-                let mut observe = |owner: hex_lattice::ProcessorChainOwner,
-                                   device_id: u64,
-                                   device_type: hex_lattice_contract::DeviceTypeId,
-                                   phase: crate::NodeSignalPhase,
-                                   offset: usize,
-                                   frames: &[Frame]| {
-                    observer(
-                        crate::PostNodeIdentity::new(owner, device_id, device_type),
-                        phase,
-                        offset,
-                        frames,
-                    );
-                };
-                chain
-                    .process_range_tapped_with_foreign(
-                        0..chain.len(),
-                        frames,
-                        frame_offset,
-                        effect_clock,
-                        effect_clock,
-                        foreign,
-                        &mut observe,
-                    )
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-            } else {
-                chain
-                    .process_range_with_foreign(
-                        0..chain.len(),
-                        frames,
-                        frame_offset,
-                        effect_clock,
-                        effect_clock,
-                        foreign,
-                    )
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-            }
+            let range = 0..chain.len();
+            crate::native_parameter_input::process_range(
+                self.native_parameter_processing.as_mut(),
+                chain,
+                range,
+                frames,
+                frame_offset,
+                effect_clock,
+                effect_clock,
+                0,
+                0,
+                foreign,
+                observer,
+            )
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             if let Some(matrix) = bus.matrix {
                 matrix.apply_block(frames);
             }

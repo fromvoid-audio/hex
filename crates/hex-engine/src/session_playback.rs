@@ -429,6 +429,9 @@ pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
     gain_recording_override: Option<f32>,
+    native_parameter_input: Option<hex_lattice::NativeTransientInput>,
+    native_parameter_processing: Option<crate::native_parameter_input::Processing>,
+    native_parameter_application: Option<crate::NativeParameterApplication>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
@@ -814,6 +817,9 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            native_parameter_input: _,
+            native_parameter_processing: _,
+            native_parameter_application: _,
             compensation,
             device_metering: _,
             revision: _,
@@ -1845,6 +1851,9 @@ impl SessionPlayback {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             gain_recording_override: None,
+            native_parameter_input: None,
+            native_parameter_processing: None,
+            native_parameter_application: None,
             compensation,
             device_metering: false,
             revision,
@@ -2402,6 +2411,7 @@ mod render_diagnostic_tests {
     }
 }
 mod gain_recording;
+mod native_parameter_input;
 #[cfg(test)]
 mod return_feed_tests;
 

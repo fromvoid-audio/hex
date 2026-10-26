@@ -222,6 +222,7 @@ impl ReturnAssembly {
         &mut self,
         project: &hex_project::Project,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
@@ -288,11 +289,12 @@ impl ReturnAssembly {
             .iter_mut()
             .zip(project.return_tracks())
         {
-            r.chain = Some(r.effects.prepare_with_effects(
+            r.chain = Some(r.effects.prepare_with_effects_and_input(
                 b.devices(),
                 hex_lattice::ProcessorChainOwner::Return(b.id().value()),
                 project.sample_rate(),
                 effects,
+                native_input,
             )?);
             self.growth = self
                 .growth

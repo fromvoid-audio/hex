@@ -1702,6 +1702,37 @@ impl NativeRuntimeChain {
         )
     }
 
+    /// Validate an inline request against the exact prepared current target.
+    /// A missing or frozen instance returns false without mutating the chain.
+    pub fn validate_transient_input(
+        &self,
+        input: NativeTransientInput,
+    ) -> Result<bool, DeviceContractError> {
+        let mut matching = self.entries.iter().filter(|entry| {
+            !entry.automation_frozen
+                && entry.owner == input.identity.owner()
+                && entry.device_id == input.identity.device_id()
+        });
+        let Some(entry) = matching.next() else {
+            return Ok(false);
+        };
+        if matching.next().is_some()
+            || entry.automation.input_target() != Some(input.operation.target())
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        if let Some(value) = input.operation.value() {
+            entry.automation.validate_input(value)?;
+        }
+        if let hex_lattice_contract::DeviceAutomationTarget::Parameter(id) =
+            input.operation.target()
+            && (!entry.matrix.is_identity() || !entry.runtime.supports_parameter_automation(id))
+        {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        Ok(true)
+    }
+
     /// Same transaction and taps with one prepared transient input. Only the
     /// exact current, non-frozen instance can consume it. A successful range
     /// stages its first nonempty application; final host delivery is not owned

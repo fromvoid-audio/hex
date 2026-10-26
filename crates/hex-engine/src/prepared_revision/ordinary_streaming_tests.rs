@@ -98,6 +98,7 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
             &instruments,
             &crate::audio_transform::AudioTransformPreparation::default(),
             None,
+            None,
         )
         .unwrap(),
     );
@@ -291,6 +292,7 @@ fn main_only_latency_and_retired_main_history_keep_batched_ordinary_stream_deman
                 &effects,
                 &instruments,
                 &crate::audio_transform::AudioTransformPreparation::default(),
+                None,
                 None,
             )
             .unwrap(),
