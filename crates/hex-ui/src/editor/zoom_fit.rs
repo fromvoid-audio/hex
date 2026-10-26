@@ -38,9 +38,14 @@ pub(super) struct MidiFitBaseline {
     current: PianoView,
     back: Option<((u64, ClipId), PianoView)>,
 }
+struct ArrangeFit {
+    generation: u64,
+    viewport: Option<Viewport>,
+    vertical: Option<super::track_layout::VerticalFitSnapshot>,
+}
 #[derive(Default)]
 pub(super) struct State {
-    arrange: Option<(u64, Option<Viewport>)>,
+    arrange: Option<ArrangeFit>,
     midi: Option<((u64, ClipId), PianoView)>,
 }
 impl State {
@@ -123,7 +128,8 @@ impl EditorView {
         if self
             .zoom_fit
             .arrange
-            .is_some_and(|(generation, _)| generation != self.project_generation)
+            .as_ref()
+            .is_some_and(|prior| prior.generation != self.project_generation)
         {
             self.zoom_fit.arrange = None;
         }
@@ -136,7 +142,8 @@ impl EditorView {
         }
     }
     pub(super) fn zoom_fit_key(&mut self, back: bool, window: &Window, cx: &Context<Self>) -> bool {
-        if self.computer_keyboard.enabled
+        if self.track_resize_active()
+            || self.computer_keyboard.enabled
             || self.track_name.is_editing()
             || self.clip_name_edit.is_some()
             || self.project_tempo_editing(cx)
@@ -176,7 +183,8 @@ impl EditorView {
             Target::Arrange => self
                 .zoom_fit
                 .arrange
-                .is_some_and(|(g, _)| g == self.project_generation),
+                .as_ref()
+                .is_some_and(|prior| prior.generation == self.project_generation),
             Target::Midi => self.zoom_fit.midi.is_some_and(|(owner, _)| {
                 owner.0 == self.project_generation && self.detail_clip_id() == Some(owner.1)
             }),
@@ -184,6 +192,9 @@ impl EditorView {
         }
     }
     pub(super) fn apply_zoom_fit(&mut self, target: Target, back: bool) -> bool {
+        if target == Target::Arrange && self.track_resize_active() {
+            return false;
+        }
         self.reconcile_zoom_fit();
         if target == Target::Audio {
             return self.event_fit_selection(back);
@@ -227,15 +238,21 @@ impl EditorView {
             self.normal_navigation_horizon(state.timeline_frames)
         };
         let next = if back {
-            let Some((generation, prior)) = self.zoom_fit.arrange.take() else {
+            let Some(prior) = self.zoom_fit.arrange.take() else {
                 return false;
             };
-            if generation != self.project_generation {
+            if prior.generation != self.project_generation {
                 return false;
             }
             // Back is an explicit restoration, rather than scrolling into a
             // retired tail. Retain exactly the saved view when content shrank.
-            prior.map(|viewport| viewport.clamp(horizon.max(viewport.end().unwrap_or(horizon))))
+            let viewport = prior
+                .viewport
+                .map(|viewport| viewport.clamp(horizon.max(viewport.end().unwrap_or(horizon))));
+            if let Some(vertical) = prior.vertical {
+                self.restore_vertical_fit(vertical);
+            }
+            viewport
         } else {
             let project = &state.project;
             let audio_range = |c: &hex_project::Clip| {
@@ -299,10 +316,47 @@ impl EditorView {
             let Some(next) = interval(a, b, target_horizon, 1) else {
                 return false;
             };
-            if next == current && target_horizon == self.viewport_horizon(state.timeline_frames) {
+            let members = self
+                .normalized_time_selection()
+                .map(|range| range.tracks().to_vec())
+                .unwrap_or_else(|| {
+                    let clips: std::collections::BTreeSet<_> =
+                        self.selected_clip_ids().into_iter().collect();
+                    let owners: Vec<_> = project
+                        .tracks()
+                        .iter()
+                        .filter(|_| !clips.is_empty())
+                        .filter(|track| {
+                            track.clips().iter().any(|clip| clips.contains(&clip.id()))
+                                || track
+                                    .midi_clips()
+                                    .iter()
+                                    .any(|clip| clips.contains(&clip.id()))
+                        })
+                        .map(|track| track.id())
+                        .collect();
+                    if !owners.is_empty() {
+                        return owners;
+                    }
+                    let selected = self.selected_track_ids();
+                    if selected.is_empty() {
+                        project.tracks().iter().map(|track| track.id()).collect()
+                    } else {
+                        selected
+                    }
+                });
+            let same_horizontal =
+                next == current && target_horizon == self.viewport_horizon(state.timeline_frames);
+            let vertical = self.capture_vertical_fit();
+            let changed_vertical = self.fit_tracks_vertically(&members);
+            if same_horizontal && !changed_vertical {
                 return false;
             }
-            self.zoom_fit.arrange = Some((self.project_generation, Some(current)));
+            self.zoom_fit.arrange = Some(ArrangeFit {
+                generation: self.project_generation,
+                viewport: Some(current),
+                vertical,
+            });
             Some(next)
         };
         if let Some(next) = next {
@@ -337,6 +391,8 @@ impl EditorView {
             if back { "↶" } else { "⤢" },
             if back {
                 "zoom back · x"
+            } else if target == Target::Arrange {
+                "fit time and selected tracks · z"
             } else {
                 "fit time selection or clip/content · z"
             },
