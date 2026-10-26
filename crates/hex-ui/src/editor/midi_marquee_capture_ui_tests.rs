@@ -123,8 +123,12 @@ fn marquee_loss_restores_owned_baseline_but_preserves_newer_selection(cx: &mut T
             "viewport",
             "bounds",
             "hidden",
+            "collapsed",
             "window",
         ] {
+            if loss == "collapsed" && !velocity {
+                continue;
+            }
             let cx = &mut cx.new_app();
             let (mut visual, editor, _environment, clip) = setup(cx);
             let actions = host(&mut visual, &editor, false);
@@ -196,6 +200,10 @@ fn marquee_loss_restores_owned_baseline_but_preserves_newer_selection(cx: &mut T
                     cx.notify();
                 }),
                 "bounds" => visual.simulate_resize(gpui::size(px(1400.), px(900.))),
+                "collapsed" => editor.update(&mut visual, |v, cx| {
+                    v.midi_velocity.open = false;
+                    cx.notify();
+                }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
                     v.clip_view_open = false;
                     cx.notify();
