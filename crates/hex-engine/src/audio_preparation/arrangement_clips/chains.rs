@@ -143,7 +143,11 @@ impl ChainCustody {
         let automation_staging = devices
             .iter()
             .map(|device| {
-                let provider=device.automation().iter().filter(|lane|!lane.target.is_host()).count();
+                let provider = device
+                    .automation()
+                    .iter()
+                    .filter(|lane| !lane.target.is_host())
+                    .count();
                 hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
                     provider,
                     device.automation().len().checked_sub(provider)?,
@@ -199,7 +203,11 @@ impl ChainCustody {
         let automation_staging = devices
             .iter()
             .map(|device| {
-                let provider=device.automation().iter().filter(|lane|!lane.target.is_host()).count();
+                let provider = device
+                    .automation()
+                    .iter()
+                    .filter(|lane| !lane.target.is_host())
+                    .count();
                 hex_lattice::PreparedParameterAutomation::quoted_construction_overlap_bytes_with_host(
                     provider,
                     device.automation().len().checked_sub(provider)?,
