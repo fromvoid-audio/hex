@@ -69,6 +69,42 @@ fn audio_fixture() -> (Editor, TrackId, Vec<ClipId>) {
     }
     (Editor::new(e.project().clone(), 16).unwrap(), t, clips)
 }
+
+#[test]
+fn grouping_mixed_activation_preserves_midi_notes_in_an_active_container() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let active = midi(&mut e, t, 0);
+    let inactive = midi(&mut e, t, 4);
+    e.execute(Command::SetClipActive {
+        clip: inactive,
+        active: false,
+    })
+    .unwrap();
+    let Created::Clip(group) = e
+        .execute(Command::GroupClips(vec![active, inactive]))
+        .unwrap()
+    else {
+        panic!("grouped clip")
+    };
+    let group = e.project().midi_clip(group).unwrap();
+    assert!(group.active());
+    assert_eq!(group.notes().len(), 2);
+}
+
+#[test]
+fn grouping_mixed_activation_preserves_audio_in_an_active_container() {
+    let (mut e, _, clips) = audio_fixture();
+    e.execute(Command::SetClipActive {
+        clip: clips[1],
+        active: false,
+    })
+    .unwrap();
+    let Created::Clip(group) = e.execute(Command::GroupClips(clips[..2].to_vec())).unwrap() else {
+        panic!("grouped clip")
+    };
+    assert!(e.project().clip(group).unwrap().active());
+}
 #[test]
 fn midi_group_materializes_loops_and_gaps_with_one_history_edge_and_fresh_ids() {
     let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
