@@ -509,10 +509,21 @@ pub(super) fn render_parameter(
         }
         None => unsupported_parameter(descriptor.label),
     };
+    let menu_binding = CapturedBinding {
+        generation,
+        owner: view.device_panel.owner,
+        key,
+        identity,
+        descriptor,
+    };
     rendered.capture_any_mouse_down(cx.listener(
         move |view, event: &gpui::MouseDownEvent, window, cx| {
             if event.button == gpui::MouseButton::Right
-                && generation == view.project_generation
+                && menu_binding.current(view, false)
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision)
                 && view.open_parameter_automation_menu(
                     event.position,
                     key.device,

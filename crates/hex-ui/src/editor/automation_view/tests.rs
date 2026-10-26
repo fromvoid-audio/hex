@@ -397,6 +397,11 @@ fn earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does(
     let track = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[0].id()
     });
+    editor.update(&mut visual, |v, cx| {
+        v.gain_lane.track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
     let plot = visual
         .debug_bounds(selector("arrangement-automation-plot", track.value()))
         .unwrap();
@@ -450,7 +455,7 @@ fn earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does(
 }
 
 #[gpui::test]
-fn a_and_toolbar_share_global_layers_and_visible_mode_indicator(cx: &mut TestAppContext) {
+fn a_and_toolbar_share_global_layers_without_assigning_parameters(cx: &mut TestAppContext) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -505,7 +510,8 @@ fn a_and_toolbar_share_global_layers_and_visible_mode_indicator(cx: &mut TestApp
         assert!(
             visual
                 .debug_bounds(selector("arrangement-automation-plot", track.value()))
-                .is_some()
+                .is_none(),
+            "entering automation view never assigns a parameter"
         );
     }
     // A toolbar change must immediately be the state A observes on the next key.

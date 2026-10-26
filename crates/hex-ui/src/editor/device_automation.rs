@@ -427,6 +427,9 @@ impl EditorView {
         ) else {
             return false;
         };
+        if !super::device_panel::finalize_controls(self, cx) {
+            return false;
+        }
         let utility_mode = entry.target.provider == DeviceTypeId::from_static("hex.utility")
             && matches!(parameter.value(), 3 | 10);
         self.open_automation_menu(
@@ -802,6 +805,7 @@ impl EditorView {
             return;
         }
         lanes.stamp = Some(stamp);
+        let previous_extra_count = lanes.extra.len();
         if lanes.draft.as_ref().is_some_and(|draft| {
             draft.revision != state.revision
                 || draft
@@ -834,7 +838,9 @@ impl EditorView {
         }) {
             lanes.selected = None;
         }
-        self.track_scroll.remeasure();
+        if lanes.extra.len() != previous_extra_count {
+            self.track_scroll.remeasure();
+        }
     }
 
     pub(super) fn pending_device_automation_matches(&self, request: &Request) -> bool {

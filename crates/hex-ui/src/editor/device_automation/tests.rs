@@ -73,6 +73,85 @@ mod native {
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, px, size};
     use std::sync::Arc;
     #[gpui::test]
+    fn old_painted_parameter_cannot_retarget_a_moved_device_before_repaint(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(super::super::super::bind_editor_keys);
+        let (project, track, device, parameter) = project();
+        let mut model = Editor::new(project, 16).unwrap();
+        let Created::Track(next) = model
+            .execute(Command::AddTrack {
+                name: "next".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let (handle, entity) = super::super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1100.0), px(760.0)));
+        visual.update(|window, cx| {
+            entity.update(cx, |view, cx| {
+                view.select_track(track, window);
+                view.device_panel_active = true;
+                view.clip_view_open = true;
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let point = visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "device-{}-parameter-{}-knob",
+                    device.value(),
+                    parameter.value()
+                )
+                .into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        entity.update(&mut visual, |view, _| {
+            model
+                .execute(Command::MoveDevice {
+                    device,
+                    track: next,
+                    before: None,
+                })
+                .unwrap();
+            let mut event = super::super::super::arrangement_main_track_ui_test::completed_event(
+                view.state.as_ref().unwrap(),
+            );
+            Arc::get_mut(&mut event.state).unwrap().project = Arc::new(model.project().clone());
+            // Publish new source/owner without notifying: the previous frame's
+            // actual pointer listener must refuse instead of rebinding this ID.
+            view.state = Some(event.state);
+            view.selected_track = Some(next);
+            view.device_panel.owner = Some(Owner::Track(next));
+            assert!(
+                Entry::read(
+                    &view.state.as_ref().unwrap().project,
+                    view.project_generation,
+                    Owner::Track(next),
+                    device,
+                    parameter
+                )
+                .is_some()
+            );
+        });
+        visual.simulate_mouse_down(point, MouseButton::Right, Modifiers::default());
+        entity.read_with(&visual, |view, _| {
+            assert!(
+                view.context_menu.is_none(),
+                "a stale painted binding must not adopt a moved device's new owner"
+            )
+        });
+    }
+
+    #[gpui::test]
     fn device_drop_in_attached_lane_keeps_track_owner_and_true_insertion_boundary(
         cx: &mut TestAppContext,
     ) {
