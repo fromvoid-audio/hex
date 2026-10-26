@@ -1656,7 +1656,8 @@ impl EditorView {
                 .child(
                     div()
                         .id(("track-header-mixer", track_id.value()))
-                        .w(px(114.0))
+                        // Two existing 60-point numeric minima and their gap.
+                        .w(px(122.0))
                         .flex_shrink_0()
                         .flex()
                         .flex_col()

@@ -735,6 +735,11 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
     assert!((activator.left() - whole.left()).abs() <= px(1.0));
     assert!(activator.bottom() <= whole.top());
     assert_eq!(arm.right(), pan.right());
+    let meter = self::bounds(&mut visual, "track-output-meter", track);
+    assert!(
+        pan.right() <= meter.left(),
+        "pan {pan:?} overlaps meter {meter:?}"
+    );
     for rect in [whole, pan, activator, solo, arm] {
         assert!(rect.left() >= header.left() && rect.right() <= header.right());
         assert!(rect.top() >= header.top() && rect.bottom() <= header.bottom());
