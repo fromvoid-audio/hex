@@ -19,8 +19,19 @@ mod native_audio;
 mod native_sources;
 mod streamed_export;
 mod time_selection_profile;
+mod update_lease;
 
 fn main() {
+    // Keep shared publication custody until every desktop worker has shut
+    // down. Do not pass this file descriptor to any update helper.
+    let _update_lease = match update_lease::acquire_for_current_executable() {
+        Ok(lease) => lease,
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "{error}");
+            std::process::exit(1);
+        }
+    };
+
     let mut arguments = std::env::args_os().skip(1);
     if arguments
         .next()

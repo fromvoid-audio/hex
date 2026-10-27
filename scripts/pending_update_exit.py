@@ -30,8 +30,11 @@ def observe_parent_exit(parent_pid: int, approval_fd: int, ready_fd: int,
 
     The caller must keep both pipes private, retain the selected candidate, and
     independently recheck target, candidate, signature, and publication lock.
+    Spawn only after any save and user confirmation; the deadline begins here.
     The bounded timeout is refusal, never consent. Only the application sends
-    APPROVAL, after its ordinary shutdown path has completed successfully.
+    APPROVAL, after its ordinary shutdown path has completed successfully. The
+    path check compares current filesystem objects, not the mapped executable
+    image; the parent must also hold validated startup custody.
     """
     if (type(parent_pid) is not int or parent_pid <= 1 or os.getppid() != parent_pid
             or not 0 < timeout <= 3600):
@@ -53,7 +56,8 @@ def observe_parent_exit(parent_pid: int, approval_fd: int, ready_fd: int,
         try:
             queue.control(events, 0, 0)
             # kqueue pins the process before consulting its path, so a reused
-            # PID cannot become the observed process during the check.
+            # PID cannot become the observed process during the check. `ps` and
+            # stat compare current paths, not the image mapped into the process.
             result = subprocess.run(["/bin/ps", "-ww", "-p", str(parent_pid), "-o", "comm="],
                                     capture_output=True, text=True, timeout=5, check=True)
             paths = result.stdout.splitlines()
