@@ -3597,7 +3597,8 @@ pub use scalar_automation::ScalarAutomationBinding;
 mod scalar_streamed;
 pub use scalar_streamed::{
     BorrowedScalarPage, ScalarFileIdentity, ScalarProjectionIdentity, ScalarSourceKey,
-    ScalarSourceMetadata, StreamResourceKey, StreamResourceMetadata, read_scalar_values,
+    ScalarSourceMetadata, ScalarSourceTarget, StreamResourceKey, StreamResourceMetadata,
+    read_scalar_values,
 };
 mod project_output;
 pub use midi_preview::{
