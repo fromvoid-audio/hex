@@ -1,12 +1,15 @@
 //! Typed scalar page declarations and bounded borrowed copying into render scratch.
 //! Source/projection IDs never alias WAV assets. Metadata are control declarations;
 //! the existing stream catalog must verify them against a closed completed source.
-//! Only coverage in an installed page denotes base fallback. Missing/short/stale
-//! data refuses the whole window, with no partial result. No file, worker, graph,
+//! Uncovered samples in an installed page and positions outside the declared
+//! extent select base. Missing/short/stale data refuses the complete window.
+//! No file, worker, graph,
 //! prepared source lease, allocation or competing parameter model is owned here.
 use crate::{Invalid, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata};
 use hex_project::AutomationValue;
 
+/// Distinct content or projection facts require a fresh key within retained
+/// domains. Native admission refuses conflicting facts under a reused key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ScalarSourceKey {
     generation: u64,

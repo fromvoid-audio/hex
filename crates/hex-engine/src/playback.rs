@@ -1285,7 +1285,7 @@ impl Playback {
         self.project.sample_rate()
     }
 
-    /// Control-side immutable prepared source facts; these are not page or
+    /// Control-side immutable prepared PCM source facts; these are not page or
     /// native publication authority. Legacy graphs without a complete prepared
     /// revision return an explicit refusal rather than incomplete dependencies.
     pub fn streamed_sources_on_control(
