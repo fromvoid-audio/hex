@@ -406,7 +406,7 @@ pub(super) fn focus_listener(
                             .is_some_and(|device| device.state().type_id() == eq::EQ_TYPE_ID)
                     })
                 {
-                    view.device_panel.selected_device = Some(device);
+                    view.device_panel.select_only(Some(device));
                     // Focus is delivered after paint; dirty the next frame,
                     // following the existing Operator focus subscription seam.
                     cx.defer_in(window, |_, _, cx| cx.notify());
