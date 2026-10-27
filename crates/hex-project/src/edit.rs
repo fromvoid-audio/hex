@@ -779,7 +779,7 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
-    /// Recompute a clip-local loop operation from the current authored source.
+    /// Recompute a clip-local loop or playback-start operation from current source.
     /// Outer growth carves both clip kinds; cycle edits retain outer occupancy.
     ResizeAudioClipView {
         clip: ClipId,
