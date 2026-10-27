@@ -125,17 +125,24 @@ impl EditorView {
     }
 }
 
-/// Root-frame camera held by the admitted edit's ordinary receipt, not by the
-/// pointer. Creating a Once placement may expose the rest of a retained root;
-/// that metadata change must not move the waveform when the ACK is installed.
+/// Camera held by the admitted edit's ordinary receipt. Creating a Once
+/// placement may expose more root frames; live musical timing can also move the
+/// grabbed point in that frame clock. Preserve its visible offset at accepted
+/// installation, using the terminal project's projection rather than old frames.
 #[derive(Clone, Copy)]
 pub(in crate::editor) struct Camera {
     prior: Option<Viewport>,
     root: Viewport,
     bounds: (u64, u64),
+    position: u64,
+    offset: u64,
 }
 impl EditorView {
-    pub(in crate::editor) fn audio_play_start_camera(&self, clip: ClipId) -> Option<Camera> {
+    pub(in crate::editor) fn audio_play_start_camera(
+        &self,
+        clip: ClipId,
+        position: u64,
+    ) -> Option<Camera> {
         let (owner, root, _) = self.event_context()?;
         if owner != clip || !self.event_context_current() {
             return None;
@@ -151,6 +158,11 @@ impl EditorView {
                 length: viewport.length,
             },
             bounds: (first, end),
+            position,
+            offset: root
+                .root_frame_at(position, tempo)
+                .ok()?
+                .saturating_sub(first.checked_add(viewport.start)?),
         })
     }
     /// Called only with the exact terminal's canonical project inside receive.
@@ -169,6 +181,12 @@ impl EditorView {
         let Some(source) = project.clip(clip) else {
             return;
         };
+        let accepted_position = hex_project::AudioViewProjection::new(source, project.tempo_map())
+            .ok()
+            .and_then(|projection| projection.play_start_position().ok().flatten());
+        if accepted_position != Some(camera.position) {
+            return;
+        }
         let root = source.audio_event_root();
         let Ok(first) = root.root_frame_at(editor_bounds(&root).0, project.tempo_map()) else {
             return;
@@ -176,20 +194,26 @@ impl EditorView {
         let Ok(end) = root.root_frame_at(editor_bounds(&root).1, project.tempo_map()) else {
             return;
         };
-        let Some(start) = camera.root.start.checked_sub(first) else {
+        let Ok(frame) = root.root_frame_at(camera.position, project.tempo_map()) else {
             return;
         };
+        let start = frame.saturating_sub(camera.offset).saturating_sub(first);
         self.audio_event_editor
             .install_frame_space(&root, (first, end));
-        self.audio_event_editor.viewport =
-            if camera.prior.is_none() && camera.bounds == (first, end) {
-                None
-            } else {
-                Some(Viewport {
-                    start,
-                    length: camera.root.length,
-                })
-            };
+        self.audio_event_editor.viewport = if camera.prior.is_none()
+            && camera.bounds == (first, end)
+            && frame.saturating_sub(camera.offset) == camera.root.start
+        {
+            None
+        } else {
+            Some(Viewport {
+                start,
+                length: camera.root.length,
+            })
+        };
+        self.audio_event_editor.canonical_start = Some((camera.position, frame));
+        self.audio_event_editor.start_grip =
+            Some((camera.position, camera.offset, camera.root.length));
     }
 }
 

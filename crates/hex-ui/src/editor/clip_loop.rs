@@ -207,12 +207,12 @@ impl EditorView {
             }
             None => return,
         };
-        let start_camera = matches!(
-            edit,
-            AudioEdit::Resize(AudioViewResizeOperation::PlayStart { .. })
-        )
-        .then(|| self.audio_play_start_camera(clip))
-        .flatten();
+        let start_camera = match edit {
+            AudioEdit::Resize(AudioViewResizeOperation::PlayStart { position }) => {
+                self.audio_play_start_camera(clip, position)
+            }
+            _ => None,
+        };
         self.clip_loop.pending = Some(Pending {
             generation: self.project_generation,
             clip,
