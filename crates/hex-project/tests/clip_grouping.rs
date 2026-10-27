@@ -69,6 +69,205 @@ fn audio_fixture() -> (Editor, TrackId, Vec<ClipId>) {
     }
     (Editor::new(e.project().clone(), 16).unwrap(), t, clips)
 }
+
+#[test]
+fn grouping_mixed_activation_preserves_midi_notes_in_an_active_container() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let active = midi(&mut e, t, 0);
+    let inactive = midi(&mut e, t, 4);
+    let first_note = e.project().midi_clip(active).unwrap().notes()[0].id();
+    e.execute(Command::SetMidiNotesActive {
+        clip: active,
+        notes: vec![first_note],
+        active: false,
+    })
+    .unwrap();
+    e.execute(Command::SetClipActive {
+        clip: inactive,
+        active: false,
+    })
+    .unwrap();
+    let Created::Clip(group) = e
+        .execute(Command::GroupClips(vec![active, inactive]))
+        .unwrap()
+    else {
+        panic!("grouped clip")
+    };
+    let group = e.project().midi_clip(group).unwrap();
+    assert!(group.active());
+    assert_eq!(group.notes().len(), 2);
+    assert_eq!(
+        group
+            .notes()
+            .iter()
+            .map(|note| note.active())
+            .collect::<Vec<_>>(),
+        vec![false, false]
+    );
+    let grouped_snapshot = e.project().snapshot();
+    assert!(e.undo());
+    assert!(!e.project().midi_clip(active).unwrap().notes()[0].active());
+    assert!(e.redo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = grouped_snapshot.next_id;
+    assert_eq!(restored, grouped_snapshot);
+}
+
+#[test]
+fn note_activation_is_atomic_reversible_and_preserves_note_data() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let clip = midi(&mut e, t, 0);
+    let original = e.project().midi_clip(clip).unwrap().notes()[0].clone();
+    let note = original.id();
+    let before = e.project().snapshot();
+    let mut activation = Command::SetMidiNotesActive {
+        clip,
+        notes: vec![note],
+        active: false,
+    };
+    assert!(activation.supports_sampler_midi_edit());
+    assert!(activation.prepare_sampler_midi_edit(e.project()).unwrap());
+    assert!(
+        e.execute(Command::SetMidiNotesActive {
+            clip,
+            notes: vec![note, note],
+            active: false
+        })
+        .is_err()
+    );
+    assert_eq!(e.project().snapshot(), before);
+    e.execute(Command::SetMidiNotesActive {
+        clip,
+        notes: vec![note],
+        active: false,
+    })
+    .unwrap();
+    assert!(!activation.prepare_sampler_midi_edit(e.project()).unwrap());
+    assert!(e.next_midi_history_effect(false).is_some());
+    let changed = &e.project().midi_clip(clip).unwrap().notes()[0];
+    assert!(!changed.active());
+    assert_eq!(
+        (
+            changed.id(),
+            changed.start(),
+            changed.duration(),
+            changed.pitch(),
+            changed.channel(),
+            changed.velocity()
+        ),
+        (
+            original.id(),
+            original.start(),
+            original.duration(),
+            original.pitch(),
+            original.channel(),
+            original.velocity()
+        )
+    );
+    assert!(e.undo());
+    assert!(e.project().midi_clip(clip).unwrap().notes()[0].active());
+    assert!(e.redo());
+    assert!(!e.project().midi_clip(clip).unwrap().notes()[0].active());
+    e.execute(Command::SetMidiNotesActive {
+        clip,
+        notes: vec![note],
+        active: true,
+    })
+    .unwrap();
+    assert!(e.project().midi_clip(clip).unwrap().notes()[0].active());
+}
+
+#[test]
+fn note_activation_follows_alias_source_and_undo() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let clip = midi(&mut e, t, 0);
+    let Created::Clips { first: alias, .. } =
+        e.execute(Command::DuplicateAliasClips(vec![clip])).unwrap()
+    else {
+        panic!("alias")
+    };
+    let note = e.project().midi_clip(clip).unwrap().notes()[0].id();
+    e.execute(Command::SetMidiNotesActive {
+        clip: alias,
+        notes: vec![note],
+        active: false,
+    })
+    .unwrap();
+    assert!(!e.project().midi_clip(clip).unwrap().notes()[0].active());
+    assert!(!e.project().midi_clip(alias).unwrap().notes()[0].active());
+    assert!(e.undo());
+    assert!(e.project().midi_clip(clip).unwrap().notes()[0].active());
+    assert!(e.project().midi_clip(alias).unwrap().notes()[0].active());
+}
+
+#[test]
+fn partial_time_group_keeps_midi_activation_inside_and_outside() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let a = midi(&mut e, t, 0);
+    let b_clip = midi(&mut e, t, 4);
+    e.execute(Command::SetClipActive {
+        clip: b_clip,
+        active: false,
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    let end = e.project().tempo_map().beat_to_frame(b(5)).unwrap();
+    e.execute(Command::GroupTimeRange(
+        hex_project::TimeRange::new(vec![t], 0, end).unwrap(),
+    ))
+    .unwrap();
+    let row = e.project().track(t).unwrap();
+    let group = row
+        .midi_clips()
+        .iter()
+        .find(|clip| clip.start() == b(0))
+        .unwrap();
+    assert!(group.active());
+    assert_eq!(
+        group
+            .notes()
+            .iter()
+            .map(|note| note.active())
+            .collect::<Vec<_>>(),
+        vec![true, false]
+    );
+    assert!(
+        row.midi_clips()
+            .iter()
+            .any(|clip| clip.start() == b(5) && !clip.active())
+    );
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(e.project().midi_clip(a).is_some());
+}
+
+#[test]
+fn grouping_only_inactive_midi_clips_keeps_an_active_container_with_silent_notes() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let a = midi(&mut e, t, 0);
+    let b_clip = midi(&mut e, t, 4);
+    for clip in [a, b_clip] {
+        e.execute(Command::SetClipActive {
+            clip,
+            active: false,
+        })
+        .unwrap();
+    }
+    let Created::Clip(group) = e.execute(Command::GroupClips(vec![a, b_clip])).unwrap() else {
+        panic!("group")
+    };
+    let group = e.project().midi_clip(group).unwrap();
+    assert!(group.active());
+    assert_eq!(group.notes().len(), 2);
+    assert!(group.notes().iter().all(|note| !note.active()));
+}
 #[test]
 fn midi_group_materializes_loops_and_gaps_with_one_history_edge_and_fresh_ids() {
     let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();

@@ -64,6 +64,12 @@ impl EditorView {
             || self.loop_rail_gesture.is_some()
             || self.sections.held()
             || self.section_install_pending()
+            || self.midi_note_gesture.is_some()
+            || self.midi_group_gesture.is_some()
+            || self.midi_stroke.is_some()
+            || self.midi_time_selection.gesture.is_some()
+            || self.midi_ruler.held()
+            || self.midi_velocity.gesture.is_some()
         {
             self.error = Some("finish the current edit before changing activation".into());
         } else if self.enqueue(Request::Edit(command)) {
@@ -77,6 +83,34 @@ impl EditorView {
         let Some(state) = &self.state else {
             return Ok(None);
         };
+        if self.midi_focus.is_focused(window) {
+            let Some(clip) = self.detail_midi_clip_data() else {
+                return Ok(None);
+            };
+            let selected = self.midi_selection.ids();
+            if selected.is_empty() {
+                return Ok(None);
+            }
+            let source = state
+                .project
+                .midi_source(clip)
+                .ok_or("selected midi source is unavailable")?;
+            let mut remaining: std::collections::BTreeSet<_> = selected.iter().copied().collect();
+            let mut any_active = false;
+            for note in source.notes() {
+                if remaining.remove(&note.id()) {
+                    any_active |= note.active();
+                }
+            }
+            if !remaining.is_empty() {
+                return Err("selected midi note no longer exists".into());
+            }
+            return Ok(Some(Command::SetMidiNotesActive {
+                clip,
+                notes: selected.to_vec(),
+                active: !any_active,
+            }));
+        }
         if let Some(target) = self.focused_header_target(window) {
             return match target {
                 Target::Track(track) => {

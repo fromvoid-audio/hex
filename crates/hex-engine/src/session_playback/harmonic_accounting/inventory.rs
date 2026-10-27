@@ -148,6 +148,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
                     loop_end_raw: 8 << 32,
                     looping: false,
                     notes: vec![hex_project::MidiNoteSnapshot {
+                        active: true,
                         id: next + 1,
                         start_raw: 0,
                         duration_raw: 8 << 32,

@@ -255,6 +255,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             let velocity = 64 + ((note_index * 3) % 64) as u8;
             notes_for_oracle.push((pitch, velocity));
             notes.push(MidiNoteSnapshot {
+                active: true,
                 id: next_id,
                 start_raw: 0,
                 duration_raw: note_duration,
