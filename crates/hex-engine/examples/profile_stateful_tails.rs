@@ -6,6 +6,7 @@ use hex_project::{Command, Created, Editor, Project};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
 
 const RATE: u32 = 48_000;
+const TAIL_FRAMES: usize = RATE as usize;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 fn fixture(
@@ -104,10 +105,19 @@ fn run(tracks: usize, effects: usize, block: usize, repetitions: usize) -> Resul
     };
     let next_revision = prepare(&candidate, &media, &table, Some(old_revision.session()))?;
     let mut reference = started(Arc::clone(&old_revision))?;
-    let mut expected = vec![[0.0; 2]; block];
-    reference.render(&mut expected)?;
+    let mut expected = vec![[0.0; 2]; TAIL_FRAMES];
+    for chunk in expected.chunks_mut(block) {
+        reference.render(chunk)?;
+    }
     if !expected.iter().flatten().any(|sample| sample.abs() > 1e-6) {
         return Err("tail oracle is silent".into());
+    }
+    let final_peak = expected[TAIL_FRAMES - block..]
+        .iter()
+        .flatten()
+        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+    if final_peak > 1.0e-6 {
+        return Err("tail remains audible at the end of the oracle window".into());
     }
     let mut handoffs = Vec::with_capacity(repetitions);
     let mut renders = Vec::with_capacity(repetitions);
@@ -122,8 +132,15 @@ fn run(tracks: usize, effects: usize, block: usize, repetitions: usize) -> Resul
         let start = Instant::now();
         next.render(black_box(&mut output))?;
         let render = start.elapsed().as_nanos();
-        if output != expected {
+        if output != expected[..block] {
             return Err("detached tail differs from continuous old-chain output".into());
+        }
+        for expected_chunk in expected[block..].chunks(block) {
+            let frames = expected_chunk.len();
+            next.render(&mut output[..frames])?;
+            if output[..frames] != *expected_chunk {
+                return Err("detached tail differs from continuous old-chain output".into());
+            }
         }
         handoffs.push(handoff);
         renders.push(render);
@@ -143,7 +160,7 @@ fn run(tracks: usize, effects: usize, block: usize, repetitions: usize) -> Resul
         digest = (digest ^ u64::from(sample.to_bits())).wrapping_mul(0x100000001b3);
     }
     println!(
-        "tracks={tracks} effects_per_track={effects} processors={} rate={RATE} block={block} repetitions={repetitions} tail_digest={digest:016x} handoff_p99_us={:.3} render_p99_us={:.3} combined_p99_us={:.3} combined_max_us={:.3} combined_beyond_period={late}",
+        "tracks={tracks} effects_per_track={effects} processors={} rate={RATE} block={block} repetitions={repetitions} oracle_frames={TAIL_FRAMES} final_peak={final_peak:.9} tail_digest={digest:016x} handoff_p99_us={:.3} render_p99_us={:.3} combined_p99_us={:.3} combined_max_us={:.3} combined_beyond_period={late}",
         tracks * effects,
         p(&handoffs, 99),
         p(&renders, 99),
@@ -163,7 +180,7 @@ fn main() -> Result<()> {
         return Err("profile arguments out of bounds".into());
     }
     println!(
-        "headless 32-frame resident source; bypass detaches active DC filters; continuous old-chain PCM reference; preparation and owner drops excluded; no native deadline"
+        "headless 32-frame resident source; bypass detaches active DC filters; one-second continuous old-chain PCM reference; preparation and owner drops excluded; no native deadline"
     );
     run(100, effects, block, 100)
 }
