@@ -431,6 +431,7 @@ pub struct SessionPlayback {
     gain_recording_override: Option<f32>,
     // Optional control allocation; the callback mutates Copy contents only.
     native_parameter_state: Option<Box<native_parameter_input::State>>,
+    scalar_automation: Option<Box<crate::scalar_automation::State>>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
@@ -818,6 +819,7 @@ impl SessionPlayback {
             capture_epoch: _,
             gain_recording_override: _,
             native_parameter_state: _,
+            scalar_automation: _,
             compensation,
             device_metering: _,
             revision: _,
@@ -1816,6 +1818,19 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        if revision.scalar_automation.is_some() && compensation.is_some() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "scalar automation requires uncompensated stage origins",
+            ));
+        }
+        let scalar_automation = match revision.scalar_automation.as_ref() {
+            Some(_) => Some(Box::new(crate::scalar_automation::State::new(
+                revision
+                    .native_parameter_input_target()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?,
+            ))),
+            None => None,
+        };
         let analytic_import = analytic_import::ImportPlan::new()?;
         let current_sampler_keyboards = Vec::new();
         let current_route_cut_scratch = Vec::new();
@@ -1827,6 +1842,7 @@ impl SessionPlayback {
                 live_expression: false,
                 computer_keyboard: None,
                 native_parameter_state: native_parameter_state.is_some(),
+                scalar_automation: scalar_automation.is_some(),
                 compensation: compensation.as_ref(),
                 main_chain: &main_chain,
                 current_sampler_keyboards: &current_sampler_keyboards,
@@ -1874,6 +1890,7 @@ impl SessionPlayback {
             capture_epoch: 0,
             gain_recording_override: None,
             native_parameter_state,
+            scalar_automation,
             compensation,
             device_metering: false,
             revision,

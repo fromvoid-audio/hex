@@ -130,6 +130,10 @@ impl CatalogLease {
     pub fn scalar_sources(&self) -> &[hex_engine::ScalarSourceMetadata] {
         &self.catalog.scalar_sources
     }
+    pub fn scalar_shared_data(&self) -> &[crate::ScalarSharedData] {
+        &self.catalog.scalar_shared_data
+    }
+
     pub fn same_catalog(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner) && Arc::ptr_eq(&self.pair_id, &other.pair_id)
     }
@@ -1020,3 +1024,6 @@ mod tests {
         assert!(worker_finished.load(Ordering::Acquire));
     }
 }
+
+#[cfg(test)]
+mod scalar_tests;

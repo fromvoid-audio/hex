@@ -6,7 +6,7 @@ use crate::{
     },
 };
 use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
-mod scalar;
+pub(crate) mod scalar;
 use hex_media::{ResampleKernel, ResamplePlan, VerifiedWavReader};
 use rtrb::{Consumer, Producer, PushError};
 use scalar::ScalarJob;
@@ -120,11 +120,10 @@ pub(crate) fn preparation_data_bound_with_scalar_sources(
     }
     let mut extra = scalar_capacity
         .checked_mul(std::mem::size_of::<ScalarSourceDefinition>())?
-        .checked_add(
-            scalar_definitions
-                .len()
-                .checked_mul(std::mem::size_of::<hex_engine::ScalarSourceMetadata>())?,
-        )?;
+        .checked_add(scalar_definitions.len().checked_mul(
+            (std::mem::size_of::<hex_engine::ScalarSourceMetadata>()
+                + std::mem::size_of::<crate::ScalarSharedData>()),
+        )?)?;
     if !scalar_definitions.is_empty() {
         extra = extra.checked_add(std::mem::size_of::<Option<ScalarJob>>())?;
     }
@@ -265,7 +264,7 @@ pub(crate) fn run_worker(
             continue;
         }
         if let Some(mut job) = scalar_job.take() {
-            let outcome = job.step(&scalar_definitions[job.source]);
+            let outcome = job.step(&mut scalar_definitions[job.source]);
             match outcome {
                 Ok(false) => scalar_job = Some(job),
                 Ok(true) => {
@@ -312,21 +311,23 @@ pub(crate) fn run_worker(
             match scalar_definitions
                 .binary_search_by_key(&scalar_key, |definition| definition.metadata().key())
             {
-                Ok(index) => match ScalarJob::begin(index, &scalar_definitions[index], key, page) {
-                    Ok(job) => scalar_job = Some(job),
-                    Err((page, kind)) => {
-                        free_pages.push(page);
-                        hold_failure(
-                            StreamFailure {
-                                key: key.source,
-                                page_index: key.page_index,
-                                kind,
-                            },
-                            &mut held_failures,
-                            &mut queues.failures,
-                        );
+                Ok(index) => {
+                    match ScalarJob::begin(index, &mut scalar_definitions[index], key, page) {
+                        Ok(job) => scalar_job = Some(job),
+                        Err((page, kind)) => {
+                            free_pages.push(page);
+                            hold_failure(
+                                StreamFailure {
+                                    key: key.source,
+                                    page_index: key.page_index,
+                                    kind,
+                                },
+                                &mut held_failures,
+                                &mut queues.failures,
+                            );
+                        }
                     }
-                },
+                }
                 Err(_) => {
                     free_pages.push(page);
                     hold_failure(
@@ -439,8 +440,27 @@ fn verified_membership(
     } else {
         std::mem::size_of::<Option<ScalarJob>>()
     };
+    let mut shared_rows = Vec::new();
+    shared_rows
+        .try_reserve_exact(scalar_sources.len())
+        .map_err(|_| StreamFailureKind::CapacityExhausted)?;
     for (index, source) in scalar_sources.iter().enumerate() {
         let layout = source.source.data_layout();
+        shared_rows.push(crate::ScalarSharedData {
+            source_identity: layout.source_owner().identity(),
+            projection_identity: Arc::as_ptr(&source.projection) as usize,
+            projection_data_bytes: std::mem::size_of::<hex_project::TempoMap>()
+                .checked_add(
+                    source
+                        .projection
+                        .owned_allocation_layout()
+                        .checked_backing_bytes()
+                        .ok_or(StreamFailureKind::CapacityExhausted)?,
+                )
+                .ok_or(StreamFailureKind::CapacityExhausted)?,
+            source_handles: 1,
+            projection_handles: 1,
+        });
         data.scalar_source_backings = data
             .scalar_source_backings
             .checked_add(layout.path_capacity_bytes())
@@ -469,12 +489,15 @@ fn verified_membership(
             data.scalar_projection_groups += 1;
         }
     }
+    data.scalar_shared_rows =
+        crate::AllocationData::of::<crate::ScalarSharedData>(shared_rows.capacity());
     data.scalar_source_handles = scalar_sources.len();
     // One in-flight cursor holds one additional source and projection handle.
     data.scalar_cursor_handle_bound = if scalar_sources.is_empty() { 0 } else { 2 };
     footprint.sources += scalar_sources.len();
     Ok(VerifiedCatalog {
         scalar_sources: scalar_members,
+        scalar_shared_data: shared_rows,
         data,
         footprint,
         sources: members,

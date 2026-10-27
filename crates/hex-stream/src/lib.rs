@@ -34,6 +34,6 @@ pub use runtime::{
     StreamSourceDomainObligation,
 };
 pub use types::{
-    CatalogFootprint, PageKey, ResourcePageKey, ScalarSourceDefinition, SourceDefinition,
-    StreamConfig, StreamFailure, StreamFailureKind, StreamRuntimeError,
+    CatalogFootprint, PageKey, ResourcePageKey, ScalarSharedData, ScalarSourceDefinition,
+    SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind, StreamRuntimeError,
 };

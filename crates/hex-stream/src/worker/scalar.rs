@@ -3,17 +3,17 @@ use super::*;
 use crate::{ResourcePageKey, ScalarSourceDefinition};
 use hex_storage::automation_draft::{ProjectedSpanCursor, SpanReadState};
 
-pub(super) struct ScalarJob {
-    pub(super) source: usize,
-    pub(super) key: ResourcePageKey,
-    pub(super) page: Box<PageBuffer>,
+pub(crate) struct ScalarJob {
+    pub(crate) source: usize,
+    pub(crate) key: ResourcePageKey,
+    pub(crate) page: Box<PageBuffer>,
     cursor: ProjectedSpanCursor,
     start: u64,
 }
 impl ScalarJob {
-    pub(super) fn begin(
+    pub(crate) fn begin(
         source: usize,
-        definition: &ScalarSourceDefinition,
+        definition: &mut ScalarSourceDefinition,
         key: ResourcePageKey,
         mut page: Box<PageBuffer>,
     ) -> Result<Self, (Box<PageBuffer>, StreamFailureKind)> {
@@ -54,9 +54,9 @@ impl ScalarJob {
     }
     /// At most 64 fetched and 64 visited data records plus the source's fixed
     /// integrity overhead. Pending may consume many turns under collisions.
-    pub(super) fn step(
+    pub(crate) fn step(
         &mut self,
-        definition: &ScalarSourceDefinition,
+        definition: &mut ScalarSourceDefinition,
     ) -> Result<bool, StreamFailureKind> {
         let mut spans = [None; 64];
         let progress = definition

@@ -2811,6 +2811,7 @@ dependencies = [
  "hex-engine",
  "hex-media",
  "hex-project",
+ "hex-storage",
  "rtrb",
  "sha2 0.11.0",
 ]

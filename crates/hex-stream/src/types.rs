@@ -174,6 +174,19 @@ impl ScalarSourceDefinition {
     }
 }
 
+/// Nonowning shared DATA identity observations. Counts describe the worker's
+/// own handles plus its single possible cursor, never caller Arc aliases,
+/// control blocks, allocator headers or native custody. Projection DATA is
+/// charged once per actual group in WorkerData, with map backing included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScalarSharedData {
+    pub source_identity: usize,
+    pub projection_identity: usize,
+    pub projection_data_bytes: usize,
+    pub source_handles: usize,
+    pub projection_handles: usize,
+}
+
 /// Tagged request/cache identity; PCM wrappers remain available through PageKey.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ResourcePageKey {
@@ -230,6 +243,7 @@ pub(crate) struct VerifiedCatalog {
     pub(crate) footprint: CatalogFootprint,
     pub(crate) sources: Vec<StreamedSourceMetadata>,
     pub(crate) scalar_sources: Vec<ScalarSourceMetadata>,
+    pub(crate) scalar_shared_data: Vec<ScalarSharedData>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

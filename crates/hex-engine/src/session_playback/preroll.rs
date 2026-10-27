@@ -434,6 +434,7 @@ impl SessionPlayback {
             live_expression: self.live_expression.is_some(),
             computer_keyboard: self.computer_keyboard.as_deref(),
             native_parameter_state: self.native_parameter_state.is_some(),
+            scalar_automation: self.scalar_automation.is_some(),
             compensation: self.compensation.as_ref(),
             main_chain: &self.main_chain,
             current_sampler_keyboards: &self.current_sampler_keyboards,
@@ -475,6 +476,7 @@ pub(super) struct RuntimeStorage<'a> {
     pub(super) live_expression: bool,
     pub(super) computer_keyboard: Option<&'a crate::computer_keyboard::ComputerKeyboardRuntime>,
     pub(super) native_parameter_state: bool,
+    pub(super) scalar_automation: bool,
     pub(super) compensation: Option<&'a crate::signal_graph::SignalRuntime>,
     pub(super) main_chain: &'a hex_lattice::NativeRuntimeChain,
     pub(super) current_sampler_keyboards:
@@ -509,6 +511,12 @@ pub(super) struct RuntimeStorage<'a> {
 impl RuntimeStorage<'_> {
     pub(super) fn bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<SessionPlayback>();
+        if self.scalar_automation {
+            checked_add(
+                &mut total,
+                std::mem::size_of::<crate::scalar_automation::State>(),
+            )?;
+        }
         if self.native_parameter_state {
             checked_add(
                 &mut total,
@@ -641,6 +649,12 @@ fn runtime_storage_preflight_bytes(
         )?
         .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
+    if revision.scalar_automation.is_some() {
+        checked_add(
+            &mut total,
+            std::mem::size_of::<crate::scalar_automation::State>(),
+        )?;
+    }
     if revision.native_parameter_input_target().is_some() {
         checked_add(
             &mut total,

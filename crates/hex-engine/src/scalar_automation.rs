@@ -16,6 +16,14 @@ pub struct ScalarAutomationBinding {
     pub source: ScalarSourceMetadata,
 }
 
+pub(crate) fn projection_matches(source: &ScalarSourceMetadata, map: &hex_project::TempoMap) -> bool {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hex_project::visit_automation_projection_identity(map, &mut |bytes| hash.update(bytes));
+    let fingerprint: [u8; 32] = hash.finalize().into();
+    source.projection_identity().fingerprint == fingerprint
+}
+
 /// Fixed preparation-allocated scratch. Filling completes before any PCM/DSP
 /// access for this chunk; failed materialization never becomes a base fallback.
 pub(crate) struct State {

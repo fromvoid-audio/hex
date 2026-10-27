@@ -155,7 +155,9 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         binding: crate::scalar_automation::ScalarAutomationBinding,
     ) -> Result<Self, Invalid> {
-        if binding.source.project_rate() != project.sample_rate() {
+        if binding.source.project_rate() != project.sample_rate()
+            || !crate::scalar_automation::projection_matches(&binding.source, project.tempo_map())
+        {
             return Err(Invalid(
                 "scalar automation source rate differs from project",
             ));

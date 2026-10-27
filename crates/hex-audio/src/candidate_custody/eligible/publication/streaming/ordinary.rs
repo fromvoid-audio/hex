@@ -19,7 +19,7 @@ impl OrdinaryReservation {
         if self
             .extents
             .checked_mul(2)
-            .and_then(|n| n.checked_mul(std::mem::size_of::<StreamPageExtent>()))
+            .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
             .and_then(|n| n.checked_add(std::mem::size_of::<OrdinaryStreams>()))
             .is_none_or(|n| n > self.metadata_bytes)
         {
@@ -208,7 +208,7 @@ impl Custody {
         }
         let mut refs = [None; 2];
         for source in playback
-            .streamed_sources_on_control()
+            .stream_resources_on_control()
             .map_err(|_| "ordinary prepared source inventory unavailable")?
         {
             let index = bank
@@ -218,10 +218,14 @@ impl Custody {
                     slot.phase == Phase::Accepted
                         && !slot.retiring
                         && slot.loan_outstanding
-                        && slot
-                            .owner
-                            .as_ref()
-                            .is_some_and(|owner| owner.covers_source(source))
+                        && slot.owner.as_ref().is_some_and(|owner| match &source {
+                            hex_engine::StreamResourceMetadata::Audio(source) => {
+                                owner.covers_source(source)
+                            }
+                            hex_engine::StreamResourceMetadata::Scalar(source) => {
+                                owner.covers_scalar_source(source)
+                            }
+                        })
                 })
                 .ok_or("ordinary graph lacks its actual retained source catalog")?;
             let slot = &bank.domains[index];

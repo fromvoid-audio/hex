@@ -20,6 +20,7 @@ impl SessionPlayback {
             capture_epoch: _,
             gain_recording_override: _,
             native_parameter_state,
+            scalar_automation,
             compensation,
             device_metering: _,
             revision,
@@ -97,6 +98,11 @@ impl SessionPlayback {
             || !spans.is_empty()
             || !mutable_onsets.candidate_storage_empty()
         {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        // Ordinary scalar preparation has not acquired this closed constructor's
+        // source obligations. It must use ordinary publication with exact catalogs.
+        if scalar_automation.is_some() || revision.scalar_automation.is_some() {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         if native_parameter_state.is_some() != revision.native_parameter_input_target().is_some() {

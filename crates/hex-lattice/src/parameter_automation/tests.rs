@@ -1239,11 +1239,11 @@ fn external_only_provider_and_host_slots_do_not_arm_live_input() {
     );
     assert_eq!(
         block.host_gain_at(DeviceAutomationTarget::HostInputGain, 0),
-        Some(0.0)
+        Some(HostGain::from_db(-60.0).unwrap().linear())
     );
     assert_eq!(
         block.host_gain_at(DeviceAutomationTarget::HostOutputGain, 0),
-        Some(0.0)
+        Some(HostGain::from_db(-60.0).unwrap().linear())
     );
     assert_eq!(
         block.host_gain_at(DeviceAutomationTarget::HostInputGain, 1),

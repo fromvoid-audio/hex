@@ -16,14 +16,7 @@ use sha2::{Digest, Sha256};
 /// is neither an authentication signature nor a native publication receipt.
 pub fn automation_projection_fingerprint(map: &TempoMap) -> [u8; 32] {
     let mut hash = Sha256::new();
-    hash.update(b"hex.automation.projection\0");
-    hash.update(hex_project::AUTOMATION_PROJECTION_VERSION.to_le_bytes());
-    hash.update(map.sample_rate().to_le_bytes());
-    hash.update((map.points().len() as u64).to_le_bytes());
-    for point in map.points() {
-        hash.update(point.beat().raw().to_le_bytes());
-        hash.update(point.tempo().micro_bpm().to_le_bytes());
-    }
+    hex_project::visit_automation_projection_identity(map, &mut |bytes| hash.update(bytes));
     hash.finalize().into()
 }
 
