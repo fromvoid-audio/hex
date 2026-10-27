@@ -2,7 +2,8 @@
 //! Source/projection IDs never alias WAV assets. Metadata are control declarations;
 //! the existing stream catalog must verify them against a closed completed source.
 //! Uncovered samples in an installed page and positions outside the declared
-//! extent select base. Missing/short/stale data refuses the complete window.
+//! extent leave the authored curve or base in control. Missing/short/stale data
+//! refuses the complete window.
 //! No file, worker, graph,
 //! prepared source lease, allocation or competing parameter model is owned here.
 use crate::{Invalid, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata};
