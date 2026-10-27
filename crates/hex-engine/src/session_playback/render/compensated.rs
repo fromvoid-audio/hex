@@ -53,6 +53,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -290,6 +291,7 @@ impl SessionPlayback {
                             self.native_parameter_state
                                 .as_deref_mut()
                                 .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     let override_gain = self
@@ -344,6 +346,7 @@ impl SessionPlayback {
                             self.native_parameter_state
                                 .as_deref_mut()
                                 .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(matrix) = bus.matrix {

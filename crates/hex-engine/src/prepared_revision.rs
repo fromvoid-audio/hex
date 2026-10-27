@@ -145,8 +145,7 @@ impl PreparedRevision {
     }
 
     /// Prepare one recorded normalized source through the same native factory
-    /// union as live input. This first streamed-source path admits only a graph
-    /// with zero final latency; delayed stage origins require separate admission.
+    /// union as live input. Delayed stages use the graph's transport history.
     /// Metadata alone grants no page lease or native publication authority.
     pub fn prepare_with_scalar_automation(
         project: &Project,
@@ -204,11 +203,6 @@ impl PreparedRevision {
         mut self,
         binding: crate::scalar_automation::ScalarAutomationBinding,
     ) -> Result<Self, Invalid> {
-        if self.arrangement.main_latency_frames() != 0 {
-            return Err(Invalid(
-                "scalar automation requires uncompensated stage origins",
-            ));
-        }
         let input = self
             .native_parameter_input
             .filter(|input| input.device() == binding.device && input.target() == binding.target)

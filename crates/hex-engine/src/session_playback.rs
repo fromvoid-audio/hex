@@ -1818,20 +1818,23 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-        if revision.scalar_automation.is_some() && compensation.is_some() {
-            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                "scalar automation requires uncompensated stage origins",
-            ));
-        }
         let scalar_automation = match revision.scalar_automation.as_ref() {
-            Some(_) => Some(Box::new(
-                crate::scalar_automation::State::new(
-                    revision
-                        .native_parameter_input_target()
-                        .ok_or(SessionPlaybackError::DeviceRuntime)?,
-                )
-                .map_err(|_| SessionPlaybackError::Allocation)?,
-            )),
+            Some(_) => {
+                let input = revision
+                    .native_parameter_input_target()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let arrival = revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .parameter_arrival(input)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                Some(Box::new(
+                    crate::scalar_automation::State::new(input, arrival)
+                        .map_err(|_| SessionPlaybackError::Allocation)?,
+                ))
+            }
             None => None,
         };
         let analytic_import = analytic_import::ImportPlan::new()?;

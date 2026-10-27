@@ -8,6 +8,7 @@ use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{Command, Created};
 use std::sync::Arc;
 
+#[derive(Clone)]
 struct Pages {
     key: ScalarSourceKey,
     values: [Vec<f32>; 2],
@@ -115,6 +116,404 @@ fn fixture(
 fn seek(runtime: &mut SessionPlayback) {
     runtime.apply(SessionPlaybackCommand::Seek(4094)).unwrap();
     runtime.apply(SessionPlaybackCommand::Play).unwrap();
+}
+
+#[test]
+fn scalar_origin_runs_split_missing_history_and_loop_discontinuities() {
+    let origins = [
+        None,
+        None,
+        Some(8),
+        Some(9),
+        Some(2),
+        Some(3),
+        None,
+        Some(5),
+    ];
+    let mut runs = Vec::new();
+    visit_origin_runs(
+        origins.len(),
+        |i| Ok(origins[i]),
+        |offset, frame, len| {
+            runs.push((offset, frame, len));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(runs, [(2, 8, 2), (4, 2, 2), (7, 5, 1)]);
+    assert!(visit_origin_runs(257, |_| Ok(None), |_, _, _| Ok(())).is_err());
+}
+
+#[test]
+fn recorded_provider_uses_delayed_stage_origin_for_demand_and_audio() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut f, device, _, mut pages) = fixture(target);
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: Some(device),
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let binding = ScalarAutomationBinding {
+        device,
+        target,
+        source: source(f.editor.project().tempo_map()),
+    };
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            binding,
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    seek(&mut runtime);
+    let mut demand = Vec::new();
+    runtime
+        .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+            demand.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        demand.is_empty(),
+        "no content has reached the delayed parameter stage"
+    );
+    let mut warmup = vec![[0.0; 2]; latency as usize];
+    runtime.render_with_pages(&mut warmup, &mut pages).unwrap();
+    runtime
+        .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+            demand.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        demand
+            .iter()
+            .map(|extent| (extent.source, extent.page_index, extent.start, extent.end))
+            .collect::<Vec<_>>(),
+        vec![
+            (pages.key.into(), 0, 4094, 4096),
+            (pages.key.into(), 1, 0, 2),
+        ]
+    );
+    let mut output = [[9.0; 2]; 4];
+    runtime.render_with_pages(&mut output, &mut pages).unwrap();
+    assert_eq!(output[0], [0.0; 2]);
+    assert!(output[1][0] > 0.25);
+    assert!((output[2][0] - 0.25).abs() < 1e-6);
+    assert_eq!(output[3], [0.0; 2]);
+}
+
+#[test]
+fn delayed_host_input_and_output_match_stage_demand_seek_and_handoff() {
+    for target in [
+        DeviceAutomationTarget::HostInputGain,
+        DeviceAutomationTarget::HostOutputGain,
+    ] {
+        let (mut f, utility, _, mut pages) = fixture(target);
+        let Created::Device(limiter) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: Some(utility),
+                state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                    "hex.limiter",
+                ))
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("limiter")
+        };
+        let binding = ScalarAutomationBinding {
+            device: limiter,
+            target,
+            source: source(f.editor.project().tempo_map()),
+        };
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_scalar_automation(
+                f.editor.project(),
+                &f.media,
+                Arc::new(SineTable::new()),
+                None,
+                binding,
+            )
+            .unwrap(),
+        );
+        let latency = revision.arrangement().main_latency_frames();
+        assert!(latency > 0);
+        // Keep the limiter below threshold so host gain anchors are independent
+        // of its lookahead envelope. The provider test exercises maximum values.
+        pages.values[0][4095] = 0.0;
+        let mut oracle_pages = pages.clone();
+        let mut oracle = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        seek(&mut oracle);
+        let mut oracle_warmup = vec![[0.0; 2]; latency as usize];
+        oracle
+            .render_with_pages(&mut oracle_warmup, &mut oracle_pages)
+            .unwrap();
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        seek(&mut runtime);
+        let mut initial = Vec::new();
+        runtime
+            .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+                initial.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            initial.is_empty(),
+            target == DeviceAutomationTarget::HostOutputGain
+        );
+        let mut warmup = vec![[0.0; 2]; latency as usize];
+        runtime.render_with_pages(&mut warmup, &mut pages).unwrap();
+        let mut expected = Vec::new();
+        runtime
+            .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+                expected.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            expected.is_empty(),
+            target == DeviceAutomationTarget::HostInputGain
+        );
+
+        let mut candidate = SessionPlayback::new(revision).unwrap();
+        let mut preview = Vec::new();
+        candidate
+            .preview_stream_handoff_with_scope(
+                &mut runtime,
+                4,
+                None,
+                &mut |extent| {
+                    preview.push(extent);
+                    Ok(())
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(preview, expected);
+        candidate.try_inherit_state_from(&mut runtime).unwrap();
+        let mut after = Vec::new();
+        candidate
+            .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+                after.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(after, expected);
+
+        if target == DeviceAutomationTarget::HostOutputGain {
+            pages.missing = Some(1);
+            let before = candidate.arrangement_frame();
+            let mut refused = [[9.0; 2]; 4];
+            assert!(
+                candidate
+                    .render_with_pages(&mut refused, &mut pages)
+                    .is_err()
+            );
+            assert_eq!(candidate.arrangement_frame(), before);
+            assert_eq!(refused, [[0.0; 2]; 4]);
+            pages.missing = None;
+        }
+        let mut output = [[0.0; 2]; 4];
+        candidate
+            .render_with_pages(&mut output, &mut pages)
+            .unwrap();
+        let mut uninterrupted = [[0.0; 2]; 4];
+        oracle
+            .render_with_pages(&mut uninterrupted, &mut oracle_pages)
+            .unwrap();
+        assert_eq!(
+            output, uninterrupted,
+            "{target:?} handoff must preserve live audio"
+        );
+        assert!(
+            (output[0][0] - 0.00025).abs() < 1e-6,
+            "{target:?}: {output:?}"
+        );
+        assert!((output[2][0] - 0.25).abs() < 1e-6, "{target:?}: {output:?}");
+
+        let action = candidate
+            .prepare_stream_action_in_scope(
+                crate::playback::PlaybackAction::Session(SessionPlaybackCommand::Seek(4094)),
+                true,
+            )
+            .unwrap();
+        let mut seek_demand = Vec::new();
+        candidate
+            .visit_prepared_stream_action(&action, 4, &mut |extent| {
+                seek_demand.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            seek_demand.is_empty(),
+            target == DeviceAutomationTarget::HostOutputGain
+        );
+    }
+}
+
+#[test]
+fn delayed_scalar_values_follow_loop_origins_across_irregular_blocks() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut f, device, _, mut pages) = fixture(target);
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 4094,
+            end: 4098,
+            enabled: true,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: Some(device),
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            ScalarAutomationBinding {
+                device,
+                target,
+                source: source(f.editor.project().tempo_map()),
+            },
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    seek(&mut runtime);
+    let mut warmup = vec![[0.0; 2]; latency as usize];
+    runtime.render_with_pages(&mut warmup, &mut pages).unwrap();
+    let mut actual = Vec::new();
+    for width in [1, 3, 2, 2] {
+        let mut block = vec![[0.0; 2]; width];
+        runtime.render_with_pages(&mut block, &mut pages).unwrap();
+        actual.extend(block);
+    }
+    for cycle in actual.chunks_exact(4) {
+        assert_eq!(cycle[0], [0.0; 2]);
+        assert!(cycle[1][0] > 0.25);
+        assert!((cycle[2][0] - 0.25).abs() < 1e-6);
+        assert_eq!(cycle[3], [0.0; 2]);
+    }
+    assert_eq!(pages.requests, 0);
+}
+
+#[test]
+fn delayed_scalar_prewarm_projects_future_loop_origin_and_matches_due_render() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut f, device, _, mut pages) = fixture(target);
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 4092,
+            end: 4099,
+            enabled: true,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: Some(device),
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            ScalarAutomationBinding {
+                device,
+                target,
+                source: source(f.editor.project().tempo_map()),
+            },
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    runtime.apply(SessionPlaybackCommand::Seek(4092)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    runtime
+        .render_with_pages(&mut [[0.0; 2]; 8], &mut pages)
+        .unwrap();
+    let command = SessionPlaybackCommand::StopTrack {
+        track: f.tracks[0],
+        quantization: crate::LaunchQuantization::Sixteenth,
+    };
+    let action = runtime
+        .prepare_stream_action_in_scope(crate::PlaybackAction::Session(command), true)
+        .unwrap();
+    let due = action.scheduled_due_frame().unwrap();
+    let mut predicted = Vec::new();
+    let projected = runtime
+        .visit_prepared_stream_action(&action, 3, &mut |extent| {
+            predicted.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert!(!predicted.is_empty());
+    assert_ne!(
+        predicted[0].page_index * 4096 + predicted[0].start as u64,
+        projected.arrangement_frame,
+        "delayed stage and incoming Arrangement cursor must differ"
+    );
+    runtime.apply(command).unwrap();
+    let mut prewarm = Vec::new();
+    runtime
+        .visit_pending_stream_chunk_in_scope(
+            due,
+            3,
+            &mut |extent| {
+                prewarm.push(extent);
+                Ok(())
+            },
+            true,
+        )
+        .unwrap();
+    assert_eq!(prewarm, predicted);
+    let advance = usize::try_from(due - runtime.performance_frame()).unwrap();
+    runtime
+        .render_with_pages(&mut vec![[0.0; 2]; advance], &mut pages)
+        .unwrap();
+    let mut actual = Vec::new();
+    runtime
+        .visit_ordinary_stream_chunk(3, None, &mut |extent| {
+            actual.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(actual, predicted);
+    let mut output = [[0.0; 2]; 3];
+    runtime.render_with_pages(&mut output, &mut pages).unwrap();
+    assert_eq!(pages.requests, 0);
 }
 
 #[test]
@@ -240,6 +639,76 @@ fn optimized_scalar_render_cost() {
         );
     }
 }
+
+#[test]
+#[ignore = "optimized delayed scalar render profile; run explicitly with --release --ignored --nocapture"]
+fn optimized_delayed_scalar_render_cost() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut f, device, _, mut pages) = fixture(target);
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: Some(device),
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let original = source(f.editor.project().tempo_map());
+    let source = ScalarSourceMetadata::new(
+        original.key(),
+        original.project_rate(),
+        0,
+        8192,
+        original.projection_identity(),
+        original.file_identity(),
+    )
+    .unwrap();
+    pages.values = [vec![0.5; 4096], vec![0.5; 4096]];
+    pages.coverage = [vec![u64::MAX; 64], vec![u64::MAX; 64]];
+    let plain = PreparedRevision::prepare(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let automated = PreparedRevision::prepare_with_scalar_automation(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+        ScalarAutomationBinding {
+            device,
+            target,
+            source,
+        },
+    )
+    .unwrap();
+    let latency = automated.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    for (label, revision) in [("inactive", plain), ("active", automated)] {
+        let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 256];
+        let mut elapsed = std::time::Duration::ZERO;
+        for iteration in 0..6 {
+            runtime.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+            let start = std::time::Instant::now();
+            for _ in 0..32 {
+                runtime.render_with_pages(&mut output, &mut pages).unwrap();
+                std::hint::black_box(&output);
+            }
+            if iteration != 0 {
+                elapsed += start.elapsed();
+            }
+        }
+        eprintln!(
+            "delayed scalar render profile: {label}, latency {latency} frames, 5 x 8192 frames, 256-frame blocks, {elapsed:?} total; one warm-up iteration; seek and setup excluded; no native deadline claim"
+        );
+    }
+}
 #[test]
 fn scalar_pages_drive_real_native_provider_and_live_clear_reveals_recorded_values() {
     let (_f, _device, revision, mut pages) =
@@ -328,7 +797,7 @@ fn missing_cross_page_scalar_refuses_without_advancing_and_retries_same_window()
     assert_eq!(output[2], [0.25, -0.5]);
 }
 #[test]
-fn scalar_host_stages_use_shared_host_mapping_and_projection_or_latency_changes_refuse() {
+fn scalar_host_stages_use_shared_host_mapping_and_stale_projection_refuses() {
     for target in [
         DeviceAutomationTarget::HostInputGain,
         DeviceAutomationTarget::HostOutputGain,
@@ -379,18 +848,15 @@ fn scalar_host_stages_use_shared_host_mapping_and_projection_or_latency_changes_
                 .unwrap(),
             })
             .unwrap();
-        let error = PreparedRevision::prepare_with_scalar_automation(
+        let prepared = PreparedRevision::prepare_with_scalar_automation(
             f.editor.project(),
             &f.media,
             Arc::new(SineTable::new()),
             None,
             current,
         )
-        .unwrap_err();
-        assert_eq!(
-            error.0,
-            "scalar automation requires uncompensated stage origins"
-        );
+        .unwrap();
+        assert!(prepared.arrangement().main_latency_frames() > 0);
     }
 }
 
