@@ -40,6 +40,13 @@ impl EditorView {
         {
             return false;
         }
+        if self.audio_event_focus.is_focused(window) {
+            let handled = self.event_toggle_active();
+            if handled {
+                cx.notify();
+            }
+            return handled;
+        }
         let command = match self.activation_command(window) {
             Ok(Some(command)) => command,
             Ok(None) => return false,
@@ -49,7 +56,17 @@ impl EditorView {
                 return true;
             }
         };
-        if self.edit_pending()
+        if self.activation_gesture_blocked() {
+            self.error = Some("finish the current edit before changing activation".into());
+        } else if self.enqueue(Request::Edit(command)) {
+            self.duplicate_intent.cancel_chain();
+        }
+        cx.notify();
+        true
+    }
+
+    pub(super) fn activation_gesture_blocked(&self) -> bool {
+        self.edit_pending()
             || self.arrangement_pan.is_some()
             || self.scrub_active()
             || self.time_selection_gesture.is_some()
@@ -70,13 +87,6 @@ impl EditorView {
             || self.midi_time_selection.gesture.is_some()
             || self.midi_ruler.held()
             || self.midi_velocity.gesture.is_some()
-        {
-            self.error = Some("finish the current edit before changing activation".into());
-        } else if self.enqueue(Request::Edit(command)) {
-            self.duplicate_intent.cancel_chain();
-        }
-        cx.notify();
-        true
     }
 
     fn activation_command(&self, window: &Window) -> Result<Option<Command>, String> {

@@ -2268,3 +2268,113 @@ fn musical_play_start_at_the_last_tick_retains_a_readable_first_quantum() {
         }
     }
 }
+
+#[test]
+fn reversed_frame_repeat_start_preserves_window_cycle_span_and_history() {
+    let (mut editor, id) = frame_fixture(AudioViewMode::Repeat);
+    editor.execute(Command::ReverseClips(vec![id])).unwrap();
+    let before = editor.project().snapshot();
+    let old = editor.project().clip(id).unwrap().clone();
+    let old_root = old.audio_edit().unwrap();
+    let old_content = old_root.content_view.unwrap();
+    assert!(old_content.window.reversed);
+    let target = 30_000;
+    let operation = AudioViewResizeOperation::PlayStart { position: target };
+    let preview =
+        preview_audio_view_resize(&old, editor.project().tempo_map(), 480_000, operation).unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: id,
+            operation,
+        })
+        .unwrap();
+    let next = editor.project().clip(id).unwrap();
+    assert_eq!(next, &preview);
+    let root = next.audio_edit().unwrap();
+    let content = root.content_view.unwrap();
+    assert_eq!(
+        (next.start(), next.duration()),
+        (old.start(), old.duration())
+    );
+    assert_eq!(
+        (root.view_start, root.view_end),
+        (old_root.view_start, old_root.view_end)
+    );
+    assert_eq!(content.window, old_content.window);
+    assert_eq!(
+        (
+            content.base_view_start,
+            content.base_view_end,
+            content.base_start_delta
+        ),
+        (
+            old_content.base_view_start,
+            old_content.base_view_end,
+            old_content.base_start_delta
+        )
+    );
+    assert_eq!(
+        content.base_placement.unwrap().outer_length,
+        old_content.base_placement.unwrap().outer_length
+    );
+    assert_eq!(
+        root.placement.unwrap().outer_length,
+        old_root.placement.unwrap().outer_length
+    );
+    assert!(std::sync::Arc::ptr_eq(&root.domain, &old_root.domain));
+    let projection = AudioViewProjection::new(next, editor.project().tempo_map()).unwrap();
+    assert_eq!(projection.play_start_position().unwrap(), Some(target));
+    let cycle = old_content.base_view_end - old_content.base_view_start;
+    for elapsed in [0, 1, 18_000, 18_001, 24_000, 47_999] {
+        let expected = old_content.base_view_start
+            + (target - old_content.base_view_start + cycle - elapsed % cycle) % cycle;
+        assert_eq!(
+            projection
+                .root_position_for_frame(next.start() + elapsed)
+                .unwrap(),
+            Some(expected)
+        );
+    }
+    // The resulting saved values already exist in the supported model: set
+    // the ordinary repeat cursor, then reflect its finite audible window.
+    let (mut equivalent, equivalent_id) = frame_fixture(AudioViewMode::Repeat);
+    equivalent
+        .execute(Command::ResizeAudioClipView {
+            clip: equivalent_id,
+            operation: AudioViewResizeOperation::PlayStart {
+                position: target + 1,
+            },
+        })
+        .unwrap();
+    equivalent
+        .execute(Command::ReverseClips(vec![equivalent_id]))
+        .unwrap();
+    assert_eq!(equivalent.project().clip(equivalent_id).unwrap(), next);
+    let after = editor.project().snapshot();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: id,
+            operation,
+        })
+        .unwrap();
+    assert_eq!(editor.project().snapshot(), after);
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+    for position in [
+        old_content.base_view_start - 1,
+        old_content.base_view_end,
+        u64::MAX,
+    ] {
+        assert!(
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: id,
+                    operation: AudioViewResizeOperation::PlayStart { position },
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), after);
+    }
+}

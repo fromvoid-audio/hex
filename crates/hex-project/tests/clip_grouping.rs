@@ -344,6 +344,220 @@ fn grouping_refusals_preserve_ids_history_and_nonselected_material() {
     assert_eq!(e.project().snapshot(), state);
 }
 #[test]
+fn grouping_only_inactive_audio_clips_keeps_an_active_container() {
+    let (mut editor, _, clips) = audio_fixture();
+    for clip in &clips[..2] {
+        editor
+            .execute(Command::SetClipActive {
+                clip: *clip,
+                active: false,
+            })
+            .unwrap();
+    }
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(clips[..2].to_vec()))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let clip = editor.project().clip(group).unwrap();
+    assert!(clip.active());
+    assert_eq!(clip.audio_events().events.len(), 2);
+    assert!(clip.audio_events().events.iter().all(|event| !event.active));
+}
+
+#[test]
+fn retained_source_event_activation_stays_editable_after_grouping() {
+    let (mut editor, _, clips) = audio_fixture();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: clips[0],
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![1],
+                active: false,
+            },
+        })
+        .unwrap();
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(clips[..2].to_vec()))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let roots = editor.project().clip(group).unwrap().audio_events();
+    let source = roots.events[0].source;
+    assert!(
+        !roots
+            .sources
+            .iter()
+            .find(|root| root.id == source)
+            .unwrap()
+            .clip
+            .audio_events()
+            .events[0]
+            .active
+    );
+    let before = editor.project().snapshot();
+    assert!(
+        editor
+            .execute(Command::EditAudioEvents {
+                clip: group,
+                operation: hex_project::AudioEventEdit::SetRetainedActive {
+                    source,
+                    events: vec![9],
+                    active: true
+                }
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetRetainedActive {
+                source,
+                events: vec![1],
+                active: true,
+            },
+        })
+        .unwrap();
+    let changed = editor.project().clip(group).unwrap().audio_events();
+    assert!(
+        changed
+            .sources
+            .iter()
+            .find(|root| root.id == source)
+            .unwrap()
+            .clip
+            .audio_events()
+            .events[0]
+            .active
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+}
+
+#[test]
+fn partial_audio_group_keeps_activation_inside_and_outside_selection() {
+    let (mut editor, track, clips) = audio_fixture();
+    editor
+        .execute(Command::SetClipActive {
+            clip: clips[1],
+            active: false,
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let Created::Clip(group) = editor
+        .execute(Command::GroupTimeRange(
+            hex_project::TimeRange::new(vec![track], 50, 250).unwrap(),
+        ))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let merged = editor.project().clip(group).unwrap();
+    assert!(merged.active());
+    assert_eq!(
+        merged
+            .audio_events()
+            .events
+            .iter()
+            .map(|event| (event.start, event.end, event.active))
+            .collect::<Vec<_>>(),
+        vec![(0, 50, true), (150, 200, false)]
+    );
+    let outside: Vec<_> = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .clips()
+        .iter()
+        .filter(|clip| clip.id() != group && clip.start() < 300)
+        .map(|clip| (clip.start(), clip.duration(), clip.active()))
+        .collect();
+    assert_eq!(outside, vec![(0, 50, true), (250, 50, false)]);
+    assert!(editor.undo());
+    let mut restored = editor.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+}
+
+#[test]
+fn mixed_audio_group_retains_event_activation_and_history() {
+    let (mut editor, _, clips) = audio_fixture();
+    editor
+        .execute(Command::SetClipActive {
+            clip: clips[1],
+            active: false,
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(clips[..2].to_vec()))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let grouped = editor.project().clip(group).unwrap();
+    assert!(grouped.active());
+    assert_eq!(
+        grouped
+            .audio_events()
+            .events
+            .iter()
+            .map(|e| e.active)
+            .collect::<Vec<_>>(),
+        vec![true, false]
+    );
+    let inactive_id = grouped.audio_events().events[1].id;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![inactive_id],
+                active: true,
+            },
+        })
+        .unwrap();
+    assert!(
+        editor
+            .project()
+            .clip(group)
+            .unwrap()
+            .audio_events()
+            .events
+            .iter()
+            .all(|e| e.active)
+    );
+    assert!(editor.undo());
+    assert!(!editor.project().clip(group).unwrap().audio_events().events[1].active);
+    let Created::Clip(nested) = editor
+        .execute(Command::GroupClips(vec![group, clips[2]]))
+        .unwrap()
+    else {
+        panic!("regroup")
+    };
+    assert_eq!(
+        editor
+            .project()
+            .clip(nested)
+            .unwrap()
+            .audio_events()
+            .events
+            .iter()
+            .map(|e| e.active)
+            .collect::<Vec<_>>(),
+        vec![true, false, true]
+    );
+    assert!(editor.undo());
+    assert!(editor.undo());
+    let mut restored = editor.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+}
+
+#[test]
 fn audio_group_retains_all_dependencies_and_can_regroup_neutral_containers() {
     let (mut e, _, clips) = audio_fixture();
     let last = e.project().clip(clips[2]).unwrap().clone();
@@ -386,6 +600,7 @@ fn audio_group_retains_all_dependencies_and_can_regroup_neutral_containers() {
                 at: 0,
                 length: 10,
                 events: vec![hex_project::AudioEvent {
+                    active: true,
                     fade: None,
                     id: 1,
                     source: 0,
@@ -968,6 +1183,46 @@ fn time_group_exact_single_clip_is_unchanged_and_oversized_margins_refuse_atomic
     assert!(error.0.contains("bounded preparation length"));
     assert_eq!(e.project(), &before);
     assert!(!e.can_undo());
+}
+
+#[test]
+fn rendered_group_refuses_to_flatten_recoverable_inactive_events() {
+    let (mut editor, track, ids) = audio_fixture();
+    editor
+        .execute(Command::MoveClip {
+            clip: ids[2],
+            track,
+            start: 900,
+        })
+        .unwrap();
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(ids[..2].to_vec()))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![1],
+                active: false,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 650 },
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let error = editor
+        .project()
+        .audio_group_render_target(&Command::GroupClips(vec![group, ids[2]]))
+        .unwrap_err();
+    assert!(error.to_string().contains("cannot retain inactive events"));
+    assert_eq!(editor.project().snapshot(), before);
 }
 
 #[test]

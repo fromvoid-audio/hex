@@ -2,6 +2,8 @@
 use super::*;
 #[path = "view_content.rs"]
 mod content_projection;
+#[path = "view_directed_start.rs"]
+mod directed_start;
 #[path = "view_ranges.rs"]
 mod ranges;
 
@@ -646,6 +648,8 @@ impl<'a> AudioViewProjection<'a> {
 pub enum AudioViewResizeOperation {
     /// Move the first read cursor in the retained root clock without moving the
     /// outer placement or either cycle boundary. Once retains its silent tail.
+    /// Aligned frame-clock directed repeats retain their finite read window
+    /// and resolve its first cursor through the existing base repeat phase.
     /// A live musical request that rounds to an empty first read resolves to
     /// the last complete destination-frame quantum in the retained cycle.
     PlayStart {
@@ -672,8 +676,9 @@ pub enum AudioViewResizeOperation {
     },
 }
 
-/// Scalar preview only. Canonical commands must recompute the operation against
-/// the current clip; a GUI cannot submit this as a prevalidated replacement.
+/// Copy-only scalar preview, including the resolved first root cursor. Directed
+/// metadata updates stay private to this owner. Canonical commands recompute the
+/// operation against current state; a GUI cannot submit a validated replacement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioViewResize {
     pub view_start: u64,
@@ -682,6 +687,10 @@ pub struct AudioViewResize {
     pub placement: AudioViewPlacement,
     pub frame_start: u64,
     pub frame_end: u64,
+    /// Resolved first root cursor for PlayStart; other operations return None.
+    pub play_start_position: Option<u64>,
+    // Owner-only metadata update; the GUI cannot submit this preview as an edit.
+    content_override: Option<AudioContentView>,
 }
 
 // A live phase changes the processing origin. The final source tick under
@@ -756,11 +765,10 @@ pub fn preview_view_resize(
     );
     let start = reference_start_raw.unwrap_or(i128::from(clip.start));
     if let AudioViewResizeOperation::PlayStart { position } = operation {
-        if clip
-            .audio_edit()
-            .is_some_and(|edit| edit.content_view.is_some())
-            || (old.is_none() && clip.looping())
-        {
+        if let Some(content) = clip.audio_edit().and_then(|edit| edit.content_view) {
+            return directed_start::preview(clip, position, content);
+        }
+        if old.is_none() && clip.looping() {
             return Err(Invalid("this audio view's play start is read-only"));
         }
         if position < view_start || position >= view_end {
@@ -840,6 +848,8 @@ pub fn preview_view_resize(
             placement,
             frame_start,
             frame_end,
+            play_start_position: Some(position),
+            content_override: None,
         });
     }
     if let AudioViewResizeOperation::CycleRange {
@@ -886,6 +896,8 @@ pub fn preview_view_resize(
             placement,
             frame_start,
             frame_end,
+            play_start_position: None,
+            content_override: None,
         });
     }
     let project_frame = match operation {
@@ -968,6 +980,8 @@ pub fn preview_view_resize(
         placement,
         frame_start,
         frame_end,
+        play_start_position: None,
+        content_override: None,
     })
 }
 
@@ -1051,11 +1065,14 @@ pub fn preview_audio_view_resize(
 ) -> Result<Clip, Invalid> {
     let next = preview_view_resize(clip, tempo, operation)?;
     let unchanged_start = matches!(operation, AudioViewResizeOperation::PlayStart { .. })
-        && clip
-            .audio_edit()
-            .and_then(|edit| edit.placement)
-            .map_or(0, |p| p.cycle_phase)
-            == next.placement.cycle_phase;
+        && if let Some(content) = next.content_override {
+            clip.audio_edit().and_then(|edit| edit.content_view) == Some(content)
+        } else {
+            clip.audio_edit()
+                .and_then(|edit| edit.placement)
+                .map_or(0, |p| p.cycle_phase)
+                == next.placement.cycle_phase
+        };
     let preview = materialize_view_resize(clip, tempo, asset_playback_frames, next)?;
     Ok(if unchanged_start {
         clip.clone()
@@ -1080,7 +1097,11 @@ fn materialize_view_resize(
     value.view_end = next.view_end;
     value.set_reference_start_raw(next.reference_start_raw)?;
     value.placement = Some(next.placement);
-    value.rebase_content()?;
+    if let Some(content) = next.content_override {
+        value.content_view = Some(content);
+    } else {
+        value.rebase_content()?;
+    }
     clip.edit = Some(edit);
     super::commands::project_clip(&mut clip, tempo)?;
     clip.audio_edit()

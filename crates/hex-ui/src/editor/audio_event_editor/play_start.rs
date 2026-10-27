@@ -77,9 +77,7 @@ impl EditorView {
             hex_project::AudioViewResizeOperation::PlayStart { position },
         )
         .ok()?;
-        resolved
-            .view_start
-            .checked_add(resolved.placement.cycle_phase)
+        resolved.play_start_position
     }
     pub(super) fn begin_audio_play_start(
         &mut self,

@@ -192,6 +192,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                         .events
                         .into_iter()
                         .map(|e| AudioEvent {
+                            active: true,
                             source: 0,
                             id: e.id,
                             start: e.start,
