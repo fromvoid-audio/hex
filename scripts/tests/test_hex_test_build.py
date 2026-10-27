@@ -663,6 +663,20 @@ class DeliveryTests(unittest.TestCase):
                 with self.assertRaisesRegex(delivery.DeliveryError, "running"):
                     delivery._apply_verified_pending(self.app, selected)
                 self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                receipt_path = pending / "Contents/Resources/test-build.json"
+                receipt_bytes = receipt_path.read_bytes()
+                original_copy = shutil.copytree
+                def change_selection_during_copy(source, destination, *args, **kwargs):
+                    result = original_copy(source, destination, *args, **kwargs)
+                    if source == pending:
+                        receipt_path.write_bytes(b"superseded")
+                    return result
+                with patch.object(delivery, "run", return_value=""), \
+                        patch.object(delivery.shutil, "copytree", side_effect=change_selection_during_copy):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "changed during publication"):
+                        delivery._apply_verified_pending(self.app, selected)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                receipt_path.write_bytes(receipt_bytes)
                 original_verify = delivery.verify
                 def fail_installed_verification(path):
                     if path == self.app and (path / "Contents/MacOS/hex").read_bytes() == b"second optimized fixture":
