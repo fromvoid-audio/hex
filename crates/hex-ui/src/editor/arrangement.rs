@@ -907,30 +907,18 @@ impl EditorView {
             .children(
                 super::musical_time::ruler_ticks(&state.project, viewport, ruler_width)
                     .into_iter()
-                    .map(|tick| {
+                    .filter_map(|tick| {
                         let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
-                        div()
-                            .debug_selector(move || format!("ruler-tick-{}", tick.frame))
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(relative(x))
-                            .flex()
-                            .items_center()
-                            .border_l_1()
-                            .border_color(rgb(theme::ruler_tick_color(
-                                tick.bar_start,
-                                tick.meter_marker || tick.fragmentary_bar,
-                            )))
-                            .pl_1()
-                            .pb(px(hex_widgets::TIME_POSITION_MARKER_HEIGHT))
-                            .text_size(px(10.0))
-                            .text_color(rgb(if tick.meter_marker {
-                                theme::color(theme::PaletteRole::Text)
-                            } else {
-                                theme::color(theme::PaletteRole::Muted)
-                            }))
-                            .child(theme::text(tick.label))
+                        super::timeline_strip::ruler_tick(
+                            x,
+                            tick.label,
+                            tick.bar_start,
+                            tick.meter_marker,
+                            tick.fragmentary_bar,
+                        )
+                        .map(|tick_view| {
+                            tick_view.debug_selector(move || format!("ruler-tick-{}", tick.frame))
+                        })
                     }),
             );
         let entity = cx.entity();
@@ -1040,14 +1028,10 @@ impl EditorView {
             .bottom_0()
             .left_0()
             .right_0()]);
-        div()
-            .h(px(24.0))
-            .flex_shrink_0()
+        super::timeline_strip::ruler_surface()
+            .debug_selector(|| "arrangement-time-ruler".into())
             .flex()
             .items_center()
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(cells)
             .children([self.time_controls(cx)])
     }

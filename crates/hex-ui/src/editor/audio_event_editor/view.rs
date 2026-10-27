@@ -5,7 +5,7 @@ use crate::theme;
 use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb};
 use hex_widgets::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 
-const EVENT_RULER_HEIGHT: f32 = 22.0;
+const EVENT_RULER_HEIGHT: f32 = super::super::timeline_strip::RULER_HEIGHT;
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
@@ -102,28 +102,23 @@ pub(in crate::editor) fn view(
                 .bg(rgb(theme::color(theme::PaletteRole::Grid))),
         );
     }
-    body = body.child(
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .h(px(EVENT_RULER_HEIGHT))
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border))),
-    );
+    let mut ruler = super::super::timeline_strip::ruler_surface()
+        .debug_selector(|| "audio-events-time-ruler".into())
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0();
     for tick in super::super::musical_time::ruler_ticks(&state.project, viewport, width) {
         let x = (tick.frame - viewport.start) as f32 / viewport.length.max(1) as f32;
-        body = body.child(
-            div()
-                .absolute()
-                .top_0()
-                .left(relative(x))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(tick.label)),
-        );
+        ruler = ruler.children(super::super::timeline_strip::ruler_tick(
+            x,
+            tick.label,
+            tick.bar_start,
+            tick.meter_marker,
+            tick.fragmentary_bar,
+        ));
     }
+    body = body.children([ruler]);
     for event in &preview.events {
         let raw_a = event.start.max(editor_bounds(&root).0);
         let raw_b = event.end.min(editor_bounds(&root).1);
