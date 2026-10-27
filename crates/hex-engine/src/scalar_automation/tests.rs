@@ -8,6 +8,7 @@ use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{Command, Created};
 use std::sync::Arc;
 
+#[derive(Clone)]
 struct Pages {
     key: ScalarSourceKey,
     values: [Vec<f32>; 2],
@@ -251,6 +252,16 @@ fn delayed_host_input_and_output_match_stage_demand_seek_and_handoff() {
         );
         let latency = revision.arrangement().main_latency_frames();
         assert!(latency > 0);
+        // Keep the limiter below threshold so host gain anchors are independent
+        // of its lookahead envelope. The provider test exercises maximum values.
+        pages.values[0][4095] = 0.0;
+        let mut oracle_pages = pages.clone();
+        let mut oracle = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        seek(&mut oracle);
+        let mut oracle_warmup = vec![[0.0; 2]; latency as usize];
+        oracle
+            .render_with_pages(&mut oracle_warmup, &mut oracle_pages)
+            .unwrap();
         let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         seek(&mut runtime);
         let mut initial = Vec::new();
@@ -320,6 +331,14 @@ fn delayed_host_input_and_output_match_stage_demand_seek_and_handoff() {
         candidate
             .render_with_pages(&mut output, &mut pages)
             .unwrap();
+        let mut uninterrupted = [[0.0; 2]; 4];
+        oracle
+            .render_with_pages(&mut uninterrupted, &mut oracle_pages)
+            .unwrap();
+        assert_eq!(
+            output, uninterrupted,
+            "{target:?} handoff must preserve live audio"
+        );
         assert!(
             (output[0][0] - 0.00025).abs() < 1e-6,
             "{target:?}: {output:?}"
