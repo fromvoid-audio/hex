@@ -126,6 +126,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
         "host_automation",
         "inactive_midi_notes",
         "inactive_audio_events",
+        "nested_audio",
     ] {
         assert!(
             schema46
@@ -559,6 +560,7 @@ fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
         "host_automation",
         "inactive_midi_notes",
         "inactive_audio_events",
+        "nested_audio",
     ] {
         assert!(
             old46

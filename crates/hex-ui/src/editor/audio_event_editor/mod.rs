@@ -54,7 +54,8 @@ pub(super) struct State {
     fit_back: Option<Option<Viewport>>,
     cursor: u64,
     selected: Option<u64>,
-    retained_selection: Option<(u64, u64)>,
+    retained_selection: Option<(Vec<u64>, u64)>,
+    retained_ancestors: Vec<u64>,
     range: Option<(u64, u64)>,
     grid: SnapGrid,
     pub(super) fade_key_held: bool,
@@ -75,6 +76,20 @@ struct Clipboard {
     length: u64,
     events: Vec<AudioEvent>,
     waveform: Option<waveform_preview::Source>,
+}
+
+fn retained_events(clip: &hex_project::Clip, path: &[u64]) -> Option<hex_project::AudioEvents> {
+    let mut clip = clip.clone();
+    for source in path {
+        let events = clip.editable_audio_events().ok()?;
+        clip = events
+            .sources
+            .iter()
+            .find(|root| root.id == *source)?
+            .clip
+            .clone();
+    }
+    clip.editable_audio_events().ok()
 }
 #[derive(Clone)]
 pub(super) struct Gesture {
@@ -161,16 +176,12 @@ impl EditorView {
         let Some(event) = events.events.iter().find(|event| event.id == selected) else {
             return false;
         };
-        if let Some((source_id, event_id)) = self.audio_event_editor.retained_selection {
-            let Some(root) = events
-                .sources
-                .iter()
-                .find(|root| root.id == source_id && event.source == source_id)
-            else {
+        if let Some((path, event_id)) = self.audio_event_editor.retained_selection.clone() {
+            if path.first() != Some(&event.source) {
                 self.error = Some("retained audio selection changed".into());
                 return true;
-            };
-            let Ok(inner) = root.clip.editable_audio_events() else {
+            }
+            let Some(inner) = retained_events(clip, &path) else {
                 return false;
             };
             let Some(event) = inner.events.iter().find(|event| event.id == event_id) else {
@@ -178,8 +189,8 @@ impl EditorView {
                 return true;
             };
             let active = !event.active;
-            self.event_commit(AudioEventEdit::SetRetainedActive {
-                source: source_id,
+            self.event_commit(AudioEventEdit::SetRetainedPathActive {
+                sources: path,
                 events: vec![event_id],
                 active,
             });
@@ -215,10 +226,21 @@ impl EditorView {
         else {
             return;
         };
-        let Some(root) = events.sources.iter().find(|root| root.id == outer.source) else {
-            return;
-        };
-        let Ok(inner) = root.clip.editable_audio_events() else {
+        let continuing = self
+            .audio_event_editor
+            .retained_selection
+            .as_ref()
+            .is_some_and(|(path, _)| path.first() == Some(&outer.source));
+        if !continuing {
+            self.audio_event_editor.retained_ancestors.clear();
+        }
+        let path = self
+            .audio_event_editor
+            .retained_selection
+            .as_ref()
+            .filter(|(path, _)| path.first() == Some(&outer.source))
+            .map_or_else(|| vec![outer.source], |(path, _)| path.clone());
+        let Some(inner) = retained_events(clip, &path) else {
             return;
         };
         if inner.events.is_empty() {
@@ -227,14 +249,74 @@ impl EditorView {
         let current = self
             .audio_event_editor
             .retained_selection
-            .filter(|(source, _)| *source == root.id)
-            .and_then(|(_, id)| inner.events.iter().position(|event| event.id == id));
+            .as_ref()
+            .filter(|(selected_path, _)| *selected_path == path)
+            .and_then(|(_, id)| inner.events.iter().position(|event| event.id == *id));
         let index = match current {
             Some(index) if forward => (index + 1) % inner.events.len(),
             Some(index) => (index + inner.events.len() - 1) % inner.events.len(),
             None => 0,
         };
-        self.audio_event_editor.retained_selection = Some((root.id, inner.events[index].id));
+        self.audio_event_editor.retained_selection = Some((path, inner.events[index].id));
+    }
+
+    fn event_retained_depth(&mut self, deeper: bool) {
+        if self.activation_gesture_blocked()
+            || self.audio_event_editor.pending.is_some()
+            || self.audio_event_editor.gesture.is_some()
+            || !self.event_context_current()
+        {
+            return;
+        }
+        let Some((mut path, selected)) = self.audio_event_editor.retained_selection.clone() else {
+            return;
+        };
+        let Some(clip) = self
+            .state
+            .as_ref()
+            .and_then(|state| self.detail_clip_id().and_then(|id| state.project.clip(id)))
+        else {
+            return;
+        };
+        let Some(current) = retained_events(clip, &path) else {
+            return;
+        };
+        if deeper {
+            let Some(event) = current.events.iter().find(|event| event.id == selected) else {
+                return;
+            };
+            if event.source == 0 || path.len() >= hex_project::MAX_RETAINED_AUDIO_DEPTH {
+                return;
+            }
+            path.push(event.source);
+            let Some(next) = retained_events(clip, &path) else {
+                return;
+            };
+            let Some(event) = next.events.first() else {
+                return;
+            };
+            self.audio_event_editor.retained_ancestors.push(selected);
+            self.audio_event_editor.retained_selection = Some((path, event.id));
+        } else if path.len() > 1 {
+            let Some(source) = path.pop() else {
+                return;
+            };
+            let Some(parent) = retained_events(clip, &path) else {
+                return;
+            };
+            let Some(parent_id) = self.audio_event_editor.retained_ancestors.last().copied() else {
+                return;
+            };
+            let Some(event) = parent
+                .events
+                .iter()
+                .find(|event| event.id == parent_id && event.source == source)
+            else {
+                return;
+            };
+            self.audio_event_editor.retained_ancestors.pop();
+            self.audio_event_editor.retained_selection = Some((path, event.id));
+        }
     }
     pub(super) fn event_group_selected(&mut self) {
         if self.audio_event_editor.source_view
