@@ -116,6 +116,63 @@ fn seek(runtime: &mut SessionPlayback) {
     runtime.apply(SessionPlaybackCommand::Seek(4094)).unwrap();
     runtime.apply(SessionPlaybackCommand::Play).unwrap();
 }
+
+#[test]
+#[ignore = "optimized scalar render profile; run explicitly with --release --ignored --nocapture"]
+fn optimized_scalar_render_cost() {
+    let (f, device, _, mut pages) = fixture(DeviceAutomationTarget::Parameter(parameter::GAIN));
+    let original = source(f.editor.project().tempo_map());
+    let source = ScalarSourceMetadata::new(
+        original.key(),
+        original.project_rate(),
+        0,
+        8192,
+        original.projection_identity(),
+        original.file_identity(),
+    )
+    .unwrap();
+    pages.values = [vec![0.5; 4096], vec![0.5; 4096]];
+    pages.coverage = [vec![u64::MAX; 64], vec![u64::MAX; 64]];
+    let plain = PreparedRevision::prepare(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let automated = PreparedRevision::prepare_with_scalar_automation(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+        ScalarAutomationBinding {
+            device,
+            target: DeviceAutomationTarget::Parameter(parameter::GAIN),
+            source,
+        },
+    )
+    .unwrap();
+    for (label, revision) in [("inactive", plain), ("active", automated)] {
+        let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 256];
+        let mut elapsed = std::time::Duration::ZERO;
+        for iteration in 0..51 {
+            runtime.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+            let start = std::time::Instant::now();
+            for _ in 0..32 {
+                runtime.render_with_pages(&mut output, &mut pages).unwrap();
+                std::hint::black_box(&output);
+            }
+            if iteration != 0 {
+                elapsed += start.elapsed();
+            }
+        }
+        eprintln!(
+            "scalar render profile: {label}, 50 x 8192 frames, 256-frame blocks, {elapsed:?} total; one warm-up iteration; seek and setup excluded; no native deadline claim"
+        );
+    }
+}
 #[test]
 fn scalar_pages_drive_real_native_provider_and_live_clear_reveals_recorded_values() {
     let (_f, _device, revision, mut pages) =
