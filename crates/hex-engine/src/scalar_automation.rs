@@ -135,12 +135,14 @@ impl State {
         frames: usize,
         offset: usize,
     ) -> Result<(), Invalid> {
-        self.fill_with_origins(pages, source, frames, offset, |index| {
-            start
-                .checked_add(index as u64)
-                .map(Some)
-                .ok_or(Invalid("scalar automation origin overflow"))
-        })
+        self.frames = 0;
+        self.values.fill(None);
+        let raw = self
+            .raw
+            .get_mut(..frames)
+            .ok_or(Invalid("scalar automation chunk exceeds scratch"))?;
+        crate::read_scalar_values(pages, source, start, raw)?;
+        self.finish_fill(frames, offset)
     }
     pub(crate) fn fill_with_origins<P: MediaPages + ?Sized>(
         &mut self,
@@ -166,6 +168,13 @@ impl State {
                 .ok_or(Invalid("scalar origin run is outside scratch"))?;
             crate::read_scalar_values(pages, source, frame, destination)
         })?;
+        self.finish_fill(frames, offset)
+    }
+    fn finish_fill(&mut self, frames: usize, offset: usize) -> Result<(), Invalid> {
+        let raw = self
+            .raw
+            .get(..frames)
+            .ok_or(Invalid("scalar automation chunk exceeds scratch"))?;
         for (slot, value) in self.values.iter_mut().zip(raw) {
             *slot = match value {
                 Some(value) => Some(

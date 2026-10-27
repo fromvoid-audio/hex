@@ -788,28 +788,40 @@ impl SessionPlayback {
                         .graph
                         .parameter_arrival(input)
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                    arrangement_frame
-                        .checked_add(chunk_frames as u64)
-                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                    scalar.fill_with_origins(
-                        endpoint,
-                        &binding.source,
-                        chunk_frames,
-                        output_offset,
-                        |index| {
-                            crate::compensation::CompensationRuntime::preview_stage_frame(
-                                Some(&compensation.delays),
-                                delay,
-                                index as u64,
-                                |source_offset| {
-                                    arrangement_frame
-                                        .checked_add(source_offset)
-                                        .map(Some)
-                                        .ok_or(crate::Invalid("scalar automation origin overflow"))
-                                },
-                            )
-                        },
-                    )
+                    if delay == 0 {
+                        scalar.fill(
+                            endpoint,
+                            &binding.source,
+                            arrangement_frame,
+                            chunk_frames,
+                            output_offset,
+                        )
+                    } else {
+                        arrangement_frame
+                            .checked_add(chunk_frames as u64)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        scalar.fill_with_origins(
+                            endpoint,
+                            &binding.source,
+                            chunk_frames,
+                            output_offset,
+                            |index| {
+                                crate::compensation::CompensationRuntime::preview_stage_frame(
+                                    Some(&compensation.delays),
+                                    delay,
+                                    index as u64,
+                                    |source_offset| {
+                                        arrangement_frame
+                                            .checked_add(source_offset)
+                                            .map(Some)
+                                            .ok_or(crate::Invalid(
+                                                "scalar automation origin overflow",
+                                            ))
+                                    },
+                                )
+                            },
+                        )
+                    }
                 } else {
                     scalar.fill(
                         endpoint,

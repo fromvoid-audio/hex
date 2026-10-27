@@ -368,6 +368,15 @@ impl SessionPlayback {
                 .as_ref()
                 .ok_or(Invalid("scalar signal graph is unavailable"))?
                 .parameter_arrival(input)?;
+            if delay == 0 {
+                crate::stream_demand::visit_scalar_page_range(
+                    &binding.source,
+                    window.arrangement_frame,
+                    window.frames,
+                    visit,
+                )?;
+                return Ok(window);
+            }
             let (owner, lead) = match history {
                 ScalarOriginHistory::Current(owner) => (
                     Some(owner),
