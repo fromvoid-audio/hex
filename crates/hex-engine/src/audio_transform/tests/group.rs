@@ -138,6 +138,175 @@ fn retained_source_event_can_be_reactivated_without_losing_processing() {
 }
 
 #[test]
+fn repeated_nested_group_preserves_pcm_and_reactivates_inner_event() {
+    let (mut editor, ids, mut media) = group_fixture();
+    editor
+        .execute(Command::SetClipActive {
+            clip: ids[1],
+            active: false,
+        })
+        .unwrap();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 20_000,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: group,
+            millidb: -2_300,
+        })
+        .unwrap();
+    let inner_event = editor
+        .project()
+        .clip(group)
+        .unwrap()
+        .audio_events()
+        .events
+        .iter()
+        .find(|event| !event.active)
+        .unwrap()
+        .id;
+    let Created::Imported {
+        clip: third, asset, ..
+    } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "third".into(),
+            path: "third.wav".into(),
+            sample_rate: 16_000,
+            frames: 2_000,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    media.insert(asset, Audio::new(16_000, vec![[0.2, -0.1]; 2_000]).unwrap());
+    let mut snapshot = editor.project().snapshot();
+    let mut third_clip = snapshot.tracks[1].audio_clips_mut().unwrap().remove(0);
+    third_clip.start = 24_000;
+    snapshot.tracks[0]
+        .audio_clips_mut()
+        .unwrap()
+        .push(third_clip);
+    snapshot.tracks.remove(1);
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    let context = isolated(32 * 1024 * 1024, 16 * 1024 * 1024, 32);
+    let muted = render(&prepare(&editor, &media, &context), 0, 27_000, 127);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![inner_event],
+                active: true,
+            },
+        })
+        .unwrap();
+    let active = render(&prepare(&editor, &media, &context), 0, 27_000, 257);
+    assert_ne!(active, muted);
+    assert!(editor.undo());
+    let Created::Clip(outer) = editor
+        .execute(Command::GroupClips(vec![group, third]))
+        .unwrap()
+    else {
+        panic!("regroup")
+    };
+    for block in [64, 257] {
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 27_000, block),
+            muted
+        );
+    }
+    let source = editor
+        .project()
+        .clip(outer)
+        .unwrap()
+        .audio_events()
+        .sources
+        .iter()
+        .find(|root| root.clip.has_retained_audio_roots())
+        .unwrap()
+        .id;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: outer,
+            operation: hex_project::AudioEventEdit::SetRetainedPathActive {
+                sources: vec![source],
+                events: vec![inner_event],
+                active: true,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 27_000, 127),
+        active
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 27_000, 64),
+        muted
+    );
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::GroupTimeRange(
+            hex_project::TimeRange::new(vec![track], 1_000, 25_000).unwrap(),
+        ))
+        .unwrap();
+    for block in [64, 257] {
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 27_000, block),
+            muted
+        );
+    }
+}
+
+#[test]
+fn directed_nested_group_preserves_pcm_and_undo() {
+    let (mut editor, ids, media) = group_fixture();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    editor.execute(Command::ReverseClips(vec![group])).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().clip(group).unwrap().asset();
+    let Created::Clip(third) = editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 17_000,
+            duration: 1_000,
+            source_offset: 0,
+            source_length: 1_000,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("third")
+    };
+    let context = isolated(32 * 1024 * 1024, 16 * 1024 * 1024, 32);
+    let expected = render(&prepare(&editor, &media, &context), 0, 19_000, 127);
+    editor
+        .execute(Command::GroupClips(vec![group, third]))
+        .unwrap();
+    for block in [64, 257] {
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 19_000, block),
+            expected
+        );
+    }
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 19_000, 64),
+        expected
+    );
+}
+
+#[test]
 fn mixed_group_preserves_silence_and_reactivation_restores_original_audio() {
     let (mut editor, ids, media) = group_fixture();
     let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);

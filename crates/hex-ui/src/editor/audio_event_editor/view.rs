@@ -575,12 +575,14 @@ pub(in crate::editor) fn view(
     let retained_label = view
         .audio_event_editor
         .retained_selection
-        .and_then(|(source, id)| {
-            let root = retained.filter(|root| root.id == source)?;
-            let events = root.clip.editable_audio_events().ok()?;
-            let event = events.events.iter().find(|event| event.id == id)?;
+        .as_ref()
+        .and_then(|(path, id)| {
+            let root = retained.filter(|root| Some(&root.id) == path.first())?;
+            let events = super::retained_events(&root.clip, &path[1..])?;
+            let event = events.events.iter().find(|event| event.id == *id)?;
             Some(format!(
-                "source event {} · {}",
+                "source level {} · event {} · {}",
+                path.len(),
                 id,
                 if event.active { "active" } else { "inactive" }
             ))
@@ -619,6 +621,15 @@ pub(in crate::editor) fn view(
                     .items_center()
                     .gap_1()
                     .child(
+                        waveform::button("↑", "parent retained source", ("audio-retained-up", 0))
+                            .debug_selector(|| "audio-retained-up".into())
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.audio_event_focus.focus(window);
+                                view.event_retained_depth(false);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
                         waveform::button(
                             "‹",
                             "previous retained source event",
@@ -629,6 +640,15 @@ pub(in crate::editor) fn view(
                             view.event_retained_step(false);
                             cx.notify();
                         })),
+                    )
+                    .child(
+                        waveform::button("↓", "open retained source", ("audio-retained-down", 0))
+                            .debug_selector(|| "audio-retained-down".into())
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.audio_event_focus.focus(window);
+                                view.event_retained_depth(true);
+                                cx.notify();
+                            })),
                     )
                     .child(
                         div()

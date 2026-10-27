@@ -30,8 +30,7 @@ impl AudioEvent {
 }
 
 /// Immutable full processing/source custody for one grouped event source.
-/// The captured tempo preserves the original warp/fade projection. Nested
-/// multi-root sources are refused; a group never recursively prepares groups.
+/// The captured tempo preserves the original warp/fade projection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetainedAudioRoot {
     pub id: u64,
@@ -58,6 +57,12 @@ pub enum AudioEventEdit {
     /// Set activation within one retained source without flattening its processing.
     SetRetainedActive {
         source: u64,
+        events: Vec<u64>,
+        active: bool,
+    },
+    /// Set activation inside a bounded path of retained source identities.
+    SetRetainedPathActive {
+        sources: Vec<u64>,
         events: Vec<u64>,
         active: bool,
     },
@@ -201,15 +206,8 @@ impl AudioEvents {
         }
         let mut ids = std::collections::BTreeSet::new();
         for source in &self.sources {
-            if source.id == 0
-                || !ids.insert(source.id)
-                || source
-                    .clip
-                    .audio_edit()
-                    .and_then(|edit| edit.domain.events.as_ref())
-                    .is_some_and(|events| !events.sources.is_empty())
-            {
-                return Err(Invalid("invalid or nested retained audio root"));
+            if source.id == 0 || !ids.insert(source.id) {
+                return Err(Invalid("invalid retained audio root identity"));
             }
         }
         self.validate_geometry(length)
@@ -308,6 +306,38 @@ impl AudioEvents {
         self.validate_geometry(length)?;
         let mut next = self.clone();
         match operation {
+            AudioEventEdit::SetRetainedPathActive {
+                sources,
+                events,
+                active,
+            } => {
+                if sources.is_empty()
+                    || sources.len() > crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH
+                {
+                    return Err(Invalid("invalid retained audio source path"));
+                }
+                let root = next
+                    .sources
+                    .iter_mut()
+                    .find(|root| root.id == sources[0])
+                    .ok_or(Invalid("retained audio source no longer exists"))?;
+                let mut edit = root.clip.audio_event_root();
+                let original = root.clip.editable_audio_events()?;
+                let operation = if sources.len() == 1 {
+                    AudioEventEdit::SetActive { events, active }
+                } else {
+                    AudioEventEdit::SetRetainedPathActive {
+                        sources: sources[1..].to_vec(),
+                        events,
+                        active,
+                    }
+                };
+                let changed = original.edited(operation, edit.domain.clock.length())?;
+                if changed != original {
+                    Arc::make_mut(&mut edit.domain).events = Some(Arc::new(changed));
+                    root.clip.edit = Some(Arc::new(edit));
+                }
+            }
             AudioEventEdit::SetRetainedActive {
                 source,
                 events,
@@ -619,6 +649,7 @@ pub(crate) fn apply(
     let events = original.editable_audio_events()?;
     let retained_source = match &operation {
         AudioEventEdit::SetRetainedActive { source, .. } => Some(*source),
+        AudioEventEdit::SetRetainedPathActive { sources, .. } => sources.first().copied(),
         _ => None,
     };
     let next = events.edited(operation, edit.domain.clock.length())?;

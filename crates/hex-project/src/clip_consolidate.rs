@@ -263,19 +263,17 @@ fn audio(
     let tempo = Arc::new(project.tempo_map().clone());
     for clip in &clips {
         let offset = clip.start() - start;
-        if clip.has_retained_audio_roots() {
+        let neutral_group = clip.has_retained_audio_roots()
+            && clip.audio_edit().is_some_and(|edit| {
+                edit.content_view.is_none()
+                    && edit.placement.is_none()
+                    && clip.gain() == ClipGain::UNITY
+                    && edit.domain.fade.is_neutral()
+            });
+        if neutral_group {
             let edit = clip
                 .audio_edit()
                 .ok_or(Invalid("grouped audio root missing"))?;
-            if edit.content_view.is_some()
-                || edit.placement.is_some()
-                || clip.gain() != ClipGain::UNITY
-                || !edit.domain.fade.is_neutral()
-            {
-                return Err(Invalid(
-                    "grouped audio with outer processing or repeats cannot be nested; group unprocessed source clips",
-                ));
-            }
             let sequence = edit
                 .domain
                 .events

@@ -42,6 +42,7 @@ mod audio_events;
 pub use audio_event_fade::AudioEventFade;
 mod project_tempo;
 mod retained_audio;
+pub use retained_audio::MAX_RETAINED_AUDIO_DEPTH;
 mod track_groups;
 mod track_order;
 pub use audio_events::{
