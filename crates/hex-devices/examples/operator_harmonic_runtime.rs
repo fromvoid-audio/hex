@@ -1,4 +1,6 @@
 //! Production registered harmonic-runtime profile; no test-only sampler.
+//! Unique pitches prevent same-pitch retrigger from collapsing the workload.
+//! Active occurrences include the held ledger and are not a physical deadline.
 use hex_devices::operator_state::{OPERATOR_METADATA, harmonic_parameter, parameter};
 use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentEvent};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -11,14 +13,25 @@ fn cpu_checkpoint(enabled: bool, stage: &str, rate: u32, voices: usize) {
         std::io::stdin().read_line(&mut String::new()).unwrap();
     }
 }
+fn fixture_events(voices: usize) -> Vec<NativeInstrumentEvent> {
+    (0..voices)
+        .map(|i| NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: i as u64 + 1,
+            pitch: 24 + i as u8,
+            velocity: 100,
+        })
+        .collect()
+}
 fn main() {
     // External tooling may sample process CPU at these control-only boundaries.
     let cpu_handshake = std::env::args().any(|arg| arg == "--cpu-handshake");
     let varied = std::env::args().any(|arg| arg == "--varied");
     let fm = std::env::args().any(|arg| arg == "--fm");
+    let builtin = std::env::args().any(|arg| arg == "--builtin");
     let blocks = if cpu_handshake { 512 } else { 128 };
     for rate in [44100, 48000, 96000] {
-        for voices in [16, 64] {
+        for voices in [16, 32] {
             let mut state = OPERATOR_METADATA.default_state().unwrap();
             for operator in 1..=4 {
                 for (id, value) in [
@@ -65,18 +78,28 @@ fn main() {
                         )
                         .unwrap();
                 }
-                for partial in 1..=64 {
+                if builtin {
                     state = OPERATOR_METADATA
                         .patch_parameter(
                             &state,
-                            harmonic_parameter(operator, partial),
-                            ParameterValue::Float(if varied {
-                                ((partial * 7 + operator * 3) % 19) as f32 / 18.0
-                            } else {
-                                1.0
-                            }),
+                            parameter::waveform(operator),
+                            ParameterValue::Choice(1),
                         )
                         .unwrap();
+                } else {
+                    for partial in 1..=64 {
+                        state = OPERATOR_METADATA
+                            .patch_parameter(
+                                &state,
+                                harmonic_parameter(operator, partial),
+                                ParameterValue::Float(if varied {
+                                    ((partial * 7 + operator * 3) % 19) as f32 / 18.0
+                                } else {
+                                    1.0
+                                }),
+                            )
+                            .unwrap();
+                    }
                 }
             }
             let instrument = OPERATOR_METADATA
@@ -91,19 +114,15 @@ fn main() {
                 .unwrap();
             let factory = instrument.prepare_mutable_runtime().unwrap().unwrap();
             let mut runtime = factory.create_runtime();
-            let events: Vec<_> = (0..voices)
-                .map(|i| NativeInstrumentEvent::NoteOn {
-                    frame_offset: 0,
-                    occurrence_id: i as u64 + 1,
-                    pitch: 24 + (i % 12) as u8,
-                    velocity: 100,
-                })
-                .collect();
+            let events = fixture_events(voices);
             let mut block = [[0.0; 2]; 256];
             runtime
                 .preflight_events(&events, block.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
                 .unwrap();
             runtime.process_block(&events, &mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            let mut active_ids = [0_u64; 64];
+            let active = runtime.active_occurrence_ids(&mut active_ids).unwrap();
+            assert_eq!(active, voices, "the fixture must retain every unique onset");
             for _ in 0..4 {
                 block.fill([0.0; 2]);
                 runtime.process_block(&[], &mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -111,6 +130,7 @@ fn main() {
             cpu_checkpoint(cpu_handshake, "ready", rate, voices);
             let mut timings = Vec::with_capacity(blocks);
             let mut checksum = 0.0;
+            let mut digest = 0xcbf2_9ce4_8422_2325_u64;
             for _ in 0..blocks {
                 block.fill([0.0; 2]);
                 let start = Instant::now();
@@ -120,6 +140,10 @@ fn main() {
                     &hex_lattice::EMPTY_DEVICE_RESOURCES,
                 );
                 timings.push(start.elapsed().as_secs_f64() * 1000.0);
+                for sample in block.iter().flatten() {
+                    digest =
+                        (digest ^ u64::from(sample.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
+                }
                 checksum += block
                     .iter()
                     .flatten()
@@ -130,7 +154,8 @@ fn main() {
             assert!(checksum.is_finite() && checksum > 0.0);
             timings.sort_by(f64::total_cmp);
             println!(
-                "rate={rate} voices={voices} partials=64 oscillators=4 block=256 timed_blocks={blocks} varied={varied} fm={fm} pair_bytes={} median_ms={:.4} p95_ms={:.4} max_ms={:.4} deadline_ms={:.4} checksum={:.8}",
+                "rate={rate} unique_note_ons={voices} active_occurrences={active} waveform={} oscillators=4 block=256 timed_blocks={blocks} varied={varied} fm={fm} pcm_digest={digest:016x} pair_bytes={} median_ms={:.4} p95_ms={:.4} max_ms={:.4} deadline_ms={:.4} checksum={:.8}",
+                if builtin { "saw" } else { "custom-64" },
                 2 * factory.declared_twin_bytes(),
                 timings[blocks / 2],
                 timings[blocks * 95 / 100],
@@ -139,5 +164,48 @@ fn main() {
                 black_box(checksum)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distinct_notes_exercise_different_voice_densities() {
+        fn render(voices: usize) -> [[f32; 2]; 256] {
+            let state = OPERATOR_METADATA
+                .patch_parameter(
+                    &OPERATOR_METADATA.default_state().unwrap(),
+                    harmonic_parameter(1, 2),
+                    ParameterValue::Float(0.5),
+                )
+                .unwrap();
+            let instrument = OPERATOR_METADATA
+                .prepare_instrument(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
+                .unwrap();
+            let factory = instrument.prepare_mutable_runtime().unwrap().unwrap();
+            let mut runtime = factory.create_runtime();
+            let events = fixture_events(voices);
+            let mut output = [[0.0; 2]; 256];
+            runtime
+                .preflight_events(&events, output.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            runtime.process_block(&events, &mut output, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            let mut ids = [0_u64; 64];
+            assert_eq!(runtime.active_occurrence_ids(&mut ids).unwrap(), voices);
+            output
+        }
+        let sixteen = render(16);
+        let thirty_two = render(32);
+        assert!(sixteen.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        assert_ne!(sixteen, thirty_two);
     }
 }

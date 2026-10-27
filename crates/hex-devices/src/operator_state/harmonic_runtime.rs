@@ -1333,6 +1333,7 @@ pub(super) fn builtin_spectrum(base: &[u8; ENABLE_PAYLOAD_BYTES]) -> Option<Spec
         coefficients: [[0.0; 64]; 4],
         builtin: [[0.0; crate::operator_waveform::BUILTIN_CHOICE_COUNT]; 4],
         builtin_active: [0; 4],
+        custom_active: [false; 4],
     };
     for operator in 0..4 {
         let offset = LEGACY_PAYLOAD_BYTES + operator * 4;

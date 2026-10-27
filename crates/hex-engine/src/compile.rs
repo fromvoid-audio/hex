@@ -476,9 +476,6 @@ fn compile_project_inner<'a>(
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
-    if snapshot.has_group_tracks() {
-        return Err(Invalid("group track playback is not prepared"));
-    }
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
     crate::device_automation::validate_project_with_registry(snapshot, registry)?;
@@ -528,7 +525,8 @@ fn compile_project_inner<'a>(
     let source_instruments =
         prepare_source_instruments(snapshot, instrument_registry, &shared_contexts, samplers)?;
     let mut audio_clip_views = Vec::new();
-    let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
+    let solo = crate::TrackSoloSelection::prepare(snapshot);
+    let any_soloed = solo.any;
     let mut tracks = Vec::new();
     tracks
         .try_reserve_exact(snapshot.tracks().len())
@@ -646,7 +644,7 @@ fn compile_project_inner<'a>(
             .into_iter()
             .flatten()
             .collect();
-        let input_muted = crate::effective_track_mute(track, any_soloed);
+        let input_muted = solo.muted(track_index, track)?;
         let shared_source = track
             .source_id()
             .filter(|source| snapshot.source_contributors(*source).count() > 1);
@@ -654,10 +652,7 @@ fn compile_project_inner<'a>(
             && let Some(source) = shared_source
         {
             (track.muted() && !track.soloed())
-                || (any_soloed
-                    && !snapshot
-                        .source_contributors(source)
-                        .any(|contributor| contributor.soloed()))
+                || (any_soloed && !solo.source_selected(snapshot, source)?)
         } else {
             input_muted
         };

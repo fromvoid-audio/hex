@@ -340,7 +340,7 @@ fn noise_catalog_native_and_analytic_pcm_is_partition_independent() {
             );
         }
     }
-    assert_eq!(size_of::<Spectrum>(), 2_800);
+    assert_eq!(size_of::<Spectrum>(), 2_808);
 }
 
 #[test]
@@ -466,5 +466,36 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
         third.process_block(&[], &mut before, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         exact.process_block(&[], &mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(before, expected);
+    }
+}
+
+#[test]
+fn builtin_and_custom_spectra_transition_matches_independent_weighted_output() {
+    let builtin_settings =
+        OperatorSettings::from_state(&OPERATOR_METADATA.default_state().unwrap()).unwrap();
+    let mut custom_settings = builtin_settings;
+    custom_settings.harmonics.custom[0] = true;
+    custom_settings.harmonics.amplitudes[0] = [0.0; 64];
+    custom_settings.harmonics.amplitudes[0][0] = 0.25;
+    custom_settings.harmonics.amplitudes[0][3] = 0.5;
+    let builtin = Spectrum::prepare(&builtin_settings);
+    let custom = Spectrum::prepare(&custom_settings);
+    let table = crate::shared_sine_table();
+    let bank = prepared_bank().unwrap();
+    let phase_table = harmonic_phase_table().unwrap();
+    for amount in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        let mixed = Spectrum::at(builtin, custom, amount);
+        let reverse = Spectrum::at(custom, builtin, 1.0 - amount);
+        for phase in [0, 1 << 58, 1 << 61, 1 << 62, u64::MAX] {
+            for step in [1 << 54, 1 << 61, 1 << 63] {
+                let sample = |spectrum: &Spectrum| {
+                    spectrum.sample(0, phase, step, 0, step, table, bank, phase_table)
+                };
+                let expected = f64::from(sample(&builtin)) * (1.0 - amount)
+                    + f64::from(sample(&custom)) * amount;
+                assert!((f64::from(sample(&mixed)) - expected).abs() < 2e-6);
+                assert!((f64::from(sample(&reverse)) - expected).abs() < 2e-6);
+            }
+        }
     }
 }
