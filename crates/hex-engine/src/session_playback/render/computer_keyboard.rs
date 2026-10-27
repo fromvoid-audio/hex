@@ -149,6 +149,7 @@ impl SessionPlayback {
                     capture,
                     None,
                     foreign,
+                    None,
                 )?;
                 if drain_edit_tails {
                     self.return_effect_tails
@@ -163,6 +164,7 @@ impl SessionPlayback {
                         offset,
                         foreign,
                         observer,
+                        None,
                         None,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -325,6 +327,7 @@ impl SessionPlayback {
                 observer,
                 capture,
                 &mut hex_lattice::RefuseForeign,
+                None,
             )?;
             if drain_edit_tails {
                 self.return_effect_tails

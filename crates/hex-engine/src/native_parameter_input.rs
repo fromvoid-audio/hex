@@ -8,11 +8,11 @@ use hex_lattice::{
 };
 use hex_lattice_contract::DeviceAutomationTarget;
 
-/// Shared borrowed adapter; ordinary renderers supply None and preserve their
-/// existing processing/tap behavior without allocating a request context.
+/// Shared input transaction with an optional fully materialized scalar window.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn process_range(
+pub(crate) fn process_range_with_external(
     input: Option<&mut Processing>,
+    external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     chain: &mut NativeRuntimeChain,
     range: std::ops::Range<usize>,
     frames: &mut [Frame],
@@ -25,7 +25,8 @@ pub(crate) fn process_range(
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), Invalid> {
     if let Some(input) = input {
-        input.process(
+        input.process_with_external(
+            external,
             chain,
             range,
             frames,
@@ -39,13 +40,15 @@ pub(crate) fn process_range(
         )
     } else {
         chain
-            .process_range_tapped_with_foreign(
+            .process_range_tapped_with_foreign_input_and_external(
                 range,
                 frames,
                 offset,
                 clock,
                 output_clock,
                 foreign,
+                None,
+                external,
                 &mut |owner, device, kind, phase, offset, frames| {
                     if let Some(observer) = observer.as_mut() {
                         observer(
@@ -100,8 +103,9 @@ impl Processing {
     /// Different device arrivals require separate calls. Missing origins defer
     /// both Set and Clear; they cannot produce fabricated recording timestamps.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn process(
+    pub(crate) fn process_with_external(
         &mut self,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
         chain: &mut NativeRuntimeChain,
         range: std::ops::Range<usize>,
         frames: &mut [Frame],
@@ -136,7 +140,7 @@ impl Processing {
             .final_arrival
             .checked_sub(arrival)
             .ok_or(Invalid("native input stage exceeds final arrival"))?;
-        let result = chain.process_range_tapped_with_foreign_and_input(
+        let result = chain.process_range_tapped_with_foreign_input_and_external(
             range,
             frames,
             offset,
@@ -144,6 +148,7 @@ impl Processing {
             output_clock,
             foreign,
             transient.as_mut(),
+            external,
             &mut |owner, device, kind, phase, offset, frames| {
                 if let Some(observer) = observer.as_mut() {
                     observer(

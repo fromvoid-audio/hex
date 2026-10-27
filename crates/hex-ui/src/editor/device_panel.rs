@@ -117,6 +117,8 @@ pub(super) struct DevicePanelState {
     pub(super) navigation: navigation::Navigation,
     generation: u64,
     pub(super) selected_device: Option<DeviceId>,
+    selected_others: HashSet<DeviceId>,
+    selection_anchor: Option<DeviceId>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, gain_meters::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -180,6 +182,87 @@ pub(super) enum DevicePanelOwner {
 }
 
 impl DevicePanelState {
+    pub(super) fn select_only(&mut self, device: Option<DeviceId>) {
+        self.selected_device = device;
+        self.selected_others.clear();
+        self.selection_anchor = device;
+    }
+
+    fn is_selected(&self, device: DeviceId) -> bool {
+        self.selected_device == Some(device) || self.selected_others.contains(&device)
+    }
+
+    fn reconcile_selection(&mut self, alive: &HashSet<DeviceId>) {
+        self.selected_device = self.selected_device.filter(|id| alive.contains(id));
+        self.selected_others.retain(|id| alive.contains(id));
+        self.selection_anchor = self.selection_anchor.filter(|id| alive.contains(id));
+        if self.selected_device.is_none() {
+            self.selected_device = self
+                .selected_others
+                .iter()
+                .copied()
+                .min_by_key(|id| id.value());
+            if let Some(primary) = self.selected_device {
+                self.selected_others.remove(&primary);
+            }
+        }
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = self.selected_device;
+        }
+    }
+
+    fn select_click(&mut self, device: DeviceId, order: &[DeviceId], modifiers: gpui::Modifiers) {
+        if !order.contains(&device) {
+            return;
+        }
+        if modifiers.shift {
+            let anchor = self
+                .selection_anchor
+                .or(self.selected_device)
+                .unwrap_or(device);
+            let Some(a) = order.iter().position(|id| *id == anchor) else {
+                self.select_only(Some(device));
+                return;
+            };
+            let Some(b) = order.iter().position(|id| *id == device) else {
+                return;
+            };
+            if modifiers.platform {
+                if let Some(previous) = self.selected_device {
+                    self.selected_others.insert(previous);
+                }
+            } else {
+                self.selected_others.clear();
+            }
+            self.selected_others
+                .extend(order[a.min(b)..=a.max(b)].iter().copied());
+            self.selected_others.remove(&device);
+            self.selected_device = Some(device);
+            self.selection_anchor = Some(anchor);
+        } else if modifiers.platform {
+            if self.is_selected(device) {
+                self.selected_others.remove(&device);
+                if self.selected_device == Some(device) {
+                    self.selected_device = order
+                        .iter()
+                        .copied()
+                        .find(|id| self.selected_others.contains(id));
+                    if let Some(primary) = self.selected_device {
+                        self.selected_others.remove(&primary);
+                    }
+                }
+                self.selection_anchor = self.selected_device;
+            } else {
+                if let Some(previous) = self.selected_device {
+                    self.selected_others.insert(previous);
+                }
+                self.selected_device = Some(device);
+                self.selection_anchor = Some(device);
+            }
+        } else {
+            self.select_only(Some(device));
+        }
+    }
     pub(super) fn add_menu_is_open(&self, state: Option<&ViewState>) -> bool {
         self.add_menu_open
             && self
@@ -494,7 +577,7 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = None;
-        view.device_panel.selected_device = None;
+        view.device_panel.select_only(None);
         view.device_panel.generation = view.project_generation;
     }
     reconcile_eq_spectrum(view);
@@ -599,7 +682,7 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = desired_owner;
-        view.device_panel.selected_device = None;
+        view.device_panel.select_only(None);
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
@@ -762,10 +845,7 @@ fn render_track(
         })
         .collect();
     let alive: HashSet<_> = identities.keys().copied().collect();
-    view.device_panel.selected_device = view
-        .device_panel
-        .selected_device
-        .filter(|id| alive.contains(id));
+    view.device_panel.reconcile_selection(&alive);
 
     clear_removed_processor_audition_target(
         view,
@@ -1375,6 +1455,17 @@ fn render_device_end_target(
         .min_w(px(40.0))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|view, _, window, cx| {
+                view.device_panel.select_only(None);
+                view.device_panel
+                    .chain_window
+                    .selection_focus(cx)
+                    .focus(window);
+                cx.notify();
+            }),
+        )
         .bg(rgb(if active {
             theme::color(theme::PaletteRole::Hover)
         } else {
@@ -1498,17 +1589,73 @@ fn device_drag_title(
         })
 }
 
+fn chain_ids(project: &hex_project::Project, owner: DevicePanelOwner) -> Vec<DeviceId> {
+    match owner {
+        DevicePanelOwner::Track(id) => project
+            .track(id)
+            .map(|track| {
+                track
+                    .ordered_device_chain()
+                    .map(|node| match node {
+                        hex_project::TrackDeviceRef::Instrument(item)
+                        | hex_project::TrackDeviceRef::Effect(item) => item.id(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        DevicePanelOwner::Main => project
+            .main_devices()
+            .iter()
+            .map(hex_project::Device::id)
+            .collect(),
+        DevicePanelOwner::Return(id) => project
+            .return_tracks()
+            .iter()
+            .find(|track| track.id() == id)
+            .map(|track| {
+                track
+                    .devices()
+                    .iter()
+                    .map(hex_project::Device::id)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn project_owner(owner: DevicePanelOwner) -> hex_project::DeviceChainOwner {
+    match owner {
+        DevicePanelOwner::Track(id) => hex_project::DeviceChainOwner::Track(id),
+        DevicePanelOwner::Main => hex_project::DeviceChainOwner::Main,
+        DevicePanelOwner::Return(id) => hex_project::DeviceChainOwner::Return(id),
+    }
+}
+
 // Capture selection before nested controls consume their pointer event. Selection
 // is local view state and never finalizes or dispatches a parameter edit.
 fn device_selection_listener(
     device: DeviceId,
+    generation: u64,
+    owner: Option<DevicePanelOwner>,
     cx: &Context<EditorView>,
 ) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
     cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
-        if event.button == MouseButton::Left && view.device_panel.selected_device != Some(device) {
-            view.device_panel.selected_device = Some(device);
-            cx.notify();
+        if event.button != MouseButton::Left
+            || view.project_generation != generation
+            || view.device_panel.owner != owner
+        {
+            return;
         }
+        let Some(state) = view.state.as_ref() else {
+            return;
+        };
+        let Some(owner) = owner else {
+            return;
+        };
+        let order = chain_ids(&state.project, owner);
+        view.device_panel
+            .select_click(device, &order, event.modifiers);
+        cx.notify();
     })
 }
 
@@ -1558,7 +1705,7 @@ fn render_effect(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let device_id = device.id();
-    let selected = view.device_panel.selected_device == Some(device_id);
+    let selected = view.device_panel.is_selected(device_id);
     let device_view = view
         .device_panel
         .views
@@ -1719,7 +1866,12 @@ fn render_effect(
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
-        .capture_any_mouse_down(device_selection_listener(device_id, cx))
+        .capture_any_mouse_down(device_selection_listener(
+            device_id,
+            view.project_generation,
+            view.device_panel.owner,
+            cx,
+        ))
         .child(rendered)
         .child(gain_meters::render(
             view,
@@ -2068,7 +2220,7 @@ fn render_instrument(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let device_id = device.id();
-    let selected = view.device_panel.selected_device == Some(device_id);
+    let selected = view.device_panel.is_selected(device_id);
     let cached = view
         .device_panel
         .views
@@ -2311,7 +2463,12 @@ fn render_instrument(
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
-        .capture_any_mouse_down(device_selection_listener(device_id, cx))
+        .capture_any_mouse_down(device_selection_listener(
+            device_id,
+            view.project_generation,
+            view.device_panel.owner,
+            cx,
+        ))
         .child(rendered)
         .child(gain_meters::render(
             view,

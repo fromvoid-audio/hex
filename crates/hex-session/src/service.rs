@@ -428,11 +428,39 @@ pub enum TrackClipboardAction {
     },
 }
 
+/// Device clipboard intents are revision-bound; the worker retains copied state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceClipboardAction {
+    Copy {
+        owner: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+    },
+    Cut {
+        owner: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+    },
+    Paste {
+        owner: hex_project::DeviceChainOwner,
+        before: Option<hex_project::DeviceId>,
+    },
+    Duplicate {
+        source: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+        destination: hex_project::DeviceChainOwner,
+        before: Option<hex_project::DeviceId>,
+    },
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 // Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    DeviceClipboard {
+        project_generation: u64,
+        revision: u64,
+        action: DeviceClipboardAction,
+    },
     TrackClipboard {
         project_generation: u64,
         revision: u64,
@@ -1833,6 +1861,7 @@ fn run_worker(
     let mut range_clipboard: Option<ArrangementClipboard> = None;
     // Typed clipboard contexts are independent; both expire with the document.
     let mut track_clipboard: Option<Arc<hex_project::TrackClipboard>> = None;
+    let mut device_clipboard: Option<Arc<hex_project::DeviceClipboard>> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
@@ -2215,6 +2244,7 @@ fn run_worker(
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
         let mut cut_clipboard = None;
+        let mut cut_device_clipboard = None;
         let automation_source_error = match &request {
             Request::DeviceAutomation {
                 project_generation: generation,
@@ -2267,6 +2297,67 @@ fn run_worker(
                 Some(reason) => Err(reason.into()),
                 None => device_automation_control::command(&session, edit),
             }),
+            Request::DeviceClipboard {
+                project_generation: generation,
+                revision: source_revision,
+                action,
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(Err("device clipboard canceled · project changed".into()))
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some(Err(
+                        "finish or cancel the active gesture before copying devices".into(),
+                    ))
+                } else {
+                    match action {
+                        DeviceClipboardAction::Copy { .. } => None,
+                        DeviceClipboardAction::Cut { owner, selected } => Some(
+                            session
+                                .project()
+                                .capture_devices(*owner, selected)
+                                .map(|captured| {
+                                    cut_device_clipboard = Some(Arc::new(captured));
+                                    Command::RemoveDevices {
+                                        owner: *owner,
+                                        selected: selected.clone(),
+                                    }
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                        DeviceClipboardAction::Paste { owner, before } => Some(
+                            device_clipboard
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    "device clipboard is empty · copy devices first".to_owned()
+                                })
+                                .map(|clipboard| Command::PasteDevices {
+                                    clipboard: Arc::clone(clipboard),
+                                    owner: *owner,
+                                    before: *before,
+                                }),
+                        ),
+                        DeviceClipboardAction::Duplicate {
+                            source,
+                            selected,
+                            destination,
+                            before,
+                        } => Some(
+                            session
+                                .project()
+                                .capture_devices(*source, selected)
+                                .map(|clipboard| Command::PasteDevices {
+                                    clipboard: Arc::new(clipboard),
+                                    owner: *destination,
+                                    before: *before,
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                    }
+                }
+            }
             Request::TrackClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -2878,6 +2969,12 @@ fn run_worker(
                     | Request::Edit(_)
                     | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
+                    | Request::DeviceClipboard {
+                        action: DeviceClipboardAction::Cut { .. }
+                            | DeviceClipboardAction::Paste { .. }
+                            | DeviceClipboardAction::Duplicate { .. },
+                        ..
+                    }
                     | Request::TrackClipboard {
                         action: TrackClipboardAction::Cut(_)
                             | TrackClipboardAction::Duplicate { .. }
@@ -2906,6 +3003,7 @@ fn run_worker(
                     | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
                     | Request::TrackClipboard { .. }
+                    | Request::DeviceClipboard { .. }
                     | Request::ReorderTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
@@ -4462,6 +4560,19 @@ fn run_worker(
                         }
                         Err(reason) => error = Some(reason),
                     }
+                }
+                Request::DeviceClipboard {
+                    action: DeviceClipboardAction::Copy { owner, selected },
+                    ..
+                } => match session.project().capture_devices(owner, &selected) {
+                    Ok(captured) => {
+                        device_clipboard = Some(Arc::new(captured));
+                        status = Some("devices copied".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                },
+                Request::DeviceClipboard { .. } => {
+                    error = Some("device clipboard request was not resolved".into())
                 }
                 Request::TrackClipboard {
                     action: TrackClipboardAction::Copy(tracks),
@@ -6438,7 +6549,13 @@ fn run_worker(
         {
             track_clipboard = Some(captured);
         }
+        if created.is_some()
+            && let Some(captured) = cut_device_clipboard
+        {
+            device_clipboard = Some(captured);
+        }
         if project_replaced {
+            device_clipboard = None;
             track_clipboard = None;
             if let Some(input) = audition_activation.take() {
                 input.cancel();
@@ -7439,6 +7556,9 @@ mod clip_move_tests;
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
 
+#[cfg(test)]
+#[path = "service/device_clipboard_tests.rs"]
+mod device_clipboard_tests;
 #[cfg(test)]
 #[path = "service/track_clipboard_tests.rs"]
 mod track_clipboard_tests;

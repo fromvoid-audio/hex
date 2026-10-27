@@ -479,7 +479,9 @@ pub struct SessionPlayback {
     release_order_scratch: u64,
     suppressions: Vec<MidiOccurrenceSuppression>,
     suppression_scratch: Vec<MidiOccurrenceSuppression>,
-    spans: MidiSpanBuffer,
+    // Keep the fixed large span payload out of by-value constructor temporaries.
+    // Its stable Box is allocated on control and retired with this runtime.
+    spans: Box<MidiSpanBuffer>,
     analytic_import: analytic_import::ImportPlan,
     performance_frame: u64,
     arrangement_frame: u64,
@@ -1816,17 +1818,42 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        let scalar_automation = match revision.scalar_automation.as_ref() {
+            Some(_) => {
+                let input = revision
+                    .native_parameter_input_target()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let arrival = revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .parameter_arrival(input)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                Some(Box::new(
+                    crate::scalar_automation::State::new(input, arrival)
+                        .map_err(|_| SessionPlaybackError::Allocation)?,
+                ))
+            }
+            None => None,
+        };
         let analytic_import = analytic_import::ImportPlan::new()?;
         let current_sampler_keyboards = Vec::new();
         let current_route_cut_scratch = Vec::new();
-        let native_parameter_state = revision
-            .native_parameter_input_target()
-            .map(|_| Box::new(native_parameter_input::State::default()));
+        let native_parameter_state = revision.native_parameter_input_target().map(|_| {
+            Box::new(native_parameter_input::State {
+                scalar: scalar_automation,
+                ..Default::default()
+            })
+        });
         if let Some(allowance) = linear_resource_allowance {
             let actual = preroll::RuntimeStorage {
                 live_expression: false,
                 computer_keyboard: None,
                 native_parameter_state: native_parameter_state.is_some(),
+                scalar_automation: native_parameter_state
+                    .as_deref()
+                    .is_some_and(|state| state.scalar.is_some()),
                 compensation: compensation.as_ref(),
                 main_chain: &main_chain,
                 current_sampler_keyboards: &current_sampler_keyboards,
@@ -1916,7 +1943,7 @@ impl SessionPlayback {
             release_order_scratch: 0,
             suppressions,
             suppression_scratch,
-            spans: MidiSpanBuffer::default(),
+            spans: Box::new(MidiSpanBuffer::default()),
             analytic_import,
             performance_frame: 0,
             arrangement_frame: 0,

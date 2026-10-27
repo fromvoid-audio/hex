@@ -3,7 +3,7 @@ use super::*;
 use crate::MidiTiming;
 use crate::{
     Invalid, PlaybackAction, PlaybackActionError, PlaybackCommand, StreamChunkWindow,
-    StreamPageExtent,
+    StreamResourceExtent,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -208,7 +208,7 @@ impl SessionPlayback {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.validate_stream_action(prepared)
             .map_err(|e| Invalid(e.diagnostic_message()))?;
@@ -260,7 +260,7 @@ impl SessionPlayback {
         if prepared.playing_after_commit() {
             self.project_due_stream_routes(performance, anchor)?;
         }
-        self.visit_stream_chunk_in_scope(
+        self.visit_stream_chunk_with_history(
             prepared.ordinary,
             &self.route_scratch,
             performance,
@@ -270,9 +270,17 @@ impl SessionPlayback {
             prepared.playing_after_commit(),
             maximum_frames,
             visit,
+            if matches!(&prepared.resolved, Resolved::Seek { .. }) {
+                super::stream_demand::ScalarOriginHistory::Empty
+            } else {
+                super::stream_demand::ScalarOriginHistory::Current(self)
+            },
         )
     }
-    fn project_stream_arrangement(&self, performance: u64) -> Result<(u64, u64), Invalid> {
+    pub(super) fn project_stream_arrangement(
+        &self,
+        performance: u64,
+    ) -> Result<(u64, u64), Invalid> {
         let delta = performance
             .checked_sub(self.performance_frame)
             .ok_or(Invalid("stream projection precedes current clock"))?;
@@ -321,7 +329,7 @@ impl SessionPlayback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.visit_pending_stream_chunk_in_scope(due, maximum_frames, visit, false)
     }
@@ -329,7 +337,7 @@ impl SessionPlayback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
         ordinary: bool,
     ) -> Result<StreamChunkWindow, Invalid> {
         if (!ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()))
@@ -386,7 +394,7 @@ impl crate::playback::Playback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?
@@ -396,7 +404,7 @@ impl crate::playback::Playback {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?
@@ -406,7 +414,7 @@ impl crate::playback::Playback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?
