@@ -4070,15 +4070,18 @@ impl EditorView {
                 if self.stopped_playback_restore.is_some() {
                     return false;
                 }
-                self.latency_rebuild = None;
-                if self.applied_project_revision == Some(project.revision)
-                    && !self.edit_pending()
-                    && self.pending_audio_commands.is_empty()
-                {
-                    self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
-                    return true;
+                if self.applied_project_revision != Some(project.revision) {
+                    self.latency_rebuild = None;
+                    return false;
                 }
-                false
+                // The project event may arrive after the matching audio ACK.
+                // Keep the resume intent until its edit/command queues drain.
+                if self.edit_pending() || !self.pending_audio_commands.is_empty() {
+                    return false;
+                }
+                self.latency_rebuild = None;
+                self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+                true
             }
         }
     }
