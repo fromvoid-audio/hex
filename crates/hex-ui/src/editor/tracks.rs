@@ -2766,8 +2766,10 @@ impl EditorView {
                 .child(
                     div()
                         .absolute()
-                        .left(px(border))
-                        .right(px(border))
+                        // Match the clip body's physical-pixel leading border
+                        // and separately painted trailing edge.
+                        .left(px(if border > 0.0 { stroke } else { 0.0 }))
+                        .right_0()
                         .top(px(border))
                         .bottom(px(border))
                         .children([foreground]),
