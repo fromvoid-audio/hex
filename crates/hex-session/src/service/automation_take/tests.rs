@@ -173,6 +173,14 @@ fn completed_take_content_queries_match_chronological_last_pass_replay() {
         assert_eq!(source.event_count(), events.len() as u64);
         for frame in 0..40 {
             assert_eq!(
+                source
+                    .captured_coverage()
+                    .iter()
+                    .flatten()
+                    .any(|range| range.contains(&frame)),
+                expected.contains_key(&frame)
+            );
+            assert_eq!(
                 source.value_at_on_control(frame).unwrap(),
                 expected.get(&frame).copied(),
                 "case={case} frame={frame}"
@@ -187,6 +195,103 @@ fn completed_take_content_queries_match_chronological_last_pass_replay() {
             preview,
             positions.map(|frame| expected.get(&frame).copied())
         );
+        drop(source);
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+}
+
+#[test]
+fn projected_preview_matches_forward_replay_with_collisions_and_exclusive_coverage() {
+    use hex_project::{BeatTime, Tempo, TempoMap, TempoPoint};
+    let files = Files::new();
+    let region = LoopRegion::new(3, 8, true).unwrap();
+    for (case, (content, pass, duration, region)) in [
+        (1, 0, 24, Some(region)),
+        (7, 0, 2, Some(region)),
+        (5, 7, 11, Some(region)),
+        (9, 0, 24, Some(region)),
+        (2, 0, 1, None),
+        (1, 0, 0, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let offsets: Vec<_> = [0, 1, 1, 3, 9, duration]
+            .into_iter()
+            .filter(|d| *d <= duration)
+            .collect();
+        let (events, end, expected_source) = history(content, pass, duration, region, &offsets);
+        let path = files.path(&format!("projected-{case}"));
+        write(&path, Some(region), &events, DraftTerminal::Finished(end));
+        let original = fs::read(&path).unwrap();
+        let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+        let captured = source.source().tempo_map().clone();
+        let maps = [
+            captured.clone(),
+            TempoMap::constant(48_000, Tempo::new(240_000_000).unwrap()).unwrap(),
+            TempoMap::constant(96_000, Tempo::new(60_000_000).unwrap()).unwrap(),
+            TempoMap::constant(8_000, Tempo::new(1_000_000_000).unwrap()).unwrap(),
+            TempoMap::new(
+                48_000,
+                vec![
+                    TempoPoint::new(BeatTime::ZERO, Tempo::new(60_000_000).unwrap()),
+                    TempoPoint::new(
+                        BeatTime::from_raw(2_000_000),
+                        Tempo::new(350_000_000).unwrap(),
+                    ),
+                ],
+            )
+            .unwrap(),
+        ];
+        // Derive contiguous source coverage from chronological replay, without
+        // using the analytical source ranges or projection locator under test.
+        let mut ranges: Vec<std::ops::Range<u64>> = Vec::new();
+        for &frame in expected_source.keys() {
+            if let Some(last) = ranges.last_mut().filter(|last| last.end == frame) {
+                last.end += 1;
+            } else {
+                ranges.push(frame..frame + 1);
+            }
+        }
+        for destination in maps {
+            let forward = |frame| {
+                destination
+                    .beat_to_frame(captured.frame_to_beat(frame).unwrap())
+                    .unwrap()
+            };
+            let mut expected = BTreeMap::new();
+            for range in &ranges {
+                let mut changes = BTreeMap::new();
+                for frame in range.clone() {
+                    changes.insert(forward(frame), expected_source[&frame]);
+                }
+                for frame in forward(range.start)..forward(range.end) {
+                    expected.insert(frame, *changes.range(..=frame).next_back().unwrap().1);
+                }
+            }
+            let positions: Vec<_> = (0..140).rev().collect();
+            for frames in positions.chunks(MAX_PREVIEW_QUERIES) {
+                let mut actual = vec![None; frames.len()];
+                source
+                    .read_projected_preview_on_control(&destination, frames, &mut actual)
+                    .unwrap();
+                let coverage = source.projected_coverage(&destination).unwrap();
+                for (&frame, value) in frames.iter().zip(actual) {
+                    assert_eq!(
+                        value,
+                        expected.get(&frame).copied(),
+                        "case={case} destination={frame}"
+                    );
+                    assert_eq!(
+                        coverage
+                            .iter()
+                            .flatten()
+                            .any(|range| range.contains(&frame)),
+                        expected.contains_key(&frame)
+                    );
+                }
+            }
+        }
         drop(source);
         assert_eq!(fs::read(&path).unwrap(), original);
     }
@@ -366,6 +471,50 @@ fn release_rate_overflow_and_preview_failures_preserve_original_drafts() {
             .is_err()
     );
     assert_eq!(preview, [None; 2]);
+    let destination = source.source().tempo_map().clone();
+    preview.fill(Some(events[0]));
+    assert!(
+        source
+            .read_projected_preview_on_control(&destination, &[10, 40], &mut preview)
+            .is_err()
+    );
+    assert_eq!(preview, [None; 2]);
+}
+
+#[test]
+fn unrepresentable_projected_coverage_is_an_error_even_outside_the_touch() {
+    let files = Files::new();
+    let event = AppliedEvent {
+        sequence: 1,
+        performance_frame: 1,
+        content_frame: u64::MAX - 10,
+        loop_pass: 0,
+        value: AutomationValue::new(0.5).unwrap(),
+    };
+    let path = files.path("unrepresentable-projection");
+    write(
+        &path,
+        Some(None),
+        &[event],
+        DraftTerminal::Finished(DraftClock {
+            performance_frame: 3,
+            content_frame: u64::MAX - 8,
+            loop_pass: 0,
+        }),
+    );
+    let original = fs::read(&path).unwrap();
+    let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let destination = source.source().tempo_map().clone();
+    assert!(source.projected_coverage(&destination).is_err());
+    let mut output = [Some(event)];
+    assert!(
+        source
+            .read_projected_preview_on_control(&destination, &[0], &mut output)
+            .is_err()
+    );
+    assert_eq!(output, [None]);
+    drop(source);
+    assert_eq!(fs::read(&path).unwrap(), original);
 }
 
 #[test]
@@ -446,6 +595,57 @@ fn profile_completed_automation_queries() {
         println!(
             "completed_automation_queries trial={trial} events={EVENTS} warmup_queries=128 measured_queries={QUERIES} validated_open_seconds={validated_open_seconds:.6} query_seconds={query_seconds:.6} mean_query_microseconds={:.3} max_binary_search_steps=17 max_record_reads_per_step=2",
             query_seconds * 1e6 / QUERIES as f64
+        );
+    }
+    let captured = fixture().0.tempo_map().clone();
+    let destination =
+        hex_project::TempoMap::constant(48_000, hex_project::Tempo::new(173_000_000).unwrap())
+            .unwrap();
+    let forward = |frame| {
+        destination
+            .beat_to_frame(captured.frame_to_beat(frame).unwrap())
+            .unwrap()
+    };
+    let placed: Vec<_> = events
+        .iter()
+        .map(|event| (forward(event.content_frame), *event))
+        .collect();
+    let end = forward(EVENTS * 256);
+    let positions: Vec<_> = (0..QUERIES)
+        .map(|query| (query * 104_729 + 127) % end)
+        .collect();
+    let expected: Vec<_> = positions
+        .iter()
+        .map(|frame| placed[placed.partition_point(|(at, _)| at <= frame) - 1].1)
+        .collect();
+    for trial in 0..3 {
+        let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+        let mut output = [None; MAX_PREVIEW_QUERIES];
+        for _ in 0..2 {
+            source
+                .read_projected_preview_on_control(
+                    &destination,
+                    &positions[..MAX_PREVIEW_QUERIES],
+                    &mut output,
+                )
+                .unwrap();
+        }
+        let start = Instant::now();
+        for (frames, expected) in positions
+            .chunks(MAX_PREVIEW_QUERIES)
+            .zip(expected.chunks(MAX_PREVIEW_QUERIES))
+        {
+            source
+                .read_projected_preview_on_control(&destination, frames, &mut output)
+                .unwrap();
+            for (actual, expected) in output.iter().zip(expected) {
+                assert_eq!(*actual, Some(*expected));
+            }
+        }
+        let seconds = start.elapsed().as_secs_f64();
+        println!(
+            "projected_automation_queries trial={trial} events={EVENTS} warmup_queries=128 measured_queries={QUERIES} batch_queries={MAX_PREVIEW_QUERIES} captured_tempo=120000000 destination_tempo=173000000 query_seconds={seconds:.6} mean_query_microseconds={:.3}",
+            seconds * 1e6 / QUERIES as f64
         );
     }
 }
