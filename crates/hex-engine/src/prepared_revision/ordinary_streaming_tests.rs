@@ -11,7 +11,130 @@ use std::collections::BTreeMap;
 struct Pages<'a> {
     samples: &'a [Frame],
     key: StreamSourceKey,
-    extents: &'a [crate::StreamPageExtent],
+    extents: &'a [crate::StreamResourceExtent],
+}
+
+#[test]
+fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
+    let mut f = crate::signal_graph::tests::fixture(&[&[]], 1024);
+    let asset = *f.media.keys().next().unwrap();
+    let key = StreamSourceKey::new(31, asset);
+    let sources = BTreeMap::from([(
+        asset,
+        PreparedAudioSource::Streamed(Arc::new(
+            StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                1024,
+                1024,
+                hex_project::IDENTITY_CONVERSION,
+                [31; 32],
+            )
+            .unwrap(),
+        )),
+    )]);
+    f.editor
+        .execute(hex_project::Command::SetLoopRegion {
+            start: 0,
+            end: 127,
+            enabled: true,
+        })
+        .unwrap();
+    f.editor
+        .execute(hex_project::Command::InsertDevice {
+            track: f.tracks[0],
+            before: None,
+            state: crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Effect,
+                crate::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let effects = hex_devices::native_registry().unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let streamed = Arc::new(
+        PreparedRevision::prepare_with_source_bank(
+            f.editor.project(),
+            crate::compile::SourceBank::Mixed(&sources, 31),
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &instruments,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            None,
+            None,
+        )
+        .unwrap(),
+    );
+    let resident = Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut actual = Playback::from_prepared(streamed);
+    let mut oracle = Playback::from_prepared(resident);
+    for playback in [&mut actual, &mut oracle] {
+        playback.apply(PlaybackCommand::Play);
+    }
+    let context = crate::AudioSourceContext {
+        project_generation: 9,
+        editor_revision: 2,
+    };
+    for count in [64, 63, 17, 257, 512] {
+        let mut expected = vec![[0.0; 2]; count];
+        oracle.render(&mut expected).unwrap();
+        let mut observed = vec![[0.0; 2]; count];
+        let mut offset = 0;
+        while offset < count {
+            let position = actual.position();
+            let mut extents = Vec::new();
+            let window = actual
+                .stream_playback(context)
+                .visit_next_stream_chunk(count - offset, None, &mut |extent| {
+                    extents.push(extent);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(
+                window.frames,
+                (count - offset).min(256).min(127 - position as usize)
+            );
+            assert_eq!(
+                extents,
+                [crate::StreamResourceExtent {
+                    source: key.into(),
+                    page_index: 0,
+                    start: position as usize,
+                    end: position as usize + window.frames,
+                }]
+            );
+            actual
+                .stream_playback(context)
+                .render_with_pages_and_signal_observers(
+                    &mut observed[offset..offset + window.frames],
+                    &mut Pages {
+                        samples: &f.samples,
+                        key,
+                        extents: &extents,
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+            offset += window.frames;
+        }
+        assert_eq!(observed, expected);
+        assert_eq!(
+            (actual.position(), actual.performance_frame()),
+            (oracle.position(), oracle.performance_frame())
+        );
+    }
 }
 
 #[test]
@@ -46,6 +169,7 @@ fn callback_demand_skips_muted_source_without_a_raw_audio_consumer() {
             &hex_devices::native_registry().unwrap(),
             &hex_devices::native_instrument_registry().unwrap(),
             &crate::audio_transform::AudioTransformPreparation::default(),
+            None,
             None,
         )
         .unwrap(),
@@ -127,6 +251,7 @@ fn callback_demand_retains_muted_source_for_compensated_graph() {
             &instruments,
             &crate::audio_transform::AudioTransformPreparation::default(),
             None,
+            None,
         )
         .unwrap(),
     );
@@ -148,7 +273,7 @@ fn callback_demand_retains_muted_source_for_compensated_graph() {
     assert!(
         extents
             .iter()
-            .any(|row| row.source == key && row.start == 0 && row.end == 32)
+            .any(|row| row.source == key.into() && row.start == 0 && row.end == 32)
     );
     let mut output = [[0.0; 2]; 32];
     playback
@@ -171,7 +296,7 @@ impl MediaPages for Pages<'_> {
         assert!(
             self.extents
                 .iter()
-                .any(|extent| extent.source == key && extent.page_index == index)
+                .any(|extent| extent.source == key.into() && extent.page_index == index)
         );
         (key == self.key && index == 0).then_some(BorrowedMediaPage {
             page_index: 0,
@@ -251,6 +376,7 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
             &instruments,
             &crate::audio_transform::AudioTransformPreparation::default(),
             None,
+            None,
         )
         .unwrap(),
     );
@@ -298,7 +424,7 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
                 .stream_playback(context)
                 .visit_prepared_stream_action(&prepared, 32, &mut |_| Ok(()))
                 .unwrap();
-            assert_eq!(window.frames, 1);
+            assert_eq!(window.frames, 32);
             assert_eq!((actual.position(), actual.performance_frame()), old);
             actual
                 .stream_playback(context)
@@ -321,7 +447,8 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
                 .unwrap();
             assert_eq!(callback.frames, count);
             assert_eq!((actual.position(), actual.performance_frame()), before);
-            for offset in 0..count {
+            let mut offset = 0;
+            while offset < count {
                 let clock = (actual.position(), actual.performance_frame());
                 let mut extents = Vec::new();
                 let window = actual
@@ -332,8 +459,9 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
                     })
                     .unwrap();
                 assert_eq!(
-                    window.frames, 1,
-                    "positive latency uses the actual renderer's one-frame source quantum"
+                    window.frames,
+                    (count - offset).min(256),
+                    "demand may cover a bounded transaction while routing remains sample-accurate"
                 );
                 assert_eq!((actual.position(), actual.performance_frame()), clock);
                 for extent in &extents {
@@ -350,7 +478,7 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
                 actual
                     .stream_playback(context)
                     .render_with_pages_and_signal_observers(
-                        &mut observed[offset..offset + 1],
+                        &mut observed[offset..offset + window.frames],
                         &mut Pages {
                             samples: &f.samples,
                             key,
@@ -360,6 +488,7 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
                         None,
                     )
                     .unwrap();
+                offset += window.frames;
             }
             assert_eq!(observed, expected);
             assert_eq!(
@@ -377,7 +506,7 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
             Ok(())
         })
         .unwrap();
-    assert_eq!(window.frames, 1);
+    assert_eq!(window.frames, 32);
     assert_eq!((actual.position(), actual.performance_frame()), clock);
     successor.try_inherit_runtime_from(&mut actual).unwrap();
     resident_successor
@@ -466,6 +595,7 @@ fn main_only_latency_and_retired_main_history_keep_batched_ordinary_stream_deman
                 &effects,
                 &instruments,
                 &crate::audio_transform::AudioTransformPreparation::default(),
+                None,
                 None,
             )
             .unwrap(),
@@ -558,8 +688,8 @@ fn main_only_latency_and_retired_main_history_keep_batched_ordinary_stream_deman
                 }
                 assert_eq!(
                     extents,
-                    [crate::StreamPageExtent {
-                        source: key,
+                    [crate::StreamResourceExtent {
+                        source: key.into(),
                         page_index: 0,
                         start: clock.0 as usize,
                         end: clock.0 as usize + window.frames,

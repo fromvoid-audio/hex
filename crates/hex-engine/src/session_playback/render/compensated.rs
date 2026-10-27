@@ -53,6 +53,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -125,34 +126,44 @@ impl SessionPlayback {
                             pages.as_deref_mut(),
                             SourceStage::Audio,
                         )?;
-                        render_source_instrument_chunk(
-                            RouteSourceContext {
-                                revision: &self.revision,
-                                midi: crate::session_inventory::EffectiveSessionMidi::new(
-                                    self.revision.session(),
-                                    self.midi_admission.as_ref(),
-                                ),
-                                route: effective_midi_route(
-                                    &self.revision,
-                                    &self.route_scratch,
+                        // An ordinary arrangement audio track without a MIDI
+                        // source cannot contribute instrument samples. Shared
+                        // sources and session routes must still use the normal
+                        // scheduler, even when this track has no local instrument.
+                        if track.instrument.is_some()
+                            || track.midi_source_index.is_some()
+                            || self.revision.source_routing().is_shared(index)
+                            || !matches!(route.owner, RouteOwner::Arrangement)
+                        {
+                            render_source_instrument_chunk(
+                                RouteSourceContext {
+                                    revision: &self.revision,
+                                    midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                        self.revision.session(),
+                                        self.midi_admission.as_ref(),
+                                    ),
+                                    route: effective_midi_route(
+                                        &self.revision,
+                                        &self.route_scratch,
+                                        index,
+                                    )?,
+                                    historical_floor: self.historical_floor_for(index),
+                                    suppressions: &self.suppression_scratch,
+                                    continuations: &self.analytic_continuations,
                                     index,
-                                )?,
-                                historical_floor: self.historical_floor_for(index),
-                                suppressions: &self.suppression_scratch,
-                                continuations: &self.analytic_continuations,
-                                index,
-                                raw: true,
-                                timing: &timing,
-                                table: self.revision.session().sine_table(),
-                            },
-                            &self.route_scratch,
-                            self.historical_floor,
-                            &self.route_historical_floors,
-                            &mut self.spans,
-                            performance_frame,
-                            arrangement_frame,
-                            &mut generator,
-                        )?;
+                                    raw: true,
+                                    timing: &timing,
+                                    table: self.revision.session().sine_table(),
+                                },
+                                &self.route_scratch,
+                                self.historical_floor,
+                                &self.route_historical_floors,
+                                &mut self.spans,
+                                performance_frame,
+                                arrangement_frame,
+                                &mut generator,
+                            )?;
+                        }
                         if self.source_input_receiver() == Some(index) {
                             let authored = self
                                 .revision
@@ -292,6 +303,10 @@ impl SessionPlayback {
                             self.device_metering,
                             foreign,
                             observer,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     let override_gain = self
@@ -405,6 +420,10 @@ impl SessionPlayback {
                             frame_offset,
                             foreign,
                             observer,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(matrix) = bus.matrix {
@@ -456,8 +475,7 @@ impl SessionPlayback {
             output[0][0] += scratch[0][0];
             output[0][1] += scratch[0][1];
         }
-        // Only zero-latency routed layouts admit detached old chains. Positive
-        // latency revisions refuse those transitions before moving audible owners.
+        // Render detached tails not already routed through a compensated track.
         self.render_detached_tails(
             performance_frame,
             arrangement_frame,

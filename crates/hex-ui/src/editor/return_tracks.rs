@@ -277,10 +277,23 @@ impl EditorView {
                 div()
                     .w_full()
                     .flex()
-                    .flex_col()
+                    .items_center()
                     .gap(px(2.0))
-                    .child(track_name_view)
-                    .child(controls),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(track_name_view)
+                            .child(controls),
+                    )
+                    .children([super::track_meters::render_return(
+                        id,
+                        self.track_meters.return_level(id),
+                        RETURN_ROW_HEIGHT,
+                    )]),
             )
             .children(selected.then(|| {
                 super::track_header::selection_outline(format!(

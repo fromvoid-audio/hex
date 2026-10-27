@@ -2577,6 +2577,7 @@ dependencies = [
  "hex-plugin-scan",
  "hex-plugin-state",
  "hex-project",
+ "hex-storage",
  "hex-stream",
  "hex-tuning",
  "qos-threads",
@@ -2800,6 +2801,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2810,6 +2812,7 @@ dependencies = [
  "hex-engine",
  "hex-media",
  "hex-project",
+ "hex-storage",
  "rtrb",
  "sha2 0.11.0",
 ]

@@ -12,10 +12,7 @@ pub(super) fn render(
         return empty_panel("effect target is no longer available");
     };
     let alive: HashSet<_> = devices.iter().map(hex_project::Device::id).collect();
-    view.device_panel.selected_device = view
-        .device_panel
-        .selected_device
-        .filter(|id| alive.contains(id));
+    view.device_panel.reconcile_selection(&alive);
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
@@ -217,7 +214,7 @@ pub(super) fn render_return_effect(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let id = device.id();
-    let selected = view.device_panel.selected_device == Some(id);
+    let selected = view.device_panel.is_selected(id);
     let device_view = view
         .device_panel
         .views
@@ -415,7 +412,12 @@ pub(super) fn render_return_effect(
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
-        .capture_any_mouse_down(device_selection_listener(id, cx))
+        .capture_any_mouse_down(device_selection_listener(
+            id,
+            view.project_generation,
+            view.device_panel.owner,
+            cx,
+        ))
         .child(rendered)
         .child(super::gain_meters::render(
             view,

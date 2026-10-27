@@ -5,6 +5,7 @@
 //! replacement removes an authored envelope: lane visibility and dashed previews
 //! are transient UI state, and never override the device's base parameter value.
 use crate::{BeatTime, Created, Device, DeviceId, Invalid, Project};
+pub use hex_lattice_contract::DeviceAutomationTarget;
 use hex_lattice_contract::ParameterId;
 
 pub const MAX_DEVICE_AUTOMATION_LANES: usize = 256;
@@ -37,12 +38,26 @@ pub struct AutomationPoint {
     pub value: AutomationValue,
     pub outgoing: AutomationInterpolation,
 }
+/// Persisted read selection, independent of the retained authored points.
+/// Base selects the ordinary device value; Authored resumes the envelope at the
+/// current content origin. It never stores an effective DSP/modulation value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AutomationReadSelection {
+    #[default]
+    Authored,
+    Base,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceAutomation {
-    pub parameter: ParameterId,
+    pub read_selection: AutomationReadSelection,
+    pub target: DeviceAutomationTarget,
     pub points: Vec<AutomationPoint>,
 }
 impl DeviceAutomation {
+    pub fn is_reading(&self) -> bool {
+        self.read_selection == AutomationReadSelection::Authored
+    }
+
     /// Evaluate a validated normalized envelope on canonical Arrangement time.
     /// Endpoint values hold outside the authored range; a preview has no points
     /// and returns None. This read-only query never allocates or patches DSP.
@@ -79,14 +94,15 @@ pub fn validate_device_automation(lanes: &[DeviceAutomation]) -> Result<(), Inva
     }
     let mut previous = None;
     for lane in lanes {
-        ParameterId::new(lane.parameter.value())
+        lane.target
+            .validate()
             .map_err(|_| Invalid("invalid automation parameter identity"))?;
-        if previous.is_some_and(|id| id >= lane.parameter) {
+        if previous.is_some_and(|target| target >= lane.target) {
             return Err(Invalid(
                 "device automation parameters must strictly increase",
             ));
         }
-        previous = Some(lane.parameter);
+        previous = Some(lane.target);
         validate_points(&lane.points)?;
     }
     Ok(())
@@ -105,19 +121,32 @@ impl Device {
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
     ) -> Result<(), Invalid> {
-        if !self.automation.is_empty() && self.state.type_id() != state.type_id() {
+        if self
+            .automation
+            .iter()
+            .any(|lane| matches!(lane.target, DeviceAutomationTarget::Parameter(_)))
+            && self.state.type_id() != state.type_id()
+        {
             return Err(Invalid(
                 "clear automation before replacing a device provider",
             ));
         }
         Ok(())
     }
+    /// Only the selected playback envelopes. Authored inventory and budgets
+    /// still include overridden lanes, whose points remain editable and saved.
+    pub fn reading_automation(&self) -> impl Iterator<Item = &DeviceAutomation> + Clone {
+        self.automation.iter().filter(|lane| lane.is_reading())
+    }
     pub fn automation(&self) -> &[DeviceAutomation] {
         &self.automation
     }
     pub fn automation_lane(&self, parameter: ParameterId) -> Option<&DeviceAutomation> {
+        self.automation_target(DeviceAutomationTarget::Parameter(parameter))
+    }
+    pub fn automation_target(&self, target: DeviceAutomationTarget) -> Option<&DeviceAutomation> {
         self.automation
-            .binary_search_by_key(&parameter, |lane| lane.parameter)
+            .binary_search_by_key(&target, |lane| lane.target)
             .ok()
             .map(|index| &self.automation[index])
     }
@@ -136,6 +165,10 @@ impl Project {
                     .iter()
                     .flat_map(|source| source.devices()),
             )
+    }
+    pub fn has_overridden_device_automation(&self) -> bool {
+        self.automation_devices()
+            .any(|device| device.automation().iter().any(|lane| !lane.is_reading()))
     }
     pub fn has_device_automation(&self) -> bool {
         self.automation_devices()
@@ -156,21 +189,107 @@ impl Project {
         }
         Ok(())
     }
+    pub(crate) fn manual_device_edit(
+        &mut self,
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        targets: Vec<DeviceAutomationTarget>,
+    ) -> Result<Created, Invalid> {
+        if targets.is_empty()
+            || targets.len() > hex_lattice_contract::MAX_PARAMETERS_PER_DEVICE + 2
+            || targets.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(Invalid(
+                "manual parameter targets must be bounded and strictly ordered",
+            ));
+        }
+        for target in &targets {
+            target
+                .validate()
+                .map_err(|_| Invalid("invalid manual parameter target"))?;
+        }
+        self.edit_device(device, move |entry| {
+            entry.replace_state(state)?;
+            for lane in &mut entry.automation {
+                if targets.binary_search(&lane.target).is_ok() {
+                    lane.read_selection = AutomationReadSelection::Base;
+                }
+            }
+            Ok(())
+        })?;
+        Ok(Created::None)
+    }
+    pub(crate) fn set_device_automation_read_selection(
+        &mut self,
+        device: DeviceId,
+        target: DeviceAutomationTarget,
+        selection: AutomationReadSelection,
+    ) -> Result<Created, Invalid> {
+        target
+            .validate()
+            .map_err(|_| Invalid("invalid automation target identity"))?;
+        self.edit_device(device, |entry| {
+            let index = entry
+                .automation
+                .binary_search_by_key(&target, |lane| lane.target)
+                .map_err(|_| Invalid("automation lane no longer exists"))?;
+            entry.automation[index].read_selection = selection;
+            Ok(())
+        })?;
+        Ok(Created::None)
+    }
+    pub(crate) fn reenable_device_automation(&mut self) -> Result<Created, Invalid> {
+        let count = self
+            .automation_devices()
+            .filter(|device| device.automation().iter().any(|lane| !lane.is_reading()))
+            .count();
+        let mut devices = Vec::new();
+        devices
+            .try_reserve_exact(count)
+            .map_err(|_| Invalid("could not reserve automation selection edit"))?;
+        devices.extend(
+            self.automation_devices()
+                .filter(|device| device.automation().iter().any(|lane| !lane.is_reading()))
+                .map(Device::id),
+        );
+        for device in devices {
+            self.edit_device(device, |entry| {
+                for lane in &mut entry.automation {
+                    lane.read_selection = AutomationReadSelection::Authored;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(Created::None)
+    }
     pub(crate) fn replace_device_automation(
         &mut self,
         device: DeviceId,
         parameter: ParameterId,
         points: Vec<AutomationPoint>,
     ) -> Result<Created, Invalid> {
-        ParameterId::new(parameter.value())
-            .map_err(|_| Invalid("invalid automation parameter identity"))?;
+        self.replace_device_automation_target(
+            device,
+            DeviceAutomationTarget::Parameter(parameter),
+            points,
+        )
+    }
+    pub(crate) fn replace_device_automation_target(
+        &mut self,
+        device: DeviceId,
+        target: DeviceAutomationTarget,
+        points: Vec<AutomationPoint>,
+    ) -> Result<Created, Invalid> {
+        target
+            .validate()
+            .map_err(|_| Invalid("invalid automation target identity"))?;
         if !points.is_empty() {
             validate_points(&points)?;
         }
         self.edit_device(device, move |device| {
             match device
                 .automation
-                .binary_search_by_key(&parameter, |lane| lane.parameter)
+                .binary_search_by_key(&target, |lane| lane.target)
             {
                 Ok(index) if points.is_empty() => {
                     device.automation.remove(index);
@@ -180,9 +299,14 @@ impl Project {
                     if device.automation.len() == MAX_DEVICE_AUTOMATION_LANES {
                         return Err(Invalid("device automation lane limit reached"));
                     }
-                    device
-                        .automation
-                        .insert(index, DeviceAutomation { parameter, points });
+                    device.automation.insert(
+                        index,
+                        DeviceAutomation {
+                            read_selection: crate::AutomationReadSelection::Authored,
+                            target,
+                            points,
+                        },
+                    );
                 }
                 Err(_) => {}
             }

@@ -28,7 +28,7 @@ ALLOWED = {
     'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract', 'hex-plugin-state'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
-    'hex-stream': {'hex-engine', 'hex-media', 'hex-project'},
+    'hex-stream': {'hex-engine', 'hex-media', 'hex-project', 'hex-storage'},
     'hex-export': {'hex-engine'},
     'hex-library': set(),
     'hex-preferences': set(),
@@ -56,7 +56,7 @@ DEV_ALLOWED = {
     # Actual Session -> native adapter fixtures, never a production editor model.
     'hex-desktop': {'hex-project', 'hex-tuning', 'hex-storage', 'hex-plugin-state'},
     # Actual provider/pair callback allocation probes; never a production edge.
-    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
+    'hex-audio': {'hex-project', 'hex-storage', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
 BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
@@ -64,9 +64,9 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'corem
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream', 'hex-plugin-host'},
               # Safe macOS joining-transport scheduling, never callback calls.
               'qos-threads': {'hex-audio'},
-              # Source/scanner identities and bounded control-side hashes of
-              # the engine's actual retained PCM bank; never callback DSP.
-              'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
+              # Source/scanner identities, automation draft integrity and bounded
+              # control-side hashes of retained PCM; never callback DSP.
+              'sha2': {'hex-storage', 'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
               # Child disposition belongs only to the standalone scanners.
               'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
               # Safe publication/standalone child ownership; host event-only socket readiness.

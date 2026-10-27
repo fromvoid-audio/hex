@@ -97,10 +97,6 @@ fn group(
             .ok_or(Invalid("grouped midi bounds reversed"))?,
     );
     crate::midi::validate_clip(BeatTime::from_raw(start), length)?;
-    let active = first.active();
-    if clips.iter().any(|c| c.active() != active) {
-        return Err(Invalid("grouped clips must have the same activation state"));
-    }
     // Preflight occurrence expansion before allocating or enumerating any loop.
     let count = clips.iter().try_fold(0usize, |count, c| {
         count
@@ -132,6 +128,7 @@ fn group(
             {
                 let mut copy = note.clone();
                 copy.id = NoteId(0);
+                copy.active &= clip.active();
                 copy.start = BeatTime::from_raw(
                     offset
                         .checked_add(occurrence.timeline_start().raw())
@@ -180,7 +177,7 @@ fn group(
     notes.sort_by_key(|n| (n.start(), n.pitch(), n.channel()));
     let mut merged = MidiClip {
         content_view: None,
-        active,
+        active: true,
         playback_offset: BeatTime::ZERO,
         name: first.name().into(),
         flavor: first.flavor(),
@@ -261,27 +258,22 @@ fn audio(
             previous_end = last;
         }
     }
-    if clips.iter().any(|c| c.active() != first.active()) {
-        return Err(Invalid("grouped clips must have the same activation state"));
-    }
     let mut sources = Vec::new();
     let mut events = Vec::new();
     let tempo = Arc::new(project.tempo_map().clone());
     for clip in &clips {
         let offset = clip.start() - start;
-        if clip.has_retained_audio_roots() {
+        let neutral_group = clip.has_retained_audio_roots()
+            && clip.audio_edit().is_some_and(|edit| {
+                edit.content_view.is_none()
+                    && edit.placement.is_none()
+                    && clip.gain() == ClipGain::UNITY
+                    && edit.domain.fade.is_neutral()
+            });
+        if neutral_group {
             let edit = clip
                 .audio_edit()
                 .ok_or(Invalid("grouped audio root missing"))?;
-            if edit.content_view.is_some()
-                || edit.placement.is_some()
-                || clip.gain() != ClipGain::UNITY
-                || !edit.domain.fade.is_neutral()
-            {
-                return Err(Invalid(
-                    "grouped audio with outer processing or repeats cannot be nested; group unprocessed source clips",
-                ));
-            }
             let sequence = edit
                 .domain
                 .events
@@ -317,6 +309,7 @@ fn audio(
                     .try_reserve(1)
                     .map_err(|_| Invalid("could not reserve grouped audio events"))?;
                 events.push(AudioEvent {
+                    active: event.active && clip.active(),
                     fade: event.fade,
                     source,
                     id: events.len() as u64 + 1,
@@ -348,6 +341,7 @@ fn audio(
                 .try_reserve(1)
                 .map_err(|_| Invalid("could not reserve grouped audio events"))?;
             events.push(AudioEvent {
+                active: clip.active(),
                 fade: None,
                 source: id,
                 id: events.len() as u64 + 1,
@@ -361,6 +355,7 @@ fn audio(
         }
     }
     let mut merged = (*first).clone();
+    merged.active = true;
     merged.start = start;
     merged.duration = duration;
     merged.source_offset = 0;

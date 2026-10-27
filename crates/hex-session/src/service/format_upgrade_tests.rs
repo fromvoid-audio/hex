@@ -86,7 +86,14 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         old.as_object_mut().unwrap().remove("device_automation"),
         Some(serde_json::json!([]))
     );
-    for key in ["alias_sources", "alias_members"] {
+    for key in [
+        "alias_sources",
+        "alias_members",
+        "host_automation",
+        "inactive_midi_notes",
+        "inactive_audio_events",
+        "nested_audio",
+    ] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),
             Some(serde_json::json!([]))
@@ -272,4 +279,32 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
     let copied = large_request(&service, Request::SaveNew(copy.clone()));
     assert!(copied.error.is_none(), "{:?}", copied.error);
     assert_eq!(hex_storage::load(copy).unwrap(), *grown.state.project);
+}
+
+#[test]
+fn schema58_save_requires_consent_or_save_as_for_schema60() {
+    let files = Files::new();
+    let path = files.0.join("schema58.hex");
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    let initial = next(&service);
+    let mut prior: serde_json::Value =
+        serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
+    // Empty schema58 uses the same complete envelope and was readable by the old writer.
+    prior["version"] = 58.into();
+    let original = serde_json::to_vec(&prior).unwrap();
+    fs::write(&path, &original).unwrap();
+    let opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(opened.document_format_upgrade_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let refused = request(&service, Request::SaveCurrent);
+    assert!(refused.save_confirmation_required && refused.error.is_some());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let copy = files.0.join("upgraded.hex");
+    let saved = request(&service, Request::SaveNew(copy.clone()));
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert!(!saved.document_format_upgrade_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let upgraded: serde_json::Value = serde_json::from_slice(&fs::read(copy).unwrap()).unwrap();
+    assert_eq!(upgraded["version"], 60);
 }

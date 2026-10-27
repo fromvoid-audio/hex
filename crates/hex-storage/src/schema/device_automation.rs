@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Point {
-    beat_raw: u64,
-    value: f32,
-    outgoing: Interpolation,
+pub(super) struct Point {
+    pub(super) beat_raw: u64,
+    pub(super) value: f32,
+    pub(super) outgoing: Interpolation,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Interpolation {
+pub(super) enum Interpolation {
     Step,
     Linear,
 }
@@ -64,7 +64,7 @@ where
     }
     d.deserialize_seq(Items(limit, std::marker::PhantomData))
 }
-fn points<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Point>, D::Error> {
+pub(super) fn points<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Point>, D::Error> {
     bounded(d, hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE)
 }
 fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> {
@@ -101,7 +101,7 @@ fn lanes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Lane>, D::Error> 
 }
 /// Visit only canonical envelope owners. Track instrument projections remain
 /// empty even when many bindings reference the same retained source envelope.
-fn devices(snapshot: &mut Snapshot) -> impl Iterator<Item = &mut DeviceSnapshot> {
+pub(super) fn devices(snapshot: &mut Snapshot) -> impl Iterator<Item = &mut DeviceSnapshot> {
     snapshot
         .tracks
         .iter_mut()
@@ -121,12 +121,19 @@ fn devices(snapshot: &mut Snapshot) -> impl Iterator<Item = &mut DeviceSnapshot>
         )
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::automation_read::require_authored(project)?;
     let mut rows = Vec::new();
     for device in project.automation_devices() {
         for lane in device.automation() {
             rows.push(Lane {
                 device: device.id().value(),
-                parameter: lane.parameter.value(),
+                parameter: lane
+                    .target
+                    .provider_parameter()
+                    .ok_or(StorageError::Invalid(
+                        "older schema cannot save host automation targets",
+                    ))?
+                    .value(),
                 points: lane
                     .points
                     .iter()
@@ -211,7 +218,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 })
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
-        let lane = DeviceAutomation { parameter, points };
+        let lane = DeviceAutomation {
+            read_selection: hex_project::AutomationReadSelection::Authored,
+            target: hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter),
+            points,
+        };
         hex_project::validate_device_automation(std::slice::from_ref(&lane))
             .map_err(|e| StorageError::Invalid(e.0))?;
         if !known.contains(&row.device) {

@@ -188,6 +188,8 @@ impl GestureMachine {
                     .ok_or(SessionError::Invalid("eq no longer exists"))?;
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
+                        touched_parameters: crate::device_gesture::TouchedParameters::default(),
+                        manual_edit: false,
                         key,
                         target: GestureTarget::EqNodeCreation { device },
                         sequence: 0,
@@ -201,7 +203,9 @@ impl GestureMachine {
                         class,
                         type_id: entry.state().type_id(),
                     },
-                    state_origin: Some(entry.state().clone()),
+                    creation_origin: Some(entry.state().clone()),
+                    origin_parameters: None,
+                    plugin_state_origin: None,
                     plugin_initial: None,
                 });
                 self.last_key = Some(key);
@@ -261,7 +265,7 @@ impl GestureMachine {
         }
         Ok(())
     }
-    pub(super) fn validate_state_origin(
+    pub(super) fn validate_creation_origin(
         &self,
         session: &Session,
         snapshot: GestureSnapshot,
@@ -270,7 +274,7 @@ impl GestureMachine {
         let origin: &NativeDeviceState = self
             .active
             .as_ref()
-            .and_then(|active| active.state_origin.as_ref())
+            .and_then(|active| active.creation_origin.as_ref())
             .ok_or(SessionError::Invalid("eq creation origin is missing"))?;
         let entry = session
             .project()

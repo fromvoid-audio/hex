@@ -38,11 +38,15 @@ fn process_detached_suffix(
         )
     } else {
         chain
+            // Detached chains were frozen by begin_output_tail. The input
+            // clock remains available to foreign DSP, but without retained
+            // compensation stamps no output origin is asserted.
             .process_range_with_foreign(
                 suffix_start..chain.len(),
                 frames,
                 frame_offset,
                 Some(clock),
+                None,
                 foreign,
             )
             .map_err(|_| SessionPlaybackError::DeviceRuntime)
@@ -371,8 +375,33 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        let result =
-            self.render_internal_borrowed(output, pages, observer, capture, sources, foreign);
+        let result = if self.device_metering {
+            // Keep bounded scratch outside the mutable playback borrow; the
+            // revision remains owned by playback until scratch is restored.
+            let revision = Arc::clone(&self.revision);
+            let mut cells = std::mem::take(&mut self.meter_cells);
+            let mut meter = super::meter_capture::MeterCapture {
+                revision: &revision,
+                cells: &mut cells,
+                downstream: capture,
+                invalidated: false,
+            };
+            let result = self.render_internal_borrowed(
+                output,
+                pages,
+                observer,
+                Some(&mut meter),
+                sources,
+                foreign,
+            );
+            if result.is_err() {
+                meter.invalidate();
+            }
+            self.meter_cells = cells;
+            result
+        } else {
+            self.render_internal_borrowed(output, pages, observer, capture, sources, foreign)
+        };
         if result.is_err() {
             foreign.reject_callback();
             output.fill([0.0; 2]);
@@ -389,6 +418,16 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        if let Some(state) = self.native_parameter_state.as_deref_mut() {
+            state.application = None;
+            state.processing = state.input.filter(|_| self.playing).map(|input| {
+                crate::native_parameter_input::Processing::new(
+                    input,
+                    self.performance_frame,
+                    self.revision.arrangement().main_latency_frames(),
+                )
+            });
+        }
         self.begin_midi_capture_render(output.len());
         if self.revision.resource_scope.is_some()
             && self.revision.resource_scope != sources.map(|s| s.id())
@@ -614,6 +653,9 @@ impl SessionPlayback {
             }
         }
         if result.is_ok() {
+            if let Some(state) = self.native_parameter_state.as_deref_mut() {
+                state.application = state.processing.as_ref().and_then(|input| input.applied);
+            }
             self.seal_midi_capture_render();
         }
         result
@@ -622,11 +664,43 @@ impl SessionPlayback {
     fn render_playing<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        // Move only the existing scratch Box, then restore it on every result.
+        // No callback allocation, new owner, or final source/graph drop occurs.
+        let mut scalar = self
+            .native_parameter_state
+            .as_deref_mut()
+            .and_then(|state| state.scalar.take());
+        let result = self.render_playing_with_scalar(
+            output,
+            pages,
+            observer,
+            capture,
+            sources,
+            foreign,
+            scalar.as_deref_mut(),
+        );
+        if let Some(state) = self.native_parameter_state.as_deref_mut() {
+            state.scalar = scalar;
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_playing_with_scalar<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
         mut pages: Option<&mut P>,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        mut scalar: Option<&mut crate::scalar_automation::State>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -671,14 +745,25 @@ impl SessionPlayback {
         let mut output_offset = 0;
         let mut route_changed = false;
         let region = self.active_loop_region();
+        // Pending route frames only change when apply_due_routes consumes them.
+        // Keep the next deadline for this render transaction so compensated
+        // graphs do not rescan every track several times for every sample.
+        let mut next_route = next_pending_frame(&self.route_scratch);
 
         while output_offset < output.len() {
             if let Some(region) = region {
                 (arrangement_frame, arrangement_loop_pass) =
                     normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
             }
-            let (captured_release, applied_route) =
-                self.apply_due_routes(performance_frame, arrangement_frame)?;
+            let (captured_release, applied_route) = if self.current_sampler_console
+                || next_route.is_some_and(|next| next <= performance_frame)
+            {
+                let result = self.apply_due_routes(performance_frame, arrangement_frame)?;
+                next_route = next_pending_frame(&self.route_scratch);
+                result
+            } else {
+                (false, false)
+            };
             route_changed |= applied_route;
             if captured_release {
                 self.release_scratch.sort_unstable_by_key(|entry| {
@@ -703,7 +788,7 @@ impl SessionPlayback {
             if current_first_frame {
                 chunk_frames = chunk_frames.min(1);
             }
-            if let Some(next) = next_pending_frame(&self.route_scratch) {
+            if let Some(next) = next_route {
                 if next > performance_frame {
                     let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
                     chunk_frames = chunk_frames.min(until);
@@ -728,6 +813,65 @@ impl SessionPlayback {
             let chunk_end = output_offset
                 .checked_add(chunk_frames)
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            if let Some(scalar) = scalar.as_deref_mut() {
+                let binding = self
+                    .revision
+                    .scalar_automation
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let endpoint = pages
+                    .as_deref_mut()
+                    .ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
+                if let Some(compensation) = self.compensation.as_ref() {
+                    let delay = scalar.arrival_frames();
+                    if delay == 0 {
+                        scalar.fill(
+                            endpoint,
+                            &binding.source,
+                            arrangement_frame,
+                            chunk_frames,
+                            output_offset,
+                        )
+                    } else {
+                        arrangement_frame
+                            .checked_add(chunk_frames as u64)
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                        scalar.fill_with_origins(
+                            endpoint,
+                            &binding.source,
+                            chunk_frames,
+                            output_offset,
+                            |index| {
+                                crate::compensation::CompensationRuntime::preview_stage_frame(
+                                    Some(&compensation.delays),
+                                    delay,
+                                    index as u64,
+                                    |source_offset| {
+                                        arrangement_frame
+                                            .checked_add(source_offset)
+                                            .map(Some)
+                                            .ok_or(crate::Invalid(
+                                                "scalar automation origin overflow",
+                                            ))
+                                    },
+                                )
+                            },
+                        )
+                    }
+                } else {
+                    scalar.fill(
+                        endpoint,
+                        &binding.source,
+                        arrangement_frame,
+                        chunk_frames,
+                        output_offset,
+                    )
+                }
+                .map_err(|_| SessionPlaybackError::MediaPagesUnavailable)?;
+            }
+            let external = scalar
+                .as_deref()
+                .map(crate::scalar_automation::State::window);
             if upstream_frame_routing {
                 self.render_compensated_route_frame(
                     performance_frame,
@@ -740,6 +884,7 @@ impl SessionPlayback {
                     capture,
                     sources,
                     foreign,
+                    external,
                 )?;
             } else {
                 self.render_route_chunk(
@@ -753,6 +898,7 @@ impl SessionPlayback {
                     capture,
                     sources,
                     foreign,
+                    external,
                 )?;
             }
             if current_first_frame {
@@ -782,6 +928,10 @@ impl SessionPlayback {
                             index,
                             foreign,
                             observer,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     let clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -808,6 +958,10 @@ impl SessionPlayback {
                             output_offset,
                             foreign,
                             observer,
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 } else {
@@ -818,11 +972,15 @@ impl SessionPlayback {
                         arrangement_loop_pass,
                         true,
                     );
-                    crate::main_chain::process(
+                    crate::main_chain::process_with_native_input_and_external(
                         &mut self.main_chain,
                         &mut output[output_offset..chunk_end],
                         output_offset,
                         Some(&main_clock),
+                        self.native_parameter_state
+                            .as_deref_mut()
+                            .and_then(|state| state.processing.as_mut()),
+                        external,
                         observer,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1046,6 +1204,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let region = self.active_loop_region();
         let revision = Arc::clone(&self.revision);
@@ -1096,9 +1255,9 @@ impl SessionPlayback {
                 || mutable_active
                 || !track.sends().is_empty()
                 || track.has_gain_automation()
-                || metered_instrument;
+                || self.device_metering;
             let ordered = shared_source || live_target || track.requires_ordered_processing();
-            let already_mixed = metered_instrument
+            let already_mixed = self.device_metering
                 && !ordered
                 && !stateful_effects
                 && track.sends().is_empty()
@@ -1167,39 +1326,23 @@ impl SessionPlayback {
                         SourceStage::Audio,
                     )?;
                     if stateful_effects {
-                        if let Some(observer) = observer.as_mut() {
-                            let mut observe =
-                                |owner: hex_lattice::ProcessorChainOwner,
-                                 device_id: u64,
-                                 device_type: hex_lattice_contract::DeviceTypeId,
-                                 phase: crate::NodeSignalPhase,
-                                 offset: usize,
-                                 frames: &[Frame]| {
-                                    observer(
-                                        crate::PostNodeIdentity::new(owner, device_id, device_type),
-                                        phase,
-                                        offset,
-                                        frames,
-                                    );
-                                };
-                            self.device_chains[index]
-                                .process_range_tapped_with_clock(
-                                    0..track.instrument_position(),
-                                    render_output,
-                                    frame_offset,
-                                    Some(&effect_clock),
-                                    &mut observe,
-                                )
-                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                        } else {
-                            self.device_chains[index]
-                                .process_range_with_clock(
-                                    0..track.instrument_position(),
-                                    render_output,
-                                    Some(&effect_clock),
-                                )
-                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                        }
+                        crate::native_parameter_input::process_range_with_external(
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
+                            external,
+                            &mut self.device_chains[index],
+                            0..track.instrument_position(),
+                            render_output,
+                            frame_offset,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                            0,
+                            0,
+                            &mut hex_lattice::RefuseForeign,
+                            observer,
+                        )
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     } else {
                         track.apply_ordered_prefix(render_output);
                     }
@@ -1331,39 +1474,23 @@ impl SessionPlayback {
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
                         let effect_count = chain.len();
-                        if let Some(observer) = observer.as_mut() {
-                            let mut observe =
-                                |owner: hex_lattice::ProcessorChainOwner,
-                                 device_id: u64,
-                                 device_type: hex_lattice_contract::DeviceTypeId,
-                                 phase: crate::NodeSignalPhase,
-                                 offset: usize,
-                                 frames: &[Frame]| {
-                                    observer(
-                                        crate::PostNodeIdentity::new(owner, device_id, device_type),
-                                        phase,
-                                        offset,
-                                        frames,
-                                    );
-                                };
-                            chain
-                                .process_range_tapped_with_clock(
-                                    track.instrument_position()..effect_count,
-                                    render_output,
-                                    frame_offset,
-                                    Some(&effect_clock),
-                                    &mut observe,
-                                )
-                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                        } else {
-                            chain
-                                .process_range_with_clock(
-                                    track.instrument_position()..effect_count,
-                                    render_output,
-                                    Some(&effect_clock),
-                                )
-                                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                        }
+                        crate::native_parameter_input::process_range_with_external(
+                            self.native_parameter_state
+                                .as_deref_mut()
+                                .and_then(|state| state.processing.as_mut()),
+                            external,
+                            chain,
+                            track.instrument_position()..effect_count,
+                            render_output,
+                            frame_offset,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                            0,
+                            0,
+                            &mut hex_lattice::RefuseForeign,
+                            observer,
+                        )
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     } else {
                         track.apply_ordered_suffix(render_output);
                     }
@@ -1462,39 +1589,24 @@ impl SessionPlayback {
                         .device_chains
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    if let Some(observer) = observer.as_mut() {
-                        let mut observe =
-                            |owner: hex_lattice::ProcessorChainOwner,
-                             device_id: u64,
-                             device_type: hex_lattice_contract::DeviceTypeId,
-                             phase: crate::NodeSignalPhase,
-                             offset: usize,
-                             frames: &[Frame]| {
-                                observer(
-                                    crate::PostNodeIdentity::new(owner, device_id, device_type),
-                                    phase,
-                                    offset,
-                                    frames,
-                                );
-                            };
-                        chain
-                            .process_range_tapped_with_clock(
-                                0..chain.len(),
-                                render_output,
-                                frame_offset,
-                                Some(&effect_clock),
-                                &mut observe,
-                            )
-                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                    } else {
-                        chain
-                            .process_range_with_clock(
-                                0..chain.len(),
-                                render_output,
-                                Some(&effect_clock),
-                            )
-                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                    }
+                    let range = 0..chain.len();
+                    crate::native_parameter_input::process_range_with_external(
+                        self.native_parameter_state
+                            .as_deref_mut()
+                            .and_then(|state| state.processing.as_mut()),
+                        external,
+                        chain,
+                        range,
+                        render_output,
+                        frame_offset,
+                        Some(&effect_clock),
+                        Some(&effect_clock),
+                        0,
+                        0,
+                        &mut hex_lattice::RefuseForeign,
+                        observer,
+                    )
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 for (frame_index, source) in render_output.iter_mut().enumerate() {
                     let mix = if let Some(gain) = recording_override {
@@ -1513,12 +1625,14 @@ impl SessionPlayback {
                     } else {
                         mix
                     };
-                    if already_mixed {
+                    let contribution = if already_mixed {
                         // Preserve the analytic per-voice fader summation order.
                         output[frame_index][0] += source[0];
                         output[frame_index][1] += source[1];
+                        *source
                     } else if track.sends().is_empty() {
                         mix.add_frame(&mut output[frame_index], *source);
+                        mix.apply_frame(*source)
                     } else {
                         let contribution = mix.apply_frame(*source);
                         output[frame_index][0] += contribution[0];
@@ -1531,9 +1645,10 @@ impl SessionPlayback {
                             target[frame_index][0] += contribution[0] * send.gain;
                             target[frame_index][1] += contribution[1] * send.gain;
                         }
-                    }
-                    if capture.is_some() && !already_mixed {
-                        *source = mix.apply_frame(*source);
+                        contribution
+                    };
+                    if capture.is_some() || self.device_metering {
+                        *source = contribution;
                     }
                 }
                 if let Some(capture) = capture.as_mut() {
@@ -1542,7 +1657,8 @@ impl SessionPlayback {
             } else {
                 let selected = capture
                     .as_ref()
-                    .is_some_and(|capture| capture.selects(capture_id));
+                    .is_some_and(|capture| capture.selects(capture_id))
+                    && matches!(self.route_scratch[index].owner, RouteOwner::Arrangement);
                 if selected {
                     let mut captured = [[0.0; 2]; 256];
                     for release in &self.release_scratch[first_release..release_cursor] {
@@ -1634,9 +1750,11 @@ impl SessionPlayback {
             observer,
             capture,
             foreign,
+            external,
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // Existing return-stage borrows plus recorded values.
     fn render_return_buses(
         &mut self,
         output: &mut [Frame],
@@ -1645,6 +1763,7 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         if !arrangement.return_feed_plan.is_empty() {
@@ -1655,44 +1774,31 @@ impl SessionPlayback {
                     .return_chains
                     .get_mut(index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                if let Some(observer) = observer.as_mut() {
-                    let mut observe =
-                        |owner, device_id, device_type, phase, offset, frames: &[Frame]| {
-                            observer(
-                                crate::PostNodeIdentity::new(owner, device_id, device_type),
-                                phase,
-                                offset,
-                                frames,
-                            );
-                        };
-                    chain
-                        .process_range_tapped_with_foreign(
-                            0..chain.len(),
-                            frames,
-                            frame_offset,
-                            effect_clock,
-                            foreign,
-                            &mut observe,
-                        )
-                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                } else {
-                    chain
-                        .process_range_with_foreign(
-                            0..chain.len(),
-                            frames,
-                            frame_offset,
-                            effect_clock,
-                            foreign,
-                        )
-                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                }
+                let range = 0..chain.len();
+                crate::native_parameter_input::process_range_with_external(
+                    self.native_parameter_state
+                        .as_deref_mut()
+                        .and_then(|state| state.processing.as_mut()),
+                    external,
+                    chain,
+                    range,
+                    frames,
+                    frame_offset,
+                    effect_clock,
+                    effect_clock,
+                    0,
+                    0,
+                    foreign,
+                    observer,
+                )
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 if let Some(matrix) = bus.matrix {
                     matrix.apply_block(frames);
                 }
                 if bus.muted {
                     frames.fill([0.0; 2]);
                 } else {
-                    for frame in frames {
+                    for frame in frames.iter_mut() {
                         frame[0] *= bus.gain;
                         frame[1] *= bus.gain;
                     }
@@ -1740,41 +1846,24 @@ impl SessionPlayback {
                 .return_chains
                 .get_mut(index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            if let Some(observer) = observer.as_mut() {
-                let mut observe = |owner: hex_lattice::ProcessorChainOwner,
-                                   device_id: u64,
-                                   device_type: hex_lattice_contract::DeviceTypeId,
-                                   phase: crate::NodeSignalPhase,
-                                   offset: usize,
-                                   frames: &[Frame]| {
-                    observer(
-                        crate::PostNodeIdentity::new(owner, device_id, device_type),
-                        phase,
-                        offset,
-                        frames,
-                    );
-                };
-                chain
-                    .process_range_tapped_with_foreign(
-                        0..chain.len(),
-                        frames,
-                        frame_offset,
-                        effect_clock,
-                        foreign,
-                        &mut observe,
-                    )
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-            } else {
-                chain
-                    .process_range_with_foreign(
-                        0..chain.len(),
-                        frames,
-                        frame_offset,
-                        effect_clock,
-                        foreign,
-                    )
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-            }
+            let range = 0..chain.len();
+            crate::native_parameter_input::process_range_with_external(
+                self.native_parameter_state
+                    .as_deref_mut()
+                    .and_then(|state| state.processing.as_mut()),
+                external,
+                chain,
+                range,
+                frames,
+                frame_offset,
+                effect_clock,
+                effect_clock,
+                0,
+                0,
+                foreign,
+                observer,
+            )
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             if let Some(matrix) = bus.matrix {
                 matrix.apply_block(frames);
             }
@@ -1784,7 +1873,7 @@ impl SessionPlayback {
                     destination[1] += source[1] * bus.gain;
                 }
             }
-            if let Some(capture) = capture.as_mut() {
+            if capture.is_some() || self.device_metering {
                 for frame in frames.iter_mut() {
                     *frame = if bus.muted {
                         [0.0; 2]
@@ -1792,6 +1881,8 @@ impl SessionPlayback {
                         [frame[0] * bus.gain, frame[1] * bus.gain]
                     };
                 }
+            }
+            if let Some(capture) = capture.as_mut() {
                 capture.add(OutputCaptureId::Return(bus.id), frame_offset, frames)?;
             }
         }
@@ -3051,6 +3142,90 @@ mod observed_page_tests {
         assert!(
             !runtime.candidate_admission_open,
             "existing render-attempt admission closure remains"
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_input_transaction_tests {
+    use super::*;
+    use hex_lattice::{NativeTransientOperation, NativeTransientValue};
+    use hex_lattice_contract::{DeviceAutomationTarget, NativeDeviceMetadata, ParameterValue};
+
+    struct RefuseCapture(usize);
+    impl CaptureSink for RefuseCapture {
+        fn selects(&self, _: OutputCaptureId) -> bool {
+            true
+        }
+        fn add(
+            &mut self,
+            _: OutputCaptureId,
+            _: usize,
+            _: &[Frame],
+        ) -> Result<(), SessionPlaybackError> {
+            self.0 += 1;
+            Err(SessionPlaybackError::DeviceRuntime)
+        }
+    }
+
+    #[test]
+    fn native_input_late_capture_refusal_discards_application_and_retries_pristine_dsp() {
+        let definition = &hex_devices::utility::UTILITY_DEFINITION;
+        let state = definition
+            .patch_parameter(
+                &definition.default_state().unwrap(),
+                hex_devices::utility::parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let id = hex_devices::utility::parameter::GAIN;
+        let target = DeviceAutomationTarget::Parameter(id);
+        let (mut runtime, _) = super::super::native_parameter_input::tests::fixture_with_state(
+            0,
+            target,
+            None,
+            state.clone(),
+        );
+        let (mut pristine, _) =
+            super::super::native_parameter_input::tests::fixture_with_state(0, target, None, state);
+        let operation = NativeTransientOperation::Set(NativeTransientValue::Parameter {
+            id,
+            value: ParameterValue::Float(2.0),
+        });
+        runtime.set_native_parameter_input(operation).unwrap();
+        pristine.set_native_parameter_input(operation).unwrap();
+        let mut output = [[9.0; 2]; 16];
+        let mut capture = RefuseCapture(0);
+        assert!(
+            runtime
+                .render_internal::<dyn MediaPages>(
+                    &mut output,
+                    None,
+                    None,
+                    Some(&mut capture),
+                    None
+                )
+                .is_err()
+        );
+        assert_eq!(capture.0, 1, "refuse after the actual target was processed");
+        assert_eq!(output, [[0.0; 2]; 16]);
+        assert_eq!(
+            (runtime.performance_frame, runtime.arrangement_frame),
+            (0, 0)
+        );
+        assert!(runtime.take_native_parameter_application().is_none());
+        runtime.render(&mut output).unwrap();
+        let mut expected = [[0.0; 2]; 16];
+        pristine.render(&mut expected).unwrap();
+        assert_eq!(output, expected);
+        assert_ne!(
+            output[0], output[15],
+            "fixture must exercise retained filter history"
+        );
+        let applied = runtime.take_native_parameter_application().unwrap();
+        assert_eq!(
+            (applied.performance_frame, applied.arrangement_frame),
+            (0, 0)
         );
     }
 }

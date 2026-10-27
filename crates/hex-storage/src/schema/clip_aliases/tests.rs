@@ -168,7 +168,7 @@ fn complete_arrangement_console_aliases_roundtrip_with_local_windows_and_history
     let (mut e, audio, audio_alias, midi, midi_alias) = fixture();
     let encoded = encode(e.project()).unwrap();
     let doc: Value = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(doc["version"], 52);
+    assert_eq!(doc["version"], crate::CURRENT_SCHEMA_VERSION);
     assert_eq!(doc["alias_sources"].as_array().unwrap().len(), 4);
     assert_eq!(doc["alias_members"].as_array().unwrap().len(), 8);
     let loaded = decode(&encoded).unwrap();
@@ -387,6 +387,28 @@ fn strict_schema51_writer_migrates_complete_state_and_original_bytes_are_unchang
     );
     assert_eq!(
         current.as_object_mut().unwrap().remove("alias_members"),
+        Some(json!([]))
+    );
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("host_automation"),
+        Some(json!([]))
+    );
+    assert_eq!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("inactive_midi_notes"),
+        Some(json!([]))
+    );
+    assert_eq!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("inactive_audio_events"),
+        Some(json!([]))
+    );
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("nested_audio"),
         Some(json!([]))
     );
     current["version"] = 51.into();

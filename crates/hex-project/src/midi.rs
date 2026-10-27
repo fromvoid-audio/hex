@@ -501,6 +501,7 @@ impl std::ops::DerefMut for MidiClip {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiNote {
     pub(crate) id: NoteId,
+    pub(crate) active: bool,
     pub(crate) start: BeatTime,
     pub(crate) duration: BeatTime,
     pub(crate) pitch: u8,
@@ -510,6 +511,9 @@ pub struct MidiNote {
 impl MidiNote {
     pub fn id(&self) -> NoteId {
         self.id
+    }
+    pub fn active(&self) -> bool {
+        self.active
     }
     pub fn start(&self) -> BeatTime {
         self.start
@@ -801,6 +805,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     if kept_start < kept_end {
                         notes.push(MidiNote {
                             id: NoteId(0),
+                            active: note.active,
                             start: BeatTime::from_raw(kept_start - beat.raw()),
                             duration: BeatTime::from_raw(kept_end - kept_start),
                             pitch: note.pitch,
@@ -933,6 +938,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 clip,
                 Vec::new(),
                 vec![crate::MidiNoteInsert {
+                    active: true,
                     start,
                     duration,
                     pitch,
@@ -1011,6 +1017,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             for update in &notes {
                 removed.push(update.note);
                 authored.push(crate::MidiNoteInsert {
+                    active: true,
                     start: update.start,
                     duration: update.duration,
                     pitch: update.pitch,
@@ -1035,6 +1042,25 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 apply_note_update(note, update);
             }
             crate::midi_note_overwrite::retain_gates(target, &plan.retained)?;
+            Ok(Created::None)
+        }
+        Command::SetMidiNotesActive {
+            clip,
+            notes,
+            active,
+        } => {
+            let source = project
+                .midi_source(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let indices = note_indices(source, notes.iter().copied())?;
+            let source = project.midi_source_mut(clip)?;
+            for index in indices {
+                let note = source
+                    .notes
+                    .get_mut(index)
+                    .ok_or(Invalid("midi note no longer exists"))?;
+                note.active = active;
+            }
             Ok(Created::None)
         }
         Command::RemoveMidiNote(note) => {
@@ -1384,6 +1410,7 @@ fn materialize_overwrite_ranges_inner(
                         .map_err(|_| Invalid("could not reserve midi overwrite notes"))?;
                     source.notes.push(MidiNote {
                         id: NoteId(0),
+                        active: note.active,
                         start: BeatTime::from_raw(kept_start - start),
                         duration: BeatTime::from_raw(kept_end - kept_start),
                         pitch: note.pitch,

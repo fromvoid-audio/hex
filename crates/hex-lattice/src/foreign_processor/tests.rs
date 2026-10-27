@@ -205,6 +205,7 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
                         segment,
                         offset,
                         None,
+                        None,
                         &mut foreign,
                         &mut |actual_owner, device, kind, phase, at, samples| {
                             assert_eq!((actual_owner, device, kind), (owner, 17, TYPE));
@@ -263,6 +264,7 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
             &mut [[1.0; 2]],
             0,
             None,
+            None,
             &mut foreign,
             &mut |_, _, _, phase, _, _| taps.push(phase),
         ),
@@ -277,6 +279,7 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
             0..1,
             &mut [[1.0; 2]],
             0,
+            None,
             None,
             &mut foreign,
             &mut |_, _, _, _, _, _| {},
@@ -403,7 +406,7 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     assert!(!chain.committed_range_is_quiescent(0..1));
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 0, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 0, None, None, &mut foreign)
         .unwrap();
     chain.commit_block();
     assert!(
@@ -413,7 +416,7 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     foreign.drained = true;
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 1, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 1, None, None, &mut foreign)
         .unwrap();
     assert!(chain.speculative_range_is_quiescent(0..1));
     assert!(!chain.committed_range_is_quiescent(0..1));
@@ -422,7 +425,7 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     assert!(!chain.speculative_range_is_quiescent(0..1));
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 2, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 2, None, None, &mut foreign)
         .unwrap();
     chain.commit_block();
     assert!(chain.committed_range_is_quiescent(0..1));
@@ -431,7 +434,7 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     foreign.drained = false;
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[1.0; 2]], 3, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[1.0; 2]], 3, None, None, &mut foreign)
         .unwrap();
     assert!(!chain.speculative_range_is_quiescent(0..1));
     chain.commit_block();

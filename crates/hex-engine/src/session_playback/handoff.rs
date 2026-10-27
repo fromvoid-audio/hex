@@ -519,7 +519,7 @@ impl SessionPlayback {
                 // Enumerate its candidate routes before either runtime's capture
                 // epoch, DSP history or one-shot admission is changed.
                 demand.window = Some(
-                    self.visit_stream_chunk_in_scope(
+                    self.visit_stream_chunk_with_history(
                         demand.ordinary,
                         &self.route_scratch,
                         self.performance_frame,
@@ -529,6 +529,7 @@ impl SessionPlayback {
                         demand.playing.unwrap_or(previous.playing),
                         demand.maximum_frames,
                         &mut demand.visit,
+                        super::stream_demand::ScalarOriginHistory::Empty,
                     )
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
                 );
@@ -563,6 +564,66 @@ impl SessionPlayback {
                     || stamp.performance_frame.checked_add(1) == Some(previous.performance_frame)
             })
         });
+        // First upstream lookahead introduces a new empty delay epoch. There
+        // must be no old compensation PCM, retained tails or shifted DSP
+        // output to consume while its origin stamps fill. Source/instrument
+        // history still passes through the complete planner below; Pause is
+        // neither a reset nor a substitute for these proofs.
+        let first_compensation = self.candidate_admission_open
+            && mapped_main_clock
+            && previous.compensation.is_none()
+            && self.compensation.as_ref().is_some_and(|candidate| {
+                previous
+                    .revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .is_some_and(|old| {
+                        let graph = &candidate.graph;
+                        graph.can_start_compensation_from(old)
+                            && previous.device_chains.len() == old.tracks.len()
+                            && previous.return_chains.len() == old.returns.len()
+                            && graph
+                                .tracks
+                                .iter()
+                                .zip(&old.tracks)
+                                .zip(&previous.device_chains)
+                                .all(|((new, old_track), chain)| {
+                                    graph.can_start_chain_from(
+                                        &new.devices,
+                                        old,
+                                        &old_track.devices,
+                                        chain,
+                                    )
+                                })
+                            && graph
+                                .returns
+                                .iter()
+                                .zip(&old.returns)
+                                .zip(&previous.return_chains)
+                                .all(|((new, old_bus), chain)| {
+                                    graph.can_start_chain_from(
+                                        &new.devices,
+                                        old,
+                                        &old_bus.devices,
+                                        chain,
+                                    )
+                                })
+                            && graph.can_start_chain_from(
+                                &graph.main_devices,
+                                old,
+                                &old.main_devices,
+                                &previous.main_chain,
+                            )
+                    })
+            })
+            && !previous.tail_output_active.iter().any(|active| *active)
+            && !previous
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active);
         let mut clock_transfer = match (&self.compensation, &previous.compensation) {
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
@@ -598,6 +659,7 @@ impl SessionPlayback {
                 2
             }
             (None, None) => 0,
+            (Some(_), None) if first_compensation => 0,
             (Some(candidate), None)
                 if mapped_main_clock
                     && previous
@@ -662,12 +724,15 @@ impl SessionPlayback {
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
+        // A paused loop-only edit may carry the closed compensation history;
+        // the planner below still refuses incompatible sources and active tails.
+        // An edited base tempo map or a live change still needs the old guard.
         if timing_changed
             && (self.revision.arrangement().main_latency_frames() > 0
                 || previous.revision.arrangement().main_latency_frames() > 0)
             && (previous.playing
-                || previous.performance_frame != 0
-                || previous.arrangement_frame != 0)
+                || !same_base
+                    && (previous.performance_frame != 0 || previous.arrangement_frame != 0))
         {
             return Err(SessionPlaybackError::Arrangement(
                 "compensated timing changed · stop transport before applying this revision",
@@ -2948,6 +3013,12 @@ impl SessionPlayback {
                 let candidate_suffix_start = candidate_track.instrument_position();
                 let exact_chain_configuration = old_chain.len() == candidate_chain.len()
                     && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
+                // Appending the first lookahead suffix leaves this exact old
+                // prefix in the current chain. Transfer its history normally;
+                // classifying it as detached would duplicate/strand the tail.
+                let retained_prefix_extension = first_compensation
+                    && old_chain.len() < candidate_chain.len()
+                    && old_chain.configuration_matches_range(candidate_chain, 0..old_chain.len());
                 let retargetable_effect_configuration = !exact_chain_configuration
                     && old_chain.len() == candidate_chain.len()
                     && old_track.instrument_position() == candidate_suffix_start
@@ -2960,7 +3031,9 @@ impl SessionPlayback {
                 old_track.instrument_position() != candidate_suffix_start
                     || old_track.instrument_suffix_matrix()
                         != candidate_track.instrument_suffix_matrix()
-                    || !(exact_chain_configuration || retargetable_effect_configuration)
+                    || !(exact_chain_configuration
+                        || retargetable_effect_configuration
+                        || retained_prefix_extension)
             });
             if !detached || old_chain.committed_range_is_quiescent(suffix_start..old_chain.len()) {
                 continue;
@@ -3371,7 +3444,7 @@ impl SessionPlayback {
                 previous.route_state_generation
             };
             demand.window = Some(
-                self.visit_stream_chunk_in_scope(
+                self.visit_stream_chunk_with_history(
                     demand.ordinary,
                     &self.route_scratch,
                     previous.performance_frame,
@@ -3381,6 +3454,11 @@ impl SessionPlayback {
                     demand.playing.unwrap_or(previous.playing),
                     demand.maximum_frames,
                     &mut demand.visit,
+                    if clock_transfer == 0 {
+                        super::stream_demand::ScalarOriginHistory::Empty
+                    } else {
+                        super::stream_demand::ScalarOriginHistory::Current(previous)
+                    },
                 )
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
             );
@@ -3907,6 +3985,7 @@ impl SessionPlayback {
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {
                 let key = signature.key();
                 if revision.midi_clip_inactive(key.track, key.clip)
+                    || revision.midi_note_inactive(key.clip, key.note)
                     || (!timing_changed
                         && old_loop == new_loop
                         && !midi_layout_changed

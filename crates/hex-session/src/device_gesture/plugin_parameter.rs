@@ -174,7 +174,9 @@ impl GestureMachine {
                 self.active = Some(Active {
                     snapshot,
                     kind: ActiveKind::Plugin,
-                    state_origin: Some(state),
+                    creation_origin: None,
+                    plugin_state_origin: Some(state),
+                    origin_parameters: None,
                     plugin_initial: Some(origin.initial),
                 });
                 self.last_key = Some(key);

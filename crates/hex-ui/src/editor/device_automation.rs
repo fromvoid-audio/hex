@@ -1,7 +1,12 @@
 //! Transient lane presentation over canonical device envelopes. Selecting or
 //! revealing a parameter never authors points. The worker validates source
 //! stamps and owns history; released curves retain their exact ordered receipt.
+//! Provider descriptors and typed host gains have separate value metadata;
+//! reserved widget keys are translated only by the shared binding edge.
+#[cfg(all(test, feature = "ui-test-support"))]
+mod host_tests;
 mod paint;
+mod read_selection;
 #[cfg(test)]
 mod tests;
 use super::pending_edit::{Disposition, Receipt};
@@ -10,8 +15,8 @@ use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Pixels, Point, SharedString, Window};
 use hex_engine::NativeDeviceClass;
 use hex_lattice_contract::{
-    DeviceTypeId, ParameterDescriptor, ParameterId, ParameterKind, ParameterSemantics,
-    ParameterValue,
+    DeviceAutomationTarget, DeviceTypeId, HostGain, ParameterDescriptor, ParameterKind,
+    ParameterSemantics, ParameterValue,
 };
 use hex_project::{
     AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, Device, DeviceId, Project,
@@ -26,19 +31,38 @@ pub(super) struct Target {
     pub(super) generation: u64,
     pub(super) owner: Owner,
     pub(super) device: DeviceId,
-    pub(super) parameter: ParameterId,
+    pub(super) kind: DeviceAutomationTarget,
     class: NativeDeviceClass,
-    provider: DeviceTypeId,
+    provider: Option<DeviceTypeId>,
 }
 
 #[derive(Clone)]
 pub(super) struct Entry {
     pub(super) target: Target,
     pub(super) label: SharedString,
-    descriptor: ParameterDescriptor,
-    semantics: ParameterSemantics,
+    metadata: EntryMetadata,
     pub(super) base: f32,
     end: Option<BeatTime>,
+}
+
+#[derive(Clone, Copy)]
+enum EntryMetadata {
+    Provider {
+        descriptor: ParameterDescriptor,
+        semantics: ParameterSemantics,
+    },
+    HostGain,
+}
+#[derive(Clone, Copy)]
+pub(super) struct TargetKey(DeviceAutomationTarget);
+impl std::fmt::Display for TargetKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            DeviceAutomationTarget::Parameter(id) => write!(f, "{}", id.value()),
+            DeviceAutomationTarget::HostInputGain => f.write_str("host-input"),
+            DeviceAutomationTarget::HostOutputGain => f.write_str("host-output"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -64,6 +88,7 @@ pub(super) enum Action {
     Hide(Target),
     HidePreview(Target),
     Clear(Target),
+    Reenable(Target),
     Shape(Target, AutomationInterpolation),
 }
 
@@ -93,6 +118,8 @@ pub(super) struct Lanes {
     selected: Option<(Target, BeatTime)>,
     draft: Option<Draft>,
     pending: Option<Pending>,
+    read_pending: Option<read_selection::PendingRead>,
+    read_summary: read_selection::ReadSummary,
     stamp: Option<(u64, u64)>,
     windows: Vec<(Owner, std::ops::Range<usize>)>,
 }
@@ -183,16 +210,19 @@ impl Target {
                 NativeDeviceClass::Effect,
             ),
         };
-        (class == self.class && device.state().type_id() == self.provider).then_some(device)
+        (class == self.class
+            && self
+                .provider
+                .is_none_or(|provider| device.state().type_id() == provider))
+        .then_some(device)
     }
     fn current(self, project: &Project, generation: u64) -> Option<&Device> {
         let device = self.identity_current(project, generation)?;
-        hex_engine::native_parameter_automation_supported(
-            self.class,
-            device.state(),
-            self.parameter,
-        )
-        .then_some(device)
+        hex_engine::project_device_automation_target_supported(project, self.device, self.kind)
+            .then_some(device)
+    }
+    pub(super) fn key(self) -> TargetKey {
+        TargetKey(self.kind)
     }
 }
 
@@ -202,47 +232,63 @@ impl Entry {
         generation: u64,
         owner: Owner,
         device: DeviceId,
-        parameter: ParameterId,
+        kind: DeviceAutomationTarget,
     ) -> Option<Self> {
         let inventory = devices(project, owner);
         let (index, (source, class)) = inventory
             .iter()
             .enumerate()
             .find(|(_, (source, _))| source.id() == device)?;
-        if !hex_engine::native_parameter_automation_supported(*class, source.state(), parameter) {
+        if !hex_engine::project_device_automation_target_supported(project, device, kind) {
             return None;
         }
         let metadata = hex_engine::native_device_view_for_class(*class, source.state()).ok()?;
-        let value = metadata
-            .parameters
-            .iter()
-            .find(|value| value.descriptor.id == parameter)?;
-        let semantics = value.semantics?;
-        let base = semantics
-            .normalization
-            .normalize(value.descriptor, value.value)
-            .ok()?;
+        let (entry_metadata, base, label) = match kind {
+            DeviceAutomationTarget::Parameter(parameter) => {
+                let value = metadata
+                    .parameters
+                    .iter()
+                    .find(|value| value.descriptor.id == parameter)?;
+                let semantics = value.semantics?;
+                (
+                    EntryMetadata::Provider {
+                        descriptor: value.descriptor,
+                        semantics,
+                    },
+                    semantics
+                        .normalization
+                        .normalize(value.descriptor, value.value)
+                        .ok()?,
+                    value.descriptor.label,
+                )
+            }
+            DeviceAutomationTarget::HostInputGain | DeviceAutomationTarget::HostOutputGain => {
+                let (millidb, label) = if kind == DeviceAutomationTarget::HostInputGain {
+                    (source.state().input_gain_millidb(), "input gain")
+                } else {
+                    (source.state().output_gain_millidb(), "output gain")
+                };
+                (
+                    EntryMetadata::HostGain,
+                    HostGain::from_millidb(millidb).ok()?.normalized(),
+                    label,
+                )
+            }
+        };
         Some(Self {
             target: Target {
                 generation,
                 owner,
                 device,
-                parameter,
+                kind,
                 class: *class,
-                provider: source.state().type_id(),
+                provider: kind.provider_parameter().map(|_| source.state().type_id()),
             },
-            label: format!(
-                "{} {} · {}",
-                metadata.name,
-                index + 1,
-                value.descriptor.label
-            )
-            .into(),
-            descriptor: value.descriptor,
-            semantics,
+            label: format!("{} {} · {}", metadata.name, index + 1, label).into(),
+            metadata: entry_metadata,
             base,
             end: source
-                .automation_lane(parameter)
+                .automation_target(kind)
                 .and_then(|lane| lane.points.last())
                 .map(|point| point.beat),
         })
@@ -254,39 +300,65 @@ impl Entry {
             generation,
             self.target.owner,
             self.target.device,
-            self.target.parameter,
+            self.target.kind,
+        )
+    }
+    fn is_discrete(&self) -> bool {
+        matches!(
+            self.metadata,
+            EntryMetadata::Provider {
+                descriptor: ParameterDescriptor {
+                    kind: ParameterKind::Bool | ParameterKind::Choice { .. },
+                    ..
+                },
+                ..
+            }
         )
     }
     fn quantize(&self, value: f32) -> Option<f32> {
-        let mut canonical = self
-            .semantics
-            .normalization
-            .denormalize(self.descriptor, value.clamp(0.0, 1.0))
-            .ok()?;
-        if let (
-            hex_lattice_contract::ParameterStepping::Increment(step),
-            ParameterKind::Float { min, max, .. },
-            ParameterValue::Float(value),
-        ) = (self.semantics.stepping, self.descriptor.kind, canonical)
-        {
-            canonical = ParameterValue::Float(
-                (min + ((value - min) / step).round() * step).clamp(min, max),
-            );
+        match self.metadata {
+            EntryMetadata::HostGain => HostGain::from_normalized(value)
+                .ok()
+                .map(HostGain::normalized),
+            EntryMetadata::Provider {
+                descriptor,
+                semantics,
+            } => {
+                let mut canonical = semantics
+                    .normalization
+                    .denormalize(descriptor, value.clamp(0.0, 1.0))
+                    .ok()?;
+                if let (
+                    hex_lattice_contract::ParameterStepping::Increment(step),
+                    ParameterKind::Float { min, max, .. },
+                    ParameterValue::Float(value),
+                ) = (semantics.stepping, descriptor.kind, canonical)
+                {
+                    canonical = ParameterValue::Float(
+                        (min + ((value - min) / step).round() * step).clamp(min, max),
+                    );
+                }
+                semantics
+                    .normalization
+                    .normalize(descriptor, canonical)
+                    .ok()
+            }
         }
-        self.semantics
-            .normalization
-            .normalize(self.descriptor, canonical)
-            .ok()
     }
     fn format(&self, value: f32) -> String {
-        let Ok(value) = self
-            .semantics
-            .normalization
-            .denormalize(self.descriptor, value)
+        let EntryMetadata::Provider {
+            descriptor,
+            semantics,
+        } = self.metadata
         else {
+            return HostGain::from_normalized(value)
+                .map(|gain| format!("{:.3} db", gain.db()))
+                .unwrap_or_else(|_| "unavailable".into());
+        };
+        let Ok(value) = semantics.normalization.denormalize(descriptor, value) else {
             return "unavailable".into();
         };
-        match (value, self.descriptor.kind) {
+        match (value, descriptor.kind) {
             (ParameterValue::Bool(value), _) => if value { "on" } else { "off" }.into(),
             (ParameterValue::Choice(index), ParameterKind::Choice { labels }) => labels
                 .get(index as usize)
@@ -294,7 +366,7 @@ impl Entry {
                 .unwrap_or("unavailable")
                 .into(),
             (ParameterValue::Float(value), ParameterKind::Float { unit, .. }) => {
-                if self.descriptor.presentation
+                if descriptor.presentation
                     == hex_lattice_contract::ParameterPresentation::LinearAmplitudeDecibels
                 {
                     if value == 0.0 {
@@ -372,7 +444,7 @@ impl Lanes {
         state
             .project
             .device(target.device)
-            .and_then(|device| device.automation_lane(target.parameter))
+            .and_then(|device| device.automation_target(target.kind))
             .map(|lane| lane.points.clone())
             .unwrap_or_default()
     }
@@ -382,7 +454,7 @@ impl EditorView {
     pub(super) fn remember_automation_parameter(
         &mut self,
         device: DeviceId,
-        parameter: ParameterId,
+        kind: DeviceAutomationTarget,
     ) {
         let Some(owner) = self.device_panel.owner else {
             return;
@@ -390,13 +462,8 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        let Some(entry) = Entry::read(
-            &state.project,
-            self.project_generation,
-            owner,
-            device,
-            parameter,
-        ) else {
+        let Some(entry) = Entry::read(&state.project, self.project_generation, owner, device, kind)
+        else {
             return;
         };
         let main = &mut self.automation_view.devices.main;
@@ -408,7 +475,7 @@ impl EditorView {
         &mut self,
         position: Point<Pixels>,
         device: DeviceId,
-        parameter: ParameterId,
+        kind: DeviceAutomationTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -418,31 +485,33 @@ impl EditorView {
         let Some(state) = &self.state else {
             return false;
         };
-        let Some(entry) = Entry::read(
-            &state.project,
-            self.project_generation,
-            owner,
-            device,
-            parameter,
-        ) else {
+        let Some(entry) = Entry::read(&state.project, self.project_generation, owner, device, kind)
+        else {
             return false;
         };
         if !super::device_panel::finalize_controls(self, cx) {
             return false;
         }
-        let utility_mode = entry.target.provider == DeviceTypeId::from_static("hex.utility")
-            && matches!(parameter.value(), 3 | 10);
-        self.open_automation_menu(
-            position,
-            vec![
-                ("show automation", Action::Show(entry.clone(), false)),
-                ("add new automation lane", Action::Show(entry, true)),
-            ],
-            window,
-            cx,
-        );
+        let utility_mode = entry.target.provider == Some(DeviceTypeId::from_static("hex.utility"))
+            && kind
+                .provider_parameter()
+                .is_some_and(|parameter| matches!(parameter.value(), 3 | 10));
+        let mut actions = vec![
+            ("show automation", Action::Show(entry.clone(), false)),
+            ("add new automation lane", Action::Show(entry.clone(), true)),
+        ];
+        if self.device_automation_read_selection(entry.target)
+            == Some(hex_project::AutomationReadSelection::Base)
+        {
+            actions.push(("re-enable automation", Action::Reenable(entry.target)));
+        }
+        self.open_automation_menu(position, actions, window, cx);
         if utility_mode {
-            self.append_utility_mode_choice(device, parameter.value() == 10);
+            self.append_utility_mode_choice(
+                device,
+                kind.provider_parameter()
+                    .is_some_and(|parameter| parameter.value() == 10),
+            );
         }
         true
     }
@@ -483,7 +552,7 @@ impl EditorView {
                 .into_iter()
                 .map(|(label, action)| MenuItem {
                     label,
-                    checked: matches!(&action, Action::Show(entry, _) if self.state.as_ref().is_some_and(|state| state.project.device(entry.target.device).and_then(|device| device.automation_lane(entry.target.parameter)).is_some())),
+                    checked: matches!(&action, Action::Show(entry, _) if self.state.as_ref().is_some_and(|state| state.project.device(entry.target.device).and_then(|device| device.automation_target(entry.target.kind)).is_some())),
                     swatch: None,
                     action: super::context_menu::EditorContextAction::Automation(action),
                 })
@@ -538,6 +607,7 @@ impl EditorView {
             Action::Hide(target)
             | Action::HidePreview(target)
             | Action::Clear(target)
+            | Action::Reenable(target)
             | Action::Shape(target, _) => self.state.as_ref().is_none_or(|state| {
                 target
                     .identity_current(&state.project, self.project_generation)
@@ -626,11 +696,22 @@ impl EditorView {
                     else {
                         continue;
                     };
-                    if metadata.parameters.iter().any(|parameter| {
-                        hex_engine::native_parameter_automation_supported(
-                            class,
-                            device.state(),
-                            parameter.descriptor.id,
+                    if [
+                        DeviceAutomationTarget::HostInputGain,
+                        DeviceAutomationTarget::HostOutputGain,
+                    ]
+                    .into_iter()
+                    .any(|target| {
+                        hex_engine::project_device_automation_target_supported(
+                            &state.project,
+                            device.id(),
+                            target,
+                        )
+                    }) || metadata.parameters.iter().any(|parameter| {
+                        hex_engine::project_device_automation_target_supported(
+                            &state.project,
+                            device.id(),
+                            DeviceAutomationTarget::Parameter(parameter.descriptor.id),
                         )
                     }) {
                         actions.push((
@@ -671,7 +752,7 @@ impl EditorView {
                 else {
                     return;
                 };
-                let actions = metadata
+                let mut actions: Vec<_> = metadata
                     .parameters
                     .iter()
                     .filter_map(|parameter| {
@@ -680,11 +761,28 @@ impl EditorView {
                             self.project_generation,
                             owner,
                             device,
-                            parameter.descriptor.id,
+                            DeviceAutomationTarget::Parameter(parameter.descriptor.id),
                         )
                         .map(|entry| ("parameter", Action::Show(entry, true)))
                     })
                     .collect();
+                actions.extend(
+                    [
+                        DeviceAutomationTarget::HostInputGain,
+                        DeviceAutomationTarget::HostOutputGain,
+                    ]
+                    .into_iter()
+                    .filter_map(|target| {
+                        Entry::read(
+                            &state.project,
+                            self.project_generation,
+                            owner,
+                            device,
+                            target,
+                        )
+                        .map(|entry| ("parameter", Action::Show(entry, true)))
+                    }),
+                );
                 self.open_automation_menu(position, actions, window, cx);
             }
             Action::Reveal {
@@ -702,7 +800,7 @@ impl EditorView {
                                 self.project_generation,
                                 owner,
                                 device.id(),
-                                lane.parameter,
+                                lane.target,
                             )
                         })
                     })
@@ -714,7 +812,7 @@ impl EditorView {
                             || state
                                 .project
                                 .device(entry.target.device)
-                                .and_then(|device| device.automation_lane(entry.target.parameter))
+                                .and_then(|device| device.automation_target(entry.target.kind))
                                 .is_some()
                     });
                 }
@@ -766,6 +864,7 @@ impl EditorView {
                     .retain(|entry| entry.target != target);
                 self.track_scroll.remeasure();
             }
+            Action::Reenable(target) => self.reenable_device_automation(Some(target), cx),
             Action::Clear(target) => {
                 self.commit_device_automation(target, Vec::new(), cx);
             }
@@ -833,7 +932,7 @@ impl EditorView {
                 && state
                     .project
                     .device(target.device)
-                    .and_then(|device| device.automation_lane(target.parameter))
+                    .and_then(|device| device.automation_target(target.kind))
                     .is_none_or(|lane| !lane.points.iter().any(|point| point.beat == beat))
         }) {
             lanes.selected = None;
@@ -844,20 +943,39 @@ impl EditorView {
     }
 
     pub(super) fn pending_device_automation_matches(&self, request: &Request) -> bool {
+        if let Some(pending) = &self.automation_view.devices.read_pending
+            && matches!(request, Request::DeviceAutomationControl { project_generation, revision, edit }
+                if *project_generation == pending.generation && *revision == pending.revision && *edit == pending.edit)
+        {
+            return true;
+        }
         let Some(pending) = &self.automation_view.devices.pending else {
             return false;
         };
-        matches!(request, Request::DeviceAutomation { project_generation, revision, device, parameter, points } if *project_generation == pending.target.generation && *revision == pending.revision && *device == pending.target.device && *parameter == pending.target.parameter && *points == pending.points)
+        matches!(request, Request::DeviceAutomation { project_generation, revision, device, target, points } if *project_generation == pending.target.generation && *revision == pending.revision && *device == pending.target.device && *target == pending.target.kind && *points == pending.points)
     }
     pub(super) fn device_automation_submitted(&mut self) {
+        if let Some(pending) = &mut self.automation_view.devices.read_pending {
+            pending.receipt.submitted(self.worker_requests_pending);
+        }
         if let Some(pending) = &mut self.automation_view.devices.pending {
             pending.receipt.submitted(self.worker_requests_pending);
         }
     }
     pub(super) fn retire_pending_device_automation(&mut self) -> bool {
-        self.automation_view.devices.pending.take().is_some()
+        let points = self.automation_view.devices.pending.take().is_some();
+        self.automation_view.devices.read_pending.take().is_some() || points
     }
     pub(super) fn device_automation_complete(&mut self, event: &Event) {
+        if let Some(pending) = &mut self.automation_view.devices.read_pending
+            && pending.receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete,
+            ) != Disposition::Waiting
+        {
+            self.automation_view.devices.read_pending = None;
+        }
         if let Some(pending) = &mut self.automation_view.devices.pending
             && pending.receipt.observe(
                 self.project_generation,
@@ -893,7 +1011,10 @@ impl EditorView {
         points: Vec<AutomationPoint>,
         cx: &mut Context<Self>,
     ) {
-        if self.edit_pending() || self.automation_view.devices.pending.is_some() {
+        if self.edit_pending()
+            || self.automation_view.devices.pending.is_some()
+            || self.automation_view.devices.read_pending.is_some()
+        {
             return;
         }
         let Some(state) = &self.state else {
@@ -908,7 +1029,7 @@ impl EditorView {
         let canonical = state
             .project
             .device(target.device)
-            .and_then(|device| device.automation_lane(target.parameter))
+            .and_then(|device| device.automation_target(target.kind))
             .map_or(&[][..], |lane| lane.points.as_slice());
         if canonical == points {
             return;
@@ -924,7 +1045,7 @@ impl EditorView {
             project_generation: target.generation,
             revision,
             device: target.device,
-            parameter: target.parameter,
+            target: target.kind,
             points,
         }) {
             self.retire_pending_device_automation();

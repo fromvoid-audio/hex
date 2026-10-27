@@ -108,9 +108,13 @@ pub use native_device_view::{
 };
 
 mod device_automation;
+mod native_parameter_input;
 pub use device_automation::{
-    DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, native_parameter_automation_supported,
+    DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, NativeParameterInputTarget,
+    native_device_automation_target_supported, native_parameter_automation_supported,
+    native_parameter_input_target, project_device_automation_target_supported,
 };
+pub use native_parameter_input::NativeParameterApplication;
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
@@ -119,7 +123,9 @@ pub use gain_envelope::{
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;
-pub use stream_demand::{StreamChunkWindow, StreamPageExtent};
+pub use stream_demand::{
+    StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
+};
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
@@ -847,6 +853,7 @@ pub(crate) struct ReturnBus {
     pub muted: bool,
     pub matrix: Option<hex_lattice::StereoMatrix>,
     pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    pub output_meter: std::sync::Arc<hex_lattice::DeviceMeter>,
 }
 
 /// Resolve playback audibility without changing authored activation/mute state.
@@ -1273,6 +1280,7 @@ impl Track {
                     .is_some_and(|effects| {
                         effects.iter().any(|effect| {
                             effect.definition.is_some()
+                                || !effect.automation.is_empty()
                                 || effect.matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]
                         })
                     })
@@ -2133,6 +2141,8 @@ pub struct Project {
     main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
+    // A legacy whole-project renderer cannot silently omit recorded parameters.
+    requires_scalar_automation: bool,
     shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
@@ -2250,6 +2260,7 @@ impl Project {
             main_device_chain: Arc::from([]),
             main_output_latency_frames: 0,
             has_streamed_sources,
+            requires_scalar_automation: false,
             shared_contexts: owned_shared::OwnedShared::new_owned(
                 shared_analytic::SharedAnalyticContextTable::default(),
             ),
@@ -2831,6 +2842,12 @@ impl RendererRuntime {
         mut pages: Option<&mut P>,
         began: &mut bool,
     ) -> Result<(), Invalid> {
+        if project.requires_scalar_automation {
+            output.fill([0.0; 2]);
+            return Err(Invalid(
+                "recorded parameters require shared session playback",
+            ));
+        }
         let volume_clock = project.midi_volume_timing();
         let volume_timing = volume_clock
             .as_ref()
@@ -2962,6 +2979,7 @@ impl RendererRuntime {
                                 0..track.instrument_position(),
                                 target,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -2981,6 +2999,7 @@ impl RendererRuntime {
                                 track.instrument_position()..effect_count,
                                 target,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -2992,7 +3011,12 @@ impl RendererRuntime {
                         .get_mut(index)
                         .ok_or(Invalid("native device runtime is unavailable"))?;
                     chain
-                        .process_range_with_clock(0..chain.len(), target, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            target,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 if !ordered {
@@ -3078,6 +3102,7 @@ impl RendererRuntime {
                                 0..track.instrument_position,
                                 rendered,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -3104,6 +3129,7 @@ impl RendererRuntime {
                                 track.instrument_position..effect_count,
                                 rendered,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -3115,7 +3141,12 @@ impl RendererRuntime {
                         .get_mut(track_index)
                         .ok_or(Invalid("native device runtime is unavailable"))?;
                     chain
-                        .process_range_with_clock(0..chain.len(), rendered, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            rendered,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 if !ordered {
@@ -3155,7 +3186,12 @@ impl RendererRuntime {
                         .get_mut(index)
                         .ok_or(Invalid("return runtime is unavailable"))?;
                     chain
-                        .process_range_with_clock(0..chain.len(), frames, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            frames,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared return segment is invalid"))?;
                     if let Some(matrix) = bus.matrix {
                         matrix.apply_block(frames);
@@ -3189,7 +3225,12 @@ impl RendererRuntime {
                 let frames = &mut bus_frames[..count];
                 if let Some(chain) = self.return_chains.get_mut(index) {
                     chain
-                        .process_range_with_clock(0..chain.len(), frames, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            frames,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared return segment is invalid"))?;
                 } else {
                     return Err(Invalid("return runtime is unavailable"));
@@ -3551,6 +3592,14 @@ pub mod tuning_audition;
 pub mod compile;
 
 pub mod playback;
+mod scalar_automation;
+pub use scalar_automation::ScalarAutomationBinding;
+mod scalar_streamed;
+pub use scalar_streamed::{
+    BorrowedScalarPage, ScalarFileIdentity, ScalarProjectionIdentity, ScalarSourceKey,
+    ScalarSourceMetadata, ScalarSourceTarget, StreamResourceKey, StreamResourceMetadata,
+    read_scalar_values,
+};
 mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,

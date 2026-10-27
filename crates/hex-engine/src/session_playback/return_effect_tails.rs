@@ -25,17 +25,29 @@ pub(super) fn process_timed_suffix(
     }
     let mut arrival = input_arrival;
     for entry in suffix_start..chain.len() {
+        let output_arrival = arrival
+            .checked_add(
+                chain
+                    .algorithmic_latency_frames_for_entry(entry)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?,
+            )
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         if let Some(compensation) = compensation {
             if frames.len() != 1 {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
             let origin =
                 crate::signal_graph::OriginClock(compensation.delays.stamp_at_delay(arrival));
+            let output_origin = crate::signal_graph::OriginClock(
+                compensation.delays.stamp_at_delay(output_arrival),
+            );
             chain.process_range_with_foreign(
                 entry..entry + 1,
                 frames,
                 frame_offset,
                 Some(&origin),
+                Some(&output_origin),
                 foreign,
             )
         } else {
@@ -47,18 +59,12 @@ pub(super) fn process_timed_suffix(
                 frames,
                 frame_offset,
                 Some(clock),
+                (output_arrival == 0).then_some(clock),
                 foreign,
             )
         }
         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-        arrival = arrival
-            .checked_add(
-                chain
-                    .algorithmic_latency_frames_for_entry(entry)
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?,
-            )
-            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        arrival = output_arrival;
     }
     Ok(())
 }
@@ -225,6 +231,7 @@ impl ReturnEffectTailBank {
                     frames,
                     frame_offset,
                     None,
+                    None,
                     foreign,
                 )
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -292,6 +299,7 @@ impl ReturnEffectTailBank {
                 clock,
                 foreign,
             )?;
+
             tail.output_scratch = !tail
                 .chain
                 .speculative_range_is_quiescent(suffix_start..tail.chain.len());

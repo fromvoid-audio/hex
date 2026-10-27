@@ -87,6 +87,7 @@ fn seed(editor: &Entity<EditorView>, visual: &mut VisualTestContext, clip: ClipI
                 notes: [(0.5, 0.5, 60), (1.5, 0.5, 64), (2.0, 1.5, 60)]
                     .into_iter()
                     .map(|(start, duration, pitch)| MidiNoteInsert {
+                        active: true,
                         start: beat(start),
                         duration: beat(duration),
                         pitch,
@@ -596,3 +597,6 @@ mod creation_capture_tests;
 
 #[path = "midi_note_capture_tests.rs"]
 mod note_capture_tests;
+
+#[path = "midi_draw_preview_ui_tests.rs"]
+mod stroke_preview_tests;

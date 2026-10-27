@@ -904,6 +904,48 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
     });
     hover_clip(&mut visual, clip);
     assert_eq!(visual.debug_bounds(selector), Some(held));
+
+    // A later canonical document replacement cancels an unadmitted drag.
+    // Its eventual mouse-up must not apply the old envelope to the new source.
+    key(&mut visual, true, "f");
+    let from = visual.debug_bounds(selector).unwrap().center();
+    let to = point(from.x - px(7.0), from.y + px(6.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let generation = editor.read_with(&visual, |v, _| {
+        assert!(v.active_fade_drag.as_ref().is_some_and(|drag| drag.moved));
+        v.project_generation
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        }));
+    });
+    pump(&editor, &mut visual);
+    let replacement = editor.update(&mut visual, |v, _| {
+        assert!(v.project_generation > generation);
+        assert!(v.active_fade_drag.is_none() && v.pending_fade.is_none());
+        assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
+        // Reset only the test edit trace after the expected earlier commit.
+        v.last_enqueued_edit = None;
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    for _ in 0..2 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(selector).is_none());
+    }
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), replacement);
+        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.error.is_none() && !v.state.as_ref().unwrap().can_undo);
+        assert!(v.active_fade_drag.is_none() && v.pending_fade.is_none());
+        assert!(v.pending_requests.is_empty() && v.worker_requests_pending == 0);
+    });
 }
 
 #[gpui::test]

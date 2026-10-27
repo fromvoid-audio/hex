@@ -47,6 +47,27 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 }));
                 (applied, _) = h.applied(applied);
             }
+            let main_compensated = owner == 0 && kind == NodeKind::LowCut;
+            if main_compensated {
+                h.run(Request::Edit(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_engine::default_native_device_state_for_class(
+                        hex_engine::NativeDeviceClass::Effect,
+                        hex_engine::DeviceTypeId::from_static("hex.limiter"),
+                    )
+                    .unwrap(),
+                }));
+                (applied, _) = h.applied(applied);
+                // Reproduce the native report: insert the EQ into an already
+                // sounding graph whose serial Main chain has latency.
+                h.audio
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .command(PlaybackCommand::Play)
+                    .unwrap();
+                assert!(level(&h) > 0.01);
+            }
             let state = EqState::default().encode().unwrap();
             let command = match owner {
                 0 => Command::InsertDevice {
@@ -233,10 +254,124 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 assert_runtime_loop(&h);
             }
             let redone = h.run(Request::Redo);
-            h.applied(applied);
+            let (audio_revision, metadata) = h.applied(applied);
+            applied = audio_revision;
+            if main_compensated {
+                assert_eq!(metadata.context.editor_revision, redone.state.revision);
+            }
             assert_eq!(redone.state.project, committed.state.project);
             if transient {
                 assert_runtime_loop(&h);
+            }
+            if main_compensated {
+                assert!(
+                    h.audio
+                        .as_ref()
+                        .unwrap()
+                        .status()
+                        .unwrap()
+                        .playing
+                        .load(Acquire)
+                );
+                // Verify the section fence after live EQ edits, both playing
+                // and paused (the latter matches the supplied failure log).
+                let mut section = h.run(Request::EditArrangementSection {
+                    project_generation: 0,
+                    revision: redone.state.revision,
+                    command: Command::AddArrangementSection {
+                        name: "copy".into(),
+                        color: hex_project::ElementColor::Cyan,
+                        start: hex_project::BeatTime::ZERO,
+                        end: hex_project::BeatTime::ONE,
+                    },
+                });
+                (applied, _) = h.applied(applied);
+                let Some(Created::ArrangementSection(section_id)) = section.created else {
+                    panic!("section");
+                };
+                // The captured report included both a copy after a different
+                // section and a copy after the source itself. Exercise both
+                // through the same applied-EQ and section-fence owner.
+                let destination = h.run(Request::EditArrangementSection {
+                    project_generation: 0,
+                    revision: section.state.revision,
+                    command: Command::AddArrangementSection {
+                        name: "destination".into(),
+                        color: hex_project::ElementColor::Cyan,
+                        start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                        end: hex_project::BeatTime::from_quarters(3).unwrap(),
+                    },
+                });
+                (applied, _) = h.applied(applied);
+                let Some(Created::ArrangementSection(destination_id)) = destination.created else {
+                    panic!("destination section");
+                };
+                section = destination;
+                for (paused, target) in [(false, destination_id), (true, section_id)] {
+                    if paused {
+                        // Applied publication precedes the worker's poll that
+                        // releases its edit fence. Retain/retry the transport
+                        // intent until that existing bounded handoff completes.
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        while h
+                            .audio
+                            .as_mut()
+                            .unwrap()
+                            .control
+                            .command(PlaybackCommand::Pause)
+                            .is_err()
+                        {
+                            h.pump();
+                            h.render();
+                            assert!(Instant::now() < deadline, "section fence was not released");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        h.render();
+                    }
+                    let before = section.state.project.snapshot();
+                    let duplicated = super::resident_sections::run_callback(
+                        &mut h,
+                        Request::EditArrangementSection {
+                            project_generation: 0,
+                            revision: section.state.revision,
+                            command: Command::DuplicateArrangementSectionAt {
+                                section: section_id,
+                                target,
+                                after: true,
+                            },
+                        },
+                    );
+                    assert!(duplicated.error.is_none(), "{:?}", duplicated.error);
+                    assert_eq!(duplicated.state.revision, section.state.revision + 1);
+                    assert!(matches!(
+                        duplicated.created,
+                        Some(Created::ArrangementSection(_))
+                    ));
+                    let after = duplicated.state.project.snapshot();
+                    assert_ne!(after, before);
+                    let (audio_revision, metadata) = h.applied(applied);
+                    applied = audio_revision;
+                    assert_eq!(metadata.context.editor_revision, duplicated.state.revision);
+                    let undone = super::resident_sections::run_callback(&mut h, Request::Undo);
+                    assert!(undone.error.is_none(), "{:?}", undone.error);
+                    (applied, _) = h.applied(applied);
+                    let mut restored = undone.state.project.snapshot();
+                    restored.next_id = before.next_id;
+                    assert_eq!(restored, before);
+                    let redone = super::resident_sections::run_callback(&mut h, Request::Redo);
+                    assert!(redone.error.is_none(), "{:?}", redone.error);
+                    let (audio_revision, metadata) = h.applied(applied);
+                    applied = audio_revision;
+                    assert_eq!(metadata.context.editor_revision, redone.state.revision);
+                    assert_eq!(redone.state.project.snapshot(), after);
+                    let undone = super::resident_sections::run_callback(&mut h, Request::Undo);
+                    assert!(undone.error.is_none(), "{:?}", undone.error);
+                    (applied, _) = h.applied(applied);
+                    let mut restored = undone.state.project.snapshot();
+                    restored.next_id = before.next_id;
+                    assert_eq!(restored, before);
+                    section = undone;
+                }
             }
             assert!(h.publication_refusals.is_empty());
         }

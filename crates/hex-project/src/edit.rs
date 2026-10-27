@@ -312,11 +312,31 @@ pub enum Command {
         before: Option<DeviceId>,
     },
     /// Replace one canonical Arrangement envelope; empty points clear it.
+    ReplaceDeviceAutomationTarget {
+        device: DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        points: Vec<crate::AutomationPoint>,
+    },
+    /// Provider-parameter convenience; host trims use the typed target command.
     ReplaceDeviceAutomation {
         device: DeviceId,
         parameter: hex_lattice_contract::ParameterId,
         points: Vec<crate::AutomationPoint>,
     },
+    /// One explicit manual edit selects base only for touched retained lanes.
+    /// Ordinary state/preset/comparison replacements retain their read selection.
+    ManualDeviceEdit {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        targets: Vec<hex_lattice_contract::DeviceAutomationTarget>,
+    },
+    SetDeviceAutomationReadSelection {
+        device: DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        selection: crate::AutomationReadSelection,
+    },
+    /// Resume every retained device envelope in one canonical history edit.
+    ReenableDeviceAutomation,
     ReplaceDeviceState {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
@@ -386,6 +406,17 @@ pub enum Command {
         clipboard: std::sync::Arc<crate::RangeClipboard>,
         track: TrackId,
         frame: u64,
+    },
+    /// Remove one validated chain selection as one history edit.
+    RemoveDevices {
+        owner: crate::DeviceChainOwner,
+        selected: crate::DeviceSelectionIds,
+    },
+    /// Insert captured devices with fresh identities and complete authored state.
+    PasteDevices {
+        clipboard: std::sync::Arc<crate::DeviceClipboard>,
+        owner: crate::DeviceChainOwner,
+        before: Option<DeviceId>,
     },
     /// Insert complete captured tracks in canonical order with fresh identities.
     PasteTracks {
@@ -552,6 +583,13 @@ pub enum Command {
     /// Toggle track solo. Exclusive solo clears other solos only when enabling.
     ToggleSolo {
         track: TrackId,
+        exclusive: bool,
+    },
+    /// Toggle one frozen selection atomically. Mixed states enable every member;
+    /// all-soloed members disable together. Exclusive enabling clears outsiders,
+    /// while disabling preserves them. Stale membership refuses before mutation.
+    ToggleSoloTracks {
+        tracks: crate::TrackSelectionIds,
         exclusive: bool,
     },
     SetLoopRegion {
@@ -752,7 +790,7 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
-    /// Recompute a clip-local loop operation from the current authored source.
+    /// Recompute a clip-local loop or playback-start operation from current source.
     /// Outer growth carves both clip kinds; cycle edits retain outer occupancy.
     ResizeAudioClipView {
         clip: ClipId,
@@ -1018,6 +1056,12 @@ pub enum Command {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
     },
+    /// Atomically enable or disable existing notes without changing their geometry.
+    SetMidiNotesActive {
+        clip: ClipId,
+        notes: Vec<NoteId>,
+        active: bool,
+    },
     RemoveMidiNote(NoteId),
     /// Atomically remove several notes in one MIDI clip as one history step.
     RemoveMidiNotes {
@@ -1075,6 +1119,7 @@ pub struct MidiNoteUpdate {
 /// Musical fields for one newly inserted MIDI note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiNoteInsert {
+    pub active: bool,
     pub start: crate::BeatTime,
     pub duration: crate::BeatTime,
     pub pitch: u8,
@@ -1875,6 +1920,22 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            Command::ManualDeviceEdit {
+                device,
+                state,
+                targets,
+            } => self.manual_device_edit(device, state, targets),
+            Command::SetDeviceAutomationReadSelection {
+                device,
+                target,
+                selection,
+            } => self.set_device_automation_read_selection(device, target, selection),
+            Command::ReenableDeviceAutomation => self.reenable_device_automation(),
+            Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points,
+            } => self.replace_device_automation_target(device, target, points),
             Command::ReplaceDeviceAutomation {
                 device,
                 parameter,
@@ -1950,6 +2011,7 @@ impl Project {
             | Command::DuplicateMidiSourceRange { .. }
             | Command::UpdateMidiNote { .. }
             | Command::UpdateMidiNotes { .. }
+            | Command::SetMidiNotesActive { .. }
             | Command::RemoveMidiNote(_)
             | Command::RemoveMidiNotes { .. }
             | Command::MoveMidiClip { .. }
@@ -2467,6 +2529,25 @@ impl Project {
                 }
                 Ok(Created::None)
             }
+            Command::ToggleSoloTracks { tracks, exclusive } => {
+                let ids = tracks.ids();
+                if ids.iter().any(|id| self.track(*id).is_none()) {
+                    return Err(Invalid("solo selection no longer exists"));
+                }
+                let enable = !self
+                    .tracks
+                    .iter()
+                    .filter(|track| ids.contains(&track.id()))
+                    .all(|track| track.soloed);
+                for track in &mut self.tracks {
+                    if ids.contains(&track.id()) {
+                        track.soloed = enable;
+                    } else if enable && exclusive {
+                        track.soloed = false;
+                    }
+                }
+                Ok(Created::None)
+            }
             Command::SetLoopRegion {
                 start,
                 end,
@@ -2720,6 +2801,14 @@ impl Project {
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
             }
+            Command::RemoveDevices { owner, selected } => {
+                crate::device_clipboard::remove(self, owner, &selected)
+            }
+            Command::PasteDevices {
+                clipboard,
+                owner,
+                before,
+            } => crate::device_clipboard::paste(self, &clipboard, owner, before),
             Command::PasteTracks {
                 clipboard,
                 destination,

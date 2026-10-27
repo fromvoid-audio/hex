@@ -53,14 +53,14 @@ impl RuntimeOwnership {
                         clock,
                         automation,
                         &crate::EMPTY_DEVICE_RESOURCES,
-                    );
+                    )?;
                 } else {
                     scratch.process_block_with_automation(
                         frames,
                         clock,
                         automation,
                         &crate::EMPTY_DEVICE_RESOURCES,
-                    );
+                    )?;
                 }
             }
             Self::Owned(value) => {
@@ -70,14 +70,14 @@ impl RuntimeOwnership {
                         clock,
                         automation,
                         &crate::EMPTY_DEVICE_RESOURCES,
-                    );
+                    )?;
                 } else {
                     value.process_block_with_automation(
                         frames,
                         clock,
                         automation,
                         &crate::EMPTY_DEVICE_RESOURCES,
-                    );
+                    )?;
                 }
             }
             _ => return Err(DeviceContractError::UnsupportedProcessingClass),

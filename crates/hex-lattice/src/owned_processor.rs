@@ -33,9 +33,10 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
 /// resource. A transaction may span arbitrarily many/large borrowed segments;
 /// providers must not impose a hidden callback-size or write-journal limit.
 ///
-/// Processing is infallible after admission, including an absent musical clock;
-/// clock-dependent laws must define that case explicitly. Providers needing a
-/// fallible per-segment capability are unsupported by this initial contract.
+/// Ordinary processing is infallible after admission, including an absent
+/// musical clock. Automation delivery may refuse invalid borrowed values or
+/// derived controls through the existing host transaction; missing origin is
+/// an explicit immutable-base fallback, never an error.
 /// Host render failure invokes rollback after all earlier speculative segments.
 pub trait OwnedProcessorRuntime: Any + Send {
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
@@ -43,12 +44,12 @@ pub trait OwnedProcessorRuntime: Any + Send {
     }
     fn process_block_with_automation(
         &mut self,
-        frames: &mut [StereoFrame],
-        clock: Option<&dyn NativeInstrumentClock>,
+        _frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
         _automation: &dyn crate::NativeParameterAutomation,
-        resources: &dyn crate::DeviceResources,
-    ) {
-        self.process_block_with_clock(frames, clock, resources);
+        _resources: &dyn crate::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
     }
     fn process_bypassed_block_with_automation(
         &mut self,
@@ -56,7 +57,7 @@ pub trait OwnedProcessorRuntime: Any + Send {
         clock: Option<&dyn NativeInstrumentClock>,
         automation: &dyn crate::NativeParameterAutomation,
         resources: &dyn crate::DeviceResources,
-    ) {
+    ) -> Result<(), DeviceContractError> {
         for (offset, frame) in frames.iter_mut().enumerate() {
             let dry = *frame;
             let shifted = clock.map(|clock| crate::OffsetClock { clock, offset });
@@ -64,7 +65,7 @@ pub trait OwnedProcessorRuntime: Any + Send {
                 values: automation,
                 offset,
             };
-            self.process_block_with_automation(
+            let result = self.process_block_with_automation(
                 std::slice::from_mut(frame),
                 shifted
                     .as_ref()
@@ -73,7 +74,9 @@ pub trait OwnedProcessorRuntime: Any + Send {
                 resources,
             );
             *frame = dry;
+            result?;
         }
+        Ok(())
     }
     fn fixed_storage_pair_bytes(&self) -> Option<usize>;
     /// Reopening must abandon prior speculative work, preserving committed PCM.

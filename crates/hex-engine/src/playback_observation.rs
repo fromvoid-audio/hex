@@ -25,11 +25,17 @@ struct Meter {
 #[derive(Debug)]
 struct TrackGates {
     track: TrackId,
+    output_meter: Arc<hex_lattice::DeviceMeter>,
     route: TrackId,
     spans: Vec<CompiledNoteSpan>,
     nodes: Vec<SpanNode>,
     root: Option<usize>,
     has_instrument: bool,
+}
+#[derive(Debug)]
+struct ReturnMeter {
+    id: hex_project::ReturnId,
+    meter: Arc<hex_lattice::DeviceMeter>,
 }
 #[derive(Debug)]
 struct SessionGates {
@@ -56,6 +62,7 @@ pub struct PreparedMidiActivity {
 #[derive(Debug)]
 pub struct PreparedPlaybackObservation {
     meters: Vec<Meter>,
+    returns: Vec<ReturnMeter>,
     activity: PreparedMidiActivity,
 }
 
@@ -89,6 +96,14 @@ impl PreparedPlaybackObservation {
             .ok_or(Invalid("observation storage overflow"))?;
         add(
             &mut bytes,
+            revision
+                .arrangement()
+                .return_buses()
+                .len()
+                .checked_mul(std::mem::size_of::<ReturnMeter>() + meter_backing_bytes()),
+        )?;
+        add(
+            &mut bytes,
             revision.session().timing().observation_copy_quote(),
         )?;
         add(
@@ -97,7 +112,7 @@ impl PreparedPlaybackObservation {
                 .arrangement()
                 .tracks()
                 .len()
-                .checked_mul(std::mem::size_of::<TrackGates>()),
+                .checked_mul(std::mem::size_of::<TrackGates>() + meter_backing_bytes()),
         )?;
         for track in revision.arrangement().tracks() {
             if let Some(source) = &track.instrument {
@@ -157,6 +172,13 @@ impl PreparedPlaybackObservation {
             return Err(Invalid("observation device identity is duplicated"));
         }
         let mut tracks = reserved(revision.arrangement().tracks().len())?;
+        let mut returns = reserved(revision.arrangement().return_buses().len())?;
+        for bus in revision.arrangement().return_buses() {
+            returns.push(ReturnMeter {
+                id: bus.id,
+                meter: Arc::clone(&bus.output_meter),
+            });
+        }
         for track in revision.arrangement().tracks() {
             let id = track
                 .canonical_track_id()
@@ -167,6 +189,7 @@ impl PreparedPlaybackObservation {
             };
             tracks.push(TrackGates {
                 track: id,
+                output_meter: Arc::clone(&track.instrument_meter),
                 route: revision.midi_activity_route_track(id)?,
                 spans,
                 nodes,
@@ -188,6 +211,7 @@ impl PreparedPlaybackObservation {
         }
         let result = Self {
             meters,
+            returns,
             activity: PreparedMidiActivity {
                 tracks,
                 session,
@@ -222,6 +246,25 @@ impl PreparedPlaybackObservation {
     pub fn activity(&self) -> &PreparedMidiActivity {
         &self.activity
     }
+    /// Borrow the independently drained post-fader peak for a canonical track.
+    /// The caller must match this observation to the applied audio revision.
+    pub fn track_output_meter(&self, track: TrackId) -> Option<&hex_lattice::DeviceMeter> {
+        self.activity
+            .tracks
+            .iter()
+            .find(|item| item.track == track)
+            .map(|item| item.output_meter.as_ref())
+    }
+    /// Borrow a return's independently drained post-fader peak.
+    pub fn return_output_meter(
+        &self,
+        id: hex_project::ReturnId,
+    ) -> Option<&hex_lattice::DeviceMeter> {
+        self.returns
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.meter.as_ref())
+    }
     /// Whether this exact compiled device selected a foreign processor. This
     /// scalar is not native admission or ACK: consumers must first match this
     /// observation to the actual applied output/context/audio revision.
@@ -247,10 +290,22 @@ impl PreparedPlaybackObservation {
             )?
             .checked_add(self.meters.len().checked_mul(meter_backing_bytes())?)?
             .checked_add(
+                self.returns
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<ReturnMeter>())?,
+            )?
+            .checked_add(self.returns.len().checked_mul(meter_backing_bytes())?)?
+            .checked_add(
                 self.activity
                     .tracks
                     .capacity()
                     .checked_mul(std::mem::size_of::<TrackGates>())?,
+            )?
+            .checked_add(
+                self.activity
+                    .tracks
+                    .len()
+                    .checked_mul(meter_backing_bytes())?,
             )?
             .checked_add(
                 self.activity

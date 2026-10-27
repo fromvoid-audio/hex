@@ -10,6 +10,7 @@ use super::{
 };
 use hex_project::{ClipId, Command, MidiNoteInsert, MidiSourceIdentity, Project};
 use hex_session::service::{Event, Request};
+use std::sync::Arc;
 
 pub(super) enum Frozen {
     Single(NoteGesture),
@@ -17,6 +18,7 @@ pub(super) enum Frozen {
     Volume(hex_project::MidiClipVolume),
     Creation(MidiNoteInsert),
     Velocity(super::midi_velocity::Gesture),
+    Stroke(Arc<super::midi_stroke::StrokePreview>),
 }
 
 pub(super) struct Pending {
@@ -86,6 +88,18 @@ impl Pending {
                 Request::Edit(Command::UpdateMidiNotes { clip: c, notes: n }),
             ) => (clip, notes) == (c, n),
             (
+                Command::EditMidiNotes {
+                    clip,
+                    remove,
+                    insert,
+                },
+                Request::Edit(Command::EditMidiNotes {
+                    clip: c,
+                    remove: r,
+                    insert: i,
+                }),
+            )
+            | (
                 Command::EditMidiNotesWithSourceExtent {
                     clip,
                     remove,
@@ -199,6 +213,23 @@ impl EditorView {
             return None;
         };
         (pending.clip == clip && pending.displayed(self)).then_some(gesture)
+    }
+
+    /// Freeze only the immutable display payload, not the working stroke's
+    /// baseline index, traversal caches or editable action map.
+    pub(super) fn displayed_midi_stroke_preview(
+        &self,
+    ) -> Option<Arc<super::midi_stroke::StrokePreview>> {
+        self.midi_stroke
+            .as_ref()
+            .map(|stroke| stroke.shared_preview())
+            .or_else(|| {
+                let pending = self.pending_midi_drag.as_ref()?;
+                let Frozen::Stroke(preview) = &pending.preview else {
+                    return None;
+                };
+                pending.displayed(self).then(|| Arc::clone(preview))
+            })
     }
 
     pub(super) fn pending_midi_drag_matches(&self, request: &Request) -> bool {

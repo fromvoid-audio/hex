@@ -43,6 +43,7 @@ impl Scene {
             points.push(Point {
                 note: GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),
@@ -222,6 +223,11 @@ impl Gesture {
             delta: 0,
         })
     }
+    /// Copied immutable admission identity; geometry updates never replace it.
+    pub(super) fn admission(&self) -> (Context, f32) {
+        (self.context, self.start_y)
+    }
+
     pub(super) fn is_current(&self, context: Context) -> bool {
         self.context == context && context.valid()
     }

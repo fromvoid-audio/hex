@@ -9,7 +9,11 @@
 //! # Does not own
 //! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
 //! Opaque payloads and asset references require provider and host validation before processing.
+mod automation_target;
 mod device_assets;
+pub use automation_target::DeviceAutomationTarget;
+mod host_gain;
+pub use host_gain::HostGain;
 mod foreign_binding;
 mod foreign_parameter;
 pub use foreign_binding::ForeignProcessorBinding;
@@ -383,40 +387,28 @@ impl NativeDeviceState {
         self.input_gain_millidb
     }
     pub fn input_gain_db(&self) -> f32 {
-        self.input_gain_millidb as f32 / 1000.0
+        HostGain(self.input_gain_millidb).db()
     }
     pub fn with_input_gain_millidb(mut self, gain: i32) -> Result<Self, DeviceContractError> {
-        if !(-60_000..=24_000).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.input_gain_millidb = gain;
+        self.input_gain_millidb = HostGain::from_millidb(gain)?.millidb();
         Ok(self)
     }
     pub fn with_input_gain_db(self, gain: f32) -> Result<Self, DeviceContractError> {
-        if !gain.is_finite() || !(-60.0..=24.0).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.with_input_gain_millidb((gain * 1000.0).round() as i32)
+        self.with_input_gain_millidb(HostGain::from_db(gain)?.millidb())
     }
     /// Host-owned output trim, independent of the device's opaque DSP payload.
     pub const fn output_gain_millidb(&self) -> i32 {
         self.output_gain_millidb
     }
     pub fn output_gain_db(&self) -> f32 {
-        self.output_gain_millidb as f32 / 1000.0
+        HostGain(self.output_gain_millidb).db()
     }
     pub fn with_output_gain_millidb(mut self, gain: i32) -> Result<Self, DeviceContractError> {
-        if !(-60_000..=24_000).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.output_gain_millidb = gain;
+        self.output_gain_millidb = HostGain::from_millidb(gain)?.millidb();
         Ok(self)
     }
     pub fn with_output_gain_db(self, gain: f32) -> Result<Self, DeviceContractError> {
-        if !gain.is_finite() || !(-60.0..=24.0).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.with_output_gain_millidb((gain * 1000.0).round() as i32)
+        self.with_output_gain_millidb(HostGain::from_db(gain)?.millidb())
     }
     pub fn without_host_gains(mut self) -> Self {
         self.input_gain_millidb = 0;
@@ -431,10 +423,10 @@ impl NativeDeviceState {
             && self.asset_references == other.asset_references
     }
     pub fn input_gain_linear(&self) -> f32 {
-        10.0_f32.powf(self.input_gain_db() / 20.0)
+        HostGain(self.input_gain_millidb).linear()
     }
     pub fn output_gain_linear(&self) -> f32 {
-        10.0_f32.powf(self.output_gain_db() / 20.0)
+        HostGain(self.output_gain_millidb).linear()
     }
     /// Physical observations of this state's immutable payload handle. These
     /// counts/bytes establish neither constructor provenance nor lifetime

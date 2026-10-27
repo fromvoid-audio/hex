@@ -98,6 +98,7 @@ struct MidiFragment {
 }
 #[derive(Debug, Clone)]
 struct FrameNote {
+    active: bool,
     start: u64,
     duration: u64,
     pitch: u8,
@@ -220,6 +221,7 @@ impl Project {
                         if note_start < note_end {
                             reserve(&mut notes, 1)?;
                             notes.push(FrameNote {
+                                active: note.active(),
                                 start: note_start - start,
                                 duration: note_end - note_start,
                                 pitch: note.pitch(),
@@ -452,6 +454,7 @@ fn paste_rows_with_source(
                 .ok_or(Invalid("pasted note is before its clip"))?;
             notes.push(MidiNote {
                 id: NoteId(0),
+                active: original.active,
                 start: note_start,
                 duration,
                 pitch: original.pitch,

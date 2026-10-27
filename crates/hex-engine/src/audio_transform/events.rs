@@ -21,6 +21,9 @@ pub(super) fn compose(
         .map_err(|_| Invalid("audio event composition allocation failed"))?;
     output.resize(source.len(), [0.0, 0.0]);
     for event in &events.events {
+        if !event.active {
+            continue;
+        }
         let start = usize::try_from(edit.root_frame_at(event.start, tempo)?)
             .map_err(|_| Invalid("audio event start overflow"))?;
         let end = usize::try_from(edit.root_frame_at(event.end, tempo)?)

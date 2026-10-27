@@ -26,7 +26,16 @@ pub(crate) fn command_for_snapshot(
             current.state(),
             &parameters,
         )?;
-        return Ok(Command::ReplaceDeviceState { device, state });
+        return Ok(manual_device_edit(
+            session,
+            device,
+            state,
+            snapshot
+                .touched_parameters
+                .ids(&parameters)
+                .map_err(SessionError::Invalid)?,
+            snapshot.manual_edit,
+        ));
     }
     match snapshot.target {
         GestureTarget::PluginParameter { .. } => Err(SessionError::Invalid(
@@ -63,7 +72,13 @@ pub(crate) fn command_for_snapshot(
                 parameter,
                 snapshot.value,
             )?;
-            Ok(Command::ReplaceDeviceState { device, state })
+            Ok(manual_device_edit(
+                session,
+                device,
+                state,
+                [parameter],
+                snapshot.manual_edit,
+            ))
         }
         GestureTarget::DeviceParameterPair {
             device,
@@ -95,10 +110,69 @@ pub(crate) fn command_for_snapshot(
                 second,
                 second_value,
             )?;
-            Ok(Command::ReplaceDeviceState { device, state })
+            Ok(manual_device_edit(
+                session,
+                device,
+                state,
+                [first, second],
+                snapshot.manual_edit,
+            ))
         }
         GestureTarget::DeviceParameterSnapshot { .. } | GestureTarget::EqNodeCreation { .. } => {
             Err(SessionError::Invalid("snapshot parameters are missing"))
         }
+    }
+}
+
+/// One neutral manual-selection seam for keyed gestures and trusted direct edits.
+/// Unsupported/source-owned targets retain their ordinary base-state edit behavior.
+pub(crate) fn manual_device_edit(
+    session: &Session,
+    device: DeviceId,
+    state: hex_lattice_contract::NativeDeviceState,
+    parameters: impl IntoIterator<Item = ParameterId>,
+    manual_edit: bool,
+) -> Command {
+    if !manual_edit {
+        return Command::ReplaceDeviceState { device, state };
+    }
+    let mut targets: Vec<_> = parameters
+        .into_iter()
+        .map(automation_target)
+        .filter(|target| {
+            session
+                .project()
+                .device(device)
+                .and_then(|device| device.automation_target(*target))
+                .is_some()
+                && hex_engine::project_device_automation_target_supported(
+                    session.project(),
+                    device,
+                    *target,
+                )
+        })
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    if targets.is_empty() {
+        Command::ReplaceDeviceState { device, state }
+    } else {
+        Command::ManualDeviceEdit {
+            device,
+            state,
+            targets,
+        }
+    }
+}
+pub(crate) fn automation_target(
+    parameter: ParameterId,
+) -> hex_lattice_contract::DeviceAutomationTarget {
+    use hex_lattice_contract::DeviceAutomationTarget as Target;
+    if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
+        Target::HostInputGain
+    } else if parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
+        Target::HostOutputGain
+    } else {
+        Target::Parameter(parameter)
     }
 }

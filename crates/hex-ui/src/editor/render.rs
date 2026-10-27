@@ -6,8 +6,8 @@ use super::{
     OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
     PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
     RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
-    SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode,
-    TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    SelectAllMidiNotes, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
+    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
@@ -449,6 +449,7 @@ impl Render for EditorView {
         self.reconcile_clip_selection();
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
+        self.reconcile_clip_gain();
         if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
@@ -609,9 +610,6 @@ impl Render for EditorView {
                 super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
-                if event.button == MouseButton::Left {
-                    view.piano_pitch_zoom = None;
-                }
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_browser_audio_drag.clone()
                 {
@@ -631,6 +629,21 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.active_native_device_drag.as_ref().is_some_and(|drag| {
+                        matches!(
+                            drag.source,
+                            super::drag::NativeDeviceDragSource::Existing { .. }
+                        )
+                    }) {
+                        cx.set_active_drag_cursor_style(
+                            if event.modifiers.alt {
+                                gpui::CursorStyle::DragCopy
+                            } else {
+                                gpui::CursorStyle::ClosedHand
+                            },
+                            window,
+                        );
+                    }
                     if view.sections.held() {
                         let position = window.mouse_position();
                         if view.update_section_pointer(
@@ -706,13 +719,34 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                if !view.tuning_audition_down(event, window, cx)
+                if event.keystroke.key == "space"
+                    && event.keystroke.modifiers == gpui::Modifiers::default()
+                    && !window.context_stack().iter().any(|context| {
+                        context.contains("hex_text_editing")
+                            || context.contains("hex_text_input")
+                            || context.contains("hex_browser_search")
+                    })
+                {
+                    if !event.is_held {
+                        let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
+                        view.toggle_play();
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                if !view.time_selection_key_down(event, window, cx)
+                    && !view.tuning_audition_down(event, window, cx)
+                    && !view.clip_gain_key_down(event, cx)
                     && !view.fade_key_down(event, window, cx)
                 {
                     view.computer_keyboard_down(event, window, cx);
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.time_selection_key_up(event, cx) {
+                    cx.stop_propagation();
+                }
                 super::device_panel::selection_key_up(view, event, window, cx);
                 if view.tuning_audition_up(&event.keystroke.key) {
                     cx.stop_propagation();
@@ -1358,24 +1392,16 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.trace(|view, _: &super::BounceInPlace, window, cx| {
-                view.bounce_arrangement_selection(true, window);
-                cx.notify();
-            }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
-                view.bounce_arrangement_selection(false, window);
+                view.bounce_arrangement_selection(window);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &LoopSelection, window, cx| {
                 view.loop_selection_key(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.trace(|view, _: &SetLoopFromClip, window, cx| {
-                view.set_loop_from_clip(window, cx);
-                cx.notify();
-            }))
-            .on_action(cx.trace(|view, _: &ToggleLoop, _, cx| {
-                view.toggle_loop();
+            .on_action(cx.trace(|view, _: &ToggleLoop, window, cx| {
+                view.toggle_active_loop_shortcut(window);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ZoomIn, _, cx| {
@@ -1517,8 +1543,8 @@ impl Render for EditorView {
             .child(workspace)
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
-            .children(self.floating_browser_audio_drag_ghost())
-            .children(self.floating_clip_drag_ghost())
+            .children(self.floating_browser_audio_drag_ghost(window.scale_factor()))
+            .children(self.floating_clip_drag_ghost(window.scale_factor()))
             .children(self.context_menu_overlay(window, cx))
             .children(self.controller_input_overlay(cx))
             .children(super::theme_settings::overlay(self, cx))
