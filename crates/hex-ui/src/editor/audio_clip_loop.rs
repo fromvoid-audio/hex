@@ -2,11 +2,8 @@
 //! Window input capture ends independently of the existing clip-loop receipt.
 use super::*;
 use crate::editor::audio_event_editor::editor_bounds;
-use crate::{
-    editor::{musical_time::SnapGrid, viewport::Viewport},
-    theme,
-};
-use gpui::{Bounds, Context, Div, MouseButton, Pixels, canvas, div, prelude::*, px, relative, rgb};
+use crate::editor::{musical_time::SnapGrid, viewport::Viewport};
+use gpui::{Bounds, Context, Div, MouseButton, Pixels, canvas, div, prelude::*, px, relative};
 use hex_project::AudioClipEdit;
 
 #[derive(Clone)]
@@ -257,20 +254,10 @@ impl EditorView {
                 })
         };
         let (a, b) = (position(start), position(end));
-        let color = theme::color(if looping {
-            theme::PaletteRole::Primary
-        } else {
-            theme::PaletteRole::Muted
-        });
-        let mut ruler = div()
+        let mut ruler = crate::editor::timeline_strip::loop_surface()
             .id("audio-loop-ruler")
             .debug_selector(|| "audio-loop-ruler".into())
-            .relative()
-            .h(px(18.0))
-            .flex_shrink_0()
             .w_full()
-            .overflow_hidden()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .track_focus(&self.audio_event_focus);
         let description=refusal.unwrap_or_else(||format!("clip loop {} · drag ends · w/l uses time selection · hold cmd/control to invert snap",if looping {"on"} else {"off"}));
         ruler = ruler.tooltip(move |_, cx| {
@@ -281,17 +268,12 @@ impl EditorView {
             .into()
         });
         if let (Some(a), Some(b)) = (a, b) {
-            if a < b && b > 0.0 && a < 1.0 {
-                ruler = ruler.child(
-                    div()
-                        .absolute()
-                        .top(px(5.0))
-                        .left(relative(a.max(0.0) as f32))
-                        .w(relative((b.min(1.0) - a.max(0.0)).max(0.0) as f32))
-                        .h(px(2.0))
-                        .bg(rgb(color)),
-                );
-            }
+            ruler = ruler.children(crate::editor::timeline_strip::loop_range(
+                a,
+                b,
+                looping,
+                ["audio-loop-start-marker", "audio-loop-end-marker"],
+            ));
             for (start_edge, at) in [(true, a), (false, b)] {
                 if !editable || !(0.0..=1.0).contains(&at) {
                     continue;
@@ -316,23 +298,6 @@ impl EditorView {
                         } else {
                             gpui::CursorStyle::ResizeRight
                         })
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(3.0))
-                                .w(px(3.0))
-                                .h(px(9.0))
-                                .bg(rgb(color))
-                                .when(start_edge, |line| line.left_0())
-                                .when(!start_edge, |line| line.right_0())
-                                .debug_selector(move || {
-                                    if start_edge {
-                                        "audio-loop-start-marker".into()
-                                    } else {
-                                        "audio-loop-end-marker".into()
-                                    }
-                                }),
-                        )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
