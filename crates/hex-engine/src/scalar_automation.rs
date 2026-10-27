@@ -18,14 +18,25 @@ pub struct ScalarAutomationBinding {
 
 pub(crate) fn validate_source(
     project: &hex_project::Project,
-    source: &ScalarSourceMetadata,
+    binding: &ScalarAutomationBinding,
 ) -> Result<(), Invalid> {
+    let source = &binding.source;
     if source.project_rate() != project.sample_rate()
         || !projection_matches(source, project.tempo_map())
     {
         return Err(Invalid(
             "scalar automation source rate or projection differs from project",
         ));
+    }
+    // Recorded sources are not yet owned by canonical lane state. Until that
+    // adoption can preserve them while switching read modes, refuse this
+    // binding rather than silently play over an existing manual override.
+    if project
+        .device(binding.device)
+        .and_then(|device| device.automation_target(binding.target))
+        .is_some_and(|lane| !lane.is_reading())
+    {
+        return Err(Invalid("recorded automation target is manually overridden"));
     }
     Ok(())
 }

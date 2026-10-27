@@ -155,7 +155,7 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         binding: crate::scalar_automation::ScalarAutomationBinding,
     ) -> Result<Self, Invalid> {
-        crate::scalar_automation::validate_source(project, &binding.source)?;
+        crate::scalar_automation::validate_source(project, &binding)?;
         let prepared = Self::prepare_for_native_parameter_input(
             project,
             media,
@@ -177,7 +177,7 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         binding: crate::scalar_automation::ScalarAutomationBinding,
     ) -> Result<Self, Invalid> {
-        crate::scalar_automation::validate_source(project, &binding.source)?;
+        crate::scalar_automation::validate_source(project, &binding)?;
         let input = crate::device_automation::native_parameter_input_target(
             project,
             binding.device,

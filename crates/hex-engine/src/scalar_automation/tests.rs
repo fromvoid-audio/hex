@@ -154,9 +154,21 @@ fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
             None,
             binding.clone(),
         );
-        assert!(
-            result.is_err(),
-            "an overridden lane must not play its recorded source"
+        assert_eq!(
+            result.unwrap_err().0,
+            "recorded automation target is manually overridden"
+        );
+        let mixed = PreparedRevision::prepare_with_scalar_automation_and_prepared_sources(
+            f.editor.project(),
+            &std::collections::BTreeMap::new(),
+            1,
+            Arc::new(SineTable::new()),
+            None,
+            binding.clone(),
+        );
+        assert_eq!(
+            mixed.unwrap_err().0,
+            "recorded automation target is manually overridden"
         );
         f.editor.execute(Command::ReenableDeviceAutomation).unwrap();
         assert!(
