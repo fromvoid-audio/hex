@@ -114,7 +114,7 @@ pub struct PreparedRevision {
     authored_midi_sources: Vec<authored_midi::Source>,
     gain_recording_track: Option<TrackId>,
     native_parameter_input: Option<crate::device_automation::NativeParameterInputTarget>,
-    pub(crate) scalar_automation: Option<crate::scalar_automation::ScalarAutomationBinding>,
+    pub(crate) scalar_automation: Option<Box<crate::scalar_automation::ScalarAutomationBinding>>,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -179,13 +179,13 @@ impl PreparedRevision {
             .native_parameter_input
             .ok_or(Invalid("scalar automation native target is unavailable"))?;
         prepared.arrangement.prepare_scalar_automation(input)?;
-        prepared.scalar_automation = Some(binding);
+        prepared.scalar_automation = Some(Box::new(binding));
         Ok(prepared)
     }
     pub fn scalar_automation_binding(
         &self,
     ) -> Option<&crate::scalar_automation::ScalarAutomationBinding> {
-        self.scalar_automation.as_ref()
+        self.scalar_automation.as_deref()
     }
 
     /// Prepare a tuning-only publication in the authoritative Session's existing
