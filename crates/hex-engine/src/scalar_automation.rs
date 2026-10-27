@@ -16,7 +16,10 @@ pub struct ScalarAutomationBinding {
     pub source: ScalarSourceMetadata,
 }
 
-pub(crate) fn projection_matches(source: &ScalarSourceMetadata, map: &hex_project::TempoMap) -> bool {
+pub(crate) fn projection_matches(
+    source: &ScalarSourceMetadata,
+    map: &hex_project::TempoMap,
+) -> bool {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hex_project::visit_automation_projection_identity(map, &mut |bytes| hash.update(bytes));
@@ -102,3 +105,6 @@ impl ExternalParameterAutomation for State {
         self.values.get(offset).copied().flatten()
     }
 }
+
+#[cfg(test)]
+mod tests;

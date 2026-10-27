@@ -1,6 +1,6 @@
 use super::*;
 use hex_engine::{ScalarSourceKey, StreamResourceExtent, StreamResourceKey};
-use hex_project::{AutomationValue, Command, Created, Editor, LoopRegion, Project, TempoMap};
+use hex_project::{AutomationValue, Command, Created, Editor, LoopRegion, Project};
 use hex_storage::automation_draft::{
     AppliedEvent, CaptureClock, CompletedAutomationTake, DraftClock, DraftProvenance,
     DraftReadLimits, DraftTarget, DraftTerminal, DraftWriter,
@@ -109,6 +109,37 @@ fn definition(looped: bool, count: u64) -> (DraftFile, ScalarSourceDefinition) {
         ScalarSourceDefinition::new(ScalarSourceKey::new(7, 1, 1).unwrap(), source, projection)
             .unwrap();
     (DraftFile(path), definition)
+}
+fn audio_definition() -> (crate::worker::tests::Fixture, SourceDefinition) {
+    let wav = crate::worker::tests::Fixture::pcm16_frames(16001);
+    let limits = hex_media::VerifiedWavReaderLimits::new(
+        hex_media::WavReaderLimits::new(2 * 1024 * 1024, 16001, 128, 32768),
+        1024 * 1024,
+    );
+    let reader = hex_media::VerifiedWavReader::open(&wav.0, limits).unwrap();
+    let mut editor = Editor::new(Project::new(48000).unwrap(), 4).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "mixed.wav".into(),
+            sample_rate: 48000,
+            frames: 16001,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let metadata = hex_engine::StreamedSourceMetadata::new(
+        StreamSourceKey::new(7, asset),
+        48000,
+        48000,
+        16001,
+        16001,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap();
+    let definition = SourceDefinition::new(wav.0.clone(), metadata, limits);
+    (wav, definition)
 }
 fn await_scalar(pages: &mut StreamCallbackPages, key: ScalarSourceKey) {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -263,13 +294,16 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
     let metadata = definition.metadata().clone();
     let config = StreamConfig::with_pool_pages(3);
     let defs = vec![definition];
+    let (_wav, audio) = audio_definition();
+    let audio_key = audio.key;
+    let audio_defs = vec![audio];
     let reservation = Some(StreamReadinessReservation {
         extents_per_role: 2,
     });
     let bound = PendingStreamDomain::preparation_bound_with_scalar_sources(
         config,
-        &[],
-        0,
+        &audio_defs,
+        audio_defs.capacity(),
         &defs,
         defs.capacity(),
         reservation,
@@ -277,7 +311,7 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
     .unwrap();
     let mut pending = PendingStreamDomain::try_start_with_scalar_sources_on_control(
         config,
-        vec![],
+        audio_defs,
         defs,
         reservation,
         StreamPreparationAllowance {
@@ -317,6 +351,29 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
         start: 0,
         end: 24,
     }];
+    let active_stamp = stamp;
+    let audio_extents = [StreamResourceExtent {
+        source: audio_key.into(),
+        page_index: 0,
+        start: 0,
+        end: 24,
+    }];
+    loan.submit_resources(ProtectionRole::Active, active_stamp, &audio_extents)
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while loan
+        .service(ProtectionRole::Active, active_stamp, 2, 2)
+        .unwrap()
+        == ReadinessProgress::Pending
+    {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(loan.acknowledge_resources(ProtectionRole::Active, active_stamp, &audio_extents));
+    let stamp = ReadinessStamp {
+        request_epoch: 2,
+        ..stamp
+    };
     loan.submit_resources(ProtectionRole::Candidate, stamp, &extents)
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -335,6 +392,23 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
             .scalar_page(metadata.key(), 0)
             .is_some()
     );
+    assert_eq!(
+        loan.submit_resources(
+            ProtectionRole::Transition,
+            ReadinessStamp {
+                request_epoch: 3,
+                ..stamp
+            },
+            &[StreamResourceExtent {
+                source: audio_key.into(),
+                page_index: 1,
+                start: 0,
+                end: 8
+            }]
+        ),
+        Err(ReadinessRefusal::Capacity)
+    );
+    assert!(loan.is_resource_protected(ProtectionRole::Active, active_stamp, &audio_extents));
     assert!(loan.promote_resources_to_active(ProtectionRole::Candidate, stamp, &extents));
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
@@ -346,4 +420,65 @@ fn mixed_prebound_domain_uses_one_union_capacity_and_same_pair_disposal() {
         }
     }
     assert!(report.unwrap().accounting_complete);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn mixed_scalar_pcm_request_borrow_and_cache_turnover_have_zero_callback_allocations() {
+    let (_file, definition) = definition(true, 0);
+    let scalar_key = definition.metadata().key();
+    let (_wav, audio) = audio_definition();
+    let audio_key = audio.key;
+    let mut runtime = StreamRuntime::spawn_with_scalar_sources(
+        StreamConfig::with_pool_pages(3),
+        vec![audio],
+        vec![definition],
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let (control, mut pages) = runtime.split().ok().unwrap();
+    let observed = allocation_counter::measure(|| {
+        pages.request_scalar_page(scalar_key, 0);
+        pages.request_page(audio_key, 0);
+    });
+    assert_zero(observed);
+    control.wake_worker();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        pages.pump_ready(3);
+        if pages.scalar_page(scalar_key, 0).is_some() && pages.page(audio_key, 0).is_some() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_zero(allocation_counter::measure(|| {
+        for _ in 0..100 {
+            let scalar = pages.scalar_page(scalar_key, 0).unwrap();
+            assert_eq!(scalar.values[20], 0.0);
+            assert_eq!((scalar.coverage[0] >> 20) & 1, 1);
+            assert_eq!(pages.page(audio_key, 0).unwrap().frames.len(), 4096);
+        }
+        pages.request_page(audio_key, 1);
+    }));
+    control.wake_worker();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        assert_zero(allocation_counter::measure(|| {
+            pages.pump_ready(3);
+        }));
+        if pages.page(audio_key, 1).is_some() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(control.shutdown(pages).unwrap().accounting_complete);
+}
+#[cfg(feature = "allocation-probe")]
+fn assert_zero(observed: allocation_counter::AllocationInfo) {
+    assert_eq!(observed.count_total, 0);
+    assert_eq!(observed.bytes_total, 0);
+    assert_eq!(observed.count_current, 0);
+    assert_eq!(observed.bytes_current, 0);
 }

@@ -444,7 +444,7 @@ impl VerifiedPages {
             runtime.wake_worker();
             runtime.pump_ready(self.config.max_ready_pages_per_pump);
             let mut failures = [StreamFailure {
-                key: first_key.source,
+                key: first_key.source.into(),
                 page_index: 0,
                 kind: StreamFailureKind::Cancelled,
             }];

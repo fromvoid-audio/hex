@@ -1636,11 +1636,15 @@ fn arrangement_crossfade_demands_both_pages_and_matches_resident_audio() {
         "the existing demand owner may bound a render quantum"
     );
     assert!(
-        extents.iter().any(|e| e.source == key.into() && e.page_index == 0),
+        extents
+            .iter()
+            .any(|e| e.source == key.into() && e.page_index == 0),
         "incoming source requires page0"
     );
     assert!(
-        extents.iter().any(|e| e.source == key.into() && e.page_index == 1),
+        extents
+            .iter()
+            .any(|e| e.source == key.into() && e.page_index == 1),
         "outgoing source requires page1"
     );
     for block in [1, 17, 257] {
