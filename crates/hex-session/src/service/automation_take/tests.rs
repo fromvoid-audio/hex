@@ -682,6 +682,8 @@ fn span_values(
         let progress = source
             .read_projected_spans_on_control(destination, &mut cursor, budget, &mut output)
             .unwrap();
+        assert!(progress.records_read <= budget);
+        assert!(progress.records_visited <= budget);
         steps += 1;
         assert!(steps <= source.event_count() as usize * 3 + 20);
         assert!(progress.written <= slots);

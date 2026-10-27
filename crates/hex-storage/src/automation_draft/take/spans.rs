@@ -191,10 +191,11 @@ impl CompletedAutomationTake {
         })
     }
 
-    /// Consume at most input_budget (1..64) sequential records and emit at most
-    /// output.len() (1..64) spans. A refill reads no more than the remaining
-    /// budget, plus the storage reader's one integrity predecessor. Cached
-    /// records also count as work. At most three empty-piece transitions occur.
+    /// Fetch AND visit at most input_budget (1..64) data records and emit at
+    /// most output.len() (1..64) spans. Refills are charged in full even when a
+    /// piece sentinel discards unread prefetch. Each refill also has at most
+    /// one fixed integrity predecessor (at most three per step). Cached records
+    /// count as visited work. At most three empty-piece transitions occur.
     /// Foreign source/map calls refuse without changing an otherwise valid
     /// cursor. A genuine read/conversion failure seals it and clears this batch.
     pub fn read_projected_spans_on_control(
@@ -255,7 +256,12 @@ impl CompletedAutomationTake {
                 break;
             }
             if cursor.batch_at == cursor.batch_count {
-                let capacity = (input_budget - work).min(MAX_APPEND_EVENTS);
+                if records_read == input_budget {
+                    break;
+                }
+                let capacity = (input_budget - work)
+                    .min(input_budget - records_read)
+                    .min(MAX_APPEND_EVENTS);
                 cursor.batch_count = self
                     .source
                     .read_events(piece.next_ordinal, &mut cursor.batch[..capacity])
