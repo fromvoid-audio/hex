@@ -79,6 +79,29 @@ pub(crate) fn plan(
     let first = project
         .clip(clips[0])
         .ok_or(Invalid("selected audio clip no longer exists"))?;
+    // Rendering a processed group cannot retain muted constituent sources.
+    // Refuse rather than replace editable inactive material with silence.
+    for id in clips {
+        let clip = project
+            .clip(*id)
+            .ok_or(Invalid("selected audio clip no longer exists"))?;
+        let events = clip.audio_events();
+        if !clip.active()
+            || events.events.iter().any(|event| !event.active)
+            || events.sources.iter().any(|source| {
+                source
+                    .clip
+                    .audio_events()
+                    .events
+                    .iter()
+                    .any(|event| !event.active)
+            })
+        {
+            return Err(Invalid(
+                "processed audio grouping cannot retain inactive events; keep the clips separate",
+            ));
+        }
+    }
     let owner = project
         .tracks()
         .iter()

@@ -11,6 +11,7 @@ pub(crate) mod content_views;
 pub(crate) mod crossfades;
 pub(crate) mod device_assets;
 pub(crate) mod device_automation;
+pub(crate) mod event_activation;
 pub(crate) mod event_fades;
 pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;

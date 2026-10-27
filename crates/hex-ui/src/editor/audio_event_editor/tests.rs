@@ -3,6 +3,121 @@ use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext
 use hex_project::{AudioEventEdit, Command};
 
 #[gpui::test]
+fn retained_source_selector_dispatches_and_acknowledges_event_activation(cx: &mut TestAppContext) {
+    use super::super::drag::group_drag_ui_test::pump;
+    use hex_session::service::Request;
+    cx.update(super::super::bind_editor_keys);
+    let (_files, handle, editor) = super::super::clip_drag_ui_test::upper_rail_owned_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    let (clip, generation) = editor.read_with(&visual, |view, _| {
+        (
+            view.state.as_ref().unwrap().project.tracks()[0].clips()[0].id(),
+            view.project_generation,
+        )
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetActive {
+                events: vec![1],
+                active: false
+            }
+        })))
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::DuplicateClip(clip))))
+    });
+    pump(&editor, &mut visual);
+    let (clips, revision) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state.project.tracks()[0]
+                .clips()
+                .iter()
+                .map(|clip| clip.id())
+                .collect(),
+            state.revision,
+        )
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::GroupClips {
+            project_generation: generation,
+            revision,
+            clips
+        }))
+    });
+    pump(&editor, &mut visual);
+    let group = editor.update(&mut visual, |view, cx| {
+        let group = view.state.as_ref().unwrap().project.tracks()[0].clips()[0].id();
+        view.selected_clip = Some(group);
+        view.clip_view_open = true;
+        view.device_panel_active = false;
+        cx.notify();
+        group
+    });
+    visual.run_until_parked();
+    let event = visual.debug_bounds("audio-event-1").unwrap();
+    let down = point(
+        event.left() + event.size.width * 0.25,
+        event.top() + px(2.0),
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let source = visual
+        .debug_bounds("audio-retained-source")
+        .expect("retained source selector");
+    let button = point(
+        source.left() + source.size.width * 0.5,
+        source.top() + source.size.height * 0.5,
+    );
+    visual.simulate_mouse_down(button, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("0");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let events = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(group)
+            .unwrap()
+            .audio_events();
+        let root = events
+            .sources
+            .iter()
+            .find(|root| root.id == events.events[0].source)
+            .unwrap();
+        assert!(root.clip.audio_events().events[0].active);
+    });
+}
+
+#[gpui::test]
+fn zero_toggles_the_focused_selected_audio_event_and_paints_it_inactive(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    let point = point(
+        bounds.origin.x + bounds.size.width * 0.125,
+        bounds.top() + px(26.0),
+    );
+    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("0");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(&view.last_enqueued_edit, Some(Command::EditAudioEvents { clip: id, operation: AudioEventEdit::SetActive { events, active: false } }) if *id == clip && events == &[1]));
+    });
+    assert!(visual.debug_bounds("audio-event-1-inactive").is_some());
+}
+
+#[gpui::test]
 fn play_start_marker_follows_clip_phase_and_viewport_without_editing(cx: &mut TestAppContext) {
     use crate::theme;
     struct Restore(hex_preferences::ThemePreferences);
@@ -825,6 +940,7 @@ fn moved_and_pasted_waveform_positions_read_event_composed_pcm() {
                 at: 0,
                 length: 10,
                 events: vec![AudioEvent {
+                    active: true,
                     source: 0,
                     id: 0,
                     start: 0,

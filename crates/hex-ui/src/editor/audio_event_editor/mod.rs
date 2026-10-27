@@ -46,6 +46,7 @@ pub(super) struct State {
     fit_back: Option<Option<Viewport>>,
     cursor: u64,
     selected: Option<u64>,
+    retained_selection: Option<(u64, u64)>,
     range: Option<(u64, u64)>,
     grid: SnapGrid,
     pub(super) fade_key_held: bool,
@@ -123,6 +124,108 @@ impl EditorView {
             .iter()
             .find(|e| e.id == selected)
             .map(|e| (e.start, e.end))
+    }
+    /// Toggle the explicitly selected event; retained geometry and source stay intact.
+    pub(in crate::editor) fn event_toggle_active(&mut self) -> bool {
+        if self.audio_event_editor.source_view || !self.event_context_current() {
+            return false;
+        }
+        let Some(selected) = self.audio_event_editor.selected else {
+            return false;
+        };
+        if self.activation_gesture_blocked()
+            || self.audio_event_editor.pending.is_some()
+            || self.audio_event_editor.gesture.is_some()
+        {
+            self.error = Some("finish the current edit before changing activation".into());
+            return true;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(clip) = self.detail_clip_id().and_then(|id| state.project.clip(id)) else {
+            return false;
+        };
+        let Ok(events) = clip.editable_audio_events() else {
+            return false;
+        };
+        let Some(event) = events.events.iter().find(|event| event.id == selected) else {
+            return false;
+        };
+        if let Some((source_id, event_id)) = self.audio_event_editor.retained_selection {
+            let Some(root) = events
+                .sources
+                .iter()
+                .find(|root| root.id == source_id && event.source == source_id)
+            else {
+                self.error = Some("retained audio selection changed".into());
+                return true;
+            };
+            let Ok(inner) = root.clip.editable_audio_events() else {
+                return false;
+            };
+            let Some(event) = inner.events.iter().find(|event| event.id == event_id) else {
+                self.error = Some("retained audio selection changed".into());
+                return true;
+            };
+            let active = !event.active;
+            self.event_commit(AudioEventEdit::SetRetainedActive {
+                source: source_id,
+                events: vec![event_id],
+                active,
+            });
+            return true;
+        }
+        let active = !event.active;
+        self.event_commit(AudioEventEdit::SetActive {
+            events: vec![selected],
+            active,
+        });
+        true
+    }
+    fn event_retained_step(&mut self, forward: bool) {
+        if self.activation_gesture_blocked()
+            || self.audio_event_editor.pending.is_some()
+            || self.audio_event_editor.gesture.is_some()
+        {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(clip) = self.detail_clip_id().and_then(|id| state.project.clip(id)) else {
+            return;
+        };
+        let Ok(events) = clip.editable_audio_events() else {
+            return;
+        };
+        let Some(outer) = events
+            .events
+            .iter()
+            .find(|event| Some(event.id) == self.audio_event_editor.selected)
+        else {
+            return;
+        };
+        let Some(root) = events.sources.iter().find(|root| root.id == outer.source) else {
+            return;
+        };
+        let Ok(inner) = root.clip.editable_audio_events() else {
+            return;
+        };
+        if inner.events.is_empty() {
+            return;
+        }
+        let current = self
+            .audio_event_editor
+            .retained_selection
+            .filter(|(source, _)| *source == root.id)
+            .and_then(|(_, id)| inner.events.iter().position(|event| event.id == id));
+        let index = match current {
+            Some(index) if forward => (index + 1) % inner.events.len(),
+            Some(index) => (index + inner.events.len() - 1) % inner.events.len(),
+            None => 0,
+        };
+        self.audio_event_editor.retained_selection = Some((root.id, inner.events[index].id));
     }
     pub(super) fn event_group_selected(&mut self) {
         if self.audio_event_editor.source_view
