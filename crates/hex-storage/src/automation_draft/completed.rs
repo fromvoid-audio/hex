@@ -1,5 +1,5 @@
 //! Structurally completed draft custody and bounded performance-time predecessor queries.
-//! Session must separately validate the continuous content/loop clock before interpreting a
+//! The closed completed-take source separately validates the content/loop clock before interpreting a
 //! completed source as a take. This owner performs file I/O only on control; it has no callback
 //! query, cached event collection, content-time index or file-deletion responsibility.
 use super::*;
@@ -64,6 +64,13 @@ impl CompletedDraft {
         &mut self,
         performance_frame: u64,
     ) -> Result<Option<AppliedEvent>, DraftError> {
+        self.event_with_ordinal_at_or_before(performance_frame)
+            .map(|event| event.map(|(_, event)| event))
+    }
+    pub(super) fn event_with_ordinal_at_or_before(
+        &mut self,
+        performance_frame: u64,
+    ) -> Result<Option<(u64, AppliedEvent)>, DraftError> {
         let mut left = 0;
         let mut right = self.event_count();
         while left < right {
@@ -76,7 +83,7 @@ impl CompletedDraft {
             }
         }
         left.checked_sub(1)
-            .map(|ordinal| self.event(ordinal))
+            .map(|ordinal| self.event(ordinal).map(|event| (ordinal, event)))
             .transpose()
     }
     fn event(&mut self, ordinal: u64) -> Result<AppliedEvent, DraftError> {

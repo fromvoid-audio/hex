@@ -328,6 +328,15 @@ fn a_trillion_loop_passes_with_no_new_events_keep_held_coverage() {
             (2..8).contains(&frame).then_some(event)
         );
     }
+    let destination = std::sync::Arc::new(source.source().tempo_map().clone());
+    let mut values = [None; 10];
+    source
+        .read_projected_values_on_control(destination, 0, &mut values)
+        .unwrap();
+    assert_eq!(
+        values,
+        std::array::from_fn(|frame| (2..8).contains(&frame).then_some(event.value))
+    );
 }
 
 #[test]
@@ -648,4 +657,457 @@ fn profile_completed_automation_queries() {
             seconds * 1e6 / QUERIES as f64
         );
     }
+}
+
+fn span_values(
+    source: &mut CompletedAutomationTake,
+    destination: &std::sync::Arc<hex_project::TempoMap>,
+    start: u64,
+    frames: usize,
+    budget: usize,
+    slots: usize,
+) -> (Vec<Option<AutomationValue>>, usize) {
+    let mut cursor = source
+        .begin_projected_spans_on_control(
+            std::sync::Arc::clone(destination),
+            start..start + frames as u64,
+        )
+        .unwrap();
+    let mut values = vec![None; frames];
+    let mut output = vec![None; slots];
+    let mut steps = 0;
+    let mut empty_pending = 0;
+    let mut last_end = start;
+    loop {
+        let progress = source
+            .read_projected_spans_on_control(destination, &mut cursor, budget, &mut output)
+            .unwrap();
+        assert!(progress.records_read <= budget);
+        assert!(progress.records_visited <= budget);
+        steps += 1;
+        assert!(steps <= source.event_count() as usize * 3 + 20);
+        assert!(progress.written <= slots);
+        assert!(output[progress.written..].iter().all(Option::is_none));
+        for span in output[..progress.written].iter().flatten() {
+            assert!(span.start >= last_end && span.start < span.end);
+            values[(span.start - start) as usize..(span.end - start) as usize]
+                .fill(Some(span.value));
+            last_end = span.end;
+        }
+        if progress.state == SpanReadState::Finished {
+            assert_eq!(
+                source
+                    .read_projected_spans_on_control(destination, &mut cursor, budget, &mut output)
+                    .unwrap(),
+                SpanReadProgress {
+                    written: 0,
+                    records_read: 0,
+                    records_visited: 0,
+                    state: SpanReadState::Finished
+                }
+            );
+            break;
+        }
+        if progress.written == 0 {
+            empty_pending += 1;
+        }
+    }
+    (values, empty_pending)
+}
+
+#[test]
+fn sequential_span_batches_match_projected_previews_across_wraps_gaps_and_collisions() {
+    use hex_project::{Tempo, TempoMap};
+    use std::sync::Arc;
+    let files = Files::new();
+    let region = LoopRegion::new(3, 8, true).unwrap();
+    for (case, (content, pass, duration, region)) in [
+        (1, 0, 24, Some(region)),
+        (7, 0, 2, Some(region)),
+        (5, 7, 11, Some(region)),
+        (9, 0, 24, Some(region)),
+        (1, 0, 0, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let offsets: Vec<_> = (0..=duration).flat_map(|offset| [offset, offset]).collect();
+        let (events, end, _) = history(content, pass, duration, region, &offsets);
+        let path = files.path(&format!("span-case-{case}"));
+        write(&path, Some(region), &events, DraftTerminal::Finished(end));
+        let original = fs::read(&path).unwrap();
+        let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+        for (rate, tempo) in [
+            (48_000, 120_000_000),
+            (48_000, 240_000_000),
+            (96_000, 60_000_000),
+            (8_000, 1_000_000_000),
+        ] {
+            let destination =
+                Arc::new(TempoMap::constant(rate, Tempo::new(tempo).unwrap()).unwrap());
+            let positions: Vec<_> = (0..128).collect();
+            let mut expected = Vec::new();
+            for frames in positions.chunks(MAX_PREVIEW_QUERIES) {
+                let mut values = vec![None; frames.len()];
+                source
+                    .read_projected_preview_on_control(&destination, frames, &mut values)
+                    .unwrap();
+                expected.extend(values.into_iter().map(|event| event.map(|e| e.value)));
+            }
+            for (budget, slots) in [(1, 1), (7, 3), (64, 64)] {
+                let (actual, _) = span_values(&mut source, &destination, 0, 128, budget, slots);
+                assert_eq!(
+                    actual, expected,
+                    "case={case} budget={budget} slots={slots}"
+                );
+            }
+            let mut actual = [None; 128];
+            source
+                .read_projected_values_on_control(Arc::clone(&destination), 0, &mut actual)
+                .unwrap();
+            assert_eq!(actual.as_slice(), expected);
+        }
+        drop(source);
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+}
+
+#[test]
+fn dense_collisions_yield_pending_and_covered_zero_is_distinct_from_gaps() {
+    use hex_project::{Tempo, TempoMap};
+    use std::sync::Arc;
+    let files = Files::new();
+    let (events, end, _) = history(0, 0, 1024, None, &(0..1024).collect::<Vec<_>>());
+    let path = files.path("dense-collisions");
+    write(&path, Some(None), &events, DraftTerminal::Finished(end));
+    let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let destination =
+        Arc::new(TempoMap::constant(8_000, Tempo::new(1_000_000_000).unwrap()).unwrap());
+    let (actual, empty_pending) = span_values(&mut source, &destination, 0, 32, 1, 1);
+    assert!(
+        empty_pending > 0,
+        "tiny work budgets must yield during collapsed event runs"
+    );
+    let mut expected = [None; 32];
+    source
+        .read_projected_preview_on_control(
+            &destination,
+            &(0..32).collect::<Vec<_>>(),
+            &mut expected,
+        )
+        .unwrap();
+    assert_eq!(actual, expected.map(|event| event.map(|e| e.value)));
+    drop(source);
+    let event = AppliedEvent {
+        sequence: 1,
+        performance_frame: 100,
+        content_frame: 10,
+        loop_pass: 0,
+        value: AutomationValue::new(0.0).unwrap(),
+    };
+    let path = files.path("covered-zero");
+    write(
+        &path,
+        Some(None),
+        &[event],
+        DraftTerminal::Finished(DraftClock {
+            performance_frame: 110,
+            content_frame: 20,
+            loop_pass: 0,
+        }),
+    );
+    let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let destination = Arc::new(source.source().tempo_map().clone());
+    let mut values = [None; 32];
+    source
+        .read_projected_values_on_control(destination, 0, &mut values)
+        .unwrap();
+    assert!(values[..10].iter().all(Option::is_none));
+    assert!(
+        values[10..20]
+            .iter()
+            .all(|value| *value == Some(event.value))
+    );
+    assert!(values[20..].iter().all(Option::is_none));
+}
+
+#[test]
+fn cursors_interleave_and_refuse_foreign_reader_or_projection_without_restamping() {
+    use std::sync::Arc;
+    let files = Files::new();
+    let (events, end, _) = history(0, 0, 100, None, &(0..100).collect::<Vec<_>>());
+    let path = files.path("interleaved");
+    write(&path, Some(None), &events, DraftTerminal::Finished(end));
+    let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let mut foreign = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let destination = Arc::new(source.source().tempo_map().clone());
+    let other_projection = Arc::new(destination.as_ref().clone());
+    let mut a = source
+        .begin_projected_spans_on_control(Arc::clone(&destination), 0..40)
+        .unwrap();
+    let mut b = source
+        .begin_projected_spans_on_control(Arc::clone(&destination), 60..100)
+        .unwrap();
+    let mut output = [None; 1];
+    assert!(
+        foreign
+            .read_projected_spans_on_control(&destination, &mut a, 1, &mut output)
+            .is_err()
+    );
+    assert_eq!(output, [None]);
+    assert!(
+        source
+            .read_projected_spans_on_control(&other_projection, &mut a, 1, &mut output)
+            .is_err()
+    );
+    assert_eq!(output, [None]);
+    let mut a_values = [None; 40];
+    let mut b_values = [None; 40];
+    let mut done = [false; 2];
+    for _ in 0..150 {
+        for (index, cursor, values, start) in [
+            (0, &mut a, &mut a_values, 0),
+            (1, &mut b, &mut b_values, 60),
+        ] {
+            if done[index] {
+                continue;
+            }
+            let progress = source
+                .read_projected_spans_on_control(&destination, cursor, 1, &mut output)
+                .unwrap();
+            for span in output[..progress.written].iter().flatten() {
+                values[(span.start - start) as usize..(span.end - start) as usize]
+                    .fill(Some(span.value));
+            }
+            done[index] = progress.state == SpanReadState::Finished;
+        }
+        if done.into_iter().all(|done| done) {
+            break;
+        }
+    }
+    assert_eq!(done, [true, true]);
+    assert_eq!(
+        a_values,
+        std::array::from_fn(|frame| Some(events[frame].value))
+    );
+    assert_eq!(
+        b_values,
+        std::array::from_fn(|frame| Some(events[frame + 60].value))
+    );
+}
+
+#[test]
+fn span_read_failure_seals_cursor_and_clears_public_output_without_touching_file() {
+    use std::{
+        io::{Seek, SeekFrom, Write},
+        sync::Arc,
+    };
+    let files = Files::new();
+    let (events, end, _) = history(0, 0, 10, None, &(0..10).collect::<Vec<_>>());
+    let path = files.path("span-damage");
+    write(&path, Some(None), &events, DraftTerminal::Finished(end));
+    let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let destination = Arc::new(source.source().tempo_map().clone());
+    let mut cursor = source
+        .begin_projected_spans_on_control(Arc::clone(&destination), 0..10)
+        .unwrap();
+    let mut output = [None; 1];
+    assert_eq!(
+        source
+            .read_projected_spans_on_control(&destination, &mut cursor, 1, &mut output)
+            .unwrap()
+            .written,
+        1
+    );
+    let bytes = fs::read(&path).unwrap();
+    let records = 32
+        + u64::from_le_bytes(bytes[16..24].try_into().unwrap())
+        + u64::from_le_bytes(bytes[24..32].try_into().unwrap())
+        + 32;
+    let mut changed = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    changed
+        .seek(SeekFrom::Start(records + 2 * 96 + 40))
+        .unwrap();
+    changed
+        .write_all(&u64::from(0.9_f32.to_bits()).to_le_bytes())
+        .unwrap();
+    changed.sync_all().unwrap();
+    let damaged = fs::read(&path).unwrap();
+    assert!(
+        source
+            .read_projected_spans_on_control(&destination, &mut cursor, 1, &mut output)
+            .is_err()
+    );
+    assert_eq!(output, [None]);
+    assert!(
+        source
+            .read_projected_spans_on_control(&destination, &mut cursor, 1, &mut output)
+            .is_err()
+    );
+    let mut values = [Some(events[0].value); 10];
+    assert!(
+        source
+            .read_projected_values_on_control(destination, 0, &mut values)
+            .is_err()
+    );
+    assert_eq!(values, [None; 10]);
+    assert_eq!(fs::read(&path).unwrap(), damaged);
+}
+
+#[test]
+#[ignore = "manual optimized sequential scalar-range profile; no callback or deadline claim"]
+fn profile_projected_scalar_ranges() {
+    use hex_project::{Tempo, TempoMap};
+    use std::{sync::Arc, time::Instant};
+    const EVENTS: u64 = 65_536;
+    const PAGES: u64 = 16;
+    const FRAMES: usize = 4096;
+    let files = Files::new();
+    for spacing in [256, 1] {
+        let path = files.path(&format!("range-profile-{spacing}"));
+        let events: Vec<_> = (0..EVENTS)
+            .map(|index| AppliedEvent {
+                sequence: index + 1,
+                performance_frame: 100 + index * spacing,
+                content_frame: index * spacing,
+                loop_pass: 0,
+                value: AutomationValue::new(((index + 1) % 17) as f32 / 16.0).unwrap(),
+            })
+            .collect();
+        write(
+            &path,
+            Some(None),
+            &events,
+            DraftTerminal::Finished(DraftClock {
+                performance_frame: 100 + EVENTS * spacing,
+                content_frame: EVENTS * spacing,
+                loop_pass: 0,
+            }),
+        );
+        let destination =
+            Arc::new(TempoMap::constant(48_000, Tempo::new(173_000_000).unwrap()).unwrap());
+        let captured = fixture().0.tempo_map().clone();
+        let end = destination
+            .beat_to_frame(captured.frame_to_beat(EVENTS * spacing).unwrap())
+            .unwrap();
+        let positions: Vec<Vec<u64>> = (0..PAGES)
+            .map(|page| {
+                let start = (page * 104_729 + 127) % (end - FRAMES as u64);
+                (start..start + FRAMES as u64).collect()
+            })
+            .collect();
+        let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+        let expected: Vec<Vec<Option<AutomationValue>>> = positions
+            .iter()
+            .map(|frames| {
+                let mut values = Vec::new();
+                for frames in frames.chunks(MAX_PREVIEW_QUERIES) {
+                    let mut page = [None; MAX_PREVIEW_QUERIES];
+                    source
+                        .read_projected_preview_on_control(&destination, frames, &mut page)
+                        .unwrap();
+                    values.extend(page.into_iter().map(|event| event.map(|e| e.value)));
+                }
+                values
+            })
+            .collect();
+        let mut range = [None; FRAMES];
+        for frames in &positions[..2] {
+            source
+                .read_projected_values_on_control(Arc::clone(&destination), frames[0], &mut range)
+                .unwrap();
+        }
+        for trial in 0..3 {
+            let mut seconds = [0.0; 2];
+            for order in 0..2 {
+                let sequential = (trial + order) % 2 == 1;
+                let start = Instant::now();
+                for (frames, expected) in positions.iter().zip(&expected) {
+                    if sequential {
+                        source
+                            .read_projected_values_on_control(
+                                Arc::clone(&destination),
+                                frames[0],
+                                &mut range,
+                            )
+                            .unwrap();
+                        assert_eq!(range.as_slice(), expected);
+                    } else {
+                        for (frames, expected) in frames
+                            .chunks(MAX_PREVIEW_QUERIES)
+                            .zip(expected.chunks(MAX_PREVIEW_QUERIES))
+                        {
+                            let mut preview = [None; MAX_PREVIEW_QUERIES];
+                            source
+                                .read_projected_preview_on_control(
+                                    &destination,
+                                    frames,
+                                    &mut preview,
+                                )
+                                .unwrap();
+                            for (actual, expected) in preview.iter().zip(expected) {
+                                assert_eq!(actual.map(|e| e.value), *expected);
+                            }
+                        }
+                    }
+                }
+                seconds[usize::from(sequential)] = start.elapsed().as_secs_f64();
+            }
+            println!(
+                "projected_scalar_ranges trial={trial} events={EVENTS} frame_spacing={spacing} measured_pages={PAGES} page_frames={FRAMES} warmup_range_pages=2 alternating_order=true point_preview_seconds={:.6} sequential_range_seconds={:.6} mean_range_page_microseconds={:.3}",
+                seconds[0],
+                seconds[1],
+                seconds[1] * 1e6 / PAGES as f64
+            );
+        }
+    }
+}
+
+#[test]
+fn early_piece_sentinels_do_not_spend_the_fetch_budget_again_after_discarding_prefetch() {
+    use std::sync::Arc;
+    let files = Files::new();
+    let region = LoopRegion::new(100, 1000, true).unwrap();
+    let (events, end, _) = history(0, 0, 1901, Some(region), &(0..1901).collect::<Vec<_>>());
+    let path = files.path("prefetch-budget");
+    write(
+        &path,
+        Some(Some(region)),
+        &events,
+        DraftTerminal::Finished(end),
+    );
+    let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+    let destination = Arc::new(source.source().tempo_map().clone());
+    // Three effective pieces: intro99..100, final pass100..101, preceding
+    // pass101..102. The first/last need only one sentinel from a larger batch.
+    let mut cursor = source
+        .begin_projected_spans_on_control(Arc::clone(&destination), 99..102)
+        .unwrap();
+    let mut output = [None; MAX_SPANS_PER_STEP];
+    let mut actual = [None; 3];
+    let mut finished = false;
+    for _ in 0..4 {
+        let progress = source
+            .read_projected_spans_on_control(&destination, &mut cursor, 64, &mut output)
+            .unwrap();
+        assert!(
+            progress.records_read <= 64,
+            "fetched {} data records with budget64",
+            progress.records_read
+        );
+        assert!(progress.records_visited <= 64);
+        for span in output[..progress.written].iter().flatten() {
+            actual[(span.start - 99) as usize..(span.end - 99) as usize].fill(Some(span.value));
+        }
+        if progress.state == SpanReadState::Finished {
+            finished = true;
+            break;
+        }
+    }
+    assert!(finished);
+    let mut expected = [None; 3];
+    source
+        .read_projected_preview_on_control(&destination, &[99, 100, 101], &mut expected)
+        .unwrap();
+    assert_eq!(actual, expected.map(|event| event.map(|e| e.value)));
 }
