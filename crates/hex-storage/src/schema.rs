@@ -1,3 +1,4 @@
+pub(crate) mod alias_projection_v60;
 pub(crate) mod appearance;
 mod arrangement_sections;
 mod audio_alias_projection;
