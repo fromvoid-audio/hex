@@ -228,9 +228,13 @@ impl RevisionAssembly {
             authored_midi_sources,
             gain_recording_track,
             native_parameter_input,
+            scalar_automation,
         }) = revision
         {
-            if *resource_scope != self.current_sampler_scope || device_resource_scope.is_some() {
+            if *resource_scope != self.current_sampler_scope
+                || device_resource_scope.is_some()
+                || scalar_automation.is_some()
+            {
                 return Err(Error::UnsupportedGraph);
             }
             if self.arrangement.is_some()
@@ -552,7 +556,6 @@ impl RevisionAssembly {
             extraction_attempted: _,
             extracted: _,
             native_parameter_input: _,
-            scalar_automation: _,
             #[cfg(test)]
                 fail_after: _,
             #[cfg(test)]

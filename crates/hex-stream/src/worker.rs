@@ -266,7 +266,10 @@ pub(crate) fn run_worker(
         if let Some(mut job) = scalar_job.take() {
             let outcome = job.step(&mut scalar_definitions[job.source]);
             match outcome {
-                Ok(false) => scalar_job = Some(job),
+                Ok(false) => {
+                    scalar_job = Some(job);
+                    thread::yield_now();
+                }
                 Ok(true) => {
                     if let Err(PushError::Full(page)) = queues.ready.push(job.page) {
                         held_pages.push(page);
@@ -429,10 +432,15 @@ fn verified_membership(
     members.sort_unstable_by_key(StreamedSourceMetadata::key);
     data.membership = crate::AllocationData::of::<StreamedSourceMetadata>(members.capacity());
     data.catalog_object = std::mem::size_of::<VerifiedCatalog>();
-    let scalar_members = scalar_sources
-        .iter()
-        .map(|s| s.metadata().clone())
-        .collect::<Vec<_>>();
+    let mut scalar_members = Vec::new();
+    scalar_members
+        .try_reserve_exact(scalar_sources.len())
+        .map_err(|_| StreamFailureKind::CapacityExhausted)?;
+    scalar_members.extend(
+        scalar_sources
+            .iter()
+            .map(|source| source.metadata().clone()),
+    );
     data.scalar_membership =
         crate::AllocationData::of::<hex_engine::ScalarSourceMetadata>(scalar_members.capacity());
     data.scalar_job_data = if scalar_sources.is_empty() {

@@ -184,6 +184,15 @@ impl PendingStreamDomain {
             readiness_bytes,
             hex_engine::STREAM_PAGE_FRAMES
                 .checked_mul(std::mem::size_of::<hex_engine::Frame>())
+                .and_then(|bytes| {
+                    bytes.checked_add(if scalar_definitions.is_empty() {
+                        0
+                    } else {
+                        hex_engine::STREAM_PAGE_FRAMES * std::mem::size_of::<f32>()
+                            + hex_engine::STREAM_PAGE_FRAMES.div_ceil(64)
+                                * std::mem::size_of::<u64>()
+                    })
+                })
                 .ok_or(StreamRuntimeError::AllocationFailed)?,
         ])
         .ok_or(StreamRuntimeError::AllocationFailed)?;

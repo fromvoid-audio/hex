@@ -1,9 +1,10 @@
 //! # Purpose
-//! Own verified WAV source workers, fixed page pools and borrowed project-rate page-cache
+//! Own verified WAV and sealed scalar source workers, fixed typed page pools and borrowed project-rate page-cache
 //! endpoints.
 //!
 //! # Dependencies
-//! Uses hex-engine/hex-project contracts, hex-media readers/conversion and rtrb ownership queues.
+//! Uses hex-engine/hex-project contracts, hex-media readers/conversion, hex-storage closed
+//! automation readers and rtrb ownership queues.
 //!
 //! # Does not own
 //! Does not edit projects, own CPAL or decode/hash on callback. Only the joining control owner

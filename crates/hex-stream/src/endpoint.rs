@@ -53,8 +53,20 @@ impl PageBuffer {
         }
         // Vec-to-box may briefly retain the old backing beside the new box.
         let old_capacity = old_capacity
-            .max(scalar_values.capacity() * std::mem::size_of::<f32>())
-            .max(scalar_coverage.capacity() * std::mem::size_of::<u64>());
+            .checked_add(
+                scalar_values
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<f32>())
+                    .ok_or(())?,
+            )
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    scalar_coverage
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<u64>())?,
+                )
+            })
+            .ok_or(())?;
         Ok((
             Box::new(Self {
                 key: None,

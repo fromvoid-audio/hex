@@ -722,6 +722,18 @@ impl ConstructorPageLoan {
     }
     /// Catalog membership only. The native host separately validates exact
     /// metadata through the actual retained constructor domain before splitting.
+    pub fn covers_resource_key(&self, key: StreamResourceKey) -> bool {
+        match key {
+            StreamResourceKey::Audio(key) => self.covers_key(key),
+            StreamResourceKey::Scalar(key) => self
+                .readiness
+                .catalog
+                .catalog
+                .scalar_sources
+                .binary_search_by_key(&key, hex_engine::ScalarSourceMetadata::key)
+                .is_ok(),
+        }
+    }
     pub fn covers_key(&self, key: StreamSourceKey) -> bool {
         self.readiness
             .catalog

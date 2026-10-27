@@ -977,7 +977,7 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
     assert_eq!(
         extents
             .iter()
-            .find(|e| e.source == source_key)
+            .find(|e| e.source == source_key.into())
             .unwrap()
             .start,
         4_093
@@ -1243,7 +1243,7 @@ fn session_gain_resident_streamed_and_replacement_keep_one_shot_anchor() {
 
 #[test]
 fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff_retry() {
-    use hex_engine::{SessionPlayback, SessionPlaybackCommand, StreamPageExtent};
+    use hex_engine::{SessionPlayback, SessionPlaybackCommand, StreamResourceExtent};
     let project = project(4094, 4105);
     let source = metadata(&project, 51, [0x71; 32]);
     let key = source.key();
@@ -1280,14 +1280,14 @@ fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff
     assert_eq!(
         extents,
         vec![
-            StreamPageExtent {
-                source: key,
+            StreamResourceExtent {
+                source: key.into(),
                 page_index: 0,
                 start: 4094,
                 end: 4096
             },
-            StreamPageExtent {
-                source: key,
+            StreamResourceExtent {
+                source: key.into(),
                 page_index: 1,
                 start: 0,
                 end: 6
@@ -1361,8 +1361,8 @@ fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff
     assert_eq!(actual, planned);
     assert_eq!(
         actual,
-        vec![StreamPageExtent {
-            source: key,
+        vec![StreamResourceExtent {
+            source: key.into(),
             page_index: 1,
             start: 2,
             end: 6
@@ -1636,11 +1636,11 @@ fn arrangement_crossfade_demands_both_pages_and_matches_resident_audio() {
         "the existing demand owner may bound a render quantum"
     );
     assert!(
-        extents.iter().any(|e| e.source == key && e.page_index == 0),
+        extents.iter().any(|e| e.source == key.into() && e.page_index == 0),
         "incoming source requires page0"
     );
     assert!(
-        extents.iter().any(|e| e.source == key && e.page_index == 1),
+        extents.iter().any(|e| e.source == key.into() && e.page_index == 1),
         "outgoing source requires page1"
     );
     for block in [1, 17, 257] {

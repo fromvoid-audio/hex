@@ -114,6 +114,11 @@ impl VerifiedPages {
         config: StreamConfig,
         control: &impl Cancellation,
     ) -> Result<Self, ExportError> {
+        if prepared.scalar_automation_binding().is_some() {
+            return Err(ExportError::Invalid(
+                "offline scalar source capture is not prepared",
+            ));
+        }
         // These private composition inputs must be bounded before reserving Vecs.
         // The original stream constructor still validates its complete configuration.
         let maximum = StreamConfig::initial();
@@ -215,10 +220,9 @@ impl VerifiedPages {
                 "offline media preparation exceeds its fixed resources"
             }
         };
-        match self
-            .files
-            .binary_search_by_key(&failure.key, |(key, _)| *key)
-        {
+        match self.files.binary_search_by_key(&failure.key, |(key, _)| {
+            hex_engine::StreamResourceKey::Audio(*key)
+        }) {
             Ok(index) => ExportError::Media(format!(
                 "{reason}: {}",
                 self.files[index].1.path().display()
@@ -264,7 +268,7 @@ impl VerifiedPages {
                     let key = self.keys.first().map(|key| key.source);
                     if let Some(key) = key {
                         let mut failures = [StreamFailure {
-                            key,
+                            key: key.into(),
                             page_index: 0,
                             kind,
                         }];
@@ -336,7 +340,18 @@ impl VerifiedPages {
         self.missed = false;
         let maximum = self.config.page_buffers;
         let extents = &mut self.extents;
-        let mut visit = |extent: StreamPageExtent| {
+        let mut visit = |extent: hex_engine::StreamResourceExtent| {
+            let hex_engine::StreamResourceKey::Audio(source) = extent.source else {
+                return Err(hex_engine::Invalid(
+                    "offline scalar source capture is not prepared",
+                ));
+            };
+            let extent = StreamPageExtent {
+                source,
+                page_index: extent.page_index,
+                start: extent.start,
+                end: extent.end,
+            };
             if control.is_cancelled() {
                 return Err(hex_engine::Invalid("export cancelled"));
             }

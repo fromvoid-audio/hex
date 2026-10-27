@@ -621,7 +621,7 @@ impl SessionPlayback {
     fn render_playing<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
-        mut pages: Option<&mut P>,
+        pages: Option<&mut P>,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
