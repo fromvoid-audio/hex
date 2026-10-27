@@ -5,6 +5,7 @@ mod fades;
 mod navigation;
 mod paint;
 mod pending;
+mod play_start;
 mod playhead;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod playhead_tests;
@@ -19,6 +20,7 @@ use super::{EditorView, musical_time::SnapGrid, viewport::Viewport};
 use gpui::{Bounds, Pixels};
 use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
 use hex_session::service::Request;
+pub(in crate::editor) use play_start::Camera as PlayStartCamera;
 pub(super) use view::view;
 
 /// Source editing exposes the complete retained root for a placed cycle,
@@ -37,6 +39,8 @@ pub(super) struct State {
     revision: u64,
     pub(super) source_view: bool,
     viewport: Option<Viewport>,
+    frame_bounds: Option<(u64, u64)>,
+    frame_domain: Option<std::sync::Arc<hex_project::AudioClipDomain>>,
     source_viewport: Option<Viewport>,
     source_fit_back: Option<Option<Viewport>>,
     wheel: f32,
@@ -80,6 +84,7 @@ pub(super) struct Gesture {
 #[derive(Clone, Copy)]
 enum Kind {
     Select,
+    PlayStart { position: u64 },
     RangeMove { start: u64, end: u64 },
     Move(AudioEvent),
     Leading(AudioEvent),
@@ -464,10 +469,19 @@ impl EditorView {
     // inside it. Only explicit cancellation discards held input.
     fn event_release_pointer(&mut self, x: f32, platform: bool) {
         self.event_update_pointer(x, platform);
-        if let Some(gesture) = self.audio_event_editor.gesture.take()
-            && let Some(operation) = gesture.operation
-        {
-            self.event_commit(operation);
+        if let Some(gesture) = self.audio_event_editor.gesture.take() {
+            if let Kind::PlayStart { position } = gesture.kind {
+                if position != gesture.anchor {
+                    if let Some((clip, _, _)) = self.event_context() {
+                        self.commit_audio_clip_loop(
+                            clip,
+                            hex_project::AudioViewResizeOperation::PlayStart { position },
+                        );
+                    }
+                }
+            } else if let Some(operation) = gesture.operation {
+                self.event_commit(operation);
+            }
         }
     }
     fn event_update_pointer(&mut self, x: f32, platform: bool) {
@@ -501,6 +515,13 @@ impl EditorView {
         };
         let position = self.event_pointer_position(x, platform).unwrap_or(raw);
         match gesture.kind {
+            Kind::PlayStart { .. } => {
+                let Some(position) = self.audio_play_start_at_pointer(&root, &gesture, x, platform)
+                else {
+                    return;
+                };
+                gesture.kind = Kind::PlayStart { position };
+            }
             Kind::Select => {
                 self.audio_event_editor.range =
                     Some((gesture.anchor.min(position), gesture.anchor.max(position)));

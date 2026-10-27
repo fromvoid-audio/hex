@@ -195,7 +195,8 @@ fn edit(
 }
 fn select(visual: &mut VisualTestContext, from: f32, to: f32) {
     let b = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(b.left() + b.size.width * from, b.top() + px(10.0));
+    // Paint blank ruler time below the distinct playback-start grab target.
+    let down = point(b.left() + b.size.width * from, b.top() + px(16.0));
     let up = point(b.left() + b.size.width * to, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
@@ -1983,3 +1984,6 @@ fn held_two_selects_audio_event_edges_without_editing_source(cx: &mut TestAppCon
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
+
+#[path = "play_start_tests.rs"]
+mod saved_start_tests;

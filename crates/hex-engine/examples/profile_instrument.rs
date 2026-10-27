@@ -71,6 +71,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 next_id += 1;
                 MidiNoteSnapshot {
                     id,
+                    active: true,
                     start_raw: if workload.dense_sustain {
                         0
                     } else {
