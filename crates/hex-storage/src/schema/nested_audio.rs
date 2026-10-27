@@ -249,6 +249,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
             }
         }
     }
+    super::audio_alias_projection::synchronize(&mut snapshot)?;
     let neutral = Project::from_snapshot(snapshot).map_err(invalid)?;
     let mut value = super::event_activation::encode(&neutral)?;
     value["version"] = 58.into();
@@ -390,6 +391,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if !inventory.is_empty() {
         return Err(StorageError::Invalid("nested audio row owner missing"));
     }
+    super::audio_alias_projection::synchronize(&mut snapshot)?;
     Project::from_snapshot(snapshot).map_err(invalid)
 }
 
