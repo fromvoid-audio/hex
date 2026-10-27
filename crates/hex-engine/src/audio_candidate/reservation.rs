@@ -251,20 +251,13 @@ impl AudioCandidateReservationQuote {
             )?
             .checked_add(session_workspace)
             .ok_or(AudioStorageError::Overflow)?,
-            // One fixed control-allocated span buffer under the Session owner.
-            data_rows: counts
-                .rows
-                .checked_add(1)
-                .ok_or(AudioStorageError::Overflow)?,
+            data_rows: counts.rows,
             handle_rows: counts.handles,
             member_rows: groups.checked_mul(2).ok_or(AudioStorageError::Overflow)?,
             transfer_rows: groups,
             metadata_data_bytes: counts
                 .bytes
                 .checked_add(session_bytes)
-                .and_then(|bytes| {
-                    bytes.checked_add(std::mem::size_of::<crate::midi_template::MidiSpanBuffer>())
-                })
                 .ok_or(AudioStorageError::Overflow)?,
         })
     }
@@ -347,7 +340,9 @@ impl Counts {
                 .ok_or(AudioStorageError::Overflow)?;
         }
         let (rows, handles) = match kind {
-            Kind::Fixed => (256usize, 128usize),
+            // Includes the fixed MIDI span Box under the Session owner; its
+            // former inline payload remains under the same runtime ceiling.
+            Kind::Fixed => (257usize, 128usize),
             Kind::Source => (8, 8),
             Kind::PreparedSource => (4, 2),
             Kind::Scene => (8, 4),
