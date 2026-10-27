@@ -287,7 +287,10 @@ impl PlaybackHandoffError {
     pub const fn is_transient(self) -> bool {
         matches!(
             self,
-            Self::Session(crate::SessionPlaybackError::ReleaseBankFull)
+            Self::Session(
+                crate::SessionPlaybackError::ReleaseBankFull
+                    | crate::SessionPlaybackError::GroupTailRoutingBusy
+            )
         )
     }
 
