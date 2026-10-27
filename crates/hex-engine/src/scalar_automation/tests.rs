@@ -320,8 +320,11 @@ fn delayed_host_input_and_output_match_stage_demand_seek_and_handoff() {
         candidate
             .render_with_pages(&mut output, &mut pages)
             .unwrap();
-        assert!((output[0][0] - 0.00025).abs() < 1e-6);
-        assert!((output[2][0] - 0.25).abs() < 1e-6);
+        assert!(
+            (output[0][0] - 0.00025).abs() < 1e-6,
+            "{target:?}: {output:?}"
+        );
+        assert!((output[2][0] - 0.25).abs() < 1e-6, "{target:?}: {output:?}");
 
         let action = candidate
             .prepare_stream_action_in_scope(
