@@ -29,9 +29,7 @@ gpui::actions!(hex_operator, [ActivateRouting, ActivateSection]);
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
         gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
-        gpui::KeyBinding::new("space", ActivateSection, Some("hex_operator_section")),
         gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
-        gpui::KeyBinding::new("space", ActivateRouting, Some("hex_operator_routing")),
     ]);
 }
 
