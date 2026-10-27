@@ -639,6 +639,76 @@ fn optimized_scalar_render_cost() {
         );
     }
 }
+
+#[test]
+#[ignore = "optimized delayed scalar render profile; run explicitly with --release --ignored --nocapture"]
+fn optimized_delayed_scalar_render_cost() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut f, device, _, mut pages) = fixture(target);
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: Some(device),
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let original = source(f.editor.project().tempo_map());
+    let source = ScalarSourceMetadata::new(
+        original.key(),
+        original.project_rate(),
+        0,
+        8192,
+        original.projection_identity(),
+        original.file_identity(),
+    )
+    .unwrap();
+    pages.values = [vec![0.5; 4096], vec![0.5; 4096]];
+    pages.coverage = [vec![u64::MAX; 64], vec![u64::MAX; 64]];
+    let plain = PreparedRevision::prepare(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let automated = PreparedRevision::prepare_with_scalar_automation(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+        ScalarAutomationBinding {
+            device,
+            target,
+            source,
+        },
+    )
+    .unwrap();
+    let latency = automated.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    for (label, revision) in [("inactive", plain), ("active", automated)] {
+        let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 256];
+        let mut elapsed = std::time::Duration::ZERO;
+        for iteration in 0..6 {
+            runtime.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+            let start = std::time::Instant::now();
+            for _ in 0..32 {
+                runtime.render_with_pages(&mut output, &mut pages).unwrap();
+                std::hint::black_box(&output);
+            }
+            if iteration != 0 {
+                elapsed += start.elapsed();
+            }
+        }
+        eprintln!(
+            "delayed scalar render profile: {label}, latency {latency} frames, 5 x 8192 frames, 256-frame blocks, {elapsed:?} total; one warm-up iteration; seek and setup excluded; no native deadline claim"
+        );
+    }
+}
 #[test]
 fn scalar_pages_drive_real_native_provider_and_live_clear_reveals_recorded_values() {
     let (_f, _device, revision, mut pages) =
