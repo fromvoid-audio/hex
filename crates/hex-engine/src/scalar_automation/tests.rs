@@ -422,6 +422,101 @@ fn delayed_scalar_values_follow_loop_origins_across_irregular_blocks() {
 }
 
 #[test]
+fn delayed_scalar_prewarm_projects_future_loop_origin_and_matches_due_render() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut f, device, _, mut pages) = fixture(target);
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 4092,
+            end: 4099,
+            enabled: true,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: Some(device),
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            ScalarAutomationBinding {
+                device,
+                target,
+                source: source(f.editor.project().tempo_map()),
+            },
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    runtime.apply(SessionPlaybackCommand::Seek(4092)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    runtime
+        .render_with_pages(&mut [[0.0; 2]; 8], &mut pages)
+        .unwrap();
+    let command = SessionPlaybackCommand::StopTrack {
+        track: f.tracks[0],
+        quantization: crate::LaunchQuantization::Sixteenth,
+    };
+    let action = runtime
+        .prepare_stream_action_in_scope(crate::PlaybackAction::Session(command), true)
+        .unwrap();
+    let due = action.scheduled_due_frame().unwrap();
+    let mut predicted = Vec::new();
+    let projected = runtime
+        .visit_prepared_stream_action(&action, 3, &mut |extent| {
+            predicted.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert!(!predicted.is_empty());
+    assert_ne!(
+        predicted[0].page_index * 4096 + predicted[0].start as u64,
+        projected.arrangement_frame,
+        "delayed stage and incoming Arrangement cursor must differ"
+    );
+    runtime.apply(command).unwrap();
+    let mut prewarm = Vec::new();
+    runtime
+        .visit_pending_stream_chunk_in_scope(
+            due,
+            3,
+            &mut |extent| {
+                prewarm.push(extent);
+                Ok(())
+            },
+            true,
+        )
+        .unwrap();
+    assert_eq!(prewarm, predicted);
+    let advance = usize::try_from(due - runtime.performance_frame()).unwrap();
+    runtime
+        .render_with_pages(&mut vec![[0.0; 2]; advance], &mut pages)
+        .unwrap();
+    let mut actual = Vec::new();
+    runtime
+        .visit_ordinary_stream_chunk(3, None, &mut |extent| {
+            actual.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(actual, predicted);
+    let mut output = [[0.0; 2]; 3];
+    runtime.render_with_pages(&mut output, &mut pages).unwrap();
+    assert_eq!(pages.requests, 0);
+}
+
+#[test]
 fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
     for target in [
         DeviceAutomationTarget::Parameter(parameter::GAIN),
