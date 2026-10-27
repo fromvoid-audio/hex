@@ -29,7 +29,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 57;
+pub const CURRENT_SCHEMA_VERSION: u32 = 58;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -154,11 +154,12 @@ impl From<serde_json::Error> for StorageError {
 /// faded Arrangement overlaps, explicit shared clip content (schema52), and
 /// typed host gain envelopes (schema53), per-lane read selection (schema55),
 /// independent MIDI note activation (schema56), and independent audio event
-/// activation, including retained roots (schema57).
+/// activation, including retained roots (schema57), and bounded nested audio
+/// sources (schema58).
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::event_activation::encode(project)?)
+    encode_document(&schema::nested_audio::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -280,6 +281,7 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// audio cycles while retaining the receiverless singleton-source layout. Schema49
 /// adds a required nullable source receiver and shared contributor bindings;
 /// schemas46–48 infer a receiver only from their singleton binding.
+/// Schema58 retains nested audio sources; earlier schemas migrate without nesting.
 /// Schema57 retains inactive audio event identities; schemas1–56 migrate events
 /// active. Schema56 retains inactive MIDI note identities; schemas1–55 migrate all notes
 /// active. Schema50 adds ordered stable device/parameter envelopes with bounded normalized
@@ -317,7 +319,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::event_activation::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::nested_audio::decode(bytes),
+        57 => schema::event_activation::decode(bytes),
         56 => schema::note_activation::decode(bytes),
         55 => schema::automation_read::decode(bytes),
         54 => Err(StorageError::Invalid(

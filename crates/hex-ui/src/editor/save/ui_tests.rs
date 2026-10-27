@@ -135,6 +135,7 @@ fn fixture(
         "alias_members",
         "inactive_midi_notes",
         "inactive_audio_events",
+        "nested_audio",
     ] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),

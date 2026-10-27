@@ -608,7 +608,9 @@ fn compile_project_inner<'a>(
                     let mut sources = Vec::new();
                     sources.try_reserve_exact(events.sources.len())
                         .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
-                    for root in &events.sources {
+                    for root in clip.retained_audio_roots() {
+                        sources.try_reserve(1)
+                            .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
                         let asset = snapshot.asset(root.clip.asset())
                             .ok_or(Invalid("grouped audio source asset missing"))?;
                         let PreparedAudioSourceRef::Resident(audio) = resolve_source(asset, snapshot.sample_rate())? else {

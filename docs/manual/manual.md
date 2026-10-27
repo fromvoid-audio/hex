@@ -468,8 +468,9 @@ to show its fade controls. release **f** to hide default
 controls; edited fades remain visible. the computer midi keyboard must be off.
 
 for a grouped event, **src** selects an event inside its retained source. use
-the adjacent arrows to choose another source event, and **c** or **0** to change
-its activation. choose **src** again to return to the grouped event.
+the adjacent left and right arrows to choose another source event, and **c** or
+**0** to change its activation. use the up and down arrows to move through nested
+sources. choose **src** again to return to the grouped event.
 
 drag an upper square to change a fade length. drag a diamond horizontally and
 vertically to shape its curve. lower squares trim the event; they move freely by
@@ -519,6 +520,16 @@ as projects grow, ordinary audio clips can play directly from their original
 files while retaining their complete duration. single-file and bulk imports keep
 this behavior; a bulk drop remains one undo step. keep those files available for
 playback, save/reopen and export.
+
+on an arrangement audio clip, hover over the top edge between the trim corners
+and drag vertically to adjust clip gain. drag down to reduce or up to increase;
+hold **shift** for fine adjustments. the displayed db value previews the change;
+release commits one undo step, and **escape** cancels. when the clip belongs to a
+whole-clip selection, selected audio clips change by the same db amount, retaining
+their relative levels; selected midi clips remain unchanged. held **2**, existing time
+selections and fade controls retain their input priorities. this top-edge gesture
+currently applies to audio clips; midi and individual event gain gestures remain
+unavailable.
 
 file-backed clips support placement, playback, clip gain and ordinary device
 processing. processing that materializes audio, including pitch,

@@ -26,6 +26,7 @@ pub(crate) mod midi_one_shot;
 mod migrations;
 pub(crate) mod musical_audio;
 pub(crate) mod native_sources;
+pub(crate) mod nested_audio;
 pub(crate) mod note_activation;
 mod original_sources;
 pub(crate) mod playable_routing;
