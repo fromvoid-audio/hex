@@ -315,8 +315,20 @@ mod tests {
     }
     #[test]
     fn typed_scalar_identity_separates_asset_ids_and_projection_generations() {
-        let audio = StreamSourceKey::new(1, hex_project::AssetId::new(1).unwrap());
-        let scalar = ScalarSourceKey::new(1, 1, 1).unwrap();
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Asset(asset) = editor
+            .execute(hex_project::Command::AddAsset {
+                path: "scalar-key-fixture.wav".into(),
+                sample_rate: 48_000,
+                frames: 1,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let audio = StreamSourceKey::new(1, asset);
+        let scalar = ScalarSourceKey::new(1, asset.value(), 1).unwrap();
         assert_ne!(
             StreamResourceKey::Audio(audio),
             StreamResourceKey::Scalar(scalar)
