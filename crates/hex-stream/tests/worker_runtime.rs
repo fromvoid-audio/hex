@@ -643,7 +643,7 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
 
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut failures = [hex_stream::StreamFailure {
-        key,
+        key: key.into(),
         page_index: 0,
         kind: hex_stream::StreamFailureKind::DecodeFailed,
     }; 1];
@@ -656,7 +656,7 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
         }
     }
     assert_eq!(failure_count, 1);
-    assert_eq!(failures[0].key, key);
+    assert_eq!(failures[0].key, key.into());
     assert_eq!(failures[0].page_index, 0);
     assert_eq!(
         failures[0].kind,

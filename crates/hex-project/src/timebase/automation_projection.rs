@@ -12,6 +12,20 @@ use std::ops::Range;
 
 pub const AUTOMATION_PROJECTION_VERSION: u32 = 1;
 
+/// Emit the exact versioned destination-map identity framing, without allocation.
+/// Hashing owners choose their digest; all consumers share this byte contract.
+/// Captured-map identity is supplied separately by the immutable source.
+pub fn visit_automation_projection_identity(map: &TempoMap, visit: &mut impl FnMut(&[u8])) {
+    visit(b"hex.automation.projection\0");
+    visit(&AUTOMATION_PROJECTION_VERSION.to_le_bytes());
+    visit(&map.sample_rate().to_le_bytes());
+    visit(&(map.points().len() as u64).to_le_bytes());
+    for point in map.points() {
+        visit(&point.beat().raw().to_le_bytes());
+        visit(&point.tempo().micro_bpm().to_le_bytes());
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct CapturedAutomationProjection<'a> {
     captured: &'a TempoMap,

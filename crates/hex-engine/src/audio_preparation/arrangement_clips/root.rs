@@ -437,6 +437,7 @@ impl ArrangementRootAssembly {
                 master_gain: scalars.master_gain,
                 audible_end_frame,
                 has_streamed_sources,
+                requires_scalar_automation: false,
                 shared_contexts: contexts,
             });
         }
@@ -474,6 +475,7 @@ impl ArrangementRootAssembly {
             master_gain: _,
             audible_end_frame: _,
             has_streamed_sources: _,
+            requires_scalar_automation: _,
             shared_contexts,
         }) = self.project.take()
         {
@@ -611,6 +613,7 @@ impl ArrangementRootAssembly {
                 master_gain: _,
                 audible_end_frame: _,
                 has_streamed_sources: _,
+                requires_scalar_automation: _,
                 shared_contexts: _,
             } = project;
             l.vec(audio_clip_views)?;

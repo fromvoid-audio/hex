@@ -228,9 +228,13 @@ impl RevisionAssembly {
             authored_midi_sources,
             gain_recording_track,
             native_parameter_input,
+            scalar_automation,
         }) = revision
         {
-            if *resource_scope != self.current_sampler_scope || device_resource_scope.is_some() {
+            if *resource_scope != self.current_sampler_scope
+                || device_resource_scope.is_some()
+                || scalar_automation.is_some()
+            {
                 return Err(Error::UnsupportedGraph);
             }
             if self.arrangement.is_some()
@@ -396,6 +400,7 @@ impl RevisionAssembly {
                     authored_midi_sources: Vec::new(),
                     gain_recording_track: None,
                     native_parameter_input: self.native_parameter_input,
+                    scalar_automation: None,
                 });
             }
             (arrangement, session, preview) => {
@@ -457,6 +462,7 @@ impl RevisionAssembly {
             authored_midi_sources: _,
             gain_recording_track: _,
             native_parameter_input: _,
+            scalar_automation: _,
         }) = self.revision_value.take()
         {
             self.arrangement = Some(arrangement);
@@ -582,6 +588,7 @@ impl RevisionAssembly {
                 authored_midi_sources,
                 gain_recording_track: _,
                 native_parameter_input: _,
+                scalar_automation: _,
             } = revision;
             source_routing.visit_storage(l)?;
             l.vec(mutable_track_revisions)?;
