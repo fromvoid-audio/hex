@@ -467,6 +467,60 @@ def install_workspace(app: Path) -> Path:
     return app.parent / ".hex-install"
 
 
+def pending_candidate(target: Path) -> Path:
+    """Reserve a fixed private candidate store without touching the installed app.
+
+    A pre-existing directory must carry our exact target-bound marker. Unknown
+    contents are preserved, including incomplete initialization after a crash.
+    """
+    root = target.parent / ".hex-pending-update"
+    marker = root / "owner.json"
+    assert_plain_path(root)
+    owner = {"schema": 1, "target": str(target)}
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        if not root.is_dir():
+            raise DeliveryError("pending update location is not a directory")
+        assert_plain_path(marker)
+        try:
+            matches = marker.is_file() and json.loads(marker.read_text()) == owner
+        except (OSError, ValueError) as error:
+            raise DeliveryError("pending update owner is unreadable; preserved for inspection") from error
+        if not matches:
+            raise DeliveryError("pending update location is not owned by this target; preserved for inspection")
+    else:
+        write_json(marker, owner)
+        sync_directory(root.parent)
+    allowed = {"owner.json", ".hex-test-build.lock", ".hex-install", "hex.app",
+               "hex-test-build-receipt.json", ".DS_Store"}
+    for member in root.iterdir():
+        if member.name not in allowed:
+            raise DeliveryError("unexpected pending update contents; preserved for inspection")
+        assert_plain_path(member)
+        if member.name in {".hex-install", "hex.app"}:
+            valid = member.is_dir()
+        else:
+            valid = stat.S_ISREG(member.lstat().st_mode)
+        if not valid:
+            raise DeliveryError("invalid pending update member; preserved for inspection")
+    return root / "hex.app"
+
+
+def pending_target_identity(target: Path) -> dict:
+    """Observe the installed bundle for later comparison, without modifying it."""
+    assert_identity(target)
+    binary = target / "Contents/MacOS/hex"
+    info = target / "Contents/Info.plist"
+    assert_plain_path(binary)
+    assert_plain_path(info)
+    verify_native_executable(binary)
+    metadata = target.stat()
+    return {"device": metadata.st_dev, "inode": metadata.st_ino,
+            "executable_sha256": sha(binary), "info_sha256": sha(info),
+            "signature": native_signature(binary)}
+
+
 def check_install_workspace(workspace: Path, *, apps: bool = True) -> None:
     """Allow only fixed installer members and Finder's regular metadata file."""
     assert_plain_path(workspace)
@@ -729,11 +783,27 @@ def build(args) -> dict:
         raise DeliveryError("stable development target must be named hex.app")
     assert_plain_path(app)
     app.parent.mkdir(parents=True, exist_ok=True)
+    target = app
+    prepare_only = getattr(args, "prepare_only", False)
+    target_identity = None
+    if prepare_only:
+        if getattr(args, "build_only", False) or getattr(args, "dev_profile", False):
+            raise DeliveryError("pending updates require full exact-source CI evidence")
+        if not target.exists():
+            raise DeliveryError("pending update requires an existing installed hex app")
+        if getattr(args, "adopt_release_target", False):
+            # Recovery can clean an unknown release target and retains the
+            # ordinary installer's stronger running-process refusal.
+            assert_recovery_inactive(target)
+        target_identity = pending_target_identity(target)
+        app = pending_candidate(target)
     with activation_lock(app):
         recover(app)
         assert_inactive(app)
         if app.exists():
             assert_identity(app)
+            if prepare_only and verify(app).get("app_path") != str(target):
+                raise DeliveryError("pending candidate targets a different application")
         runner = ci.LocalCiRunner(ROOT, adopt_target=False)
         build_only = getattr(args, "build_only", False)
         source_evidence = validate_source(runner, args.candidate) if build_only else None
@@ -778,7 +848,7 @@ def build(args) -> dict:
         recovery = {}
         if replacement is not None:
             recovery = {"expected_recreated_target_identity": replacement,
-                        "recovery_inactive_check": lambda: assert_recovery_inactive(app)}
+                        "recovery_inactive_check": lambda: assert_recovery_inactive(target)}
         instance_receipt = getattr(args, "vst3_instance_receipt", None)
         if instance_receipt is not None:
             validate_instance_input(instance_receipt, args.candidate)
@@ -841,17 +911,22 @@ def build(args) -> dict:
                                         "tests": "not_run" if build_only else "passed"},
                        "vst3_discovery": discovery_evidence,
                        "vst3_instance": instance_evidence,
-                       "included": included, "changelog": changelog_identity, "app_path": str(app), "created_at": ci.utc_now(),
-                       "activation": "installed on disk; launch or relaunch required; not launched by delivery",
+                       "included": included, "changelog": changelog_identity, "app_path": str(target), "created_at": ci.utc_now(),
+                       "activation": ("prepared pending update; not installed or launched" if prepare_only else
+                                      "installed on disk; launch or relaunch required; not launched by delivery"),
                        "signature": "Developer ID sealed local test bundle; not notarized",
                        "signing": signing,
                        "input_executable_sha256": sha(contents / "MacOS/hex"),
                        "files": inventory(stage, signed_payload=True)}
+            if prepare_only:
+                receipt["pending_target_identity"] = target_identity
             write_json(contents / "Resources/test-build.json", receipt)
             sign_bundle(stage, signing)
             verify(stage)
             verify_native_executable(contents / "MacOS/hex")
             revalidate()
+            if prepare_only and pending_target_identity(target) != target_identity:
+                raise DeliveryError("installed app changed during preparation; pending candidate was not replaced")
             activate(app, stage)
             verify_native_executable(app / "Contents/MacOS/hex")
             receipt = {**receipt, "artifact_files": inventory(app, include_receipt=True),
@@ -866,6 +941,8 @@ def main() -> int:
     verification.add_argument("--ci-report", type=Path, help="full exact-source local CI report")
     parser.add_argument("--dev-profile", action="store_true",
                         help="explicit development delivery only; allow a resolved scoped merge report, never beta/stable full qualification")
+    parser.add_argument("--prepare-only", action="store_true",
+                        help="prepare a fully verified pending update without replacing the installed app")
     verification.add_argument("--build-only", action="store_true",
                               help="verify clean exact source and build without running or requiring tests")
     parser.add_argument("--candidate", required=True, help="full exact candidate commit")
@@ -902,7 +979,8 @@ def main() -> int:
         return 0
     except (DeliveryError, ci.TargetCacheError, ci.InterruptedRun, OSError, ValueError,
             KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
-        print(f"test installation incomplete: {error}; temporary publication files preserved for retry. "
+        operation = "pending update preparation" if args.prepare_only else "test installation"
+        print(f"{operation} incomplete: {error}; temporary publication files preserved for retry. "
               "inspect the reported process/ownership refusal before retrying; no process was terminated", file=sys.stderr)
         return 1
 
