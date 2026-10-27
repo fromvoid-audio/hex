@@ -155,14 +155,8 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         binding: crate::scalar_automation::ScalarAutomationBinding,
     ) -> Result<Self, Invalid> {
-        if binding.source.project_rate() != project.sample_rate()
-            || !crate::scalar_automation::projection_matches(&binding.source, project.tempo_map())
-        {
-            return Err(Invalid(
-                "scalar automation source rate or projection differs from project",
-            ));
-        }
-        let mut prepared = Self::prepare_for_native_parameter_input(
+        crate::scalar_automation::validate_source(project, &binding.source)?;
+        let prepared = Self::prepare_for_native_parameter_input(
             project,
             media,
             sine_table,
@@ -170,17 +164,58 @@ impl PreparedRevision {
             binding.device,
             binding.target,
         )?;
-        if prepared.arrangement.main_latency_frames() != 0 {
+        prepared.finish_scalar_automation(binding)
+    }
+    /// The same recorded target and factory admission with prepared PCM sources.
+    /// This adds no source worker or resource owner; native publication must
+    /// match every audio/scalar dependency against its actual retained catalog.
+    pub fn prepare_with_scalar_automation_and_prepared_sources(
+        project: &Project,
+        sources: &BTreeMap<AssetId, crate::compile::PreparedAudioSource>,
+        source_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        binding: crate::scalar_automation::ScalarAutomationBinding,
+    ) -> Result<Self, Invalid> {
+        crate::scalar_automation::validate_source(project, &binding.source)?;
+        let input = crate::device_automation::native_parameter_input_target(
+            project,
+            binding.device,
+            binding.target,
+        )?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_source_bank(
+            project,
+            crate::compile::SourceBank::Mixed(sources, source_generation),
+            sine_table,
+            previous_session,
+            &effects,
+            &instruments,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            None,
+            Some(input),
+        )?
+        .finish_scalar_automation(binding)
+    }
+    fn finish_scalar_automation(
+        mut self,
+        binding: crate::scalar_automation::ScalarAutomationBinding,
+    ) -> Result<Self, Invalid> {
+        if self.arrangement.main_latency_frames() != 0 {
             return Err(Invalid(
                 "scalar automation requires uncompensated stage origins",
             ));
         }
-        let input = prepared
+        let input = self
             .native_parameter_input
+            .filter(|input| input.device() == binding.device && input.target() == binding.target)
             .ok_or(Invalid("scalar automation native target is unavailable"))?;
-        prepared.arrangement.prepare_scalar_automation(input)?;
-        prepared.scalar_automation = Some(Box::new(binding));
-        Ok(prepared)
+        self.arrangement.prepare_scalar_automation(input)?;
+        self.scalar_automation = Some(Box::new(binding));
+        Ok(self)
     }
     pub fn scalar_automation_binding(
         &self,

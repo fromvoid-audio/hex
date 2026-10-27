@@ -1227,14 +1227,26 @@ mod tests {
             .expect("held victim returned")
             .key
             .expect("cached page key");
-        assert!(initial.contains(&returned_key));
+        assert!(
+            initial
+                .iter()
+                .any(|key| ResourcePageKey::from(*key) == returned_key)
+        );
 
         let resident_keys = ready
             .endpoint
             .cache
             .iter()
             .filter_map(|slot| match slot {
-                CacheSlot::Occupied { page, .. } => page.key,
+                CacheSlot::Occupied { page, .. } => page.key.map(|key| {
+                    let StreamResourceKey::Audio(source) = key.source else {
+                        panic!("PCM pin fixture")
+                    };
+                    PageKey {
+                        source,
+                        page_index: key.page_index,
+                    }
+                }),
                 CacheSlot::Empty => None,
             })
             .collect::<Vec<_>>();

@@ -16,6 +16,19 @@ pub struct ScalarAutomationBinding {
     pub source: ScalarSourceMetadata,
 }
 
+pub(crate) fn validate_source(
+    project: &hex_project::Project,
+    source: &ScalarSourceMetadata,
+) -> Result<(), Invalid> {
+    if source.project_rate() != project.sample_rate()
+        || !projection_matches(source, project.tempo_map())
+    {
+        return Err(Invalid(
+            "scalar automation source rate or projection differs from project",
+        ));
+    }
+    Ok(())
+}
 pub(crate) fn projection_matches(
     source: &ScalarSourceMetadata,
     map: &hex_project::TempoMap,
