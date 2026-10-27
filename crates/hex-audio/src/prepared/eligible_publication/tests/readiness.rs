@@ -364,6 +364,168 @@ fn later_missing_chunk_keeps_committed_pcm_and_clocks_then_pause_passes_pending_
 }
 
 #[test]
+fn whole_foreign_callback_releases_completed_pages_under_real_pool_pressure() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let mut edit = hex_project::Editor::new(project_with_frames(128), 16).unwrap();
+    let a = edit.project().assets().next().unwrap().id();
+    let track = edit.project().tracks()[0].id();
+    let hex_project::Created::Asset(b) = edit
+        .execute(hex_project::Command::AddAsset {
+            path: "later.wav".into(),
+            sample_rate: 48000,
+            frames: 8192,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    edit.execute(hex_project::Command::PlaceClip {
+        track,
+        asset: b,
+        start: 128,
+        duration: 512,
+        source_offset: 3968,
+        source_length: 512,
+        looping: false,
+    })
+    .unwrap();
+    let a_wav = stream_fixture::Wav::with_frames(128);
+    let b_wav = stream_fixture::Wav::with_frames(8192);
+    let a_def = a_wav.definition(a, 11);
+    let b_def = b_wav.definition(b, 11);
+    let mut owner = stream_fixture::owner_sources(
+        edit.project(),
+        vec![a_def.metadata.clone(), b_def.metadata.clone()],
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 12,
+        }),
+    );
+    let limits = reservation(&mut owner);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(2).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair_with_pool(vec![a_def, b_def], 3),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 2,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while control.status.position.load(Acquire) == 0 {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut output).unwrap();
+        });
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first callback did not install"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.position.load(Acquire), 256);
+    assert_eq!(output, [[0.25; 2]; 256]);
+    // The completed callback retained A/page 0 and B/page 0 in a two-page
+    // cache. The next callback needs B/page 1, so retaining both old pages
+    // would refuse every retry although the new callback itself needs one.
+    let mut provider = hex_lattice::RefuseForeign;
+    loop {
+        let mut complete = false;
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                let Some(ActivePublication::Eligible(active)) = c.active.as_mut() else {
+                    panic!("active")
+                };
+                let outcome = active.stream_view().render_streamed_with_foreign(
+                    &mut c.domain_pages,
+                    false,
+                    c.stream_prefix,
+                    &mut output,
+                    None,
+                    None,
+                    Some(&mut provider),
+                );
+                assert!(outcome.fault.is_none());
+                assert!(
+                    !outcome.readiness_refused,
+                    "old completed pages must not block the new union"
+                );
+                match outcome.progress {
+                    crate::candidate_custody::StreamProgress::Complete => complete = true,
+                    crate::candidate_custody::StreamProgress::Buffering { committed_frames } => {
+                        assert_eq!(committed_frames, 0);
+                        assert_eq!(output, [[0.0; 2]; 256]);
+                    }
+                }
+                c.publish_transport();
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        if complete {
+            break;
+        }
+        assert_eq!(control.status.position.load(Acquire), 256);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "new page did not become ready"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.position.load(Acquire), 512);
+    assert_eq!(output, [[0.25; 2]; 256]);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    let _ = retirement.advance().unwrap();
+    let ready = recover(&mut control, &ticket);
+    loop {
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(ready);
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
 fn two_source_small_pool_refusal_after_commit_preserves_pcm_clock_and_applied_prefix() {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {

@@ -59,14 +59,39 @@ pub struct NativeWorkerControllerQuery {
     ordinal: u64,
     stopped: bool,
 }
+impl NativeWorkerControllerQuery {
+    /// True only after the original worker's completion allocation has been
+    /// released. Its source may have moved to quiescent custody, so this is
+    /// neither source-loss evidence nor a controller result.
+    pub fn original_worker_released_on_control(&self) -> bool {
+        self.source.upgrade().is_none()
+    }
+}
 /// Copied controller observations only; never DSP/canonical/publication ACK.
 #[derive(Debug)]
 pub enum NativeWorkerControllerProgress {
     Pending,
     Page(Box<ParameterPage>),
     Conversion(Box<ParameterConversionResult>),
-    Changed { revision: u64, total: u16 },
+    Changed {
+        revision: u64,
+        total: u16,
+    },
+    /// The exact terminal was consumed, but its source closed before delivery.
+    /// No controller data or authority survives this result.
+    Discarded,
     Failed,
+}
+
+impl NativeWorkerControllerProgress {
+    pub(crate) fn source_closed(self, reason: &'static str) -> Result<Self, &'static str> {
+        match self {
+            Self::Pending | Self::Failed => Err(reason),
+            Self::Page(_) | Self::Conversion(_) | Self::Changed { .. } | Self::Discarded => {
+                Ok(Self::Discarded)
+            }
+        }
+    }
 }
 
 impl NativeWorker {
@@ -185,6 +210,50 @@ impl NativeWorker {
             NativeWorkerControllerProgress::Page(Box::new(reply.page))
         };
         Ok(progress)
+    }
+
+    /// Drain a revoked live query from its exact joined original worker.
+    /// Late metadata is discarded: it cannot authorize an edit after Stop.
+    /// False retains the same operation until its actual completion is ready.
+    pub fn drain_stopped_controller_query_on_control(
+        &mut self,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<bool, &'static str> {
+        if request.stopped
+            || request.binding != self.binding
+            || request.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
+        {
+            return Err("native controller source differs");
+        }
+        {
+            let mailbox = match self.reaper.completed.capture.try_lock() {
+                Ok(slot) => slot,
+                Err(TryLockError::WouldBlock) => return Ok(false),
+                Err(TryLockError::Poisoned(_)) => return Err("native controller mailbox failed"),
+            };
+            if !mailbox.controller.matches(request) {
+                return Err("native controller operation differs");
+            }
+        }
+        match self.service_stopped_controller() {
+            Ok(()) => {}
+            Err("native preparation is busy") => return Ok(false),
+            Err(error) => return Err(error),
+        }
+        let mut mailbox = match self.reaper.completed.capture.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::WouldBlock) => return Ok(false),
+            Err(TryLockError::Poisoned(_)) => return Err("native controller mailbox failed"),
+        };
+        let slot = &mut mailbox.controller;
+        if !slot.matches(request) {
+            return Err("native controller operation differs");
+        }
+        if !slot.complete {
+            return Ok(false);
+        }
+        slot.requested = false;
+        Ok(true)
     }
 
     fn service_stopped_controller(&mut self) -> Result<(), &'static str> {

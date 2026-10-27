@@ -14,6 +14,7 @@ use hex_session::service::{
 };
 
 pub(super) struct Pending {
+    id: u64,
     playback: Playback,
     file_sources: Option<hex_session::service::ResidentFileSet>,
     resources: Option<PreparedDeviceResources>,
@@ -25,6 +26,16 @@ pub(super) struct Pending {
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
     pub(super) current_submission: Option<ResidentRuntimeLoop>,
+    // Scalar callback status and exact tag survive relinquishment. A fresh
+    // exclusive output is required before they can prove old quiescence.
+    pub(super) retired_submission: Option<(ResidentRuntimeLoop, Arc<hex_audio::prepared::Status>)>,
+    pub(super) closed_stopped_gesture: Option<(
+        hex_session::device_gesture::GestureKey,
+        u64,
+        hex_session::service::ResidentPublicationReceipt,
+    )>,
+    next_retained_id: u64,
+    retained_submission: Option<(u64, hex_session::service::ResidentPublicationReceipt)>,
     pub(super) applied_loop: Option<ResidentRuntimeLoop>,
     pub(super) retired: Option<DeviceResourcePublication>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
@@ -70,6 +81,104 @@ impl Resident {
     }
 }
 impl NativeAudioSink {
+    pub(super) fn retained_publication(
+        &self,
+        context: AudioSourceContext,
+    ) -> Option<hex_session::service::ResidentRetainedReceipt> {
+        let pending = self.resident.pending.as_ref()?;
+        (pending.metadata.context == context).then_some(
+            hex_session::service::ResidentRetainedReceipt {
+                id: pending.id,
+                context,
+            },
+        )
+    }
+    pub(super) fn retained_publication_terminal(
+        &mut self,
+        receipt: hex_session::service::ResidentRetainedReceipt,
+    ) -> hex_session::service::ResidentPublicationTerminal {
+        use hex_session::service::ResidentPublicationTerminal as Terminal;
+        if self.resident.pending.as_ref().is_some_and(|pending| {
+            pending.id == receipt.id && pending.metadata.context == receipt.context
+        }) {
+            return Terminal::Pending;
+        }
+        let Some((id, submitted)) = self.resident.retained_submission else {
+            return Terminal::Indeterminate;
+        };
+        if id != receipt.id || submitted.context != receipt.context {
+            return Terminal::Indeterminate;
+        }
+        self.resident_publication_terminal(submitted)
+    }
+    pub(super) fn resident_publication_terminal(
+        &mut self,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::ResidentPublicationTerminal {
+        use hex_session::service::ResidentPublicationTerminal as Terminal;
+        let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        else {
+            return Terminal::Indeterminate;
+        };
+        if receipt.output_identity == 0 || receipt.audio_revision == 0 {
+            return Terminal::Indeterminate;
+        }
+        if control.output_identity() != Some(receipt.output_identity) {
+            let Some((tag, status)) = self.resident.retired_submission.as_ref() else {
+                return Terminal::Indeterminate;
+            };
+            if tag.output_identity != receipt.output_identity
+                || tag.audio_revision != receipt.audio_revision
+                || tag.source_context != Some(receipt.context)
+                || control.output_identity().is_none()
+            {
+                return Terminal::Indeterminate;
+            }
+            // The fresh output holds the existing exclusive lease. Its
+            // acquisition proves old callback/worker retirement, so these
+            // immutable terminal observations can no longer change.
+            if let Some((revision, reason)) = status.rejected_revision()
+                && revision == receipt.audio_revision
+            {
+                return Terminal::OutputClosedRefused(reason);
+            }
+            if let Some(source) = status.recording_source()
+                && source.output_identity == receipt.output_identity
+                && source.audio_revision == receipt.audio_revision
+                && source.context == receipt.context
+            {
+                return Terminal::OutputClosedApplied;
+            }
+            return if status.applied_revision.load(Acquire) < receipt.audio_revision {
+                Terminal::OutputClosedUnapplied
+            } else {
+                Terminal::Indeterminate
+            };
+        }
+        if !self.resident.current_submission.is_some_and(|submitted| {
+            submitted.output_identity == receipt.output_identity
+                && submitted.audio_revision == receipt.audio_revision
+                && submitted.source_context == Some(receipt.context)
+        }) {
+            return Terminal::Indeterminate;
+        }
+        if let Some((revision, reason)) = control.status.rejected_revision()
+            && revision == receipt.audio_revision
+        {
+            return Terminal::Refused(reason);
+        }
+        if let Some(source) = control.status.recording_source()
+            && source.output_identity == receipt.output_identity
+            && source.audio_revision == receipt.audio_revision
+            && source.context == receipt.context
+        {
+            return Terminal::Applied;
+        }
+        Terminal::Pending
+    }
     /// Two fixed scalar tags suffice: publication admission allows one pending
     /// graph. Retain the last applied tag when a successor is cancelled/refused.
     /// Only this worker publishes graphs; transport commands cannot mutate a
@@ -285,6 +394,7 @@ impl NativeAudioSink {
             self.plugins.poll_restore(
                 control,
                 self.desired.as_ref().map(|source| source.context()),
+                self.request_cancellation.as_ref(),
             );
         }
         let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
@@ -607,8 +717,16 @@ impl NativeAudioSink {
         if let Err(error) = admit(&[candidate, current[0], current[1], current[2]]) {
             return Err(ResidentPublicationRefusal { playback, error });
         }
+        let Some(id) = self.resident.next_retained_id.checked_add(1) else {
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "resident retained identity exhausted".into(),
+            });
+        };
+        self.resident.next_retained_id = id;
         self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
         self.resident.pending = Some(Pending {
+            id,
             playback,
             file_sources: file_sources.cloned(),
             resources: captured,
@@ -659,6 +777,7 @@ impl NativeAudioSink {
             }
         }
         let Pending {
+            id,
             playback,
             file_sources,
             resources,
@@ -677,7 +796,7 @@ impl NativeAudioSink {
             };
             admit(&[capture, *prospective, *retired, *pending])
         };
-        if let Err(refused) = self.publish_resident_graph(
+        match self.publish_resident_graph(
             playback,
             resources.as_ref(),
             Arc::clone(&observation),
@@ -687,26 +806,48 @@ impl NativeAudioSink {
             &mut with_capture,
             file_sources.as_ref(),
         ) {
-            self.resident.pending = Some(Pending {
-                playback: refused.playback,
-                file_sources,
-                resources,
-                observation,
-                metadata,
-                policy,
-            });
-            // Keep the actual owner through both transient backpressure and hard scope/budget
-            // refusal, but expose the reason. Waiting never masquerades as Submitted/Applied.
-            self.output_identity = self
-                .output
-                .as_mut()
-                .and_then(|output| output.publication.control())
-                .and_then(|control| control.output_identity());
-            self.observe(
-                metadata.context,
-                "resident-pending-refused",
-                EditorPublicationState::Refused(refused.error),
-            );
+            Ok(ResidentPublicationAcceptance::Submitted {
+                output_identity,
+                audio_revision,
+            }) => {
+                self.resident.retained_submission = Some((
+                    id,
+                    hex_session::service::ResidentPublicationReceipt {
+                        output_identity,
+                        audio_revision,
+                        context: metadata.context,
+                    },
+                ));
+            }
+            Ok(ResidentPublicationAcceptance::OfflineRetained) => {
+                // Preserve the original identity if an output disappears during retry.
+                if let Some(pending) = self.resident.pending.as_mut() {
+                    pending.id = id;
+                }
+            }
+            Err(refused) => {
+                self.resident.pending = Some(Pending {
+                    id,
+                    playback: refused.playback,
+                    file_sources,
+                    resources,
+                    observation,
+                    metadata,
+                    policy,
+                });
+                // Keep the actual owner through both transient backpressure and hard scope/budget
+                // refusal, but expose the reason. Waiting never masquerades as Submitted/Applied.
+                self.output_identity = self
+                    .output
+                    .as_mut()
+                    .and_then(|output| output.publication.control())
+                    .and_then(|control| control.output_identity());
+                self.observe(
+                    metadata.context,
+                    "resident-pending-refused",
+                    EditorPublicationState::Refused(refused.error),
+                );
+            }
         }
     }
 }

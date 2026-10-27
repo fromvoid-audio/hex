@@ -104,6 +104,7 @@ impl ActiveView<'_> {
                 &mut request,
                 ProtectionRole::Candidate,
                 Some(scheduled.due),
+                false,
             )
             .is_err()
         {

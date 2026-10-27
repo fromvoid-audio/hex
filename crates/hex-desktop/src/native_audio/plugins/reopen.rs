@@ -1,15 +1,21 @@
-//! Fresh-output restore borrows one canonical snapshot. Source, child, worker
-//! and endpoint custody remain in that output's existing Root. At most one
-//! source advances per poll; no old-output binding or default instance is reused.
+//! Fresh-output restore normally borrows the canonical snapshot. A proven
+//! retired-applied edit may instead stage its validated candidate while the
+//! original canonical context remains current. Source, child, worker and
+//! endpoint custody remain in the output's existing Root. At most one source
+//! advances per poll; no old-output binding or default instance is reused.
 use super::*;
 
 pub(super) struct Reopen {
     pub(super) context: AudioSourceContext,
+    canonical_context: AudioSourceContext,
     output: Option<u64>,
     next: usize,
     current: Option<Binding>,
     pub(super) ready: bool,
     cleanup: bool,
+    retry_after_cleanup: bool,
+    candidate: Option<Arc<hex_session::service::PluginRecoveryCandidate>>,
+    next_candidate: Option<Arc<hex_session::service::PluginRecoveryCandidate>>,
 }
 
 impl Plugins {
@@ -23,6 +29,7 @@ impl Plugins {
             && let Ok(mut observed) = observed.try_lock()
         {
             observed.restore_refused = false;
+            observed.restore_error = None;
         }
         let mut has_effects = false;
         let visited = input.visit_plugin_effects(|_, _, _| {
@@ -36,12 +43,35 @@ impl Plugins {
             && self.catalog.is_some())
         .then_some(Reopen {
             context: input.context(),
+            canonical_context: input.context(),
             output: None,
             next: 0,
             current: None,
             ready: false,
             cleanup: false,
+            retry_after_cleanup: false,
+            candidate: None,
+            next_candidate: None,
         });
+    }
+    pub(in crate::native_audio) fn retarget_reopen(
+        &mut self,
+        candidate: Arc<hex_session::service::PluginRecoveryCandidate>,
+    ) -> Result<(), String> {
+        let restore = self
+            .reopen
+            .as_mut()
+            .ok_or("vst3 output restore unavailable")?;
+        if restore.context.project_generation != candidate.context().project_generation
+            || restore.next_candidate.is_some()
+            || restore.candidate.is_some()
+        {
+            return Err("vst3 output restore context changed".into());
+        }
+        restore.next_candidate = Some(candidate);
+        restore.ready = false;
+        restore.cleanup = true;
+        Ok(())
     }
     pub(in crate::native_audio) fn reopen_ready(&self) -> Option<AudioSourceContext> {
         self.reopen
@@ -93,6 +123,20 @@ impl Plugins {
         }
         true
     }
+    pub(in crate::native_audio) fn retry_refused_reopen(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> bool {
+        if !self.finish_reopen(context, false) {
+            return false;
+        }
+        if let Some(restore) = self.reopen.as_mut() {
+            restore.retry_after_cleanup = true;
+            true
+        } else {
+            false
+        }
+    }
     pub(in crate::native_audio) fn poll_reopen(
         &mut self,
         output: &mut WorkerPreparedOutput,
@@ -101,8 +145,9 @@ impl Plugins {
         let Some(mut restore) = self.reopen.take() else {
             return;
         };
-        let Some(snapshot) = snapshot.filter(|snapshot| snapshot.context() == restore.context)
-        else {
+        if !restore.cleanup
+            && snapshot.is_none_or(|snapshot| snapshot.context() != restore.canonical_context)
+        {
             for source in &mut self.sources {
                 if source.project_generation == restore.context.project_generation
                     && source.operation.is_reopen()
@@ -111,7 +156,7 @@ impl Plugins {
                 }
             }
             return;
-        };
+        }
         if restore.ready {
             self.reopen = Some(restore);
             return;
@@ -140,10 +185,39 @@ impl Plugins {
                 .any(|source| source.operation.is_reopen())
             {
                 self.reopen = Some(restore);
+            } else if let Some(candidate) = restore.next_candidate.take() {
+                restore.context = candidate.context();
+                restore.candidate = Some(candidate);
+                restore.next = 0;
+                restore.current = None;
+                restore.cleanup = false;
+                self.reopen = Some(restore);
+            } else if restore.retry_after_cleanup {
+                restore.next = 0;
+                restore.current = None;
+                restore.cleanup = false;
+                restore.retry_after_cleanup = false;
+                self.reopen = Some(restore);
             }
             return;
         }
-        let input = snapshot.effect_preparation();
+        let candidate = restore.candidate.clone();
+        let input = if let Some(candidate) = candidate.as_ref() {
+            candidate.effect_preparation()
+        } else if let Some(snapshot) =
+            snapshot.filter(|snapshot| snapshot.context() == restore.context)
+        {
+            snapshot.effect_preparation()
+        } else {
+            for source in &mut self.sources {
+                if source.project_generation == restore.context.project_generation
+                    && source.operation.is_reopen()
+                {
+                    source.retiring = true;
+                }
+            }
+            return;
+        };
         let mut next = None;
         let mut index = 0;
         let visited = input.visit_plugin_effects(|owner, device, state| {
@@ -187,6 +261,8 @@ impl Plugins {
             let presentation = None;
             #[cfg(all(test, feature = "allocation-probe"))]
             let presentation = self.presentation;
+            #[cfg(all(test, feature = "allocation-probe"))]
+            let preparation_stage = control.native_source_preparation_progress(source.binding);
             let result = self
                 .host
                 .as_ref()
@@ -210,6 +286,7 @@ impl Plugins {
                         && let Ok(mut observed) = observed.try_lock()
                     {
                         observed.restore_refused = true;
+                        observed.restore_error = Some(format!("{preparation_stage:?}: {error}"));
                     }
                     let _ = error;
                     source.retiring = true;

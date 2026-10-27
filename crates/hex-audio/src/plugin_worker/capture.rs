@@ -141,7 +141,26 @@ impl NativeWorkerStateSnapshot {
 pub enum NativeWorkerStateSnapshotProgress {
     Pending,
     Captured(Box<NativeWorkerStateSnapshot>),
+    /// A completed capture was consumed but its source closed before delivery.
+    /// The snapshot data and any authority it might carry are discarded.
+    Discarded,
     Failed,
+}
+
+/// An exact snapshot action completed. `SourceClosed` only records that the
+/// action happened before close; it grants no authority to publish or edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeSnapshotAction {
+    Current,
+    SourceClosed,
+}
+impl NativeWorkerStateSnapshotProgress {
+    pub(crate) fn source_closed(self, reason: &'static str) -> Result<Self, &'static str> {
+        match self {
+            Self::Pending | Self::Failed => Err(reason),
+            Self::Captured(_) | Self::Discarded => Ok(Self::Discarded),
+        }
+    }
 }
 
 impl NativeWorker {

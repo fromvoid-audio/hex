@@ -4,6 +4,7 @@
 use super::*;
 use hex_session::service::NativeDeviceState;
 mod edits;
+pub(super) use edits::{ordinary_terminal, workers_idle};
 mod save;
 
 #[test]
@@ -99,6 +100,82 @@ fn nondefault_fixture() -> SavedEffectFixture {
         expected,
         old_output,
     }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn native_plugin_recovery_finishes_only_after_fresh_callback() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let fixture = nondefault_fixture();
+    let mut h = ResidentHarness::with_plugins_and_catalog(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+        fixture.catalog.clone(),
+    );
+    assert!(h.next().error.is_none());
+    h.applied(0);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(fixture.path.clone()));
+    assert!(opened.project_replaced && opened.open_complete);
+    let context = opened
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let (ready, resume, _busy) = h.probe_next_native_publication();
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    let until = Instant::now() + Duration::from_secs(10);
+    while ready.try_recv().is_err() {
+        h.pump();
+        h.render_plugin_block();
+        workers_idle(&h);
+        assert!(
+            Instant::now() < until,
+            "fresh plugin graph did not reach publication gate"
+        );
+        std::thread::yield_now();
+    }
+    resume.send(()).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        h.pump();
+        if h.submitted
+            .is_some_and(|(_, metadata)| metadata.context == context)
+        {
+            break;
+        }
+        assert!(Instant::now() < until, "fresh plugin graph not submitted");
+        std::thread::yield_now();
+    }
+    assert!(
+        h.gesture_probe.restore_finishes.lock().unwrap().is_empty(),
+        "queue admission must not finish native restoration"
+    );
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        0
+    );
+    h.applied(0);
+    wait(|| {
+        h.pump();
+        h.gesture_probe
+            .restore_finishes
+            .lock()
+            .unwrap()
+            .contains(&(context, true))
+    });
+    assert_eq!(opened.state.project.as_ref(), &fixture.project);
 }
 
 #[test]

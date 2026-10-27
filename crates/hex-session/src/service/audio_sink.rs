@@ -41,6 +41,16 @@ impl<'a> PluginParameterGestureInput<'a> {
     }
 }
 pub enum PluginParameterGestureResult {
+    /// The sink retains this exact operation and will report its real terminal
+    /// through a later continuation. This is never an SDK or gesture ACK.
+    Pending,
+    /// The exact stopped gesture has renewed its source and requires the
+    /// Session-owned graph to be installed before its point can be completed.
+    StoppedGraphReady,
+    /// The exclusive replacement output proves this stopped gesture's old
+    /// output retired before a graph receipt existed. Canonical restoration
+    /// must still reach the replacement callback before its source-loss ACK.
+    StoppedOutputClosed { old_output: u64 },
     /// Validated Begin or completed Preview/Restore, not physical delivery or
     /// an assertion that a plugin returned the exact requested normalized value.
     /// SDK readback remains separate from the client's lossless intent.
@@ -53,6 +63,69 @@ pub enum PluginParameterGestureResult {
 pub enum PluginParameterGestureError {
     Refused(String),
     SourceLost(String),
+}
+/// Exact old-source disposition after an admitted gesture's context changed.
+/// A pending operation retains its original token; neither a cancellation
+/// request nor transport revocation is a terminal.
+pub enum StalePluginGestureDisposition {
+    Pending,
+    Restored,
+    SourceLost(String),
+}
+
+/// One bounded read-only controller page for an exact canonical source. The
+/// worker must revalidate the actual hosted device; these fields grant no edit
+/// or native-source authority. A nonzero page binds the observed revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginControllerPageRequest {
+    pub context: hex_engine::AudioSourceContext,
+    pub device_id: u64,
+    pub first: u16,
+    pub revision: u64,
+}
+
+/// An SDK plain value may legitimately be infinite or unavailable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PluginControllerPlainValue {
+    Finite(f64),
+    NegativeInfinity,
+    PositiveInfinity,
+    Unavailable,
+}
+
+/// Copied plugin-provided names and values; source spelling is preserved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginControllerParameter {
+    pub id: u32,
+    pub flags: u32,
+    pub step_count: u32,
+    pub unit_id: i32,
+    pub editable: bool,
+    pub normalized: f64,
+    pub default_normalized: f64,
+    pub plain: PluginControllerPlainValue,
+    pub default_plain: PluginControllerPlainValue,
+    pub title: String,
+    pub short_title: String,
+    pub units: String,
+    pub display: Option<String>,
+    pub default_display: Option<String>,
+}
+
+/// At most four parameters from one actual controller observation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginControllerPage {
+    pub request: PluginControllerPageRequest,
+    pub revision: u64,
+    pub total: u16,
+    pub parameters: Vec<PluginControllerParameter>,
+}
+
+#[derive(Debug)]
+pub enum PluginControllerPageResult {
+    Pending,
+    Page(PluginControllerPage),
+    Changed { revision: u64, total: u16 },
 }
 impl<'a> ResidentEffectPreparation<'a> {
     pub fn context(&self) -> hex_engine::AudioSourceContext {
@@ -195,6 +268,71 @@ pub enum ResidentPublicationAcceptance {
     },
     OfflineRetained,
 }
+/// Exact submitted graph identity. This is correlation only, not acceptance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentPublicationReceipt {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub context: hex_engine::AudioSourceContext,
+}
+/// Identity of one exact graph retained by the sink before an output exists.
+/// This grants no permission to commit; only its later callback terminal does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentRetainedReceipt {
+    pub id: u64,
+    pub context: hex_engine::AudioSourceContext,
+}
+/// Validated but not yet canonical project state for recovering an edit that
+/// the retired callback actually installed. This carries no publication or
+/// history authority; the editor token remains with Session.
+pub struct PluginRecoveryCandidate {
+    pub(in crate::service) project: Arc<Project>,
+    pub(in crate::service) context: hex_engine::AudioSourceContext,
+}
+impl PluginRecoveryCandidate {
+    pub fn context(&self) -> hex_engine::AudioSourceContext {
+        self.context
+    }
+    pub fn effect_preparation(&self) -> ResidentEffectPreparation<'_> {
+        ResidentEffectPreparation {
+            project: &self.project,
+            context: self.context,
+            restoring_plugin_state: true,
+            preparing_edit: false,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentRetiredIdentity {
+    Submitted(ResidentPublicationReceipt),
+    Retained(ResidentRetainedReceipt),
+}
+/// A nonblocking observation of the original publication. Indeterminate means
+/// the source/output or its single-slot telemetry changed before observation;
+/// it must never be treated as either application or safe refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationTerminal {
+    Pending,
+    Applied,
+    Refused(hex_engine::playback::PlaybackHandoffRejection),
+    /// The retired callback installed the graph, but its source must be
+    /// reconstructed on the replacement output before normal completion.
+    OutputClosedApplied,
+    /// The retired callback refused the graph; replacement-output source
+    /// recovery is still required before normal completion.
+    OutputClosedRefused(hex_engine::playback::PlaybackHandoffRejection),
+    /// The original callback has fully retired without installing this exact
+    /// submitted graph. This is not a callback refusal or a cancellation ACK.
+    OutputClosedUnapplied,
+    Indeterminate,
+}
+/// A stopped gesture retains its exact owners while observations are transient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoppedGestureCompletion {
+    Completed,
+    Pending,
+    Conflict,
+}
 pub struct ResidentPublicationRefusal {
     pub playback: Playback,
     pub error: String,
@@ -212,6 +350,123 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Start cleanup and reconstruction only for the exact refused fresh
+    /// canonical publication. Its owner remains retained until retry admission.
+    fn retry_refused_plugin_state_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _receipt: ResidentPublicationReceipt,
+    ) -> StoppedGestureCompletion {
+        StoppedGestureCompletion::Conflict
+    }
+    /// Pin the exact closed original receipt to its stopped gesture before a
+    /// subsequent output can replace the sink's last-retired observation.
+    fn preserve_closed_stopped_plugin_gesture(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _key: crate::device_gesture::GestureKey,
+        _sequence: u64,
+        _receipt: ResidentPublicationReceipt,
+    ) -> StoppedGestureCompletion {
+        StoppedGestureCompletion::Conflict
+    }
+    /// Notify the stopped gesture only after the exact replacement graph's
+    /// callback terminal. The sink retains the source and gesture identity.
+    fn finish_stopped_plugin_gesture(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _key: crate::device_gesture::GestureKey,
+        _sequence: u64,
+        _receipt: ResidentPublicationReceipt,
+        _accepted: bool,
+    ) -> StoppedGestureCompletion {
+        StoppedGestureCompletion::Conflict
+    }
+    /// Retire an old stopped gesture only after its output is proven closed
+    /// and the exact fresh canonical replacement has reached its callback.
+    fn retire_closed_stopped_plugin_gesture(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _key: crate::device_gesture::GestureKey,
+        _sequence: u64,
+        _old: ResidentPublicationReceipt,
+        _replacement: ResidentPublicationReceipt,
+    ) -> StoppedGestureCompletion {
+        StoppedGestureCompletion::Conflict
+    }
+    /// Retire an unsubmitted stopped gesture after the fresh exclusive lease
+    /// proved old-output retirement and the exact canonical callback applied.
+    fn retire_unsubmitted_stopped_plugin_gesture(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _key: crate::device_gesture::GestureKey,
+        _sequence: u64,
+        _old_output: u64,
+        _replacement: ResidentPublicationReceipt,
+    ) -> StoppedGestureCompletion {
+        StoppedGestureCompletion::Conflict
+    }
+    /// Begin replacement-source preparation for an exactly correlated graph
+    /// known to have applied before its output retired.
+    fn begin_retired_applied_plugin_recovery(
+        &mut self,
+        _identity: ResidentRetiredIdentity,
+        _candidate: Arc<PluginRecoveryCandidate>,
+    ) -> Result<(), String> {
+        Err("retired plugin recovery is unavailable".into())
+    }
+    /// Capture the exact graph just retained by this sink, if it supports
+    /// correlation across a later output opening. Called on the same worker.
+    fn retained_resident_publication(
+        &self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Option<ResidentRetainedReceipt> {
+        None
+    }
+    /// Observe the retained graph's exact subsequent output submission.
+    fn poll_retained_resident_publication(
+        &mut self,
+        _receipt: ResidentRetainedReceipt,
+    ) -> ResidentPublicationTerminal {
+        ResidentPublicationTerminal::Indeterminate
+    }
+    /// Retire only the exact gesture/capture belonging to an already retired
+    /// output, after a replacement graph has actually installed. False keeps
+    /// the pending transaction in custody for further recovery.
+    fn retire_closed_plugin_gesture(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _key: crate::device_gesture::GestureKey,
+        _sequence: u64,
+    ) -> bool {
+        false
+    }
+    /// Observe only the exact original output, revision and source context.
+    /// A caller must retain its transaction while Pending or Indeterminate.
+    fn poll_resident_publication_terminal(
+        &mut self,
+        _receipt: ResidentPublicationReceipt,
+    ) -> ResidentPublicationTerminal {
+        ResidentPublicationTerminal::Indeterminate
+    }
+    /// Admit one source-bound, read-only query. The sink owns its exact query
+    /// until the real terminal, including revocation and output replacement.
+    /// `canonical_state` is validation input only, not native custody.
+    fn begin_plugin_controller_page(
+        &mut self,
+        _request: PluginControllerPageRequest,
+        _canonical_state: &NativeDeviceState,
+    ) -> Result<(), String> {
+        Err("plugin controller metadata is unavailable for this output".into())
+    }
+    /// Observe the same admitted request; stale/other identities refuse.
+    /// A returned page is copied observation, never permission to mutate DSP.
+    fn poll_plugin_controller_page(
+        &mut self,
+        _request: PluginControllerPageRequest,
+    ) -> Result<PluginControllerPageResult, String> {
+        Err("plugin controller metadata is unavailable for this output".into())
+    }
     /// Use the existing actual source for one keyed plugin operation. Begin
     /// revalidates observed metadata/context. Preview/Restore must apply the
     /// real point before returning Applied; they never edit canonical state.
@@ -225,6 +480,39 @@ pub trait WorkerAudioSink: Send {
         Err(PluginParameterGestureError::Refused(
             "plugin parameter controls are unavailable for this output".into(),
         ))
+    }
+    /// The exact pending host operation has a terminal ready to be consumed by
+    /// the Session continuation, including after cancellation intent. The
+    /// sink must report the actual terminal on retry and must not turn an
+    /// unprocessed or withdrawn input into an accepted operation. Readiness
+    /// alone is not a gesture ACK.
+    fn plugin_parameter_gesture_ready(
+        &self,
+        _context: hex_engine::AudioSourceContext,
+        _request: crate::device_gesture::GestureRequest,
+    ) -> bool {
+        false
+    }
+    /// Request cancellation of only this retained operation. The sink must
+    /// keep its original token until the actual processed/refused/withdrawn or
+    /// source-loss terminal; this request is not itself an acknowledgement.
+    fn cancel_pending_plugin_parameter(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _request: crate::device_gesture::GestureRequest,
+    ) {
+    }
+    /// Drain only this original operation after a context replacement. Return
+    /// Restored only after any applied preview was actually restored, or
+    /// SourceLost only after the original source's loss is established. Never
+    /// apply its data to the current document. Pending retains exact custody;
+    /// the sink must report readiness again only when that next step can run.
+    fn finish_stale_plugin_parameter(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _request: crate::device_gesture::GestureRequest,
+    ) -> StalePluginGestureDisposition {
+        StalePluginGestureDisposition::Pending
     }
     /// Called for every Commit attempt, including capture/compilation/publication
     /// refusal. Retire only the exact key/sequence/input context's pending
@@ -576,6 +864,29 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    // Return false when the intent slot is contended; the worker must not
+    // release a deferred edit until it has observed that boundary.
+    fn poll_plugin_restore_priority(
+        mailbox: &std::sync::Mutex<Option<GestureRequest>>,
+        terminal: &Receiver<QueuedRequest>,
+        awaiting: &mut Option<crate::device_gesture::GestureKey>,
+        completed: Option<GestureRequest>,
+        active: Option<crate::device_gesture::GestureKey>,
+    ) -> (bool, Option<QueuedRequest>) {
+        let Ok(mut slot) = mailbox.try_lock() else {
+            return (false, None);
+        };
+        if let Some(completed) = completed
+            && *slot == Some(completed)
+        {
+            *slot = None;
+            if active == Some(completed.key()) {
+                *awaiting = Some(completed.key());
+            }
+        }
+        drop(slot);
+        (true, terminal.try_recv().ok())
+    }
     pub(super) fn begin_diagnostics(
         &mut self,
         queued: &QueuedRequest,
@@ -830,24 +1141,69 @@ impl WorkerEvents {
         &mut self,
         requests: &Receiver<QueuedRequest>,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
+        plugin_cancel: &std::sync::Mutex<Option<GestureRequest>>,
+        plugin_terminal: &Receiver<QueuedRequest>,
+        awaiting_restore: &mut Option<crate::device_gesture::GestureKey>,
+        completed_plugin: Option<GestureRequest>,
+        active_gesture: Option<crate::device_gesture::GestureKey>,
+        deferred: &mut Option<QueuedRequest>,
         bounded: bool,
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
+        mut pending_plugin_gesture: Option<&mut PendingPluginGesture>,
+        pending_plugin_history: Option<&mut PendingPluginHistory>,
+        pending_plugin_recovery: Option<&mut resident_audio::PendingPluginRecovery>,
         context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
     ) -> Option<QueuedRequest> {
+        // A retained FIFO head or priority restore must never outlive Service
+        // shutdown and become an edit after its UI owner has gone away.
+        if self.shutdown.load(Ordering::Acquire) {
+            return None;
+        }
         control_poll(
             self.audio
                 .as_mut()
                 .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
         );
-        if self.audio.is_none() && !bounded {
+        if self.shutdown.load(Ordering::Acquire) {
+            return None;
+        }
+        if pending_plugin_gesture.is_none()
+            && pending_plugin_history.is_none()
+            && pending_plugin_recovery.is_none()
+        {
+            let (checked, terminal) = Self::poll_plugin_restore_priority(
+                plugin_cancel,
+                plugin_terminal,
+                awaiting_restore,
+                completed_plugin,
+                active_gesture,
+            );
+            if let Some(terminal) = terminal {
+                return Some(terminal);
+            }
+            if checked && awaiting_restore.is_none() && deferred.is_some() {
+                return deferred.take();
+            }
+        }
+        if self.audio.is_none()
+            && !bounded
+            && awaiting_restore.is_none()
+            && deferred.is_none()
+            && pending_plugin_history.is_none()
+            && pending_plugin_gesture.is_none()
+            && pending_plugin_recovery.is_none()
+        {
             let result = requests.recv().ok();
             control_poll(
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
             );
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
             return result;
         }
         loop {
@@ -860,57 +1216,163 @@ impl WorkerEvents {
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
             );
-            // Preserve queued New/Open/edit ordering before a callback-ready
-            // continuation. No worker wait can strand project replacement.
-            match requests.try_recv() {
-                Ok(request) => return Some(request),
-                Err(mpsc::TryRecvError::Disconnected) => return None,
-                Err(mpsc::TryRecvError::Empty) => {}
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
             }
-            if self
-                .audio
-                .as_mut()
-                .is_some_and(|a| a.sampler_edit_ready().is_some())
+            if let Some(pending) = pending_plugin_gesture.as_deref_mut()
+                && let Some(audio) = self.audio.as_mut()
+            {
+                pending.poll_cancellation(
+                    plugin_cancel,
+                    context,
+                    document_intent.load(Ordering::Acquire),
+                    audio.as_mut(),
+                );
+            }
+            if pending_plugin_gesture.is_none()
+                && pending_plugin_history.is_none()
+                && pending_plugin_recovery.is_none()
+            {
+                let (checked, terminal) = Self::poll_plugin_restore_priority(
+                    plugin_cancel,
+                    plugin_terminal,
+                    awaiting_restore,
+                    completed_plugin,
+                    active_gesture,
+                );
+                if let Some(terminal) = terminal {
+                    return Some(terminal);
+                }
+                if !checked || awaiting_restore.is_some() {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                if deferred.is_some() {
+                    return deferred.take();
+                }
+            }
+            // Retain only the FIFO head until the admitted gesture's actual
+            // terminal. Later requests remain in the bounded channel.
+            if deferred.is_none() {
+                match requests.try_recv() {
+                    Ok(request)
+                        if pending_plugin_gesture.is_some()
+                            || pending_plugin_history.is_some()
+                            || pending_plugin_recovery.is_some() =>
+                    {
+                        *deferred = Some(request)
+                    }
+                    Ok(request) => return Some(request),
+                    Err(mpsc::TryRecvError::Disconnected) => return None,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+            }
+            if pending_plugin_gesture.is_none()
+                && pending_plugin_history.is_none()
+                && pending_plugin_recovery.is_none()
+                && self
+                    .audio
+                    .as_mut()
+                    .is_some_and(|a| a.sampler_edit_ready().is_some())
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinueSamplerEdit,
                     document_intent,
                 ));
             }
-            if self
-                .audio
-                .as_ref()
-                .is_some_and(|audio| audio.plugin_state_restore_ready().is_some())
+            if pending_plugin_gesture.is_none()
+                && pending_plugin_history.is_none()
+                && pending_plugin_recovery.is_none()
+                && self
+                    .audio
+                    .as_ref()
+                    .is_some_and(|audio| audio.plugin_state_restore_ready().is_some())
             {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginStateRestore,
                     document_intent,
                 ));
             }
-            if plugin_effect.is_some_and(|insertion| {
-                insertion.context != context
-                    || insertion.control.is_cancelled()
-                    || self
-                        .audio
-                        .as_ref()
-                        .is_some_and(|audio| audio.plugin_effect_ready())
-            }) {
+            if pending_plugin_gesture.is_none()
+                && pending_plugin_history.is_none()
+                && pending_plugin_recovery.is_none()
+                && plugin_effect.is_some_and(|insertion| {
+                    insertion.context != context
+                        || insertion.control.is_cancelled()
+                        || self
+                            .audio
+                            .as_ref()
+                            .is_some_and(|audio| audio.plugin_effect_ready())
+                })
+            {
                 return Some(QueuedRequest::continuation(
                     Request::ContinuePluginEffect,
                     document_intent,
                 ));
             }
-            if stopped_restore.is_some_and(|captured| {
-                captured != context
-                    || self
-                        .audio
-                        .as_ref()
-                        .is_some_and(|audio| audio.stopped_playback_restore_ready())
+            if pending_plugin_gesture.as_ref().is_some_and(|pending| {
+                self.audio.as_mut().is_some_and(|audio| {
+                    if let Some(recovery) = pending.stopped_recovery.as_ref() {
+                        recovery.stopped_gesture_ready(audio.as_mut())
+                    } else if let Some(publication) = pending.publication.as_ref() {
+                        publication.gesture_ready(audio.as_mut(), pending.context)
+                    } else {
+                        audio.plugin_parameter_gesture_ready(pending.context, pending.request)
+                    }
+                })
             }) {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginParameterGesture,
+                    document_intent,
+                ));
+            }
+            if pending_plugin_history.as_ref().is_some_and(|pending| {
+                self.audio.as_mut().is_some_and(|audio| {
+                    matches!(
+                        pending.publication.terminal(audio.as_mut()),
+                        ResidentPublicationTerminal::Applied
+                            | ResidentPublicationTerminal::Refused(_)
+                    )
+                })
+            }) {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginHistory,
+                    document_intent,
+                ));
+            }
+            if pending_plugin_recovery.as_ref().is_some_and(|pending| {
+                self.audio.as_mut().is_some_and(|audio| {
+                    matches!(
+                        pending.terminal(audio.as_mut()),
+                        ResidentPublicationTerminal::Applied
+                            | ResidentPublicationTerminal::Refused(_)
+                    )
+                })
+            }) {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginStateRestore,
+                    document_intent,
+                ));
+            }
+            if pending_plugin_gesture.is_none()
+                && pending_plugin_history.is_none()
+                && pending_plugin_recovery.is_none()
+                && stopped_restore.is_some_and(|captured| {
+                    captured != context
+                        || self
+                            .audio
+                            .as_ref()
+                            .is_some_and(|audio| audio.stopped_playback_restore_ready())
+                })
+            {
                 return Some(QueuedRequest::continuation(
                     Request::ContinueStoppedPlaybackRestore,
                     document_intent,
                 ));
+            }
+            if deferred.is_some() {
+                thread::sleep(Duration::from_millis(5));
+                continue;
             }
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {
@@ -919,7 +1381,17 @@ impl WorkerEvents {
                             .as_mut()
                             .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
                     );
-                    return Some(request);
+                    if self.shutdown.load(Ordering::Acquire) {
+                        return None;
+                    }
+                    if pending_plugin_gesture.is_some()
+                        || pending_plugin_history.is_some()
+                        || pending_plugin_recovery.is_some()
+                    {
+                        *deferred = Some(request);
+                    } else {
+                        return Some(request);
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -940,6 +1412,478 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Instant;
+
+    #[test]
+    fn plugin_gesture_wakeup_matches_request_and_preserves_fifo() {
+        use crate::device_gesture::{GestureKey, GestureRequest, PluginParameterValue};
+        struct ReadySink {
+            context: hex_engine::AudioSourceContext,
+            request: GestureRequest,
+            checked: mpsc::SyncSender<()>,
+        }
+        impl WorkerAudioSink for ReadySink {
+            fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+                Ok(48_000)
+            }
+            fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+            fn poll(&mut self) {}
+            fn close(&mut self) {}
+            fn plugin_parameter_gesture_ready(
+                &self,
+                context: hex_engine::AudioSourceContext,
+                request: GestureRequest,
+            ) -> bool {
+                let _ = self.checked.try_send(());
+                self.context == context && self.request == request
+            }
+        }
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 9,
+            editor_revision: 3,
+        };
+        let request = GestureRequest::ChangePlugin {
+            key: GestureKey {
+                generation: 9,
+                token: 4,
+            },
+            sequence: 7,
+            value: PluginParameterValue::new(0.75).unwrap(),
+        };
+        let (event_tx, _event_rx) = mpsc::sync_channel(2);
+        let (checked_tx, checked_rx) = mpsc::sync_channel(4);
+        let mut events = WorkerEvents::new(
+            event_tx,
+            Arc::new(AtomicBool::new(false)),
+            Some(Box::new(ReadySink {
+                context,
+                request,
+                checked: checked_tx,
+            })),
+        );
+        let (tx, rx) = mpsc::sync_channel(2);
+        let intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let plugin_cancel = std::sync::Mutex::new(None);
+        let (_terminal_tx, terminal_rx) = mpsc::sync_channel(1);
+        let mut awaiting = None;
+        let mut deferred = None;
+        let mut pending = PendingPluginGesture {
+            request,
+            context,
+            document_intent: 0,
+            fifo_completion: true,
+            rebase: false,
+            barrier: false,
+            preview: None,
+            publication: None,
+            stopped_recovery: None,
+            cancellation_requested: false,
+            explicit_cancel_requested: false,
+        };
+        assert!(
+            tx.send(QueuedRequest::continuation(Request::Undo, &intent))
+                .is_ok()
+        );
+        assert!(
+            tx.send(QueuedRequest::continuation(Request::Redo, &intent))
+                .is_ok()
+        );
+        let first = events
+            .next_request_with_control_poll(
+                &rx,
+                &intent,
+                &plugin_cancel,
+                &terminal_rx,
+                &mut awaiting,
+                None,
+                None,
+                &mut deferred,
+                true,
+                None,
+                None,
+                Some(&mut pending),
+                None,
+                None,
+                context,
+                |_| {},
+            )
+            .unwrap();
+        assert!(matches!(
+            first.request,
+            Request::ContinuePluginParameterGesture
+        ));
+        let next = events
+            .next_request_with_control_poll(
+                &rx,
+                &intent,
+                &plugin_cancel,
+                &terminal_rx,
+                &mut awaiting,
+                None,
+                None,
+                &mut deferred,
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                context,
+                |_| {},
+            )
+            .unwrap();
+        assert!(matches!(next.request, Request::Undo));
+        let following = events
+            .next_request_with_control_poll(
+                &rx,
+                &intent,
+                &plugin_cancel,
+                &terminal_rx,
+                &mut awaiting,
+                None,
+                None,
+                &mut deferred,
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                context,
+                |_| {},
+            )
+            .unwrap();
+        assert!(matches!(following.request, Request::Redo));
+        while checked_rx.try_recv().is_ok() {}
+        let wrong = GestureRequest::ChangePlugin {
+            key: GestureKey {
+                generation: 9,
+                token: 4,
+            },
+            sequence: 8,
+            value: PluginParameterValue::new(0.75).unwrap(),
+        };
+        pending.request = wrong;
+        assert!(
+            tx.send(QueuedRequest::continuation(Request::Redo, &intent))
+                .is_ok()
+        );
+        let shutdown = Arc::clone(&events.shutdown);
+        thread::scope(|scope| {
+            let pending_intent = Arc::clone(&intent);
+            let deferred_ref = &mut deferred;
+            let awaiting_ref = &mut awaiting;
+            let waiting = scope.spawn(move || {
+                events
+                    .next_request_with_control_poll(
+                        &rx,
+                        &pending_intent,
+                        &plugin_cancel,
+                        &terminal_rx,
+                        awaiting_ref,
+                        None,
+                        None,
+                        deferred_ref,
+                        true,
+                        None,
+                        None,
+                        Some(&mut pending),
+                        None,
+                        None,
+                        context,
+                        |_| {},
+                    )
+                    .map(|request| request.request)
+            });
+            checked_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            shutdown.store(true, Ordering::Release);
+            assert!(waiting.join().unwrap().is_none());
+        });
+        assert!(matches!(deferred.unwrap().request, Request::Redo));
+    }
+    #[test]
+    fn plugin_gesture_poll_routes_cancellation_before_fifo_dequeue() {
+        use crate::device_gesture::{GestureKey, GestureRequest, PluginParameterValue};
+        struct CancelSink(mpsc::SyncSender<(hex_engine::AudioSourceContext, GestureRequest)>);
+        impl WorkerAudioSink for CancelSink {
+            fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+                Ok(48_000)
+            }
+            fn canonical_changed(&mut self, _: Arc<CanonicalAudioSourceSnapshot>) {}
+            fn poll(&mut self) {}
+            fn close(&mut self) {}
+            fn plugin_parameter_gesture_ready(
+                &self,
+                _: hex_engine::AudioSourceContext,
+                _: GestureRequest,
+            ) -> bool {
+                true
+            }
+            fn cancel_pending_plugin_parameter(
+                &mut self,
+                context: hex_engine::AudioSourceContext,
+                request: GestureRequest,
+            ) {
+                let _ = self.0.try_send((context, request));
+            }
+        }
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 9,
+            editor_revision: 3,
+        };
+        let request = GestureRequest::ChangePlugin {
+            key: GestureKey {
+                generation: 9,
+                token: 4,
+            },
+            sequence: 7,
+            value: PluginParameterValue::new(0.75).unwrap(),
+        };
+        for (document_intent, explicit_cancel, context_changed) in
+            [(1, false, false), (0, true, false), (0, false, true)]
+        {
+            let mut pending = PendingPluginGesture {
+                request,
+                context,
+                document_intent: 0,
+                fifo_completion: true,
+                rebase: false,
+                barrier: false,
+                preview: None,
+                publication: None,
+                stopped_recovery: None,
+                cancellation_requested: false,
+                explicit_cancel_requested: false,
+            };
+            let (event_tx, _event_rx) = mpsc::sync_channel(2);
+            let (cancel_tx, cancel_rx) = mpsc::sync_channel(2);
+            let mut events = WorkerEvents::new(
+                event_tx,
+                Arc::new(AtomicBool::new(false)),
+                Some(Box::new(CancelSink(cancel_tx))),
+            );
+            let (tx, rx) = mpsc::sync_channel(2);
+            let intent = Arc::new(std::sync::atomic::AtomicU64::new(document_intent));
+            let plugin_cancel = std::sync::Mutex::new(explicit_cancel.then_some(request));
+            let (_terminal_tx, terminal_rx) = mpsc::sync_channel(1);
+            let mut awaiting = None;
+            let mut deferred = None;
+            tx.send(QueuedRequest::continuation(Request::Undo, &intent))
+                .unwrap();
+            let next = events
+                .next_request_with_control_poll(
+                    &rx,
+                    &intent,
+                    &plugin_cancel,
+                    &terminal_rx,
+                    &mut awaiting,
+                    None,
+                    None,
+                    &mut deferred,
+                    true,
+                    None,
+                    None,
+                    Some(&mut pending),
+                    None,
+                    None,
+                    if context_changed {
+                        hex_engine::AudioSourceContext {
+                            editor_revision: context.editor_revision + 1,
+                            ..context
+                        }
+                    } else {
+                        context
+                    },
+                    |_| {},
+                )
+                .unwrap();
+            assert!(matches!(
+                next.request,
+                Request::ContinuePluginParameterGesture
+            ));
+            assert!(matches!(deferred.unwrap().request, Request::Undo));
+            assert_eq!(cancel_rx.try_recv().unwrap(), (context, request));
+            assert!(pending.cancellation_requested);
+            assert!(plugin_cancel.lock().unwrap().is_none());
+        }
+    }
+    #[test]
+    fn explicit_restore_is_processed_before_held_fifo_edit() {
+        use crate::device_gesture::{GestureKey, GestureRequest, PluginParameterValue};
+        let key = GestureKey {
+            generation: 9,
+            token: 4,
+        };
+        let original = GestureRequest::ChangePlugin {
+            key,
+            sequence: 7,
+            value: PluginParameterValue::new(0.75).unwrap(),
+        };
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 9,
+            editor_revision: 3,
+        };
+        let intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mailbox = std::sync::Mutex::new(Some(original));
+        let (event_tx, _event_rx) = mpsc::sync_channel(2);
+        let mut events = WorkerEvents::new(event_tx, Arc::new(AtomicBool::new(false)), None);
+        let (_tx, rx) = mpsc::sync_channel(2);
+        let (terminal_tx, terminal_rx) = mpsc::sync_channel(1);
+        let mut deferred = Some(QueuedRequest::continuation(Request::Undo, &intent));
+        let mut awaiting = None;
+        let (checked, ready) = WorkerEvents::poll_plugin_restore_priority(
+            &mailbox,
+            &terminal_rx,
+            &mut awaiting,
+            Some(original),
+            Some(key),
+        );
+        assert!(checked && ready.is_none());
+        assert_eq!(awaiting, Some(key));
+        terminal_tx
+            .send(QueuedRequest::continuation(
+                Request::DeviceGesture(GestureRequest::Cancel { key }),
+                &intent,
+            ))
+            .unwrap();
+        let restore = events
+            .next_request_with_control_poll(
+                &rx,
+                &intent,
+                &mailbox,
+                &terminal_rx,
+                &mut awaiting,
+                Some(original),
+                Some(key),
+                &mut deferred,
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                context,
+                |_| {},
+            )
+            .unwrap();
+        assert!(
+            matches!(restore.request, Request::DeviceGesture(GestureRequest::Cancel { key: actual }) if actual == key)
+        );
+        assert_eq!(awaiting, Some(key));
+        assert!(matches!(deferred.as_ref().unwrap().request, Request::Undo));
+        // The real gesture handler releases this gate only on an accepted
+        // restore or exact source loss. A refusal keeps the held edit intact.
+        awaiting = None;
+        let edit = events
+            .next_request_with_control_poll(
+                &rx,
+                &intent,
+                &mailbox,
+                &terminal_rx,
+                &mut awaiting,
+                None,
+                None,
+                &mut deferred,
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                context,
+                |_| {},
+            )
+            .unwrap();
+        assert!(matches!(edit.request, Request::Undo));
+    }
+    #[test]
+    fn shutdown_does_not_release_held_edit_or_priority_restore() {
+        use crate::device_gesture::{GestureKey, GestureRequest};
+        let key = GestureKey {
+            generation: 9,
+            token: 4,
+        };
+        let intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (event_tx, _event_rx) = mpsc::sync_channel(1);
+        let mut events = WorkerEvents::new(event_tx, Arc::new(AtomicBool::new(true)), None);
+        let (_tx, rx) = mpsc::sync_channel(1);
+        let (terminal_tx, terminal_rx) = mpsc::sync_channel(1);
+        terminal_tx
+            .send(QueuedRequest::continuation(
+                Request::DeviceGesture(GestureRequest::Cancel { key }),
+                &intent,
+            ))
+            .unwrap();
+        let mailbox = std::sync::Mutex::new(None);
+        let mut deferred = Some(QueuedRequest::continuation(Request::Undo, &intent));
+        let mut awaiting = Some(key);
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 9,
+            editor_revision: 3,
+        };
+        let mut polled = false;
+        let next = events.next_request_with_control_poll(
+            &rx,
+            &intent,
+            &mailbox,
+            &terminal_rx,
+            &mut awaiting,
+            None,
+            Some(key),
+            &mut deferred,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            context,
+            |_| {
+                polled = true;
+            },
+        );
+        assert!(next.is_none());
+        assert!(!polled);
+        assert!(matches!(deferred.unwrap().request, Request::Undo));
+        assert!(
+            matches!(terminal_rx.try_recv().unwrap().request, Request::DeviceGesture(GestureRequest::Cancel { key: actual }) if actual == key)
+        );
+    }
+    #[test]
+    fn shutdown_during_control_poll_keeps_the_held_edit() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (event_tx, _event_rx) = mpsc::sync_channel(1);
+        let mut events = WorkerEvents::new(event_tx, Arc::clone(&shutdown), None);
+        let (_tx, rx) = mpsc::sync_channel(1);
+        let (_terminal_tx, terminal_rx) = mpsc::sync_channel(1);
+        let mailbox = std::sync::Mutex::new(None);
+        let mut deferred = Some(QueuedRequest::continuation(Request::Undo, &intent));
+        let mut awaiting = None;
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 9,
+            editor_revision: 3,
+        };
+        let next = events.next_request_with_control_poll(
+            &rx,
+            &intent,
+            &mailbox,
+            &terminal_rx,
+            &mut awaiting,
+            None,
+            None,
+            &mut deferred,
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            context,
+            |_| shutdown.store(true, Ordering::Release),
+        );
+        assert!(next.is_none());
+        assert!(matches!(deferred.unwrap().request, Request::Undo));
+    }
     #[derive(Default)]
     struct Observation {
         sources: Mutex<Vec<(u64, u64, thread::ThreadId)>>,

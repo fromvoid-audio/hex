@@ -193,6 +193,8 @@ pub struct GestureClient {
     pending_begin: Option<GestureRequest>,
     latest_change: Option<GestureRequest>,
     terminal: Option<GestureRequest>,
+    urgent_plugin_cancel: Option<GestureRequest>,
+    urgent_plugin_cancel_submitted: bool,
 }
 
 impl GestureClient {
@@ -443,6 +445,23 @@ impl GestureClient {
     }
 
     pub fn cancel(&mut self) -> Result<(), &'static str> {
+        if self.submitted
+            && let Some(in_flight) = self.in_flight
+            && self
+                .active
+                .is_some_and(|snapshot| snapshot.plugin_value.is_some())
+            && in_flight.phase() != GesturePhase::Cancel
+        {
+            if self.urgent_plugin_cancel.is_some() {
+                return Err("plugin gesture cancellation is already pending");
+            }
+            self.latest_change = None;
+            self.terminal = Some(GestureRequest::Cancel {
+                key: in_flight.key(),
+            });
+            self.urgent_plugin_cancel = Some(in_flight);
+            return Ok(());
+        }
         if self.has_pending_terminal() {
             return Err("device gesture is already finishing");
         }
@@ -497,6 +516,20 @@ impl GestureClient {
         }
     }
 
+    /// Exact plugin operation to interrupt without displacing its in-flight
+    /// protocol slot. A full FIFO leaves this request available for retry.
+    pub fn urgent_plugin_cancel(&self) -> Option<GestureRequest> {
+        (!self.urgent_plugin_cancel_submitted)
+            .then_some(self.urgent_plugin_cancel)
+            .flatten()
+    }
+
+    pub fn mark_urgent_plugin_cancel_submitted(&mut self) {
+        if self.urgent_plugin_cancel.is_some() {
+            self.urgent_plugin_cancel_submitted = true;
+        }
+    }
+
     pub fn reset(&mut self) {
         self.recovery_pending = false;
         self.active = None;
@@ -505,6 +538,8 @@ impl GestureClient {
         self.pending_begin = None;
         self.latest_change = None;
         self.terminal = None;
+        self.urgent_plugin_cancel = None;
+        self.urgent_plugin_cancel_submitted = false;
     }
 
     /// A matching acknowledgment releases the protocol slot. Stale or unrelated
@@ -530,6 +565,7 @@ impl GestureClient {
         {
             return false;
         }
+        let cancellation_requested = self.urgent_plugin_cancel == Some(request);
         if ack.source_lost {
             if ack.accepted
                 || ack.preview_retained
@@ -560,12 +596,17 @@ impl GestureClient {
         };
         self.in_flight = None;
         self.submitted = false;
+        if cancellation_requested {
+            self.urgent_plugin_cancel = None;
+            self.urgent_plugin_cancel_submitted = false;
+        }
         if let Some(snapshot) = retained {
             self.active = Some(snapshot);
             self.pending_begin = None;
             self.latest_change = None;
-            self.terminal = None;
-            self.recovery_pending = true;
+            self.terminal =
+                cancellation_requested.then_some(GestureRequest::Cancel { key: ack.key });
+            self.recovery_pending = !cancellation_requested;
             return true;
         }
         if !ack.accepted && ack.phase == GesturePhase::Begin {
@@ -1042,6 +1083,8 @@ mod client_tests {
 
 pub(crate) struct GestureOutcome {
     pub ack: GestureAck,
+    /// No acknowledgement exists while the exact host operation is pending.
+    pub pending: bool,
     pub playback: Option<Arc<PreparedRevision>>,
     pub preview_project: Option<Arc<Project>>,
     pub canonical_changed: bool,
@@ -1146,6 +1189,12 @@ impl GestureMachine {
         self.active.as_ref().map(|active| active.snapshot)
     }
 
+    pub(crate) fn retire_if_key(&mut self, key: GestureKey) {
+        if self.snapshot().is_some_and(|active| active.key == key) {
+            self.active = None;
+        }
+    }
+
     pub fn reset(&mut self) {
         self.active = None;
         self.last_key = None;
@@ -1196,6 +1245,7 @@ impl GestureMachine {
                 accepted: false,
                 reason: None,
             },
+            pending: false,
             playback: None,
             preview_project: None,
             canonical_changed: false,
@@ -1203,6 +1253,10 @@ impl GestureMachine {
         let result = self.apply(session, request, generation, &mut outcome, &mut prepare);
         match result {
             Ok(()) => outcome.ack.accepted = true,
+            Err(SessionError::PluginPending) => {
+                outcome.pending = true;
+                return outcome;
+            }
             Err(error) => {
                 if matches!(error, SessionError::PluginSourceLost(_))
                     && (matches!(
@@ -1846,6 +1900,7 @@ impl GestureMachine {
                     accepted: true,
                     reason: None,
                 },
+                pending: false,
                 playback: Some(prepared),
                 preview_project: Some(project),
                 canonical_changed: false,
@@ -1908,11 +1963,27 @@ impl GestureMachine {
                         accepted: true,
                         reason: None,
                     },
+                    pending: false,
                     playback,
                     preview_project: (!plugin).then_some(project).flatten(),
                     canonical_changed: false,
                 })
             }
+            Err(SessionError::PluginPending) if plugin => Some(GestureOutcome {
+                ack: GestureAck {
+                    preview_retained: false,
+                    source_lost: false,
+                    key: active.key,
+                    phase: GesturePhase::Change,
+                    sequence: active.sequence,
+                    accepted: false,
+                    reason: None,
+                },
+                pending: true,
+                playback: None,
+                preview_project: None,
+                canonical_changed: false,
+            }),
             Err(error) if plugin && !matches!(error, SessionError::PluginSourceLost(_)) => {
                 // The independent canonical publication can retain this same
                 // native instance. A temporary validation refusal cannot erase
@@ -1927,6 +1998,7 @@ impl GestureMachine {
                         accepted: false,
                         reason: Some(error.to_string()),
                     },
+                    pending: false,
                     playback: None,
                     preview_project: None,
                     canonical_changed: false,
@@ -1946,6 +2018,7 @@ impl GestureMachine {
                         accepted: false,
                         reason: Some(error.to_string()),
                     },
+                    pending: false,
                     playback: previous.cloned(),
                     preview_project: None,
                     canonical_changed: false,

@@ -129,11 +129,32 @@ impl Custody {
         id: u32,
         normalized: f64,
     ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.begin_parameter_change(id, normalized),
-            Owner::Loaned(owner) => owner.begin_parameter_change(id, normalized),
-            _ => Err("native parameter input owner differs"),
-        })
+        self.parameter_admission(binding, id, normalized, || {})
+    }
+
+    fn parameter_admission(
+        &self,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+        after_admission: impl FnOnce(),
+    ) -> Result<crate::plugin_worker::NativeWorkerParameterChange, &'static str> {
+        let mut admitted = None;
+        let result = self.with_live_capture(binding, |owner| {
+            admitted = Some(match owner {
+                Owner::Effect(owner) => owner.begin_parameter_change(id, normalized)?,
+                Owner::Loaned(owner) => owner.begin_parameter_change(id, normalized)?,
+                _ => return Err("native parameter input owner differs"),
+            });
+            after_admission();
+            Ok(())
+        });
+        // Once the worker admits an input, a racing close cannot turn that
+        // admission into a refusal and discard its only correlation token.
+        match admitted {
+            Some(request) => Ok(request),
+            None => result.and(Err("native parameter input was not admitted")),
+        }
     }
     pub(in crate::candidate_custody) fn withdraw_native_parameter_change(
         &self,
@@ -150,55 +171,180 @@ impl Custody {
         &self,
         binding: Binding,
         request: &crate::plugin_worker::NativeWorkerParameterChange,
-    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.poll_parameter_change(request),
-            Owner::Loaned(owner) => owner.poll_parameter_change(request),
-            _ => Err("native parameter input owner differs"),
-        })
+    ) -> Result<crate::plugin_worker::NativeParameterPoll, &'static str> {
+        self.parameter_terminal_receipt(
+            binding,
+            false,
+            || {},
+            |owner| match owner {
+                Owner::Effect(owner) => owner.poll_parameter_change(request),
+                Owner::Loaned(owner) => owner.poll_parameter_change(request),
+                _ => Err("native parameter input owner differs"),
+            },
+        )
     }
     pub(in crate::candidate_custody) fn drain_stopped_native_parameter_change(
         &self,
         binding: Binding,
         request: &crate::plugin_worker::NativeWorkerParameterChange,
-    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.drain_stopped_parameter_change(request),
-            Owner::Loaned(owner) => owner.drain_stopped_parameter_change(request),
-            _ => Err("native parameter input owner differs"),
-        })
+    ) -> Result<crate::plugin_worker::NativeParameterPoll, &'static str> {
+        self.parameter_terminal_receipt(
+            binding,
+            true,
+            || {},
+            |owner| match owner {
+                Owner::Effect(owner) => owner.drain_stopped_parameter_change(request),
+                Owner::Loaned(owner) => owner.drain_stopped_parameter_change(request),
+                _ => Err("native parameter input owner differs"),
+            },
+        )
+    }
+
+    // The worker can consume a terminal before the post-poll bank check sees
+    // close. Preserve that exact terminal as data, while marking its source
+    // invalid for any later canonical or publication admission.
+    fn parameter_terminal_receipt(
+        &self,
+        binding: Binding,
+        stopped: bool,
+        after_terminal: impl FnOnce(),
+        run: impl FnOnce(
+            &mut Owner,
+        )
+            -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str>,
+    ) -> Result<crate::plugin_worker::NativeParameterPoll, &'static str> {
+        use crate::plugin_worker::{
+            NativeParameterPoll as Poll, NativeWorkerParameterProgress as Progress,
+        };
+        let mut consumed = None;
+        let result = self.with_live_capture(binding, |owner| {
+            let progress = run(owner)?;
+            let poll = match progress {
+                Progress::Pending => Poll::Pending,
+                Progress::Failed if !stopped => Poll::TransportRevoked,
+                terminal => {
+                    consumed = Some(terminal);
+                    after_terminal();
+                    Poll::terminal(terminal)
+                }
+            };
+            Ok(poll)
+        });
+        match (result, consumed) {
+            (Err(reason), Some(terminal)) => Poll::terminal(terminal).source_closed(reason),
+            (result, _) => result,
+        }
     }
     pub(in crate::candidate_custody) fn begin_native_controller_query(
         &self,
         binding: Binding,
         query: hex_plugin_host::protocol::ParameterPageQuery,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.begin_controller_query(query),
-            Owner::Loaned(owner) => owner.begin_controller_query(query),
-            _ => Err("native controller owner differs"),
-        })
+        self.controller_query_admission(binding, query, || {})
+    }
+
+    fn controller_query_admission(
+        &self,
+        binding: Binding,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+        after_admission: impl FnOnce(),
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        let mut admitted = None;
+        let result = self.with_live_capture(binding, |owner| {
+            admitted = Some(match owner {
+                Owner::Effect(owner) => owner.begin_controller_query(query)?,
+                Owner::Loaned(owner) => owner.begin_controller_query(query)?,
+                _ => return Err("native controller owner differs"),
+            });
+            after_admission();
+            Ok(())
+        });
+        match admitted {
+            Some(request) => Ok(request),
+            None => result.and(Err("native controller query was not admitted")),
+        }
     }
     pub(in crate::candidate_custody) fn poll_native_controller_query(
         &self,
         binding: Binding,
         request: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerControllerProgress, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.poll_controller_query(request),
-            Owner::Loaned(owner) => owner.poll_controller_query(request),
-            _ => Err("native controller owner differs"),
-        })
+        self.controller_query_receipt(binding, request, || {})
+    }
+
+    fn controller_query_receipt(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerControllerQuery,
+        after_terminal: impl FnOnce(),
+    ) -> Result<NativeWorkerControllerProgress, &'static str> {
+        let mut consumed = false;
+        let result = self.with_live_capture(binding, |owner| {
+            let progress = match owner {
+                Owner::Effect(owner) => owner.poll_controller_query(request)?,
+                Owner::Loaned(owner) => owner.poll_controller_query(request)?,
+                _ => return Err("native controller owner differs"),
+            };
+            if !matches!(
+                progress,
+                NativeWorkerControllerProgress::Pending | NativeWorkerControllerProgress::Failed
+            ) {
+                consumed = true;
+                after_terminal();
+            }
+            Ok(progress)
+        });
+        match result {
+            Err(_) if consumed => Ok(NativeWorkerControllerProgress::Discarded),
+            result => result,
+        }
+    }
+    pub(in crate::candidate_custody) fn drain_stopped_native_controller_query(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<bool, &'static str> {
+        let mut drained = false;
+        let result = self.with_live_capture(binding, |owner| {
+            drained = match owner {
+                Owner::Effect(owner) => owner.drain_stopped_controller_query(request)?,
+                Owner::Loaned(owner) => owner.drain_stopped_controller_query(request)?,
+                _ => return Err("native controller owner differs"),
+            };
+            Ok(())
+        });
+        // Once consumed, a racing close cannot make the same token pending.
+        if drained {
+            Ok(true)
+        } else {
+            result.map(|()| false)
+        }
     }
     pub(in crate::candidate_custody) fn begin_live_native_capture(
         &self,
         binding: Binding,
     ) -> Result<NativeWorkerCapture, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.begin_state_capture(),
-            Owner::Loaned(owner) => owner.begin_state_capture(),
-            _ => Err("native capture owner differs"),
-        })
+        self.capture_admission(binding, || {})
+    }
+    fn capture_admission(
+        &self,
+        binding: Binding,
+        after_admission: impl FnOnce(),
+    ) -> Result<NativeWorkerCapture, &'static str> {
+        let mut admitted = None;
+        let result = self.with_live_capture(binding, |owner| {
+            admitted = Some(match owner {
+                Owner::Effect(owner) => owner.begin_state_capture()?,
+                Owner::Loaned(owner) => owner.begin_state_capture()?,
+                _ => return Err("native capture owner differs"),
+            });
+            after_admission();
+            Ok(())
+        });
+        match admitted {
+            Some(request) => Ok(request),
+            None => result.and(Err("native capture was not admitted")),
+        }
     }
     pub(in crate::candidate_custody) fn poll_live_native_capture(
         &self,
@@ -215,8 +361,17 @@ impl Custody {
         &self,
         binding: Binding,
         snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
-    ) -> Result<(), &'static str> {
-        self.with_live_capture(binding, |owner| {
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
+        self.stage_snapshot_receipt(binding, snapshot, || {})
+    }
+    fn stage_snapshot_receipt(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        after_stage: impl FnOnce(),
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
+        let mut staged = false;
+        let result = self.with_live_capture(binding, |owner| {
             let max_data = lock(&self.bank)
                 .sources
                 .limits
@@ -234,31 +389,82 @@ impl Custody {
                     owner.stage_state_snapshot(snapshot, max_data)
                 }
                 _ => Err("native snapshot owner differs"),
-            }
-        })
+            }?;
+            staged = true;
+            after_stage();
+            Ok(crate::plugin_worker::NativeSnapshotAction::Current)
+        });
+        match result {
+            Err(_) if staged => Ok(crate::plugin_worker::NativeSnapshotAction::SourceClosed),
+            result => result,
+        }
     }
     pub(in crate::candidate_custody) fn finalize_live_native_snapshot(
         &self,
         binding: Binding,
         snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
         accepted: bool,
-    ) -> Result<(), &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.finalize_state_snapshot(snapshot, accepted),
-            Owner::Loaned(owner) => owner.finalize_state_snapshot(snapshot, accepted),
-            _ => Err("native snapshot owner differs"),
-        })
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
+        self.finalize_snapshot_receipt(binding, snapshot, accepted, || {})
+    }
+    fn finalize_snapshot_receipt(
+        &self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        accepted: bool,
+        after_finalize: impl FnOnce(),
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
+        let mut finalized = false;
+        let result = self.with_live_capture(binding, |owner| {
+            match owner {
+                Owner::Effect(owner) => owner.finalize_state_snapshot(snapshot, accepted),
+                Owner::Loaned(owner) => owner.finalize_state_snapshot(snapshot, accepted),
+                _ => Err("native snapshot owner differs"),
+            }?;
+            finalized = true;
+            after_finalize();
+            Ok(crate::plugin_worker::NativeSnapshotAction::Current)
+        });
+        match result {
+            Err(_) if finalized => Ok(crate::plugin_worker::NativeSnapshotAction::SourceClosed),
+            result => result,
+        }
     }
     pub(in crate::candidate_custody) fn poll_live_native_snapshot(
         &self,
         binding: Binding,
         request: &NativeWorkerCapture,
     ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.poll_live_state_snapshot(request),
-            Owner::Loaned(owner) => owner.poll_live_state_snapshot(request),
-            _ => Err("native snapshot owner differs"),
-        })
+        self.snapshot_receipt(binding, request, || {})
+    }
+    fn snapshot_receipt(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerCapture,
+        after_terminal: impl FnOnce(),
+    ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
+        let mut consumed = false;
+        let result = self.with_live_capture(binding, |owner| {
+            let result = match owner {
+                Owner::Effect(owner) => owner.poll_live_state_snapshot(request)?,
+                Owner::Loaned(owner) => owner.poll_live_state_snapshot(request)?,
+                _ => return Err("native snapshot owner differs"),
+            };
+            if matches!(
+                result,
+                crate::plugin_worker::NativeWorkerStateSnapshotProgress::Captured(_)
+            ) {
+                consumed = true;
+                after_terminal();
+            }
+            Ok(result)
+        });
+        match result {
+            Err(_) if consumed => {
+                Ok(crate::plugin_worker::NativeWorkerStateSnapshotProgress::Discarded)
+            }
+            result => result,
+        }
     }
     pub(in crate::candidate_custody) fn matches_live_native_snapshot(
         &self,
@@ -374,6 +580,7 @@ impl Custody {
                 }
                 Err(owner) => {
                     cell.constructor_refused = true;
+                    cell.failure_stage = Some("native quiescent operation");
                     cell.owner = Some(Owner::Refused(owner));
                 }
             },
@@ -406,14 +613,16 @@ impl CandidateRoot {
         &self,
         binding: Binding,
         request: &crate::plugin_worker::NativeWorkerParameterChange,
-    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+    ) -> Result<crate::plugin_worker::NativeParameterPoll, &'static str> {
         self.require_native_source_control_open()?;
         let result = self
             .0
             .eligible
             .drain_stopped_native_parameter_change(binding, request)?;
-        self.require_native_source_control_open()?;
-        Ok(result)
+        match self.require_native_source_control_open() {
+            Ok(()) => Ok(result),
+            Err(reason) => result.source_closed(reason),
+        }
     }
     pub(crate) fn matches_native_accepted_state(
         &self,
@@ -457,7 +666,6 @@ impl CandidateRoot {
             .0
             .eligible
             .begin_native_parameter_change(binding, id, normalized)?;
-        self.require_native_source_control_open()?;
         Ok(result)
     }
     pub(crate) fn withdraw_native_parameter_change(
@@ -477,14 +685,16 @@ impl CandidateRoot {
         &self,
         binding: Binding,
         request: &crate::plugin_worker::NativeWorkerParameterChange,
-    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+    ) -> Result<crate::plugin_worker::NativeParameterPoll, &'static str> {
         self.require_native_source_control_open()?;
         let result = self
             .0
             .eligible
             .poll_native_parameter_change(binding, request)?;
-        self.require_native_source_control_open()?;
-        Ok(result)
+        match self.require_native_source_control_open() {
+            Ok(()) => Ok(result),
+            Err(reason) => result.source_closed(reason),
+        }
     }
     pub(crate) fn begin_native_controller_query(
         &self,
@@ -496,7 +706,6 @@ impl CandidateRoot {
             .0
             .eligible
             .begin_native_controller_query(binding, query)?;
-        self.require_native_source_control_open()?;
         Ok(result)
     }
     pub(crate) fn poll_native_controller_query(
@@ -509,8 +718,25 @@ impl CandidateRoot {
             .0
             .eligible
             .poll_native_controller_query(binding, request)?;
+        match self.require_native_source_control_open() {
+            Ok(()) => Ok(result),
+            Err(reason) => result.source_closed(reason),
+        }
+    }
+    pub(crate) fn drain_stopped_native_controller_query(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<bool, &'static str> {
         self.require_native_source_control_open()?;
-        Ok(result)
+        let drained = self
+            .0
+            .eligible
+            .drain_stopped_native_controller_query(binding, request)?;
+        if !drained {
+            self.require_native_source_control_open()?;
+        }
+        Ok(drained)
     }
     pub(crate) fn begin_live_native_capture(
         &self,
@@ -535,24 +761,34 @@ impl CandidateRoot {
         &self,
         binding: Binding,
         snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
-    ) -> Result<(), &'static str> {
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
         self.require_native_source_control_open()?;
-        self.0
+        let result = self
+            .0
             .eligible
             .stage_live_native_snapshot(binding, snapshot)?;
-        self.require_native_source_control_open()
+        if self.require_native_source_control_open().is_err() {
+            Ok(crate::plugin_worker::NativeSnapshotAction::SourceClosed)
+        } else {
+            Ok(result)
+        }
     }
     pub(crate) fn finalize_live_native_snapshot(
         &self,
         binding: Binding,
         snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
         accepted: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
         self.require_native_source_control_open()?;
-        self.0
+        let result = self
+            .0
             .eligible
             .finalize_live_native_snapshot(binding, snapshot, accepted)?;
-        self.require_native_source_control_open()
+        if self.require_native_source_control_open().is_err() {
+            Ok(crate::plugin_worker::NativeSnapshotAction::SourceClosed)
+        } else {
+            Ok(result)
+        }
     }
     pub(crate) fn poll_live_native_snapshot(
         &self,
@@ -564,8 +800,10 @@ impl CandidateRoot {
             .0
             .eligible
             .poll_live_native_snapshot(binding, request)?;
-        self.require_native_source_control_open()?;
-        Ok(result)
+        match self.require_native_source_control_open() {
+            Ok(()) => Ok(result),
+            Err(reason) => result.source_closed(reason),
+        }
     }
     pub(crate) fn matches_live_native_snapshot(
         &self,

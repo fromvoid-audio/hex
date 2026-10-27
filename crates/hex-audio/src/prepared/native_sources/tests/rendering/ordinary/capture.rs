@@ -4,6 +4,73 @@ use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn output_close_retains_consumed_snapshot_action_receipts() {
+    use crate::plugin_worker::{
+        NativeSnapshotAction, NativeWorkerStateSnapshotProgress as Progress,
+    };
+    let _serial = serial();
+    for action in 0..4 {
+        let mut f = fixture_at("processing", 0);
+        let request = begin(&mut f);
+        let until = Instant::now() + Duration::from_secs(3);
+        let snapshot = loop {
+            let status = Arc::clone(&f.control.status);
+            let result = f.control.poll_snapshot_receipt(f.binding, &request, || {
+                if action == 0 {
+                    status.closing.store(true, Release);
+                }
+            });
+            match result {
+                Ok(Progress::Discarded) if action == 0 => break None,
+                Ok(Progress::Captured(snapshot)) if action != 0 => break Some(snapshot),
+                Ok(Progress::Pending) | Err("native preparation is busy") => {}
+                other => panic!("snapshot close action {action}: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        if let Some(snapshot) = snapshot {
+            let status = Arc::clone(&f.control.status);
+            let staged = snapshot_action(|| {
+                let status = Arc::clone(&status);
+                f.control.stage_snapshot_receipt(f.binding, &snapshot, || {
+                    if action == 1 {
+                        status.closing.store(true, Release);
+                    }
+                })
+            })
+            .unwrap();
+            if action == 1 {
+                assert_eq!(staged, NativeSnapshotAction::SourceClosed);
+            } else {
+                assert_eq!(staged, NativeSnapshotAction::Current);
+                let status = Arc::clone(&f.control.status);
+                let finalized = snapshot_action(|| {
+                    let status = Arc::clone(&status);
+                    f.control
+                        .finalize_snapshot_receipt(f.binding, &snapshot, action == 3, || {
+                            status.closing.store(true, Release);
+                        })
+                })
+                .unwrap();
+                assert_eq!(finalized, NativeSnapshotAction::SourceClosed);
+            }
+            assert!(
+                f.control
+                    .matches_native_source_state_snapshot_on_control(f.binding, &snapshot)
+                    .is_err()
+            );
+        }
+        let returned = dispose(f);
+        assert!(matches!(
+            returned.disposal,
+            native::PreparationDisposal::Reaped(_)
+        ));
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn paused_original_source_flush_reinstalls_at_witnessed_position() {
     if std::env::var_os("HEX_PAUSED_PARAMETER_DRIVER").is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
@@ -26,6 +93,7 @@ fn paused_original_source_flush_reinstalls_at_witnessed_position() {
     for location in 0..3 {
         let mut f = fixture_at("processing", location);
         let canonical = f.editor.project().clone();
+        let accepted_baseline = f.control.native_source_prepared_state(f.binding).unwrap();
         let root = f.control.native_candidate_root();
         let playback = compile(&f, true);
         publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
@@ -141,6 +209,26 @@ fn paused_original_source_flush_reinstalls_at_witnessed_position() {
             )
         });
         epoch::on_control(|| f.control.start_native_effect(next));
+        // A stopped preview mutates the actual plugin but must not implicitly
+        // replace the registered canonical baseline used to compile its graph.
+        for (state, expected) in [(&accepted_baseline, true), (&flushed_state, false)] {
+            let until = Instant::now() + Duration::from_secs(3);
+            loop {
+                match f
+                    .control
+                    .native_source_matches_accepted_state_on_control(next, state)
+                {
+                    Ok(matches) => {
+                        assert_eq!(matches, expected);
+                        break;
+                    }
+                    Err("native preparation is busy") => {}
+                    Err(reason) => panic!("resumed baseline match: {reason}"),
+                }
+                assert!(Instant::now() < until, "resumed baseline match timed out");
+                std::thread::yield_now();
+            }
+        }
         let request = begin(&mut f);
         let until = Instant::now() + Duration::from_secs(3);
         let snapshot = loop {
@@ -246,7 +334,7 @@ fn paused_original_source_flush_reinstalls_at_witnessed_position() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn stopped_input_terminal_keeps_original_root_binding_until_drained() {
-    use crate::plugin_worker::NativeWorkerParameterProgress;
+    use crate::plugin_worker::{NativeParameterPoll, NativeWorkerParameterProgress};
     let _serial = serial();
     for location in 0..3 {
         let mut f = fixture_at("processing", location);
@@ -266,6 +354,18 @@ fn stopped_input_terminal_keeps_original_root_binding_until_drained() {
                 Ok(request) => break request,
                 Err("native preparation is busy" | "native parameter mailbox is busy") => {}
                 Err(error) => panic!("input admission: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        let controller_query = loop {
+            match f.control.begin_native_source_controller_query_on_control(
+                f.binding,
+                hex_plugin_host::protocol::ParameterPageQuery::default(),
+            ) {
+                Ok(query) => break query,
+                Err("native preparation is busy" | "native controller mailbox is busy") => {}
+                Err(error) => panic!("controller query admission: {error}"),
             }
             assert!(Instant::now() < until);
             std::thread::yield_now();
@@ -301,6 +401,35 @@ fn stopped_input_terminal_keeps_original_root_binding_until_drained() {
             });
         }
         let old = f.binding;
+        assert!(
+            f.control
+                .drain_stopped_native_source_controller_query_on_control(
+                    Binding {
+                        epoch: old.epoch + 1,
+                        ..old
+                    },
+                    &controller_query
+                )
+                .is_err()
+        );
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match f
+                .control
+                .drain_stopped_native_source_controller_query_on_control(old, &controller_query)
+            {
+                Ok(true) => break,
+                Ok(false) | Err("native preparation is busy") => {}
+                Err(error) => panic!("stopped controller query drain: {error}"),
+            }
+            assert!(Instant::now() < until, "original controller query terminal");
+            std::thread::yield_now();
+        }
+        assert!(
+            f.control
+                .drain_stopped_native_source_controller_query_on_control(old, &controller_query)
+                .is_err()
+        );
         let until = Instant::now() + Duration::from_secs(3);
         loop {
             match f.control.quiesce_native_source_preparation(old, old.graph) {
@@ -328,8 +457,13 @@ fn stopped_input_terminal_keeps_original_root_binding_until_drained() {
                 .control
                 .drain_stopped_native_source_parameter_change_on_control(old, &request)
             {
-                Ok(NativeWorkerParameterProgress::Withdrawn) => break,
-                Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {}
+                Ok(NativeParameterPoll::Terminal(receipt))
+                    if receipt.source_current()
+                        && receipt.progress() == NativeWorkerParameterProgress::Withdrawn =>
+                {
+                    break;
+                }
+                Ok(NativeParameterPoll::Pending) | Err("native preparation is busy") => {}
                 other => panic!("queued input must be withdrawn after actual stop: {other:?}"),
             }
             assert!(Instant::now() < until);
@@ -359,8 +493,54 @@ fn stopped_input_terminal_keeps_original_root_binding_until_drained() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_original_source() {
+fn abandoned_output_retains_queued_parameter_terminal_until_original_retirement() {
     use crate::plugin_worker::NativeWorkerParameterProgress;
+    let _serial = serial();
+    let mut f = fixture_at("processing", 2);
+    let original = f.editor.project().clone();
+    let root = f.control.native_candidate_root();
+    let playback = compile(&f, true);
+    publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+    f.control.command(PlaybackCommand::Play).unwrap();
+    block(&mut f);
+    replacement::wait_for_blocks(&root, f.binding, 1);
+    let until = Instant::now() + Duration::from_secs(3);
+    let request = loop {
+        match f
+            .control
+            .begin_native_source_parameter_change_on_control(f.binding, 7, 0.75)
+        {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native parameter mailbox is busy") => {}
+            Err(reason) => panic!("parameter admission: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    assert_eq!(f.editor.project(), &original);
+    let OrdinaryFixture {
+        control,
+        data,
+        errors,
+        retirement,
+        ..
+    } = f;
+    // This is the actual output's control abandonment path: it transfers the
+    // original callback returns to Root, without draining through a new output.
+    drop(control);
+    let mut retirement = close_backend(data, errors, retirement);
+    finish(&mut retirement);
+    assert_eq!(
+        request.poll_retirement_on_control().unwrap(),
+        NativeWorkerParameterProgress::Withdrawn
+    );
+    assert!(request.poll_retirement_on_control().is_err());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_original_source() {
+    use crate::plugin_worker::{NativeParameterPoll, NativeWorkerParameterProgress};
     if std::env::var_os("HEX_ORDINARY_HOST_INPUT_DRIVER").is_none() {
         let name = std::thread::current().name().unwrap().to_owned();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -453,8 +633,13 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
                 .control
                 .poll_native_source_parameter_change_on_control(f.binding, &request)
             {
-                Ok(NativeWorkerParameterProgress::Processed(value)) => break value,
-                Ok(NativeWorkerParameterProgress::Pending) | Err("native preparation is busy") => {}
+                Ok(NativeParameterPoll::Terminal(receipt)) if receipt.source_current() => {
+                    match receipt.progress() {
+                        NativeWorkerParameterProgress::Processed(value) => break value,
+                        other => panic!("unexpected input terminal: {other:?}"),
+                    }
+                }
+                Ok(NativeParameterPoll::Pending) | Err("native preparation is busy") => {}
                 other => panic!("original source host-input terminal: {other:?}"),
             }
             assert!(Instant::now() < until);
@@ -903,7 +1088,7 @@ fn actual_ordinary_track_return_main_host_input_capture_and_commit_reuse_origina
     }
 }
 
-fn snapshot_action(mut run: impl FnMut() -> Result<(), &'static str>) -> Result<(), &'static str> {
+fn snapshot_action<T>(mut run: impl FnMut() -> Result<T, &'static str>) -> Result<T, &'static str> {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
         match run() {

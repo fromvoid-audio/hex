@@ -65,6 +65,11 @@ impl Plugins {
         desired: Option<&CanonicalAudioSourceSnapshot>,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Option<Binding>, String> {
+        if let Some(binding) =
+            self.staged_gesture_binding(control, input, owner, device, state, cancellation)?
+        {
+            return Ok(Some(binding));
+        }
         let mut changed_state = false;
         if input.preparing_edit()
             && let Some(desired) = desired.filter(|source| {
@@ -244,7 +249,7 @@ impl Plugins {
                 control,
                 source,
             )?;
-            self.poll(output, desired.map(|source| source.context()));
+            self.poll(output, desired.map(|source| source.context()), cancellation);
             if let Some(ready) = ready {
                 return if ready.processing_eq(state) {
                     Ok(())

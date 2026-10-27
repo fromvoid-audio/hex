@@ -89,7 +89,7 @@ mod spectrum_multi_tests;
 #[cfg(test)]
 mod spectrum_profile;
 mod spectrum_stages;
-pub use applied_source::AppliedAudioSource;
+pub use applied_source::{AppliedAudioSource, AudioSourceObservation};
 pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
 mod ordinary_streaming;
 #[cfg(test)]
@@ -1130,6 +1130,10 @@ pub struct Callback {
     route_slot_visits: usize,
     #[cfg(test)]
     test_transient_handoff_refusals: usize,
+    // Headless fixture only: refuse one exact queued revision through the real
+    // callback rejection/return path, never from the production control lane.
+    #[cfg(feature = "allocation-probe")]
+    fixture_reject_revision: Option<u64>,
     #[cfg(all(test, feature = "allocation-probe"))]
     test_eligible_transfer_allowance: Option<usize>,
     #[cfg(test)]
@@ -1257,6 +1261,8 @@ pub fn channel_with_spectrum(
             route_slot_visits: 0,
             #[cfg(test)]
             test_transient_handoff_refusals: 0,
+            #[cfg(feature = "allocation-probe")]
+            fixture_reject_revision: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             test_eligible_transfer_allowance: None,
             #[cfg(test)]
@@ -2087,6 +2093,10 @@ impl PublicationControl {
 }
 
 impl Callback {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn fixture_reject_revision(&mut self, revision: u64) {
+        self.fixture_reject_revision = Some(revision);
+    }
     /// Construct an original whole-output transport profile before callback
     /// exposure. This does not admit a device, graph node or native worker.
     /// Native resource admission remains unavailable until device insertion
@@ -2884,6 +2894,13 @@ impl Callback {
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
+            };
+            #[cfg(feature = "allocation-probe")]
+            let stale_fence = if self.fixture_reject_revision == Some(next.revision) {
+                self.fixture_reject_revision = None;
+                Some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+            } else {
+                stale_fence
             };
             #[cfg(test)]
             if stale_fence.is_none()

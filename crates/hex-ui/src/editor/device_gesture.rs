@@ -165,13 +165,48 @@ impl EditorView {
     }
 
     pub(super) fn pump_device_gesture(&mut self) -> bool {
+        if let Some(request) = self.device_gesture.urgent_plugin_cancel() {
+            return match self
+                .service
+                .submit(Request::CancelPendingPluginParameter { request })
+            {
+                Ok(()) => {
+                    self.device_gesture.mark_urgent_plugin_cancel_submitted();
+                    true
+                }
+                Err(SubmitError::Full(_) | SubmitError::Busy(_)) => false,
+                Err(SubmitError::Closed(_)) => {
+                    self.device_gesture.reset();
+                    self.device_gesture_barriers.clear();
+                    self.effect_bus_barrier.custody = None;
+                    self.retire_tuning_library_device_terminal();
+                    self.refuse_deferred_tuning_writes();
+                    self.error = Some("project worker stopped".into());
+                    true
+                }
+            };
+        }
         let Some(gesture) = self.device_gesture.next_request() else {
             return false;
         };
-        match self.service.submit(Request::DeviceGesture(gesture)) {
+        let plugin_cancel = matches!(
+            gesture,
+            hex_session::device_gesture::GestureRequest::Cancel { .. }
+        ) && self
+            .device_gesture
+            .snapshot()
+            .is_some_and(|snapshot| snapshot.plugin_value.is_some());
+        let result = if plugin_cancel {
+            self.service.submit_plugin_cancel(gesture)
+        } else {
+            self.service.submit(Request::DeviceGesture(gesture))
+        };
+        match result {
             Ok(()) => {
                 self.device_gesture.mark_submitted();
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                if !plugin_cancel {
+                    self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                }
                 true
             }
             Err(SubmitError::Full(_)) => false,

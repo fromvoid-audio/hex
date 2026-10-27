@@ -16,6 +16,13 @@ mod capture;
 mod controller;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use controller::{NativeWorkerControllerProgress, NativeWorkerControllerQuery};
+/// Bounded copied controller observations used by the native audio consumer.
+/// These values carry no native pointers, source custody or edit authority.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use hex_plugin_host::protocol::{
+    ControllerParameter, ParameterConversion, ParameterConversionResult, ParameterConversionStatus,
+    ParameterPage, ParameterPageQuery, ParameterPlainValue, ParameterText,
+};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod edits;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -24,15 +31,16 @@ mod parameter_change;
 mod parameters;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use parameter_change::{
-    NativeWorkerParameterChange, NativeWorkerParameterProgress, ProcessedParameterChange,
+    NativeParameterPoll, NativeParameterTerminalReceipt, NativeWorkerParameterChange,
+    NativeWorkerParameterProgress, ProcessedParameterChange,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use capture::{
-    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerStateSnapshot,
-    NativeWorkerStateSnapshotProgress,
+    NativeSnapshotAction, NativeWorkerCapture, NativeWorkerCaptureProgress,
+    NativeWorkerStateSnapshot, NativeWorkerStateSnapshotProgress,
 };
 
 // Original completion allocation, shared only by joining control and worker.
@@ -566,13 +574,18 @@ impl NativeWorker {
             .worker
             .as_mut()
             .ok_or(Error::Protocol("native worker terminal missing"))?;
+        let healthy_input = joined.is_ok()
+            && state.native_error.is_none()
+            && matches!(state.processor, Some(Processor::Native(_)));
+        parameter_change::retain_retirement_terminal(&self.reaper.completed, state, healthy_input)
+            .map_err(Error::Protocol)?;
         let mut failure = state
             .native_error
             .take()
             .or_else(|| joined.err().map(|fault| Error::Protocol(fault.message())));
-        if failure.is_none() && state.capture.is_in_flight() {
-            // Retirement explicitly cancels this original outstanding capture;
-            // never send normal SDK Stop while main still owns its streams.
+        if failure.is_none() && (state.capture.is_in_flight() || state.controller.is_in_flight()) {
+            // Retirement explicitly cancels an outstanding original main-lane
+            // request rather than attempting SDK Stop while it is pending.
             failure = Some(Error::Cancelled);
         }
         let Some(Processor::Native(instance)) = state.processor.as_mut() else {

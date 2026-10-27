@@ -18,7 +18,7 @@ fn with_gain(state: &NativeDeviceState, gain: f32) -> NativeDeviceState {
     })
     .unwrap()
 }
-pub(super) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
+pub(in crate::native_audio::tests::plugins) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
     let end = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();
@@ -36,7 +36,7 @@ pub(super) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
         std::thread::yield_now();
     }
 }
-fn workers_idle(h: &ResidentHarness) {
+pub(in crate::native_audio::tests::plugins) fn workers_idle(h: &ResidentHarness) {
     wait(|| {
         h.callback
             .lock()

@@ -115,11 +115,9 @@ fn actual_root_missing_required_presentation_retains_refusal_instead_of_prepared
         Some(NativeSourcePreparationProgress::Retiring)
     );
     assert!(root.native_source_prepared_state(binding).is_none());
-    assert!(
-        root.native_source_error(binding)
-            .unwrap()
-            .contains("presentation")
-    );
+    let error = root.native_source_error(binding).unwrap();
+    assert!(error.starts_with("native instance completion: "));
+    assert!(error.contains("presentation"));
     assert!(root.complete_native_source(binding, None).is_err());
     dispose(&root, binding);
     let returned = root.recover_native_source(binding).unwrap();

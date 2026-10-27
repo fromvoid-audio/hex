@@ -521,7 +521,8 @@ fn actual_root_refused_native_request_retains_original_failure_through_cleanup()
     );
     assert!(
         root.native_source_error(binding)
-            .is_some_and(|error| error.contains("configuration"))
+            .is_some_and(|error| error.starts_with("native instance startup: ")
+                && error.contains("configuration"))
     );
     {
         let work = root.work.try_lock().unwrap();
@@ -561,6 +562,40 @@ fn actual_root_refused_native_request_retains_original_failure_through_cleanup()
     ));
     assert!(returned.cleanup_error.is_none());
     assert!(root.native_source_error(binding).is_none());
+    assert!(root.complete());
+}
+
+#[test]
+#[ignore = "original SDK fixture variant 27 and a fresh instance trace are required"]
+fn actual_root_startup_timeout_reports_stage_and_reaps_original_child() {
+    assert_eq!(
+        std::env::var("HEX_ORIGINAL_INSTANCE_VARIANT").as_deref(),
+        Ok("27")
+    );
+    let trace = PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_TRACE").unwrap());
+    assert!(!trace.exists(), "fixture trace must start absent");
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    let observed = std::fs::read(trace).unwrap();
+    assert_eq!(observed.len(), 56);
+    assert_eq!(i32::from_le_bytes(observed[..4].try_into().unwrap()), 8);
+    assert_eq!(
+        root.native_source_progress(binding),
+        Some(NativeSourcePreparationProgress::Retiring)
+    );
+    let error = root.native_source_error(binding).unwrap();
+    assert!(error.starts_with("native instance startup: "));
+    assert!(error.contains("timed out"));
+    dispose(&root, binding);
+    let returned = root.recover_native_source(binding).unwrap();
+    assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
+    assert!(matches!(
+        returned.error,
+        Some(hex_plugin_host::Error::Timeout)
+    ));
+    assert!(returned.cleanup_error.is_none());
     assert!(root.complete());
 }
 

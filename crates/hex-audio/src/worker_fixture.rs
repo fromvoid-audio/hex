@@ -9,6 +9,15 @@ pub struct HeadlessBackend {
     errors: Option<Guard<ErrorCallbackOwner>>,
 }
 impl HeadlessBackend {
+    /// Cause one exact queued graph to take the real callback refusal path.
+    /// The callback still returns the graph and emits its ordinary terminal.
+    pub fn reject_publication_on_callback(&mut self, revision: u64) -> bool {
+        let Some(owner) = self.data.as_mut().and_then(Guard::owner_mut) else {
+            return false;
+        };
+        owner.run(|callback, _| callback.fixture_reject_revision(revision));
+        true
+    }
     pub(crate) fn new(data: Guard<NativeCallbackOwner>, errors: Guard<ErrorCallbackOwner>) -> Self {
         Self {
             data: Some(data),
@@ -110,6 +119,28 @@ impl HeadlessBackend {
         let mut result = None;
         owner.run(|callback, _| result = callback.native_workers_idle_on_control());
         result
+    }
+    /// Diagnostic read on the headless control caller, outside any render probe.
+    #[cfg(all(
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    pub fn native_faults_on_control(
+        &mut self,
+    ) -> Option<Vec<(crate::plugin_effects::EffectBinding, Option<&'static str>)>> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut result = None;
+        owner.run(|callback, _| result = Some(callback.native_faults_on_control()));
+        result
+    }
+    #[cfg(all(
+        feature = "allocation-probe",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    pub fn native_partial_callback_on_control(&self) -> Option<(u32, u32)> {
+        hex_plugin_host::transport::test_partial_callback()
     }
     /// Hold original native Work on a separate test control thread. The
     /// callback entry ends before taking that exclusion; native state and its

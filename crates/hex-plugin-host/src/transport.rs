@@ -34,6 +34,16 @@ pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
 pub const QUEUE_CAPACITY: usize = 8;
 
+// Temporary bounded, allocation-free diagnostic for a physical-callback
+// coverage refusal in the real headless worker fixture.
+#[cfg(feature = "allocation-probe")]
+static TEST_PARTIAL_CALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "allocation-probe")]
+pub fn test_partial_callback() -> Option<(u32, u32)> {
+    let value = TEST_PARTIAL_CALLBACK.load(std::sync::atomic::Ordering::Relaxed);
+    (value != 0).then_some(((value >> 32) as u32, value as u32))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
     Configuration,
@@ -585,6 +595,11 @@ impl Callback {
             return self.fail(Fault::Protocol);
         };
         if stage.staged_frames != stage.expected_frames {
+            #[cfg(feature = "allocation-probe")]
+            TEST_PARTIAL_CALLBACK.store(
+                ((stage.staged_frames as u64) << 32) | stage.expected_frames as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             return self.fail(Fault::Protocol);
         }
         let remaining = MAX_PARAMETER_POINTS - stage.input_parameters;

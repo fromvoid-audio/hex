@@ -47,6 +47,8 @@ impl SessionPlayback {
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,
+            tail_input_arrivals: _,
+            tail_compensated_main: _,
             tail_output_active: _,
             tail_output_scratch: _,
             releases,

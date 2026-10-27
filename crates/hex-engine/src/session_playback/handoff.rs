@@ -85,6 +85,46 @@ fn tail_runtime_suffix_start(
     }
 }
 
+/// Read the suffix clock from its actual original graph before any owner moves.
+pub(super) fn track_suffix_input_arrival(
+    previous: &SessionPlayback,
+    track_index: usize,
+    suffix_start: usize,
+) -> Result<u32, SessionPlaybackError> {
+    let chain = previous
+        .device_chains
+        .get(track_index)
+        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+    if suffix_start > chain.len() {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
+    if suffix_start == chain.len() || previous.compensation.is_none() {
+        return Ok(0);
+    }
+    let graph = &previous
+        .compensation
+        .as_ref()
+        .ok_or(SessionPlaybackError::DeviceRuntime)?
+        .graph;
+    let track = graph
+        .tracks
+        .get(track_index)
+        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+    if track.devices.len() != chain.len() {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
+    let node = *track
+        .devices
+        .get(suffix_start)
+        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+    Ok(graph
+        .plan
+        .nodes()
+        .get(node)
+        .ok_or(SessionPlaybackError::DeviceRuntime)?
+        .input_arrival_frames)
+}
+
 #[derive(Clone, Copy)]
 struct MutableCandidateSpan {
     signature: crate::mutable_instrument::MutableOccurrenceSignature,
@@ -2667,6 +2707,7 @@ impl SessionPlayback {
         let mut old_track_tail_metadata: [Option<(usize, Option<hex_lattice::StereoMatrix>)>;
             MAX_TRACKS] = [None; MAX_TRACKS];
         let mut old_track_tail_output_active = [false; MAX_TRACKS];
+        let mut old_track_tail_arrivals = [0_u32; MAX_TRACKS];
         let mut tail_processor_count = 0_usize;
         let mut tail_runtime_bytes = 0_usize;
         // The existing retained-tail pool is shared by Track, Return and Main.
@@ -3115,6 +3156,8 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
                     .0;
                 validate_foreign_tail_sources(self, chain, start)?;
+                old_track_tail_arrivals[index] =
+                    track_suffix_input_arrival(previous, index, start)?;
             }
         }
 
@@ -3426,11 +3469,43 @@ impl SessionPlayback {
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
 
+        // A detached effect-only suffix can use the very same compensated
+        // track-to-Main edge when the complete pre-Main graph and clock
+        // history are compatible. It must never feed current sends or feeds.
+        // Mutable/source releases and already retained tails still require
+        // their own routing proof and remain under the existing guard.
+        let route_old_track_tails = clock_transfer != 0
+            && self
+                .compensation
+                .as_ref()
+                .zip(previous.compensation.as_ref())
+                .is_some_and(|(new, old)| {
+                    new.graph.needs_upstream_frame_routing()
+                        && new.graph.pre_main_compatible(&old.graph)
+                })
+            && !active_tail_groups.iter().any(|active| *active)
+            && !old_track_mutable_tail_slots.iter().any(Option::is_some)
+            && old_track_tail_slots
+                .iter()
+                .enumerate()
+                .all(|(index, slot)| {
+                    let Some(slot) = *slot else {
+                        return true;
+                    };
+                    previous.routes.get(index).is_some_and(|old_route| {
+                        self.routes
+                            .get(index)
+                            .is_some_and(|new_route| new_route.id == old_route.id)
+                    }) && !self
+                        .release_scratch
+                        .iter()
+                        .any(|release| release.location.tail_group().map(usize::from) == Some(slot))
+                });
         if (self.revision.arrangement().main_latency_frames() > 0
             || previous.revision.arrangement().main_latency_frames() > 0)
             && (return_tail_plan.captures_bus()
                 || old_track_mutable_tail_slots.iter().any(Option::is_some)
-                || old_track_tail_slots.iter().any(Option::is_some)
+                || (old_track_tail_slots.iter().any(Option::is_some) && !route_old_track_tails)
                 || previous.tail_output_active.iter().any(|&active| active)
                 || previous
                     .return_effect_tails
@@ -3670,6 +3745,8 @@ impl SessionPlayback {
                 ) {
                     *candidate_matrix = previous_matrix;
                 }
+                self.tail_input_arrivals[slot] = previous.tail_input_arrivals[slot];
+                self.tail_compensated_main[slot] = previous.tail_compensated_main[slot];
                 if previous
                     .tail_mutable_instruments
                     .get(slot)
@@ -3698,6 +3775,8 @@ impl SessionPlayback {
                     hex_lattice::NativeRuntimeChain::empty(),
                 ));
                 self.tail_track_ids[slot] = previous.routes.get(old_index).map(|route| route.id);
+                self.tail_input_arrivals[slot] = old_track_tail_arrivals[old_index];
+                self.tail_compensated_main[slot] = route_old_track_tails;
                 if let (Some(active), Some(prepared_active)) = (
                     self.tail_output_active.get_mut(slot),
                     old_track_tail_output_active.get(old_index).copied(),

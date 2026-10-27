@@ -125,6 +125,26 @@ fn actual_worker_controller_pages_share_capture_reader_and_preserve_stopped_sour
         owner.poll_controller_query_on_control(&late).unwrap(),
         NativeWorkerControllerProgress::Failed
     ));
+    assert!(
+        other
+            .drain_stopped_controller_query_on_control(&late)
+            .is_err()
+    );
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        match owner.drain_stopped_controller_query_on_control(&late) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(error) => panic!("original revoked controller drain: {error}"),
+        }
+        assert!(Instant::now() < until, "original controller drain terminal");
+        thread::yield_now();
+    }
+    assert!(
+        owner
+            .drain_stopped_controller_query_on_control(&late)
+            .is_err()
+    );
     let stopped = query(&mut owner);
     assert!(owner.poll_controller_query_on_control(&late).is_err());
     let stopped_page = page(&mut owner, &stopped);
@@ -140,6 +160,45 @@ fn actual_worker_controller_pages_share_capture_reader_and_preserve_stopped_sour
     assert_eq!(quiescent.child_id_on_control(), child);
     assert_eq!(quiescent.completed_blocks(), 1);
     assert!(quiescent.retire_on_control().unwrap().status.success());
+    assert!(!late.original_worker_released_on_control());
+    drop(owner);
+    assert!(late.original_worker_released_on_control());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_worker_retirement_cancels_held_controller_query_through_original_lease() {
+    const NAME: &str = "plugin_worker::capture::tests::controller::actual_worker_retirement_cancels_held_controller_query_through_original_lease";
+    if fixture_child(93, NAME) {
+        return;
+    }
+    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let request = query(&mut owner);
+    let until = Instant::now() + Duration::from_secs(3);
+    while fs::read(trace_path()).ok().is_none_or(|bytes| {
+        bytes.len() != 56 || i32::from_le_bytes(bytes[..4].try_into().unwrap()) != 26
+    }) {
+        assert!(Instant::now() < until, "actual held controller getter");
+        thread::sleep(Duration::from_millis(1));
+    }
+    callback_block(&owner, &mut callback, 0);
+    owner.revoke_on_control();
+    assert!(matches!(
+        owner.poll_controller_query_on_control(&request).unwrap(),
+        NativeWorkerControllerProgress::Failed
+    ));
+    let retired = owner.retire_on_control().unwrap();
+    assert!(
+        matches!(retired.failure, Some(Error::Cancelled)),
+        "{:?}",
+        retired.failure
+    );
+    assert_eq!(retired.native.status.code(), Some(9));
+    assert!(retired.native.terminal.is_none());
+    assert!(owner.owns_callback(&callback));
+    assert!(!request.original_worker_released_on_control());
+    drop(owner);
+    assert!(request.original_worker_released_on_control());
 }
 
 #[test]

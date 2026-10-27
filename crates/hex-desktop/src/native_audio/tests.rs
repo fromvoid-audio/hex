@@ -1648,9 +1648,257 @@ fn generated_100_track_project_uses_actual_verified_service_and_callback() {
 }
 
 #[test]
+fn retired_publication_receipt_uses_old_callback_terminal_after_fresh_lease() {
+    use hex_session::service::{
+        ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+        ResidentPublicationReceipt, ResidentPublicationTerminal,
+    };
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let open = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match hex_audio::worker_fixture::open(48_000) {
+                Ok(pair) => break pair,
+                Err(error) if error == "audio output is open or still shutting down" => {}
+                Err(error) => panic!("{error}"),
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    for case in ["unapplied", "applied", "refused"] {
+        let (mut output, mut backend) = open();
+        output
+            .publication
+            .control()
+            .unwrap()
+            .configure_device_resource_publication_on_control(
+                AudioPolicy::new().unwrap().resident_native.storage,
+            )
+            .unwrap();
+        let context = AudioSourceContext {
+            project_generation: 7,
+            editor_revision: 3,
+        };
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &hex_project::Project::new(48_000).unwrap(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let playback =
+            hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&prepared))
+                .unwrap();
+        let observation = Arc::new(
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap(),
+        );
+        let metadata = ResidentPublicationMetadata {
+            context,
+            device_preview: None,
+            tuning_preview: None,
+            seek_request: None,
+            stopped_restore: false,
+            computer_keyboard_request: None,
+            gain_recording_track: None,
+            requires_preroll: false,
+        };
+        let (events, _receiver) = mpsc::sync_channel(8);
+        let mut sink = NativeAudioSink::new(events);
+        sink.output = Some(output);
+        let mut admit =
+            |_: &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>]| Ok(());
+        let ResidentPublicationAcceptance::Submitted {
+            output_identity,
+            audio_revision,
+        } = sink
+            .publish_resident_graph(
+                playback,
+                None,
+                observation,
+                metadata,
+                ResidentPublicationPolicy::InheritRuntime,
+                0,
+                &mut admit,
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("expected submitted graph")
+        };
+        let receipt = ResidentPublicationReceipt {
+            output_identity,
+            audio_revision,
+            context,
+        };
+        if case == "refused" {
+            assert!(backend.reject_publication_on_callback(audio_revision));
+        }
+        if case != "unapplied" {
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        sink.relinquish_output();
+        assert_eq!(
+            sink.poll_resident_publication_terminal(receipt),
+            ResidentPublicationTerminal::Indeterminate
+        );
+        backend.close();
+        let (mut fresh, mut fresh_backend) = open();
+        assert_ne!(
+            fresh.publication.control().unwrap().output_identity(),
+            Some(output_identity)
+        );
+        sink.output = Some(fresh);
+        let expected = match case {
+            "unapplied" => ResidentPublicationTerminal::OutputClosedUnapplied,
+            "applied" => ResidentPublicationTerminal::OutputClosedApplied,
+            _ => ResidentPublicationTerminal::OutputClosedRefused(
+                hex_engine::playback::PlaybackHandoffRejection::RuntimeFenceChanged,
+            ),
+        };
+        assert_eq!(
+            sink.poll_resident_publication_terminal(receipt),
+            expected,
+            "{case}"
+        );
+        assert_eq!(
+            sink.poll_resident_publication_terminal(ResidentPublicationReceipt {
+                context: AudioSourceContext {
+                    editor_revision: context.editor_revision + 1,
+                    ..context
+                },
+                ..receipt
+            }),
+            ResidentPublicationTerminal::Indeterminate
+        );
+        sink.relinquish_output();
+        fresh_backend.close();
+    }
+}
+
+#[test]
+fn retained_graph_identity_follows_exact_retry_to_callback() {
+    use hex_session::service::{
+        ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+        ResidentPublicationTerminal, ResidentRetainedReceipt,
+    };
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let context = AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &hex_project::Project::new(48_000).unwrap(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let graph = || {
+        hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&prepared))
+            .unwrap()
+    };
+    let observation = || {
+        Arc::new(hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap())
+    };
+    let metadata = ResidentPublicationMetadata {
+        context,
+        device_preview: None,
+        tuning_preview: None,
+        seek_request: None,
+        stopped_restore: false,
+        computer_keyboard_request: None,
+        gain_recording_track: None,
+        requires_preroll: false,
+    };
+    let (events, _receiver) = mpsc::sync_channel(8);
+    let mut sink = NativeAudioSink::new(events);
+    let mut admit = |_: &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>]| Ok(());
+    for _ in 0..2 {
+        assert!(matches!(
+            sink.publish_resident_graph(
+                graph(),
+                None,
+                observation(),
+                metadata,
+                ResidentPublicationPolicy::InheritRuntime,
+                0,
+                &mut admit,
+                None
+            )
+            .unwrap(),
+            ResidentPublicationAcceptance::OfflineRetained
+        ));
+        let current = sink.retained_resident_publication(context).unwrap();
+        if current.id == 1 {
+            assert_eq!(
+                sink.poll_retained_resident_publication(current),
+                ResidentPublicationTerminal::Pending
+            );
+        }
+    }
+    let current = sink.retained_resident_publication(context).unwrap();
+    assert_eq!(
+        sink.poll_retained_resident_publication(ResidentRetainedReceipt {
+            id: current.id - 1,
+            ..current
+        }),
+        ResidentPublicationTerminal::Indeterminate
+    );
+    assert_eq!(
+        sink.poll_retained_resident_publication(ResidentRetainedReceipt {
+            context: AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            ..current
+        }),
+        ResidentPublicationTerminal::Indeterminate
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut output, mut backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(pair) => break pair,
+            Err(error) if error == "audio output is open or still shutting down" => {}
+            Err(error) => panic!("{error}"),
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let policy = AudioPolicy::new().unwrap();
+    output
+        .publication
+        .control()
+        .unwrap()
+        .configure_device_resource_publication_on_control(policy.resident_native.storage)
+        .unwrap();
+    sink.output = Some(output);
+    sink.retry_resident_pending(&mut admit);
+    assert_eq!(
+        sink.poll_retained_resident_publication(current),
+        ResidentPublicationTerminal::Pending
+    );
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(
+        sink.poll_retained_resident_publication(current),
+        ResidentPublicationTerminal::Applied
+    );
+    sink.relinquish_output();
+    assert_eq!(
+        sink.poll_retained_resident_publication(current),
+        ResidentPublicationTerminal::Indeterminate
+    );
+}
+
+#[test]
 fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_events_are_full() {
     use hex_session::service::{
         ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+        ResidentPublicationReceipt, ResidentPublicationTerminal,
     };
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1722,6 +1970,25 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
     else {
         panic!("active publication")
     };
+    let first_receipt = ResidentPublicationReceipt {
+        output_identity,
+        audio_revision: first,
+        context,
+    };
+    assert_eq!(
+        sink.poll_resident_publication_terminal(first_receipt),
+        ResidentPublicationTerminal::Pending
+    );
+    assert_eq!(
+        sink.poll_resident_publication_terminal(ResidentPublicationReceipt {
+            context: AudioSourceContext {
+                editor_revision: context.editor_revision + 1,
+                ..context
+            },
+            ..first_receipt
+        }),
+        ResidentPublicationTerminal::Indeterminate
+    );
     sink.flush_events(); // The bounded channel is occupied by the first exact submission.
     // The real publication lane permits one pending graph; install it while deliberately
     // leaving its scalar observation in the full UI channel before submitting the successor.
@@ -1735,6 +2002,10 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             measured.bytes_current
         ),
         (0, 0, 0, 0)
+    );
+    assert_eq!(
+        sink.poll_resident_publication_terminal(first_receipt),
+        ResidentPublicationTerminal::Applied
     );
     sink.output
         .as_mut()
@@ -1767,6 +2038,18 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
         panic!("active publication")
     };
     assert_ne!(first, second);
+    let second_receipt = ResidentPublicationReceipt {
+        audio_revision: second,
+        ..first_receipt
+    };
+    assert_eq!(
+        sink.poll_resident_publication_terminal(second_receipt),
+        ResidentPublicationTerminal::Pending
+    );
+    assert_eq!(
+        sink.poll_resident_publication_terminal(first_receipt),
+        ResidentPublicationTerminal::Indeterminate
+    );
     sink.observe(context, "preparing", EditorPublicationState::Preparing);
     sink.observe(context, "busy", EditorPublicationState::Busy);
     let candidate = graph();
@@ -1845,7 +2128,80 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             .unwrap()
             .reclaim();
     }
+    assert_eq!(
+        sink.poll_resident_publication_terminal(second_receipt),
+        ResidentPublicationTerminal::Applied
+    );
     drop(refused);
+    let fence = sink
+        .output
+        .as_mut()
+        .unwrap()
+        .publication
+        .control()
+        .unwrap()
+        .capture_fresh_runtime_fence()
+        .unwrap();
+    let fence = hex_session::service::ResidentFreshRuntimeFence {
+        output_identity,
+        active_audio_revision: fence.expected_active_revision(),
+        route_generation: fence.route_state_generation(),
+        admitted_command_ticket: fence.admitted_command_ticket(),
+    };
+    let ResidentPublicationAcceptance::Submitted {
+        audio_revision: cancelled,
+        ..
+    } = sink
+        .publish_resident_graph(
+            graph(),
+            None,
+            Arc::clone(&view),
+            second_metadata,
+            ResidentPublicationPolicy::FreshIfUnchanged(fence),
+            0,
+            &mut admit,
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("conditional publication")
+    };
+    let cancelled_receipt = ResidentPublicationReceipt {
+        audio_revision: cancelled,
+        ..first_receipt
+    };
+    assert_eq!(
+        sink.poll_resident_publication_terminal(cancelled_receipt),
+        ResidentPublicationTerminal::Pending
+    );
+    let client = sink.output.as_mut().unwrap().take_client().unwrap();
+    client.stop();
+    backend.render(&mut pcm).unwrap();
+    assert_eq!(
+        sink.poll_resident_publication_terminal(cancelled_receipt),
+        ResidentPublicationTerminal::Refused(
+            hex_engine::playback::PlaybackHandoffRejection::RuntimeFenceChanged
+        )
+    );
+    assert_eq!(
+        sink.poll_resident_publication_terminal(ResidentPublicationReceipt {
+            context: AudioSourceContext {
+                editor_revision: context.editor_revision + 1,
+                ..context
+            },
+            ..cancelled_receipt
+        }),
+        ResidentPublicationTerminal::Indeterminate
+    );
+    sink.output
+        .as_mut()
+        .unwrap()
+        .publication
+        .control()
+        .unwrap()
+        .reclaim();
+    sink.flush_events();
+    drop(receiver.try_recv().unwrap());
     // Returned audio graphs do not retire a telemetry view still held by a UI consumer. Fill
     // the existing three observation rows, refuse intact, then release one actual external
     // owner and prove control reaps just that row without raising the production bound.
@@ -1912,6 +2268,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
         .unwrap(),
         ResidentPublicationAcceptance::Submitted { .. }
     ));
+    drop(client);
     sink.close();
     drop(backend);
 }

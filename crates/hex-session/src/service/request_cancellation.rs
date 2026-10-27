@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicU64;
 pub(super) struct QueuedRequest {
     pub request: Request,
     pub document_intent: u64,
+    pub fifo_completion: bool,
     pub diagnostic: Option<super::diagnostics::DiagnosticRequest>,
     pub diagnostic_origin: super::diagnostics::DiagnosticOrigin,
 }
@@ -15,6 +16,7 @@ impl QueuedRequest {
         Self {
             request,
             document_intent: intent.load(Ordering::Acquire),
+            fifo_completion: false,
             diagnostic: None,
             diagnostic_origin: super::diagnostics::DiagnosticOrigin::Continuation,
         }
@@ -64,6 +66,18 @@ impl Sender {
             single_producer: std::marker::PhantomData,
         }
     }
+    pub(super) fn intent(&self) -> u64 {
+        self.document_intent.load(Ordering::Acquire)
+    }
+
+    // Wake a worker sleeping on the ordinary FIFO. A full FIFO already wakes
+    // it; this internal continuation never completes a submitted request.
+    pub(super) fn wake_plugin_terminal(&self) {
+        let _ = self.channel.try_send(QueuedRequest::continuation(
+            Request::ContinuePluginParameterGesture,
+            &self.document_intent,
+        ));
+    }
     #[allow(clippy::result_large_err)] // Exact original request on bounded admission refusal.
     #[cfg(test)]
     pub(super) fn submit(&self, request: Request) -> Result<(), SubmitError> {
@@ -95,6 +109,7 @@ impl Sender {
         match self.channel.try_send(QueuedRequest {
             request,
             document_intent: intent,
+            fifo_completion: true,
             diagnostic,
             diagnostic_origin: super::diagnostics::DiagnosticOrigin::Submitted,
         }) {

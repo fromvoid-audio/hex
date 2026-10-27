@@ -172,7 +172,7 @@ pub use session::{
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
-pub use history::Editor;
+pub use history::{Editor, PreparedPluginState};
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{
     MidiClip, MidiClipTrim, MidiContent, MidiNote, MidiOneShotBoundary, MidiSource,

@@ -286,7 +286,8 @@ fn complete_snapshot(
     loop {
         match owner.poll_live_state_snapshot_on_control(request).unwrap() {
             NativeWorkerStateSnapshotProgress::Captured(snapshot) => return snapshot,
-            NativeWorkerStateSnapshotProgress::Failed => panic!("snapshot failed"),
+            NativeWorkerStateSnapshotProgress::Failed
+            | NativeWorkerStateSnapshotProgress::Discarded => panic!("snapshot failed"),
             NativeWorkerStateSnapshotProgress::Pending => {
                 assert!(Instant::now() < until);
                 thread::yield_now();
@@ -369,6 +370,10 @@ fn actual_worker_snapshot_retains_original_capture_provenance_without_source_aut
         assert!(Instant::now() < until);
         thread::yield_now();
     }
+    assert!(
+        changed_intent.poll_retirement_on_control().is_err(),
+        "an already consumed live terminal must not remain pending or repeat at retirement"
+    );
     assert!(
         owner.state_snapshot_approval_on_control(&latest).is_err(),
         "withdrawal cannot retag a captured SDK result"

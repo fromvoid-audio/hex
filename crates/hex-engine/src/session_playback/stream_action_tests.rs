@@ -355,7 +355,47 @@ fn quantized_action_projects_original_due_across_real_loop_wrap_then_matches_act
         .unwrap();
     assert_eq!(early, projected);
     actual
-        .render_with_pages(&mut vec![[0.0; 2]; (due - 8) as usize], &mut pages())
+        .render_with_pages(&mut vec![[0.0; 2]; (due - 12) as usize], &mut pages())
+        .unwrap();
+    let before_callback = (
+        actual.position(),
+        actual.performance_frame(),
+        actual.session_route_status(0),
+    );
+    let mut callback_demand = Vec::new();
+    let context = crate::AudioSourceContext {
+        project_generation: 1,
+        editor_revision: 1,
+    };
+    let full = actual
+        .stream_playback(context)
+        .visit_stream_callback(12, None, &mut |row| {
+            callback_demand.push(row);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(full.frames, 12);
+    assert_eq!(
+        (
+            actual.position(),
+            actual.performance_frame(),
+            actual.session_route_status(0)
+        ),
+        before_callback
+    );
+    for row in &projected {
+        assert!(
+            callback_demand
+                .iter()
+                .any(|planned| planned.source == row.source
+                    && planned.page_index == row.page_index
+                    && planned.start <= row.start
+                    && planned.end >= row.end),
+            "callback must cover scheduled clip after loop wrap: {row:?}"
+        );
+    }
+    actual
+        .render_with_pages(&mut [[0.0; 2]; 4], &mut pages())
         .unwrap();
     assert_eq!(actual.performance_frame(), due);
     assert!(actual.session_route_status(0).unwrap().pending.is_some());

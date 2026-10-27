@@ -61,6 +61,7 @@ impl Custody {
                     }
                     Err(owner) => {
                         cell.constructor_refused = true;
+                        cell.failure_stage = Some("native effect worker startup");
                         cell.owner = Some(Owner::WorkerRefused(owner));
                     }
                 }

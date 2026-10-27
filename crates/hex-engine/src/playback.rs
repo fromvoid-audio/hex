@@ -204,6 +204,14 @@ pub enum PlaybackHandoffError {
     FreshRuntimeCancelled,
 }
 
+// Test-only, allocation-free classifier for headless handoff diagnosis.
+#[cfg(feature = "instrument-test-support")]
+static TEST_HANDOFF_FAILURE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "instrument-test-support")]
+pub fn test_handoff_failure_code() -> u32 {
+    TEST_HANDOFF_FAILURE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Compact truthful category for asynchronous callback handoff refusals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -1608,10 +1616,85 @@ impl Playback {
         generation: Option<u64>,
         previous_generation: Option<u64>,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(
+        let result = self.try_inherit_runtime_impl(
             previous,
             generation.is_some() && generation == previous_generation,
-        )
+        );
+        #[cfg(feature = "instrument-test-support")]
+        if let Err(error) = result {
+            let code = match error {
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::DeviceRuntime) => 1,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::ForeignTailSourceBusy,
+                ) => 2,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::CandidateAlreadyUsed,
+                ) => 3,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand) => 4,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::ReleaseBankFull) => 5,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentChase,
+                ) => 6,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::Arrangement(reason)) => {
+                    reason.bytes().fold(2_166_136_261_u32, |hash, byte| {
+                        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+                    }) | 0x8000_0000
+                }
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentDiagnostic(_),
+                ) => 10,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentRuntime,
+                ) => 11,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentEvents,
+                ) => 12,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentLoopUnsupported,
+                ) => 13,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentLoopDensity,
+                ) => 14,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentActive,
+                ) => 15,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentLoopBoundsActive,
+                ) => 16,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MutableInstrumentRouteBoundary,
+                ) => 17,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::SharedAnalyticContext,
+                ) => 18,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::MediaPagesUnavailable,
+                ) => 19,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::Capture(_)) => 20,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::RevisionTrackMismatch,
+                ) => 21,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::RevisionSampleRateMismatch,
+                ) => 22,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::Allocation) => 23,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::UnknownTrack) => 24,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::UnknownScene) => 25,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::UnknownClip) => 26,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::ClipTrackMismatch) => 27,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::ArithmeticOverflow) => {
+                    28
+                }
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::TempoConversion) => 29,
+                PlaybackHandoffError::Session(
+                    crate::SessionPlaybackError::SessionTempoUnavailable(_),
+                ) => 30,
+                PlaybackHandoffError::Session(crate::SessionPlaybackError::Midi(_)) => 31,
+                _ => 8,
+            };
+            TEST_HANDOFF_FAILURE.store(code, std::sync::atomic::Ordering::Relaxed);
+        }
+        result
     }
 
     fn try_inherit_runtime_impl(
@@ -2041,6 +2124,28 @@ impl Playback {
             .as_ref()
             .ok_or(Invalid("ordinary session runtime unavailable"))?
             .visit_ordinary_stream_chunk(maximum_frames, playing, visit)
+    }
+    pub(crate) fn visit_ordinary_stream_callback(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("ordinary session runtime unavailable"))?
+            .visit_ordinary_stream_callback(maximum_frames, playing, visit)
+    }
+    pub(crate) fn visit_stream_callback(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("candidate session runtime unavailable"))?
+            .visit_stream_callback(maximum_frames, playing, visit)
     }
     pub(crate) fn preview_stream_handoff(
         &mut self,

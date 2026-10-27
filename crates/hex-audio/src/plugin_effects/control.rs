@@ -99,6 +99,13 @@ impl NativeEffect {
     ) -> Result<NativeWorkerControllerProgress, &'static str> {
         self.worker.poll_controller_query_on_control(request)
     }
+    pub(crate) fn drain_stopped_controller_query(
+        &mut self,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<bool, &'static str> {
+        self.worker
+            .drain_stopped_controller_query_on_control(request)
+    }
     pub(crate) fn parameter_values(
         &self,
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
@@ -225,6 +232,13 @@ impl NativeEffectControl {
         request: &NativeWorkerControllerQuery,
     ) -> Result<NativeWorkerControllerProgress, &'static str> {
         self.worker.poll_controller_query_on_control(request)
+    }
+    pub(crate) fn drain_stopped_controller_query(
+        &mut self,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<bool, &'static str> {
+        self.worker
+            .drain_stopped_controller_query_on_control(request)
     }
     pub(crate) fn parameter_values(
         &self,

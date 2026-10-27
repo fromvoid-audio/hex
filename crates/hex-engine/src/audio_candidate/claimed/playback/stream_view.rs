@@ -162,6 +162,21 @@ impl StreamPlayback<'_> {
             }
         }
     }
+    /// Enumerate a complete physical callback before any DSP advances. The
+    /// constructor retains its phase and closed-family checks.
+    pub fn visit_stream_callback(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, Invalid> {
+        match &self.runtime {
+            Runtime::Ordinary(r, _) => {
+                r.visit_ordinary_stream_callback(maximum_frames, playing, visit)
+            }
+            Runtime::Constructor(r) => r.visit_stream_callback(maximum_frames, playing, visit),
+        }
+    }
     pub fn preview_stream_handoff(
         &mut self,
         previous: &mut StreamPlayback<'_>,

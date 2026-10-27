@@ -461,6 +461,11 @@ pub struct SessionPlayback {
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
     tail_suffix_matrices: Vec<Option<hex_lattice::StereoMatrix>>,
+    // The original input clock of each retained suffix; inline storage is
+    // included in the complete SessionPlayback reservation.
+    tail_input_arrivals: [u32; SESSION_TAIL_GROUP_CAPACITY],
+    // True only when preflight proved the original track Main edge survives.
+    tail_compensated_main: [bool; SESSION_TAIL_GROUP_CAPACITY],
     tail_output_active: [bool; SESSION_TAIL_GROUP_CAPACITY],
     tail_output_scratch: [bool; SESSION_TAIL_GROUP_CAPACITY],
     releases: Vec<ReleaseEntry>,
@@ -842,6 +847,8 @@ impl SessionPlayback {
             tail_mixes: _,
             tail_suffix_starts: _,
             tail_suffix_matrices: _,
+            tail_input_arrivals: _,
+            tail_compensated_main: _,
             tail_output_active: _,
             tail_output_scratch: _,
             releases: _,
@@ -1873,6 +1880,8 @@ impl SessionPlayback {
             tail_mixes,
             tail_suffix_starts,
             tail_suffix_matrices,
+            tail_input_arrivals: [0; SESSION_TAIL_GROUP_CAPACITY],
+            tail_compensated_main: [false; SESSION_TAIL_GROUP_CAPACITY],
             tail_output_active: [false; SESSION_TAIL_GROUP_CAPACITY],
             tail_output_scratch: [false; SESSION_TAIL_GROUP_CAPACITY],
             releases,

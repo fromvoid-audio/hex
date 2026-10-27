@@ -1223,6 +1223,15 @@ pub(super) fn request(value: &Request) -> Description {
         }
         Request::InsertPluginEffect(_) => describe!("insert_plugin_effect"; []; omitted="value0"),
         Request::ContinuePluginEffect => describe!("continue_plugin_effect"; []; omitted=""),
+        Request::ContinuePluginParameterGesture => {
+            describe!("continue_plugin_parameter_gesture"; []; omitted="")
+        }
+        Request::ContinuePluginHistory => {
+            describe!("continue_plugin_history"; []; omitted="")
+        }
+        Request::CancelPendingPluginParameter { request } => {
+            describe!("cancel_pending_plugin_parameter"; ["key_generation" => request.key().generation, "key_token" => request.key().token, "sequence" => request.sequence()]; omitted="")
+        }
         Request::ContinuePluginStateRestore => {
             describe!("continue_plugin_state_restore"; []; omitted="")
         }

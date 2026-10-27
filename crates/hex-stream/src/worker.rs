@@ -232,6 +232,8 @@ pub(crate) fn run_worker(
             continue;
         };
         let source = &mut sources[source_index];
+        #[cfg(feature = "test-support")]
+        crate::test_control::hold_if_selected(&source.definition.path, key.page_index, &stop);
         match render_page(source, key, &mut page, &mut source_scratch, &stop) {
             Ok(()) => {
                 match queues.ready.push(page) {

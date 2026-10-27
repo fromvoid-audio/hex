@@ -171,6 +171,15 @@ impl NativeAudioSink {
     }
     fn relinquish_output(&mut self) {
         self.plugins.output_closed();
+        if let Some(tag) = self.resident.current_submission
+            && let Some(control) = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+            && control.output_identity() == Some(tag.output_identity)
+        {
+            self.resident.retired_submission = Some((tag, Arc::clone(&control.status)));
+        }
         // Publication/StreamOwner relinquish before any event can backpressure.
         // All accepted construction stays inside Root's terminal/lifecycle book.
         self.retain_relinquished_output();
@@ -859,6 +868,309 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn retry_refused_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        use hex_session::service::{
+            ResidentPublicationTerminal as Terminal, StoppedGestureCompletion as Completion,
+        };
+        if receipt.context != context {
+            return Completion::Conflict;
+        }
+        match self.resident_publication_terminal(receipt) {
+            Terminal::Refused(_) => {
+                if self.plugins.retry_refused_reopen(context) {
+                    Completion::Completed
+                } else {
+                    Completion::Conflict
+                }
+            }
+            Terminal::Pending
+            | Terminal::OutputClosedApplied
+            | Terminal::OutputClosedUnapplied
+            | Terminal::OutputClosedRefused(_) => Completion::Pending,
+            _ => Completion::Conflict,
+        }
+    }
+    fn preserve_closed_stopped_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        use hex_session::service::{
+            ResidentPublicationTerminal as Terminal, StoppedGestureCompletion as Completion,
+        };
+        if receipt.context != context
+            || !self.plugins.matches_retired_stopped_gesture(
+                context,
+                key,
+                sequence,
+                receipt.output_identity,
+            )
+        {
+            return Completion::Conflict;
+        }
+        let identity = (key, sequence, receipt);
+        if let Some(saved) = self.resident.closed_stopped_gesture {
+            return if saved == identity {
+                Completion::Completed
+            } else {
+                Completion::Conflict
+            };
+        }
+        match self.resident_publication_terminal(receipt) {
+            Terminal::OutputClosedApplied
+            | Terminal::OutputClosedUnapplied
+            | Terminal::OutputClosedRefused(_) => {
+                self.resident.closed_stopped_gesture = Some(identity);
+                Completion::Completed
+            }
+            Terminal::Pending => Completion::Pending,
+            _ => Completion::Conflict,
+        }
+    }
+    fn retire_unsubmitted_stopped_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        old_output: u64,
+        replacement: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        use hex_session::service::{
+            ResidentPublicationTerminal as Terminal, StoppedGestureCompletion as Completion,
+        };
+        if old_output == 0
+            || replacement.context != context
+            || replacement.output_identity == old_output
+        {
+            return Completion::Conflict;
+        }
+        match self.resident_publication_terminal(replacement) {
+            Terminal::Applied => {}
+            Terminal::Pending
+            | Terminal::OutputClosedApplied
+            | Terminal::OutputClosedUnapplied
+            | Terminal::OutputClosedRefused(_) => return Completion::Pending,
+            _ => return Completion::Conflict,
+        }
+        if self
+            .plugins
+            .retire_unsubmitted_stopped_gesture(context, key, sequence, old_output)
+        {
+            Completion::Completed
+        } else {
+            Completion::Conflict
+        }
+    }
+    fn retire_closed_stopped_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        old: hex_session::service::ResidentPublicationReceipt,
+        replacement: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        use hex_session::service::{
+            ResidentPublicationTerminal as Terminal, StoppedGestureCompletion as Completion,
+        };
+        if old.context != context
+            || replacement.context != context
+            || old.output_identity == replacement.output_identity
+        {
+            return Completion::Conflict;
+        }
+        if self.resident.closed_stopped_gesture != Some((key, sequence, old)) {
+            return Completion::Conflict;
+        }
+        match self.resident_publication_terminal(replacement) {
+            Terminal::Applied => {}
+            Terminal::Pending
+            | Terminal::OutputClosedApplied
+            | Terminal::OutputClosedUnapplied
+            | Terminal::OutputClosedRefused(_) => return Completion::Pending,
+            _ => return Completion::Conflict,
+        }
+        if self
+            .plugins
+            .retire_closed_stopped_gesture(context, key, sequence, old.output_identity)
+        {
+            self.resident.closed_stopped_gesture = None;
+            Completion::Completed
+        } else {
+            Completion::Conflict
+        }
+    }
+    fn finish_stopped_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+        accepted: bool,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        use hex_session::service::{
+            ResidentPublicationTerminal, StoppedGestureCompletion as Completion,
+        };
+        if receipt.context != context {
+            return Completion::Conflict;
+        }
+        let terminal = self.resident_publication_terminal(receipt);
+        if !matches!(
+            (accepted, terminal),
+            (true, ResidentPublicationTerminal::Applied)
+                | (false, ResidentPublicationTerminal::Refused(_))
+        ) {
+            return match terminal {
+                ResidentPublicationTerminal::Pending
+                | ResidentPublicationTerminal::OutputClosedApplied
+                | ResidentPublicationTerminal::OutputClosedUnapplied
+                | ResidentPublicationTerminal::OutputClosedRefused(_) => Completion::Pending,
+                _ => Completion::Conflict,
+            };
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control());
+        self.plugins
+            .finish_stopped_gesture(context, key, sequence, receipt, accepted, control)
+    }
+    fn begin_retired_applied_plugin_recovery(
+        &mut self,
+        identity: hex_session::service::ResidentRetiredIdentity,
+        candidate: Arc<hex_session::service::PluginRecoveryCandidate>,
+    ) -> Result<(), String> {
+        use hex_session::service::{ResidentPublicationTerminal, ResidentRetiredIdentity};
+        let (context, terminal) = match identity {
+            ResidentRetiredIdentity::Submitted(receipt) => {
+                (receipt.context, self.resident_publication_terminal(receipt))
+            }
+            ResidentRetiredIdentity::Retained(receipt) => {
+                (receipt.context, self.retained_publication_terminal(receipt))
+            }
+        };
+        if context != candidate.context()
+            || terminal != ResidentPublicationTerminal::OutputClosedApplied
+        {
+            return Err("retired vst3 publication does not match applied candidate".into());
+        }
+        self.plugins.retarget_reopen(candidate)
+    }
+    fn retire_closed_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+    ) -> bool {
+        let Some((tag, _)) = self.resident.retired_submission.as_ref() else {
+            return false;
+        };
+        let old_output = tag.output_identity;
+        if self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .and_then(|control| control.output_identity())
+            .is_none_or(|output| output == old_output)
+        {
+            return false;
+        }
+        self.plugins
+            .retire_closed_gesture(context, key, sequence, old_output)
+    }
+    fn retained_resident_publication(
+        &self,
+        context: AudioSourceContext,
+    ) -> Option<hex_session::service::ResidentRetainedReceipt> {
+        self.retained_publication(context)
+    }
+    fn poll_retained_resident_publication(
+        &mut self,
+        receipt: hex_session::service::ResidentRetainedReceipt,
+    ) -> hex_session::service::ResidentPublicationTerminal {
+        self.retained_publication_terminal(receipt)
+    }
+    fn poll_resident_publication_terminal(
+        &mut self,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::ResidentPublicationTerminal {
+        self.resident_publication_terminal(receipt)
+    }
+    fn prepare_plugin_parameter_gesture(
+        &mut self,
+        input: hex_session::service::PluginParameterGestureInput<'_>,
+    ) -> Result<
+        hex_session::service::PluginParameterGestureResult,
+        hex_session::service::PluginParameterGestureError,
+    > {
+        self.plugins.prepare_plugin_gesture(
+            self.output.as_mut(),
+            self.desired.as_ref().map(|source| source.context()),
+            input,
+        )
+    }
+    fn plugin_parameter_gesture_ready(
+        &self,
+        context: AudioSourceContext,
+        request: hex_session::device_gesture::GestureRequest,
+    ) -> bool {
+        self.plugins.plugin_gesture_ready(context, request)
+    }
+    fn cancel_pending_plugin_parameter(
+        &mut self,
+        context: AudioSourceContext,
+        request: hex_session::device_gesture::GestureRequest,
+    ) {
+        self.plugins.cancel_plugin_point(context, request);
+    }
+    fn finish_plugin_parameter_commit(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        accepted: bool,
+    ) {
+        self.plugins
+            .finish_plugin_commit(context, key, sequence, accepted);
+    }
+    fn finish_stale_plugin_parameter(
+        &mut self,
+        context: AudioSourceContext,
+        request: hex_session::device_gesture::GestureRequest,
+    ) -> hex_session::service::StalePluginGestureDisposition {
+        self.plugins.finish_stale_plugin_gesture(
+            context,
+            request,
+            self.desired.as_ref().map(|source| source.context()),
+        )
+    }
+    fn begin_plugin_controller_page(
+        &mut self,
+        request: hex_session::service::PluginControllerPageRequest,
+        canonical_state: &hex_session::service::NativeDeviceState,
+    ) -> Result<(), String> {
+        let output = self.output.as_mut().ok_or("vst3 output is unavailable")?;
+        self.plugins.begin_controller_page(
+            output,
+            self.desired.as_ref().map(|source| source.context()),
+            request,
+            canonical_state,
+        )
+    }
+    fn poll_plugin_controller_page(
+        &mut self,
+        request: hex_session::service::PluginControllerPageRequest,
+    ) -> Result<hex_session::service::PluginControllerPageResult, String> {
+        self.plugins.take_controller_page(
+            request,
+            self.desired.as_ref().map(|source| source.context()),
+        )
+    }
     fn capture_plugin_states_for_save(
         &mut self,
         input: hex_session::service::PluginStateSaveInput<'_>,
@@ -870,6 +1182,14 @@ impl WorkerAudioSink for NativeAudioSink {
     }
     fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
         self.plugins.finish_edit(context, accepted);
+        if self
+            .resident
+            .retired_submission
+            .as_ref()
+            .is_some_and(|(tag, _)| tag.source_context == Some(context))
+        {
+            self.resident.retired_submission = None;
+        }
     }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.plugins.reopen_ready()
@@ -1329,6 +1649,7 @@ impl WorkerAudioSink for NativeAudioSink {
         hold
     }
     fn poll(&mut self) {
+        self.plugins.poll_detached_controller_page();
         self.resident.reap_observations();
         self.poll_edit_timeout();
         self.poll_section_edit();
@@ -1353,6 +1674,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 self.plugins.poll(
                     &mut output,
                     self.desired.as_ref().map(|source| source.context()),
+                    self.request_cancellation.as_ref(),
                 );
             }
             self.ordinary_pcm_frames = output

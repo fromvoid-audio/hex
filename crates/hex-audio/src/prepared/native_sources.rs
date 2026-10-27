@@ -14,11 +14,18 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Observation for control-side recovery; an open source still requires
+    /// its own exact binding and callback receipt checks.
+    pub fn native_source_control_open(&self) -> bool {
+        self.native_custody && !self.status.closing.load(Acquire)
+    }
     /// Queue one validated raw SDK parameter input on the original live source.
     /// Only an actual accepted PCM quantum can consume it; no process/flush or
     /// graph replacement is invented. Validate current metadata/writability at
     /// the caller; the SDK path still enforces its actual parameter contract.
-    /// Processing progress below grants no canonical/state installation.
+    /// An admitted token is returned even if closing races admission, so the
+    /// original operation remains identifiable. It grants no current-source,
+    /// canonical-state or publication authority.
     pub fn begin_native_source_parameter_change_on_control(
         &mut self,
         binding: Binding,
@@ -31,9 +38,6 @@ impl PublicationControl {
         let result = self
             .candidate_root
             .begin_native_parameter_change(binding, id, normalized)?;
-        if self.status.closing.load(Acquire) {
-            return Err("native parameter output is closing");
-        }
         Ok(result)
     }
     /// True only if the exact queued input was withdrawn before processing.
@@ -56,13 +60,14 @@ impl PublicationControl {
         Ok(result)
     }
     /// Actual SDK input exchange progress, not controller readback, final host
-    /// delivery or canonical authority. Exact source/token/context checks and
-    /// captured-state validation remain required before a project/history edit.
+    /// delivery or canonical authority. A consumed terminal survives a racing
+    /// close as a receipt with source_current=false; it cannot authorize an
+    /// edit. Pending and transport revocation have not consumed the token.
     pub fn poll_native_source_parameter_change_on_control(
         &mut self,
         binding: Binding,
         request: &crate::plugin_worker::NativeWorkerParameterChange,
-    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+    ) -> Result<crate::plugin_worker::NativeParameterPoll, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native parameter output is closing");
         }
@@ -70,7 +75,7 @@ impl PublicationControl {
             .candidate_root
             .poll_native_parameter_change(binding, request)?;
         if self.status.closing.load(Acquire) {
-            return Err("native parameter output is closing");
+            return result.source_closed("native parameter output is closing");
         }
         Ok(result)
     }
@@ -82,7 +87,7 @@ impl PublicationControl {
         &mut self,
         binding: Binding,
         request: &crate::plugin_worker::NativeWorkerParameterChange,
-    ) -> Result<crate::plugin_worker::NativeWorkerParameterProgress, &'static str> {
+    ) -> Result<crate::plugin_worker::NativeParameterPoll, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native parameter output is closing");
         }
@@ -90,15 +95,16 @@ impl PublicationControl {
             .candidate_root
             .drain_stopped_native_parameter_change(binding, request)?;
         if self.status.closing.load(Acquire) {
-            return Err("native parameter output is closing");
+            return result.source_closed("native parameter output is closing");
         }
         Ok(result)
     }
     /// Query actual SDK controller metadata through the original Root effect
     /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
     /// replacing them. Normally stopped transport uses its joined original
-    /// worker. The caller owns the one weak token and retires it at its exact
-    /// terminal; neither admission nor copied metadata grants edit authority.
+    /// worker. An admitted token survives a racing close; the caller retains
+    /// it through its exact terminal. Neither admission nor copied metadata
+    /// grants current-source or edit authority.
     pub fn begin_native_source_controller_query_on_control(
         &mut self,
         binding: Binding,
@@ -110,14 +116,12 @@ impl PublicationControl {
         let result = self
             .candidate_root
             .begin_native_controller_query(binding, query)?;
-        if self.status.closing.load(Acquire) {
-            return Err("native controller output is closing");
-        }
         Ok(result)
     }
     /// Consume only the exact source/worker query terminal. Recheck the owning
     /// document/device context before using these copied observations in UI.
-    /// Source revocation wins over a late result; close suppresses delivery.
+    /// Source revocation suppresses late data; a consumed terminal is reported
+    /// as discarded even if close races the return.
     pub fn poll_native_source_controller_query_on_control(
         &mut self,
         binding: Binding,
@@ -130,9 +134,29 @@ impl PublicationControl {
             .candidate_root
             .poll_native_controller_query(binding, request)?;
         if self.status.closing.load(Acquire) {
-            return Err("native controller output is closing");
+            return result.source_closed("native controller output is closing");
         }
         Ok(result)
+    }
+    /// Drain the exact revoked live controller query after its original worker
+    /// joins. The old metadata is discarded and never grants current-source or
+    /// edit authority. False retains the token; true records actual consumption
+    /// even if output close races the return.
+    pub fn drain_stopped_native_source_controller_query_on_control(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerControllerQuery,
+    ) -> Result<bool, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        let drained = self
+            .candidate_root
+            .drain_stopped_native_controller_query(binding, request)?;
+        if !drained && self.status.closing.load(Acquire) {
+            return Err("native controller output is closing");
+        }
+        Ok(drained)
     }
     /// Request/read ordered native controller callbacks through the actual
     /// original effect or loan control. None is pending; Some consumes at most
@@ -177,8 +201,9 @@ impl PublicationControl {
     /// including an active callback loan or normally ended transport. Stopped
     /// capture requires the original worker's joined healthy terminal and leaves
     /// transport revoked. No graph/endpoint is returned or
-    /// replaced. The caller owns/accounting for its correlation token and must
-    /// retire it on the exact terminal, including source close/refusal.
+    /// replaced. Admission returns its exact token even if close races the
+    /// return; it grants no current-source authority. The caller owns/accounting
+    /// for that token and must retire it on its exact terminal or source loss.
     pub fn begin_native_source_state_capture_on_control(
         &mut self,
         binding: Binding,
@@ -211,10 +236,19 @@ impl PublicationControl {
     /// Consume the existing live capture with original source/operation
     /// provenance retained. This is copied state plus correlation, not graph or
     /// canonical acceptance. Caller-owned snapshot storage stays on control.
+    /// A consumed terminal racing close is discarded without exposing its data.
     pub fn poll_native_source_state_snapshot_on_control(
         &mut self,
         binding: Binding,
         request: &crate::plugin_worker::NativeWorkerCapture,
+    ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
+        self.poll_snapshot_receipt(binding, request, || {})
+    }
+    fn poll_snapshot_receipt(
+        &mut self,
+        binding: Binding,
+        request: &crate::plugin_worker::NativeWorkerCapture,
+        after_capture: impl FnOnce(),
     ) -> Result<crate::plugin_worker::NativeWorkerStateSnapshotProgress, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native capture output is closing");
@@ -222,8 +256,14 @@ impl PublicationControl {
         let result = self
             .candidate_root
             .poll_live_native_snapshot(binding, request)?;
+        if matches!(
+            result,
+            crate::plugin_worker::NativeWorkerStateSnapshotProgress::Captured(_)
+        ) {
+            after_capture();
+        }
         if self.status.closing.load(Acquire) {
-            return Err("native capture output is closing");
+            return result.source_closed("native capture output is closing");
         }
         Ok(result)
     }
@@ -272,40 +312,64 @@ impl PublicationControl {
     /// the endpoint. At most one pending permission is retained beside the last
     /// accepted one. The canonical owner must retain its gesture/document context
     /// and finalize with that operation's actual accepted/refused terminal.
+    /// SourceClosed means staging completed but cannot authorize publication.
     pub fn stage_native_source_state_snapshot_on_control(
         &mut self,
         binding: Binding,
         snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
-    ) -> Result<(), &'static str> {
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
+        self.stage_snapshot_receipt(binding, snapshot, || {})
+    }
+    fn stage_snapshot_receipt(
+        &mut self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        after_stage: impl FnOnce(),
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native capture output is closing");
         }
-        self.candidate_root
+        let result = self
+            .candidate_root
             .stage_live_native_snapshot(binding, snapshot)?;
+        after_stage();
         if self.status.closing.load(Acquire) {
-            return Err("native capture output is closing");
+            return Ok(crate::plugin_worker::NativeSnapshotAction::SourceClosed);
         }
-        Ok(())
+        Ok(result)
     }
     /// Retire the exact staged compiler permission with its canonical terminal.
     /// Accepted promotes it; refusal preserves the preceding accepted permission.
     /// This call does not itself accept a project edit, restore foreign DSP,
     /// cancel in-flight input or acknowledge a graph. Those retain their owners.
+    /// SourceClosed means the exact finalization completed before source close;
+    /// it grants no authority to reuse that source or publish its data.
     pub fn finalize_native_source_state_snapshot_on_control(
         &mut self,
         binding: Binding,
         snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
         accepted: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
+        self.finalize_snapshot_receipt(binding, snapshot, accepted, || {})
+    }
+    fn finalize_snapshot_receipt(
+        &mut self,
+        binding: Binding,
+        snapshot: &crate::plugin_worker::NativeWorkerStateSnapshot,
+        accepted: bool,
+        after_finalize: impl FnOnce(),
+    ) -> Result<crate::plugin_worker::NativeSnapshotAction, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native capture output is closing");
         }
-        self.candidate_root
+        let result = self
+            .candidate_root
             .finalize_live_native_snapshot(binding, snapshot, accepted)?;
+        after_finalize();
         if self.status.closing.load(Acquire) {
-            return Err("native capture output is closing");
+            return Ok(crate::plugin_worker::NativeSnapshotAction::SourceClosed);
         }
-        Ok(())
+        Ok(result)
     }
     /// Nondefault deterministic fixture control: original worker's observed
     /// completion prefix. Neither queueing, readiness nor custody authority.
@@ -482,6 +546,30 @@ impl PublicationControl {
         }));
         Ok(())
     }
+    /// Retain the existing stopped exclusion while transferring its source
+    /// witness to an exact installed successor in the same context. This is a
+    /// fence transition only; it does not publish or authorize an edit.
+    pub fn advance_ordinary_native_epoch_fence(
+        &self,
+        fence: StoppedEditFence,
+        previous: AppliedAudioSource,
+        successor: AppliedAudioSource,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
+            || self.status.recording_source() != Some(successor)
+            || self.status.applied_revision.load(Acquire) != successor.audio_revision
+            || successor.output_identity != self.candidate_root.root_id()
+            || !self
+                .status
+                .sampler_edit
+                .advance_ordinary_native_epoch_source(fence, previous, successor)
+        {
+            return Err("native epoch successor is not current");
+        }
+        Ok(())
+    }
     /// Renew custody of this exact loaded source after its original callback
     /// endpoint and every old graph reference returned. The new binding is a
     /// pending operation: query facts, complete with actual presentation, then
@@ -540,6 +628,33 @@ impl PublicationControl {
             return Err("native parameter output is closing");
         }
         Ok(result)
+    }
+
+    /// Flush one validated stopped parameter through the original quiescent
+    /// source. A true result is the SDK/controller terminal only; it grants no
+    /// graph, gesture or canonical-state authority.
+    pub fn flush_native_source_parameter_on_control(
+        &mut self,
+        binding: Binding,
+        id: u32,
+        normalized: f64,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<bool>, &'static str> {
+        let mut parameters = hex_plugin_host::transport::Parameters::default();
+        parameters
+            .push(hex_plugin_host::transport::ParameterPoint {
+                frame: 0,
+                id,
+                normalized,
+            })
+            .map_err(|_| "invalid stopped native parameter")?;
+        self.flush_native_source_parameters_on_control(binding, &parameters, is_cancelled)
+            .map(|result| {
+                result.map(|values| {
+                    values.disposition == hex_plugin_host::protocol::FlushDisposition::Applied
+                        && values.as_slice().iter().any(|value| value.id == id)
+                })
+            })
     }
     /// Reserve fixed cells and per-cell variable DATA allowances before exposing
     /// the output. The whole pool's allowances remain charged, including vacant
@@ -768,6 +883,10 @@ impl Callback {
     pub(crate) fn native_workers_idle_on_control(&self) -> Option<bool> {
         self.native_sources
             .workers_idle_on_control(&self.candidate_root)
+    }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_faults_on_control(&self) -> Vec<(Binding, Option<&'static str>)> {
+        self.native_sources.faults_on_control()
     }
     pub(super) fn current_native_epoch_fence_source(&self) -> Option<AppliedAudioSource> {
         if !self.status.sampler_edit.ordinary_native_epoch_active() {

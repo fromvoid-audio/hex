@@ -20,6 +20,297 @@ pub(super) struct Snapshot {
     pub(super) inputs: RuntimeInputs,
     pub(super) file_sources: Option<ResidentFileSet>,
 }
+/// Fresh canonical graph and exact output receipt, retained until callback
+/// installation. Queue admission does not retire the previous input owners.
+pub(super) struct PendingPluginRecovery {
+    pub(super) snapshot: Snapshot,
+    pub(super) previous_inputs: RuntimeInputs,
+    pub(super) receipt: Option<ResidentPublicationReceipt>,
+    pub(super) retained_receipt: Option<ResidentRetainedReceipt>,
+    pub(super) context: hex_engine::AudioSourceContext,
+    pub(super) replacement: Option<Box<PendingPluginRecovery>>,
+    pub(super) unsubmitted_old_output: Option<u64>,
+    pub(super) retrying_reopen: bool,
+    held: bool,
+}
+impl PendingPluginRecovery {
+    pub(super) fn hold(&mut self) {
+        self.held = true;
+    }
+    pub(super) fn terminal(&self, sink: &mut dyn WorkerAudioSink) -> ResidentPublicationTerminal {
+        if self.held {
+            return ResidentPublicationTerminal::Indeterminate;
+        }
+        if let Some(receipt) = self.receipt {
+            sink.poll_resident_publication_terminal(receipt)
+        } else if let Some(receipt) = self.retained_receipt {
+            sink.poll_retained_resident_publication(receipt)
+        } else {
+            ResidentPublicationTerminal::Indeterminate
+        }
+    }
+    pub(super) fn stopped_gesture_ready(&self, sink: &mut dyn WorkerAudioSink) -> bool {
+        if self.held {
+            return false;
+        }
+        if self.retrying_reopen {
+            return sink.plugin_state_restore_ready() == Some(self.context);
+        }
+        if let Some(replacement) = self.replacement.as_ref() {
+            return match replacement.terminal(sink) {
+                ResidentPublicationTerminal::Applied | ResidentPublicationTerminal::Refused(_) => {
+                    true
+                }
+                ResidentPublicationTerminal::OutputClosedApplied
+                | ResidentPublicationTerminal::OutputClosedUnapplied
+                | ResidentPublicationTerminal::OutputClosedRefused(_) => {
+                    sink.plugin_state_restore_ready() == Some(self.context)
+                }
+                _ => false,
+            };
+        }
+        match self.terminal(sink) {
+            ResidentPublicationTerminal::Applied | ResidentPublicationTerminal::Refused(_) => true,
+            ResidentPublicationTerminal::OutputClosedApplied
+            | ResidentPublicationTerminal::OutputClosedUnapplied
+            | ResidentPublicationTerminal::OutputClosedRefused(_) => {
+                sink.plugin_state_restore_ready() == Some(self.context)
+            }
+            _ => false,
+        }
+    }
+}
+/// One submitted plugin transition on the Session worker. The prepared
+/// canonical token, prospective resource owners, prior input selection and
+/// exact output receipt travel together until the real terminal is resolved.
+/// Dropping this before the callback terminal does not cancel publication.
+pub(super) struct PendingPluginPublication {
+    pub(super) token: hex_project::PreparedPluginState,
+    pub(super) snapshot: Snapshot,
+    pub(super) previous_inputs: RuntimeInputs,
+    pub(super) receipt: Option<ResidentPublicationReceipt>,
+    retained_receipt: Option<ResidentRetainedReceipt>,
+    pub(super) context: hex_engine::AudioSourceContext,
+    pub(super) recovery: Option<PendingPluginRecovery>,
+    pub(super) retired_applied_started: bool,
+    conflict: bool,
+}
+pub(super) enum PluginPublicationResolution {
+    Waiting(PendingPluginPublication),
+    Indeterminate(PendingPluginPublication),
+    Conflict(PendingPluginPublication),
+    Applied(Snapshot),
+    Refused(hex_engine::playback::PlaybackHandoffRejection),
+}
+impl PendingPluginPublication {
+    pub(super) fn retired_identity(&self) -> Option<ResidentRetiredIdentity> {
+        self.receipt
+            .map(ResidentRetiredIdentity::Submitted)
+            .or_else(|| self.retained_receipt.map(ResidentRetiredIdentity::Retained))
+    }
+    pub(super) fn quarantine(&mut self) {
+        self.conflict = true;
+    }
+    pub(super) fn terminal(&self, sink: &mut dyn WorkerAudioSink) -> ResidentPublicationTerminal {
+        if self.conflict {
+            return ResidentPublicationTerminal::Indeterminate;
+        }
+        if let Some(receipt) = self.receipt {
+            sink.poll_resident_publication_terminal(receipt)
+        } else if let Some(receipt) = self.retained_receipt {
+            sink.poll_retained_resident_publication(receipt)
+        } else {
+            ResidentPublicationTerminal::Indeterminate
+        }
+    }
+    /// A retired unapplied/refused edit may advance only when its original
+    /// canonical source is ready to be restored, or the fresh graph has an
+    /// exact callback terminal. A retired-applied edit first requests its
+    /// validated candidate, then waits for the matching fresh source.
+    pub(super) fn gesture_ready(
+        &self,
+        sink: &mut dyn WorkerAudioSink,
+        original: hex_engine::AudioSourceContext,
+    ) -> bool {
+        if self.conflict {
+            return false;
+        }
+        if let Some(recovery) = self.recovery.as_ref() {
+            return matches!(
+                recovery.terminal(sink),
+                ResidentPublicationTerminal::Applied | ResidentPublicationTerminal::Refused(_)
+            );
+        }
+        match self.terminal(sink) {
+            ResidentPublicationTerminal::Applied | ResidentPublicationTerminal::Refused(_) => true,
+            ResidentPublicationTerminal::OutputClosedUnapplied
+            | ResidentPublicationTerminal::OutputClosedRefused(_) => {
+                sink.plugin_state_restore_ready() == Some(original)
+            }
+            ResidentPublicationTerminal::OutputClosedApplied => {
+                !self.retired_applied_started
+                    || sink.plugin_state_restore_ready() == Some(self.context)
+            }
+            _ => false,
+        }
+    }
+    #[allow(clippy::result_large_err)]
+    pub(super) fn finish_retired_applied(
+        mut self,
+        session: &mut Session,
+        sink: &mut dyn WorkerAudioSink,
+        original: hex_engine::AudioSourceContext,
+        key: crate::device_gesture::GestureKey,
+        sequence: u64,
+    ) -> Result<Snapshot, Self> {
+        let Some(recovery) = self.recovery.as_ref() else {
+            return Err(self);
+        };
+        if self.terminal(sink) != ResidentPublicationTerminal::OutputClosedApplied
+            || recovery.context != self.context
+            || recovery.terminal(sink) != ResidentPublicationTerminal::Applied
+            || !session.editor.plugin_state_is_current(&self.token)
+            || !sink.retire_closed_plugin_gesture(original, key, sequence)
+        {
+            return Err(self);
+        }
+        let Some(recovery) = self.recovery.take() else {
+            return Err(self);
+        };
+        let Self {
+            token,
+            snapshot,
+            previous_inputs,
+            receipt,
+            retained_receipt,
+            context,
+            recovery: _,
+            retired_applied_started,
+            conflict: _,
+        } = self;
+        match session.editor.try_commit_plugin_state(token) {
+            Ok(_) => {
+                sink.finish_plugin_state_restore(context, true);
+                recovery
+                    .snapshot
+                    .inputs
+                    .cancel_retired_from(&recovery.previous_inputs);
+                sink.finish_resident_effect_edit(context, true);
+                Ok(recovery.snapshot)
+            }
+            Err((token, _)) => Err(Self {
+                token,
+                snapshot,
+                previous_inputs,
+                receipt,
+                retained_receipt,
+                context,
+                recovery: Some(recovery),
+                retired_applied_started,
+                conflict: true,
+            }),
+        }
+    }
+    #[allow(clippy::result_large_err)] // Keep the exact transaction and graph owners on refusal.
+    pub(super) fn finish_retired_unapplied(
+        mut self,
+        session: &mut Session,
+        sink: &mut dyn WorkerAudioSink,
+        original: hex_engine::AudioSourceContext,
+        key: crate::device_gesture::GestureKey,
+        sequence: u64,
+    ) -> Result<Snapshot, Self> {
+        let Some(recovery) = self.recovery.as_ref() else {
+            return Err(self);
+        };
+        if recovery.context != original
+            || recovery.terminal(sink) != ResidentPublicationTerminal::Applied
+            || !session.editor.plugin_state_is_current(&self.token)
+        {
+            return Err(self);
+        }
+        if !sink.retire_closed_plugin_gesture(original, key, sequence) {
+            return Err(self);
+        }
+        let Some(recovery) = self.recovery.take() else {
+            return Err(self);
+        };
+        sink.finish_plugin_state_restore(original, true);
+        recovery
+            .snapshot
+            .inputs
+            .cancel_retired_from(&recovery.previous_inputs);
+        session.editor.cancel_plugin_state(self.token);
+        sink.finish_resident_effect_edit(self.context, false);
+        Ok(recovery.snapshot)
+    }
+    /// Consume only a matching callback terminal. An unknown output or stale
+    /// canonical token retains the complete owner for recovery; it is never
+    /// translated into a successful or refused edit.
+    pub(super) fn resolve(
+        self,
+        session: &mut Session,
+        sink: &mut dyn WorkerAudioSink,
+    ) -> PluginPublicationResolution {
+        match self.terminal(sink) {
+            ResidentPublicationTerminal::Pending => PluginPublicationResolution::Waiting(self),
+            ResidentPublicationTerminal::Indeterminate => {
+                PluginPublicationResolution::Indeterminate(self)
+            }
+            // Recovery still needs to retire the old gesture and restore the
+            // canonical source on the new output. Keep the complete owner
+            // until that lifecycle is coordinated by the worker.
+            ResidentPublicationTerminal::OutputClosedUnapplied
+            | ResidentPublicationTerminal::OutputClosedApplied
+            | ResidentPublicationTerminal::OutputClosedRefused(_) => {
+                PluginPublicationResolution::Indeterminate(self)
+            }
+            ResidentPublicationTerminal::Refused(reason) => {
+                session.editor.cancel_plugin_state(self.token);
+                sink.finish_resident_effect_edit(self.context, false);
+                PluginPublicationResolution::Refused(reason)
+            }
+            ResidentPublicationTerminal::Applied => {
+                if !session.editor.plugin_state_is_current(&self.token) {
+                    let mut retained = self;
+                    retained.conflict = true;
+                    return PluginPublicationResolution::Conflict(retained);
+                }
+                let Self {
+                    token,
+                    snapshot,
+                    previous_inputs,
+                    receipt,
+                    retained_receipt,
+                    context,
+                    recovery,
+                    retired_applied_started,
+                    conflict: _,
+                } = self;
+                match session.editor.try_commit_plugin_state(token) {
+                    Ok(_) => {
+                        snapshot.inputs.cancel_retired_from(&previous_inputs);
+                        sink.finish_resident_effect_edit(context, true);
+                        PluginPublicationResolution::Applied(snapshot)
+                    }
+                    Err((token, _)) => {
+                        PluginPublicationResolution::Conflict(PendingPluginPublication {
+                            token,
+                            snapshot,
+                            previous_inputs,
+                            receipt,
+                            retained_receipt,
+                            context,
+                            recovery,
+                            retired_applied_started,
+                            conflict: true,
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
 struct Inputs<'a> {
     native: NativeSamplerSources<'a>,
     limits: crate::ResidentNativeReservation,
@@ -1069,6 +1360,141 @@ enum Transition {
 }
 
 impl Session {
+    /// Prepare and submit an already-reserved plugin edit without changing the
+    /// Editor. The caller must serialize conflicting edits and retain the
+    /// returned owners until the exact callback terminal, including on cancel.
+    pub(super) fn stage_plugin_publication(
+        &mut self,
+        token: hex_project::PreparedPluginState,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<PendingPluginPublication, SessionError> {
+        let mut attempted_context = None;
+        let result = (|| {
+            let next_context = if token.project() == self.project() {
+                context
+            } else {
+                hex_engine::AudioSourceContext {
+                    editor_revision: context
+                        .editor_revision
+                        .checked_add(1)
+                        .ok_or(SessionError::Invalid("plugin revision exhausted"))?,
+                    ..context
+                }
+            };
+            attempted_context = Some(next_context);
+            let inputs = Inputs {
+                plugin_effect: None,
+                restoring_plugin_state: false,
+                preparing_edit: true,
+                predecessor: None,
+                native: NativeSamplerSources::Committed(&self.native_assets),
+                limits: self.native_reservation.ok_or(SessionError::Invalid(
+                    "resident resource reservation unavailable",
+                ))?,
+                max_frames: self.max_resident_frames,
+                shutdown: &self.shutdown,
+                cancel: None,
+                admission,
+                current,
+                legacy: self
+                    .media
+                    .values()
+                    .flat_map(|m| [&m.source_audio, &m.audio])
+                    .collect(),
+            };
+            let media = self.media_bank();
+            let mut snapshot = inputs.prepare_transition(
+                self.project(),
+                token.project(),
+                false,
+                sink,
+                &media,
+                self.sine_table(),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+                next_context,
+            )?;
+            let metadata = ResidentPublicationMetadata {
+                context: next_context,
+                device_preview: None,
+                tuning_preview: None,
+                seek_request: None,
+                stopped_restore: false,
+                computer_keyboard_request: None,
+                gain_recording_track: snapshot.prepared.gain_recording_track(),
+                requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+            };
+            let (policy, section_loop) = inherited_runtime(
+                sink,
+                next_context,
+                ResidentPublicationPolicy::InheritRuntime,
+            )?;
+            let mut playback = playback_with_loop(&snapshot, section_loop)?;
+            let previous_inputs = snapshot.inputs.clone();
+            let mut selected = previous_inputs.clone();
+            selected.attach(token.project(), &mut playback)?;
+            selected.selected_after(&previous_inputs)?;
+            let acceptance = inputs.publish_runtime(
+                &snapshot,
+                playback,
+                sink,
+                metadata,
+                policy,
+                selected.allowance()?,
+            )?;
+            // The old selection remains live until actual application; retiring
+            // it at queue submission could silence the still-installed graph.
+            snapshot.inputs = selected;
+            let (receipt, retained_receipt) = match acceptance {
+                ResidentPublicationAcceptance::Submitted {
+                    output_identity,
+                    audio_revision,
+                } => (
+                    Some(ResidentPublicationReceipt {
+                        output_identity,
+                        audio_revision,
+                        context: next_context,
+                    }),
+                    None,
+                ),
+                ResidentPublicationAcceptance::OfflineRetained => {
+                    (None, sink.retained_resident_publication(next_context))
+                }
+            };
+            Ok((
+                snapshot,
+                previous_inputs,
+                receipt,
+                retained_receipt,
+                next_context,
+            ))
+        })();
+        match result {
+            Ok((snapshot, previous_inputs, receipt, retained_receipt, context)) => {
+                Ok(PendingPluginPublication {
+                    token,
+                    snapshot,
+                    previous_inputs,
+                    receipt,
+                    retained_receipt,
+                    context,
+                    recovery: None,
+                    retired_applied_started: false,
+                    conflict: false,
+                })
+            }
+            Err(error) => {
+                if let Some(context) = attempted_context {
+                    sink.finish_resident_effect_edit(context, false);
+                }
+                self.editor.cancel_plugin_state(token);
+                Err(error)
+            }
+        }
+    }
     #[allow(clippy::too_many_arguments)] // Captured target, source, control union and final publication remain explicit.
     pub(super) fn import_resident_sampler(
         &mut self,
@@ -1337,12 +1763,36 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
+        selected: RuntimeInputs,
+        required: Option<RequiredInput>,
+    ) -> Result<
+        (
+            Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>,
+            RuntimeInputs,
+        ),
+        SessionError,
+    > {
+        self.prepare_resident_runtime_inputs_with_receipt(
+            snapshot, project, sink, admission, metadata, policy, selected, required,
+        )
+        .map(|(hint, selected, _)| (hint, selected))
+    }
+    #[allow(clippy::too_many_arguments)] // Same source and admission as the ordinary runtime path.
+    fn prepare_resident_runtime_inputs_with_receipt(
+        &self,
+        snapshot: &Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
         mut selected: RuntimeInputs,
         required: Option<RequiredInput>,
     ) -> Result<
         (
             Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>,
             RuntimeInputs,
+            ResidentPublicationAcceptance,
         ),
         SessionError,
     > {
@@ -1368,7 +1818,7 @@ impl Session {
         }
         selected.selected_after(&snapshot.inputs)?;
         let hint = playback.computer_keyboard_tuning_hint();
-        inputs.publish_runtime(
+        let accepted = inputs.publish_runtime(
             snapshot,
             playback,
             sink,
@@ -1376,7 +1826,7 @@ impl Session {
             policy,
             selected.allowance()?,
         )?;
-        Ok((hint, selected))
+        Ok((hint, selected, accepted))
     }
     fn resident_seek_inputs<'a>(
         &'a self,
@@ -1519,16 +1969,113 @@ impl Session {
         self.restore_resident_snapshot_with_metadata(context, sink, admission, current, true)
     }
 
-    /// Recompile only after the fresh output restored the same opaque plugin
-    /// state. This changes neither the canonical revision nor musical history.
-    pub(super) fn restore_plugin_state_snapshot(
+    /// Submit fresh plugin restoration without claiming callback installation.
+    /// The caller retains this owner and serializes conflicting work until its
+    /// exact terminal, including output loss or refusal.
+    pub(super) fn stage_plugin_state_recovery(
         &self,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
-    ) -> Result<Snapshot, SessionError> {
-        self.restore_resident_snapshot_with_metadata(context, sink, admission, current, false)
+    ) -> Result<PendingPluginRecovery, SessionError> {
+        self.stage_plugin_candidate_recovery(self.project(), context, sink, admission, current)
+    }
+
+    pub(super) fn stage_plugin_candidate_recovery(
+        &self,
+        project: &hex_project::Project,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<PendingPluginRecovery, SessionError> {
+        self.stage_plugin_recovery(project, context, sink, admission, current, false)
+    }
+
+    pub(super) fn stage_stopped_plugin_recovery(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<PendingPluginRecovery, SessionError> {
+        self.stage_plugin_recovery(self.project(), context, sink, admission, current, true)
+    }
+
+    fn stage_plugin_recovery(
+        &self,
+        project: &hex_project::Project,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        stopped: bool,
+    ) -> Result<PendingPluginRecovery, SessionError> {
+        let mut inputs = self.resident_seek_inputs(admission, current, None)?;
+        inputs.restoring_plugin_state = !stopped;
+        let mut snapshot = inputs.prepare(
+            project,
+            sink,
+            &self.media_bank(),
+            self.sine_table(),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+            context,
+        )?;
+        let metadata = ResidentPublicationMetadata {
+            context,
+            device_preview: None,
+            tuning_preview: None,
+            seek_request: None,
+            stopped_restore: stopped,
+            computer_keyboard_request: None,
+            gain_recording_track: snapshot.prepared.gain_recording_track(),
+            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+        };
+        let previous_inputs = snapshot.inputs.clone();
+        let (_, selected, accepted) = self.prepare_resident_runtime_inputs_with_receipt(
+            &snapshot,
+            project,
+            sink,
+            admission,
+            metadata,
+            if stopped {
+                ResidentPublicationPolicy::InstallFreshRuntime
+            } else {
+                ResidentPublicationPolicy::RestorePluginState
+            },
+            previous_inputs.clone(),
+            None,
+        )?;
+        snapshot.inputs = selected;
+        let (receipt, retained_receipt) = match accepted {
+            ResidentPublicationAcceptance::Submitted {
+                output_identity,
+                audio_revision,
+            } => (
+                Some(ResidentPublicationReceipt {
+                    output_identity,
+                    audio_revision,
+                    context,
+                }),
+                None,
+            ),
+            ResidentPublicationAcceptance::OfflineRetained => {
+                (None, sink.retained_resident_publication(context))
+            }
+        };
+        Ok(PendingPluginRecovery {
+            snapshot,
+            previous_inputs,
+            receipt,
+            retained_receipt,
+            context,
+            replacement: None,
+            unsubmitted_old_output: None,
+            retrying_reopen: false,
+            held: false,
+        })
     }
 
     fn restore_resident_snapshot_with_metadata(
@@ -2043,6 +2590,7 @@ impl Session {
 mod tests {
     mod bounce_tests;
     mod export_tests;
+    mod pending_plugin_publication_tests;
     mod plugin_effect_tests;
     mod source_binding_tests;
     use super::*;

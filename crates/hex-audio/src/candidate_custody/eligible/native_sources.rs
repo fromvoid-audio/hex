@@ -249,6 +249,9 @@ struct Execution {
     // Constructor refusals retain their original cause in the actual owner
     // until disposal. Explicit cancellation of a valid source is not a failure.
     constructor_refused: bool,
+    // Diagnostic context for the operation that retained the original error;
+    // this never changes ownership or the disposal receipt.
+    failure_stage: Option<&'static str>,
     disposal: Option<PreparationDisposal>,
     pending: bool,
     first_panic: Option<Box<dyn Any + Send>>,
@@ -517,6 +520,7 @@ impl Custody {
             }
             Ok(Err(owner)) => {
                 cell.constructor_refused = true;
+                cell.failure_stage = Some("native instance startup");
                 cell.owner = Some(Owner::Refused(owner));
                 None
             }
@@ -621,11 +625,15 @@ impl Custody {
             .cells
             .get(index)
             .ok_or("native source cell unavailable")?;
-        Ok(match (cell.cause(), &cell.cleanup_error) {
+        let error = match (cell.cause(), &cell.cleanup_error) {
             (Some(error), Some(cleanup)) => Some(format!("{error} · cleanup: {cleanup}")),
             (Some(error), None) | (None, Some(error)) => Some(error.to_string()),
             (None, None) => None,
-        })
+        };
+        Ok(error.map(|error| match cell.failure_stage {
+            Some(stage) => format!("{stage}: {error}"),
+            None => error,
+        }))
     }
 
     pub(super) fn advance_native_sources(&self, work: &mut Work, abandoned: bool) {
@@ -734,6 +742,7 @@ impl Custody {
                     Ok(()) => {
                         cell.disposal = None;
                         cell.constructor_refused = false;
+                        cell.failure_stage = None;
                         cell.pending = false;
                         lock(&self.bank).sources.slots[index] = Slot::vacant();
                     }
@@ -770,6 +779,7 @@ impl Custody {
             return None;
         }
         cell.constructor_refused = false;
+        cell.failure_stage = None;
         let result = NativeSourcePreparationReturn {
             binding,
             disposal: cell.disposal.take()?,

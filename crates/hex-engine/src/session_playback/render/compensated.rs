@@ -57,6 +57,21 @@ impl SessionPlayback {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
+        let has_compensated_tails = self
+            .tail_compensated_main
+            .iter()
+            .zip(&self.tail_output_scratch)
+            .any(|(routed, active)| *routed && *active);
+        let tail_revision = has_compensated_tails.then(|| Arc::clone(&self.revision));
+        let tail_clock = tail_revision.as_ref().map(|revision| {
+            crate::effect_clock::ArrangementEffectClock::session(
+                revision.session().timing(),
+                arrangement_frame,
+                performance_frame,
+                loop_pass,
+                self.playing,
+            )
+        });
         self.push_compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
         let region = self.active_loop_region();
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
@@ -285,8 +300,70 @@ impl SessionPlayback {
                     let mixed = compensation
                         .fader(track, index, override_gain, processed)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    let mut main_input = mixed;
+                    if let Some(tail_clock) = tail_clock.as_ref() {
+                        for (group, chain) in self.tail_groups.iter_mut().enumerate() {
+                            if !self
+                                .tail_compensated_main
+                                .get(group)
+                                .copied()
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?
+                                || self
+                                    .tail_track_ids
+                                    .get(group)
+                                    .copied()
+                                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                                    != Some(route.id)
+                                || !self
+                                    .tail_output_scratch
+                                    .get(group)
+                                    .copied()
+                                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                            {
+                                continue;
+                            }
+                            let chain =
+                                chain.as_mut().ok_or(SessionPlaybackError::DeviceRuntime)?;
+                            let start = *self
+                                .tail_suffix_starts
+                                .get(group)
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                            let arrival = *self
+                                .tail_input_arrivals
+                                .get(group)
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                            let mut tail = [[0.0; 2]; 1];
+                            super::process_detached_suffix(
+                                chain,
+                                start,
+                                arrival,
+                                &mut tail,
+                                frame_offset,
+                                Some(compensation),
+                                tail_clock,
+                                foreign,
+                            )?;
+                            *self
+                                .tail_output_scratch
+                                .get_mut(group)
+                                .ok_or(SessionPlaybackError::DeviceRuntime)? =
+                                !chain.speculative_range_is_quiescent(start..chain.len());
+                            if let Some(matrix) = self
+                                .tail_suffix_matrices
+                                .get(group)
+                                .copied()
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?
+                            {
+                                matrix.apply_block(&mut tail);
+                            }
+                            self.tail_mixes
+                                .get(group)
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?
+                                .add_frame(&mut main_input, tail[0]);
+                        }
+                    }
                     let main = compensation
-                        .edge(compensation.graph.tracks[index].main, mixed)
+                        .edge(compensation.graph.tracks[index].main, main_input)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     compensation.main[index] = main;
                     if let Some(capture) = capture.as_mut() {
@@ -381,7 +458,15 @@ impl SessionPlayback {
         }
         // Only zero-latency routed layouts admit detached old chains. Positive
         // latency revisions refuse those transitions before moving audible owners.
-        self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
+        self.render_detached_tails(
+            performance_frame,
+            arrangement_frame,
+            loop_pass,
+            output,
+            frame_offset,
+            capture,
+            foreign,
+        )?;
         if self.playing {
             self.return_effect_tails
                 .render_chunk(output, frame_offset, capture, foreign)?;

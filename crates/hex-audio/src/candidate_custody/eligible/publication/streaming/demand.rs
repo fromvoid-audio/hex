@@ -70,7 +70,13 @@ impl StateView<'_> {
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
-        self.prepare_stream_window_at(previous, request, role, None)
+        self.prepare_stream_window_at(previous, request, role, None, false)
+    }
+    fn prepare_stream_callback(
+        &mut self,
+        request: &mut StreamInstall<'_>,
+    ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
+        self.prepare_stream_window_at(None, request, ProtectionRole::Transition, None, true)
     }
     pub(super) fn prepare_stream_window_at(
         &mut self,
@@ -78,6 +84,7 @@ impl StateView<'_> {
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
         due: Option<u64>,
+        whole_callback: bool,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
         let refs = self.domain_refs;
         let workspace = self
@@ -170,6 +177,12 @@ impl StateView<'_> {
                     request.frames,
                     &mut visit,
                 )?
+            } else if whole_callback {
+                runtime.visit_stream_callback(
+                    request.frames,
+                    request.pending_play.then_some(true),
+                    &mut visit,
+                )?
             } else {
                 runtime.visit_next_stream_chunk(
                     request.frames,
@@ -194,6 +207,26 @@ impl StateView<'_> {
             workspace.role = Some(role);
             if role == ProtectionRole::Candidate {
                 workspace.candidate_role = CandidateRole::Publication;
+            }
+        }
+        if whole_callback {
+            // The previous callback has completed and no page borrow survives
+            // into this one. Its Active role cannot reserve cache indefinitely
+            // while the next whole-callback union waits for new pages. Release
+            // only those exact completed stamps; Candidate and Transition
+            // protections keep their independent ownership and masks.
+            for token in refs.into_iter().flatten() {
+                if let Some(stamp) = workspace.active[token.slot] {
+                    let loan = envelope(request.domains, token)?
+                        .inner
+                        .loan
+                        .as_mut()
+                        .ok_or(hex_engine::Invalid("stream loan unavailable"))?;
+                    if !loan.cancel(ProtectionRole::Active, stamp.request_epoch) {
+                        return Err(hex_engine::Invalid("completed stream role differs"));
+                    }
+                    workspace.active[token.slot] = None;
+                }
             }
         }
         let stamps = if due.is_some() {
@@ -466,9 +499,12 @@ impl ActiveView<'_> {
                 command_prefix,
                 frames: output.len() - committed,
             };
-            let mut planned =
+            let mut planned = if foreign.is_some() {
+                self.state.prepare_stream_callback(&mut request)
+            } else {
                 self.state
-                    .prepare_stream_window(None, &mut request, ProtectionRole::Transition);
+                    .prepare_stream_window(None, &mut request, ProtectionRole::Transition)
+            };
             if !matches!(planned, Ok(Some(_))) && self.revoke_launch_prewarm(request.domains) {
                 if let Some(scheduled) = self
                     .state
@@ -482,11 +518,12 @@ impl ActiveView<'_> {
                 // commits; a worker request must get a chance to use the pool.
                 // Current audio has priority over revocable future pins. One
                 // bounded retry, retaining the actual original PendingRoute due.
-                planned = self.state.prepare_stream_window(
-                    None,
-                    &mut request,
-                    ProtectionRole::Transition,
-                );
+                planned = if foreign.is_some() {
+                    self.state.prepare_stream_callback(&mut request)
+                } else {
+                    self.state
+                        .prepare_stream_window(None, &mut request, ProtectionRole::Transition)
+                };
             }
             let window = match planned {
                 Ok(Some(window)) => window,

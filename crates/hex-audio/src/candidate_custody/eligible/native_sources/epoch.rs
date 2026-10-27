@@ -97,6 +97,7 @@ impl Custody {
                 }
                 Err(owner) => {
                     cell.constructor_refused = true;
+                    cell.failure_stage = Some("native instance quiescence");
                     cell.owner = Some(Owner::WorkerRefused(owner));
                 }
             },

@@ -7,6 +7,62 @@ use std::fmt;
 
 pub(super) const RETURN_EFFECT_TAIL_CAPACITY: usize = 64;
 
+/// Process one retained suffix on the existing transport history. The caller
+/// owns the captured arrival and the original chain; this transfers neither.
+#[allow(clippy::too_many_arguments)] // Exact retained chain, clock and callback endpoint.
+pub(super) fn process_timed_suffix(
+    chain: &mut NativeRuntimeChain,
+    suffix_start: usize,
+    input_arrival: u32,
+    frames: &mut [Frame],
+    frame_offset: usize,
+    compensation: Option<&crate::signal_graph::SignalRuntime>,
+    clock: &dyn hex_lattice::NativeInstrumentClock,
+    foreign: &mut dyn hex_lattice::ForeignProcessors,
+) -> Result<(), SessionPlaybackError> {
+    if suffix_start > chain.len() {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
+    let mut arrival = input_arrival;
+    for entry in suffix_start..chain.len() {
+        if let Some(compensation) = compensation {
+            if frames.len() != 1 {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            let origin =
+                crate::signal_graph::OriginClock(compensation.delays.stamp_at_delay(arrival));
+            chain.process_range_with_foreign(
+                entry..entry + 1,
+                frames,
+                frame_offset,
+                Some(&origin),
+                foreign,
+            )
+        } else {
+            if arrival != 0 {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            chain.process_range_with_foreign(
+                entry..entry + 1,
+                frames,
+                frame_offset,
+                Some(clock),
+                foreign,
+            )
+        }
+        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        arrival = arrival
+            .checked_add(
+                chain
+                    .algorithmic_latency_frames_for_entry(entry)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?,
+            )
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 enum TailDestination {
     Return(ReturnId),
@@ -226,44 +282,16 @@ impl ReturnEffectTailBank {
             }
             let frames = &mut scratch[..output.len()];
             frames.fill([0.0; 2]);
-            let mut arrival = input_arrival;
-            for entry in suffix_start..tail.chain.len() {
-                if let Some(compensation) = compensation {
-                    if frames.len() != 1 {
-                        return Err(SessionPlaybackError::DeviceRuntime);
-                    }
-                    let origin = crate::signal_graph::OriginClock(
-                        compensation.delays.stamp_at_delay(arrival),
-                    );
-                    tail.chain.process_range_with_foreign(
-                        entry..entry + 1,
-                        frames,
-                        frame_offset,
-                        Some(&origin),
-                        foreign,
-                    )
-                } else {
-                    if arrival != 0 {
-                        return Err(SessionPlaybackError::DeviceRuntime);
-                    }
-                    tail.chain.process_range_with_foreign(
-                        entry..entry + 1,
-                        frames,
-                        frame_offset,
-                        Some(clock),
-                        foreign,
-                    )
-                }
-                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                arrival = arrival
-                    .checked_add(
-                        tail.chain
-                            .algorithmic_latency_frames_for_entry(entry)
-                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?
-                            .ok_or(SessionPlaybackError::DeviceRuntime)?,
-                    )
-                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            }
+            process_timed_suffix(
+                &mut tail.chain,
+                suffix_start,
+                input_arrival,
+                frames,
+                frame_offset,
+                compensation,
+                clock,
+                foreign,
+            )?;
             tail.output_scratch = !tail
                 .chain
                 .speculative_range_is_quiescent(suffix_start..tail.chain.len());

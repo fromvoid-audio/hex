@@ -13,7 +13,9 @@ use hex_session::service::{
 };
 mod restore;
 use restore::Restore;
+mod controller_page;
 mod edits;
+mod gesture;
 mod reopen;
 mod save;
 use reopen::Reopen;
@@ -90,7 +92,7 @@ impl FactsGate {
     }
 }
 #[cfg(all(test, feature = "allocation-probe"))]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(super) struct PreparationObservation {
     pub(super) output: Option<u64>,
     pub(super) binding: Option<Binding>,
@@ -100,6 +102,10 @@ pub(super) struct PreparationObservation {
     pub(super) native: Option<Progress>,
     pub(super) attempts: u64,
     pub(super) restore_refused: bool,
+    pub(super) restore_error: Option<String>,
+    pub(super) stopped_error: Option<String>,
+    pub(super) stopped_stage: Option<&'static str>,
+    pub(super) stopped_fence: Option<hex_audio::prepared::StoppedEditFenceState>,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -112,6 +118,10 @@ impl std::fmt::Debug for PreparationObservation {
             .field("retiring", &self.retiring)
             .field("attempts", &self.attempts)
             .field("native", &self.native)
+            .field("restore_error", &self.restore_error)
+            .field("stopped_error", &self.stopped_error)
+            .field("stopped_stage", &self.stopped_stage)
+            .field("stopped_fence", &self.stopped_fence)
             .finish()
     }
 }
@@ -128,6 +138,11 @@ pub(super) struct Plugins {
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     edit: Option<AudioSourceContext>,
+    controller_page: Option<controller_page::PendingControllerPage>,
+    gesture: Option<gesture::Gesture>,
+    gesture_point: Option<gesture::PendingPoint>,
+    stopped_gesture_point: Option<gesture::StoppedPoint>,
+    gesture_capture: Option<gesture::PendingCommit>,
     pub(super) catalog: Option<std::path::PathBuf>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -189,7 +204,17 @@ impl Plugins {
         // Session already completed an accepted submission. A fresh exclusive
         // Lease proves the old Root/gate retired even if its final ACK was lost
         // to output replacement. Unsubmitted requests still need their refusal.
-        if self.restore.as_ref().is_some_and(Restore::submitted) {
+        if let Some(point) = self.stopped_gesture_point.as_mut() {
+            if !point.output_retired {
+                point.retired_without_submission = !point.graph_installed
+                    && self
+                        .restore
+                        .as_ref()
+                        .is_none_or(|restore| !restore.submitted());
+            }
+            point.output_retired = true;
+            self.restore = None;
+        } else if self.restore.as_ref().is_some_and(Restore::submitted) {
             self.restore = None;
         }
         self.sources.clear();
@@ -197,6 +222,7 @@ impl Plugins {
     }
     pub fn output_closed(&mut self) {
         self.configured = false;
+        self.detach_controller_page();
         if let Some(restore) = self.restore.as_mut() {
             restore.output_closed();
         }
@@ -348,7 +374,7 @@ impl Plugins {
                 result: None,
             });
         }
-        self.poll(output, Some(input.insertion.context));
+        self.poll(output, Some(input.insertion.context), None);
         match self.pending.as_ref().and_then(|p| p.result.as_ref()) {
             Some(Ok(state)) => Ok(PluginEffectPreparationState::Ready(state.clone())),
             Some(Err(error)) => Err(error.clone()),
@@ -382,12 +408,20 @@ impl Plugins {
             source.retiring |= !source.accepted;
         }
     }
-    pub fn poll(&mut self, output: &mut WorkerPreparedOutput, context: Option<AudioSourceContext>) {
+    pub fn poll(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        context: Option<AudioSourceContext>,
+        cancellation: Option<&hex_session::service::RequestCancellation>,
+    ) {
         let Some(control) = output.publication.control() else {
             self.output_closed();
             return;
         };
-        self.poll_restore(control, context);
+        self.poll_controller_page(control, context);
+        self.poll_gesture_point(control, context);
+        self.poll_gesture_capture(control, context);
+        self.poll_restore(control, context, cancellation);
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(observed) = self.completed.as_ref() {
             let count = self
@@ -486,6 +520,12 @@ impl Plugins {
             {
                 let source = self.sources.first();
                 let restore_refused = observed.restore_refused;
+                let restore_error = observed.restore_error.take();
+                let stopped_error = observed.stopped_error.take();
+                let stopped = self
+                    .restore
+                    .as_ref()
+                    .map(|restore| restore.observation(control));
                 *observed = PreparationObservation {
                     output: control.output_identity(),
                     binding: source.map(|source| source.binding),
@@ -497,6 +537,10 @@ impl Plugins {
                         control.native_source_preparation_progress(source.binding)
                     }),
                     restore_refused,
+                    restore_error,
+                    stopped_error,
+                    stopped_stage: stopped.map(|(stage, _)| stage),
+                    stopped_fence: stopped.map(|(_, fence)| fence),
                 };
             }
             if let Some(queued) = &self.queued {

@@ -424,6 +424,30 @@ fn stopped_parameter_drain_keeps_an_authored_collision_refused() {
     );
     let retired = owner.retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
+
+    // A real authored collision remains refused when retirement performs the
+    // final join instead of a caller draining the stopped worker first.
+    let (mut owner, mut endpoint) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let request = begin_change(&mut owner, 7, 0.75);
+    callback(
+        &owner,
+        &mut endpoint,
+        0,
+        2.0,
+        &[ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        }],
+    );
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
+    assert_eq!(
+        request.poll_retirement_on_control().unwrap(),
+        NativeWorkerParameterProgress::Refused
+    );
+    assert!(request.poll_retirement_on_control().is_err());
 }
 
 #[test]

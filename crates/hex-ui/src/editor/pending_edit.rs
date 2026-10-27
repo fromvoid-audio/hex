@@ -14,9 +14,10 @@
 //! but cannot undo a released edit already admitted to the worker.
 //!
 //! This follows the Service's ordered ordinary request completions. Every
-//! `request_complete` counts, including typed gesture completions counted by the
-//! controller. Existing keyed device GestureClient acknowledgements remain their
-//! own stronger protocol; never replace those with an ordinary FIFO receipt.
+//! `request_complete` counts, including ordinary typed gesture completions.
+//! A priority plugin restore has a keyed acknowledgement and no FIFO completion;
+//! it cannot retire another edit's receipt. Existing keyed device GestureClient
+//! acknowledgements remain their own stronger protocol.
 use std::num::NonZeroUsize;
 
 #[derive(Debug)]

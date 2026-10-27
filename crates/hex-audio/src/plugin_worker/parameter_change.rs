@@ -2,7 +2,7 @@
 //! Fixed request/result storage belongs to the original completion allocation;
 //! no SDK callback, invented process block, reader or source owner is added.
 use super::*;
-use std::sync::{TryLockError, Weak};
+use std::sync::{Mutex, TryLockError, Weak};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
@@ -24,6 +24,14 @@ pub(super) struct Slot {
     phase: Phase,
     point: ParameterPoint,
     result: Option<Terminal>,
+    retirement: Option<Arc<Mutex<RetirementReceipt>>>,
+}
+#[derive(Default)]
+enum RetirementReceipt {
+    #[default]
+    Pending,
+    Terminal(NativeWorkerParameterProgress),
+    Consumed,
 }
 impl Slot {
     pub(super) fn snapshot_fence(&self) -> (u64, bool) {
@@ -42,10 +50,40 @@ pub(super) struct Work {
 /// canonical edit authority. Retain the one current token until its exact
 /// terminal, including after Stop. If custody is lost, retire the original
 /// source; never rebind it as though the input had been consumed.
+/// Admission allocates one fixed-size receipt on control, shared only with
+/// this worker's single input slot. The token retains that allocation after
+/// retirement; it contains no native owner or captured state. It is separate
+/// from the worker's constructor storage and must be dropped on control.
 pub struct NativeWorkerParameterChange {
     source: Weak<Signal>,
     binding: Binding,
     ordinal: u64,
+    retirement: Arc<Mutex<RetirementReceipt>>,
+}
+impl NativeWorkerParameterChange {
+    /// Read the exact original worker's terminal after its control owner has
+    /// retired. This small caller-owned receipt retains no source, processor,
+    /// callback or state payload, and never grants canonical edit authority.
+    /// Pending includes a still-running retirement; a terminal is consumed once.
+    pub fn poll_retirement_on_control(
+        &self,
+    ) -> Result<NativeWorkerParameterProgress, &'static str> {
+        let mut receipt = match self.retirement.try_lock() {
+            Ok(receipt) => receipt,
+            Err(TryLockError::WouldBlock) => return Ok(NativeWorkerParameterProgress::Pending),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err("native parameter retirement receipt failed");
+            }
+        };
+        match *receipt {
+            RetirementReceipt::Pending => Ok(NativeWorkerParameterProgress::Pending),
+            RetirementReceipt::Terminal(result) => {
+                *receipt = RetirementReceipt::Consumed;
+                Ok(result)
+            }
+            RetirementReceipt::Consumed => Err("native parameter retirement receipt consumed"),
+        }
+    }
 }
 /// The requested point travelled in this successful SDK input/reply exchange.
 /// This is not controller readback, final host delivery, captured state or a
@@ -67,6 +105,49 @@ pub enum NativeWorkerParameterProgress {
     /// Withdrawn while queued, before any native input could consume it.
     Withdrawn,
     Failed,
+}
+
+/// One consumed native input terminal. The source flag is an observation at
+/// return, never authority to commit a project edit or reuse an endpoint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeParameterTerminalReceipt {
+    progress: NativeWorkerParameterProgress,
+    source_current: bool,
+}
+impl NativeParameterTerminalReceipt {
+    pub fn progress(self) -> NativeWorkerParameterProgress {
+        self.progress
+    }
+    pub fn source_current(self) -> bool {
+        self.source_current
+    }
+}
+
+/// Pending and transport revocation do not consume the input token. A
+/// terminal contains the actual consumed result even if source close raced
+/// its delivery; callers must not install state from a closed-source receipt.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeParameterPoll {
+    Pending,
+    TransportRevoked,
+    Terminal(NativeParameterTerminalReceipt),
+}
+impl NativeParameterPoll {
+    pub(crate) fn terminal(progress: NativeWorkerParameterProgress) -> Self {
+        Self::Terminal(NativeParameterTerminalReceipt {
+            progress,
+            source_current: true,
+        })
+    }
+    pub(crate) fn source_closed(self, reason: &'static str) -> Result<Self, &'static str> {
+        match self {
+            Self::Terminal(mut receipt) => {
+                receipt.source_current = false;
+                Ok(Self::Terminal(receipt))
+            }
+            _ => Err(reason),
+        }
+    }
 }
 impl NativeWorker {
     /// Drain the exact admitted input after its original worker has stopped.
@@ -135,6 +216,7 @@ impl NativeWorker {
             // original owner and fence intact for explicit fault recovery.
             return Err("native parameter input terminal missing");
         }
+        slot.mark_consumed()?;
         slot.phase = Phase::Idle;
         slot.result = None;
         if state.parameter_change.ordinal == Some(request.ordinal) {
@@ -200,6 +282,8 @@ impl NativeWorker {
         slot.point = point;
         slot.phase = Phase::Queued;
         slot.result = None;
+        let retirement = Arc::new(Mutex::new(RetirementReceipt::Pending));
+        slot.retirement = Some(Arc::clone(&retirement));
         self.reaper
             .completed
             .parameter_change_requested
@@ -208,6 +292,7 @@ impl NativeWorker {
             source: Arc::downgrade(&self.reaper.completed),
             binding: self.binding,
             ordinal,
+            retirement,
         })
     }
     /// Withdraw only an exact queued operation. False means it already crossed
@@ -268,6 +353,7 @@ impl NativeWorker {
         let result = slot
             .result
             .ok_or("native parameter input terminal missing")?;
+        slot.mark_consumed()?;
         slot.phase = Phase::Idle;
         slot.result = None;
         Ok(match result {
@@ -288,9 +374,75 @@ impl NativeWorker {
         Ok(())
     }
 }
+
+// Called by the original joining owner after the worker has stopped. A queued
+// input is known not to have reached DSP. If an in-flight input has no worker
+// result at final retirement, report failure without claiming its effect.
+pub(super) fn retain_retirement_terminal(
+    signal: &Signal,
+    state: &mut State,
+    healthy: bool,
+) -> Result<(), &'static str> {
+    let mut mailbox = signal
+        .capture
+        .lock()
+        .map_err(|_| "native parameter mailbox failed")?;
+    let slot = &mut mailbox.parameter_change;
+    if slot.phase == Phase::Idle {
+        return Ok(());
+    }
+    let result = match slot.phase {
+        Phase::Queued if healthy => NativeWorkerParameterProgress::Withdrawn,
+        Phase::Complete => match slot.result {
+            Some(Terminal::Processed(value)) => NativeWorkerParameterProgress::Processed(value),
+            Some(Terminal::Refused) => NativeWorkerParameterProgress::Refused,
+            Some(Terminal::Withdrawn) => NativeWorkerParameterProgress::Withdrawn,
+            None => return Err("native parameter input terminal missing"),
+        },
+        Phase::InFlight if state.parameter_change.ordinal == Some(slot.ordinal) => {
+            match state.parameter_change.result {
+                Some(Terminal::Processed(value)) => NativeWorkerParameterProgress::Processed(value),
+                Some(Terminal::Refused) => NativeWorkerParameterProgress::Refused,
+                Some(Terminal::Withdrawn) => NativeWorkerParameterProgress::Withdrawn,
+                None => NativeWorkerParameterProgress::Failed,
+            }
+        }
+        _ if !healthy => NativeWorkerParameterProgress::Failed,
+        _ => return Err("native parameter input terminal missing"),
+    };
+    let receipt = slot
+        .retirement
+        .as_ref()
+        .ok_or("native parameter retirement receipt missing")?;
+    let mut receipt = receipt
+        .lock()
+        .map_err(|_| "native parameter retirement receipt failed")?;
+    *receipt = RetirementReceipt::Terminal(result);
+    drop(receipt);
+    slot.phase = Phase::Idle;
+    slot.result = None;
+    slot.retirement = None;
+    state.parameter_change = Work::default();
+    signal.parameter_change_requested.store(false, Release);
+    Ok(())
+}
 impl Slot {
     fn matches(&self, request: &NativeWorkerParameterChange) -> bool {
         self.phase != Phase::Idle && self.ordinal == request.ordinal
+    }
+
+    fn mark_consumed(&mut self) -> Result<(), &'static str> {
+        let receipt = self
+            .retirement
+            .as_ref()
+            .ok_or("native parameter retirement receipt missing")?;
+        let mut receipt = receipt
+            .lock()
+            .map_err(|_| "native parameter retirement receipt failed")?;
+        *receipt = RetirementReceipt::Consumed;
+        drop(receipt);
+        self.retirement = None;
+        Ok(())
     }
 }
 fn merge_parameter_input(
@@ -389,6 +541,26 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn closing_preserves_only_an_already_consumed_terminal() {
+        assert_eq!(
+            NativeParameterPoll::Pending.source_closed("closed"),
+            Err("closed")
+        );
+        assert_eq!(
+            NativeParameterPoll::TransportRevoked.source_closed("closed"),
+            Err("closed")
+        );
+        let NativeParameterPoll::Terminal(receipt) =
+            NativeParameterPoll::terminal(NativeWorkerParameterProgress::Withdrawn)
+                .source_closed("closed")
+                .unwrap()
+        else {
+            panic!("terminal")
+        };
+        assert_eq!(receipt.progress(), NativeWorkerParameterProgress::Withdrawn);
+        assert!(!receipt.source_current());
+    }
     #[test]
     fn input_merge_preserves_authored_order_and_refuses_conflict_or_capacity_without_overwrite() {
         let host = ParameterPoint {

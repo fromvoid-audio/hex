@@ -16,6 +16,8 @@ mod footprint;
 pub use footprint::{AllocationData, EndpointData, StreamDataFootprint, TransportData, WorkerData};
 mod endpoint;
 mod runtime;
+#[cfg(feature = "test-support")]
+pub mod test_control;
 mod types;
 mod worker;
 

@@ -5,6 +5,21 @@ use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
 use hex_lattice_contract::DeviceContractError;
 use hex_plugin_host::transport::Fault;
 impl NativeEndpointBank {
+    /// Headless control diagnostic only, never an endpoint or completion proof.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn faults_on_control(&self) -> Vec<(Binding, Option<&'static str>)> {
+        self.entries
+            .iter()
+            .flatten()
+            .filter_map(|entry| {
+                let callback = entry.0.callback.as_ref()?.callback();
+                Some((
+                    entry.0.binding,
+                    callback.transport_fault_for_test().map(Fault::message),
+                ))
+            })
+            .collect()
+    }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_transport_fault(&self, binding: Binding) -> Option<Fault> {
         self.entries

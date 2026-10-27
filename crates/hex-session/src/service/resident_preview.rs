@@ -78,9 +78,41 @@ pub(super) fn device_operation(
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
 ) -> crate::device_gesture::PreparedGesture {
+    if matches!(
+        operation,
+        GesturePreparation::Plugin(crate::device_gesture::PluginGesturePreparation::Commit(_))
+    ) {
+        return Err(SessionError::Invalid(
+            "finish the plugin gesture before continuing",
+        ));
+    }
+    device_operation_with_plugin_publication(
+        session, operation, context, current, preview, sink, admission, &mut None, &mut None,
+    )
+}
+#[allow(clippy::too_many_arguments)] // Existing keyed gesture plus its exact unpublished/project owner.
+pub(super) fn device_operation_with_plugin_publication(
+    session: &mut Session,
+    operation: GesturePreparation,
+    context: hex_engine::AudioSourceContext,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    pending: &mut Option<resident_audio::PendingPluginPublication>,
+    stopped_recovery: &mut Option<resident_audio::PendingPluginRecovery>,
+) -> crate::device_gesture::PreparedGesture {
     match operation {
         GesturePreparation::Plugin(operation) => plugin_parameter::operation(
-            session, operation, context, current, preview, sink, admission,
+            session,
+            operation,
+            context,
+            current,
+            preview,
+            sink,
+            admission,
+            pending,
+            stopped_recovery,
         ),
         GesturePreparation::Preview(draft) => {
             let identity = Identity::Device(DevicePreviewIdentity {

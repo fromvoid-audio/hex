@@ -83,6 +83,7 @@ impl Custody {
                 Ok(owner) => cell.owner = Some(Owner::Prepared(owner)),
                 Err(owner) => {
                     cell.constructor_refused = true;
+                    cell.failure_stage = Some("native instance completion");
                     cell.owner = Some(Owner::Refused(owner));
                 }
             },
@@ -91,6 +92,7 @@ impl Custody {
                     Ok(owner) => cell.owner = Some(Owner::Prepared(owner)),
                     Err(owner) => {
                         cell.constructor_refused = true;
+                        cell.failure_stage = Some("native instance resume");
                         cell.owner = Some(Owner::Refused(owner));
                     }
                 }

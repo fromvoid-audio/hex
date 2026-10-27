@@ -10,7 +10,10 @@ use hex_session::service::{
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationRefusal,
 };
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{
+    AtomicU8, AtomicUsize,
+    Ordering::{AcqRel, Release},
+};
 
 struct ResidentSink {
     inner: NativeAudioSink,
@@ -21,6 +24,49 @@ struct ResidentSink {
     file_publication_waiting: Arc<AtomicBool>,
     pending_observation_generation: Arc<AtomicU64>,
     publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+    gesture_probe: Arc<GestureProbe>,
+}
+#[derive(Default)]
+pub(super) struct GestureProbe {
+    pub(super) enabled: AtomicBool,
+    pub(super) ready: AtomicBool,
+    pub(super) hold_real_ready: AtomicBool,
+    pub(super) observed_real_ready: AtomicBool,
+    pub(super) real_restore_attempts: AtomicUsize,
+    pub(super) real_restore_pending: AtomicBool,
+    pub(super) real_restore_busy_refused: AtomicBool,
+    pub(super) real_preview_attempts: AtomicUsize,
+    pub(super) real_preview_pending: AtomicBool,
+    pub(super) real_commit_attempts: AtomicUsize,
+    pub(super) real_commit_pending: AtomicBool,
+    pub(super) hold_commit_finish: AtomicBool,
+    pub(super) pending_commit_finish: Mutex<
+        Option<(
+            AudioSourceContext,
+            hex_session::device_gesture::GestureKey,
+            u64,
+            bool,
+        )>,
+    >,
+    pub(super) restart_generation: AtomicU64,
+    pub(super) restart_result: Mutex<Option<Result<(), String>>>,
+    pub(super) restore_ready: AtomicBool,
+    pub(super) restore_finishes: Mutex<Vec<(AudioSourceContext, bool)>>,
+    pub(super) hold_publication_terminal: AtomicBool,
+    pub(super) saw_publication_applied: AtomicBool,
+    pub(super) contend_stopped_finish: AtomicBool,
+    pub(super) stopped_finish_contended: AtomicBool,
+    pub(super) pending: Mutex<Option<hex_session::device_gesture::GestureRequest>>,
+    pub(super) cancelled: Mutex<Vec<hex_session::device_gesture::GestureRequest>>,
+    pub(super) controller_start: Mutex<
+        Option<(
+            hex_session::service::PluginControllerPageRequest,
+            hex_session::service::NativeDeviceState,
+        )>,
+    >,
+    pub(super) controller_active: Mutex<Option<hex_session::service::PluginControllerPageRequest>>,
+    pub(super) controller_result:
+        Mutex<Option<Result<hex_session::service::PluginControllerPageResult, String>>>,
 }
 struct PublicationProbe {
     ready: SyncSender<()>,
@@ -28,6 +74,238 @@ struct PublicationProbe {
     busy: SyncSender<()>,
 }
 impl WorkerAudioSink for ResidentSink {
+    fn retry_refused_plugin_state_restore(
+        &mut self,
+        context: AudioSourceContext,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        self.inner
+            .retry_refused_plugin_state_restore(context, receipt)
+    }
+    fn preserve_closed_stopped_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        self.inner
+            .preserve_closed_stopped_plugin_gesture(context, key, sequence, receipt)
+    }
+    fn retire_unsubmitted_stopped_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        old_output: u64,
+        replacement: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        self.inner.retire_unsubmitted_stopped_plugin_gesture(
+            context,
+            key,
+            sequence,
+            old_output,
+            replacement,
+        )
+    }
+    fn retire_closed_stopped_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        old: hex_session::service::ResidentPublicationReceipt,
+        replacement: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        self.inner
+            .retire_closed_stopped_plugin_gesture(context, key, sequence, old, replacement)
+    }
+    fn finish_stopped_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+        accepted: bool,
+    ) -> hex_session::service::StoppedGestureCompletion {
+        if self
+            .gesture_probe
+            .contend_stopped_finish
+            .swap(false, AcqRel)
+        {
+            if let Some(control) = self
+                .inner
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+            {
+                control
+                    .status
+                    .hold_recording_source_observation_for_test(true);
+                self.gesture_probe
+                    .stopped_finish_contended
+                    .store(true, Release);
+            }
+        }
+        self.inner
+            .finish_stopped_plugin_gesture(context, key, sequence, receipt, accepted)
+    }
+    fn begin_retired_applied_plugin_recovery(
+        &mut self,
+        identity: hex_session::service::ResidentRetiredIdentity,
+        candidate: Arc<hex_session::service::PluginRecoveryCandidate>,
+    ) -> Result<(), String> {
+        self.inner
+            .begin_retired_applied_plugin_recovery(identity, candidate)
+    }
+    fn retire_closed_plugin_gesture(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+    ) -> bool {
+        self.inner
+            .retire_closed_plugin_gesture(context, key, sequence)
+    }
+    fn retained_resident_publication(
+        &self,
+        context: AudioSourceContext,
+    ) -> Option<hex_session::service::ResidentRetainedReceipt> {
+        self.inner.retained_resident_publication(context)
+    }
+    fn poll_retained_resident_publication(
+        &mut self,
+        receipt: hex_session::service::ResidentRetainedReceipt,
+    ) -> hex_session::service::ResidentPublicationTerminal {
+        self.inner.poll_retained_resident_publication(receipt)
+    }
+    fn prepare_plugin_parameter_gesture(
+        &mut self,
+        input: hex_session::service::PluginParameterGestureInput<'_>,
+    ) -> Result<
+        hex_session::service::PluginParameterGestureResult,
+        hex_session::service::PluginParameterGestureError,
+    > {
+        use hex_session::device_gesture::{GestureRequest, PluginGesturePreparation};
+        use hex_session::service::PluginParameterGestureResult;
+        if !self.gesture_probe.enabled.load(Acquire) {
+            let restore = matches!(input.operation(), PluginGesturePreparation::Restore { .. });
+            let preview = matches!(input.operation(), PluginGesturePreparation::Preview(_));
+            let commit = matches!(input.operation(), PluginGesturePreparation::Commit(_));
+            let result = self.inner.prepare_plugin_parameter_gesture(input);
+            if restore {
+                self.gesture_probe.real_restore_pending.store(
+                    matches!(&result, Ok(PluginParameterGestureResult::Pending)),
+                    Release,
+                );
+                if matches!(&result, Err(hex_session::service::PluginParameterGestureError::Refused(reason)) if reason == "native preparation is busy")
+                {
+                    self.gesture_probe
+                        .real_restore_busy_refused
+                        .store(true, Release);
+                }
+                self.gesture_probe
+                    .real_restore_attempts
+                    .fetch_add(1, Release);
+            }
+            if preview {
+                self.gesture_probe.real_preview_pending.store(
+                    matches!(&result, Ok(PluginParameterGestureResult::Pending)),
+                    Release,
+                );
+                self.gesture_probe
+                    .real_preview_attempts
+                    .fetch_add(1, Release);
+            }
+            if commit {
+                self.gesture_probe.real_commit_pending.store(
+                    matches!(&result, Ok(PluginParameterGestureResult::Pending)),
+                    Release,
+                );
+                self.gesture_probe
+                    .real_commit_attempts
+                    .fetch_add(1, Release);
+            }
+            return result;
+        }
+        match input.operation() {
+            PluginGesturePreparation::Begin { .. } | PluginGesturePreparation::Restore { .. } => {
+                Ok(PluginParameterGestureResult::Applied)
+            }
+            PluginGesturePreparation::Preview(snapshot) => {
+                let value = snapshot.plugin_value.ok_or_else(|| {
+                    hex_session::service::PluginParameterGestureError::Refused(
+                        "fixture missing value".into(),
+                    )
+                })?;
+                *self.gesture_probe.pending.lock().unwrap() = Some(GestureRequest::ChangePlugin {
+                    key: snapshot.key,
+                    sequence: snapshot.sequence,
+                    value,
+                });
+                if self.gesture_probe.ready.load(Acquire) {
+                    Ok(PluginParameterGestureResult::Applied)
+                } else {
+                    Ok(PluginParameterGestureResult::Pending)
+                }
+            }
+            PluginGesturePreparation::Commit(_) => {
+                Err(hex_session::service::PluginParameterGestureError::Refused(
+                    "fixture commit unsupported".into(),
+                ))
+            }
+        }
+    }
+    fn plugin_parameter_gesture_ready(
+        &self,
+        context: AudioSourceContext,
+        request: hex_session::device_gesture::GestureRequest,
+    ) -> bool {
+        if !self.gesture_probe.enabled.load(Acquire) {
+            let ready = self.inner.plugin_parameter_gesture_ready(context, request);
+            if ready {
+                self.gesture_probe
+                    .observed_real_ready
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            return !self.gesture_probe.hold_real_ready.load(Acquire) && ready;
+        }
+        self.gesture_probe.ready.load(Acquire)
+            && *self.gesture_probe.pending.lock().unwrap() == Some(request)
+    }
+    fn cancel_pending_plugin_parameter(
+        &mut self,
+        context: AudioSourceContext,
+        request: hex_session::device_gesture::GestureRequest,
+    ) {
+        if !self.gesture_probe.enabled.load(Acquire) {
+            self.gesture_probe.cancelled.lock().unwrap().push(request);
+            self.inner.cancel_pending_plugin_parameter(context, request);
+            return;
+        }
+        self.gesture_probe.cancelled.lock().unwrap().push(request);
+    }
+    fn finish_stale_plugin_parameter(
+        &mut self,
+        context: AudioSourceContext,
+        request: hex_session::device_gesture::GestureRequest,
+    ) -> hex_session::service::StalePluginGestureDisposition {
+        self.inner.finish_stale_plugin_parameter(context, request)
+    }
+    fn finish_plugin_parameter_commit(
+        &mut self,
+        context: AudioSourceContext,
+        key: hex_session::device_gesture::GestureKey,
+        sequence: u64,
+        accepted: bool,
+    ) {
+        if self.gesture_probe.hold_commit_finish.load(Acquire) {
+            *self.gesture_probe.pending_commit_finish.lock().unwrap() =
+                Some((context, key, sequence, accepted));
+            return;
+        }
+        self.inner
+            .finish_plugin_parameter_commit(context, key, sequence, accepted);
+    }
     fn capture_plugin_states_for_save(
         &mut self,
         input: hex_session::service::PluginStateSaveInput<'_>,
@@ -40,10 +318,31 @@ impl WorkerAudioSink for ResidentSink {
     fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
         self.inner.finish_resident_effect_edit(context, accepted);
     }
+    fn poll_resident_publication_terminal(
+        &mut self,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+    ) -> hex_session::service::ResidentPublicationTerminal {
+        let terminal = self.inner.poll_resident_publication_terminal(receipt);
+        if self.gesture_probe.hold_publication_terminal.load(Acquire) {
+            if terminal == hex_session::service::ResidentPublicationTerminal::Applied {
+                self.gesture_probe
+                    .saw_publication_applied
+                    .store(true, Release);
+            }
+            hex_session::service::ResidentPublicationTerminal::Pending
+        } else {
+            terminal
+        }
+    }
     fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
         self.inner.plugin_state_restore_ready()
     }
     fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
+        self.gesture_probe
+            .restore_finishes
+            .lock()
+            .unwrap()
+            .push((context, accepted));
         self.inner.finish_plugin_state_restore(context, accepted);
     }
     fn prepare_stopped_playback_restore(
@@ -269,7 +568,48 @@ impl WorkerAudioSink for ResidentSink {
         hold
     }
     fn poll(&mut self) {
+        if !self.gesture_probe.hold_commit_finish.load(Acquire)
+            && let Some((context, key, sequence, accepted)) = self
+                .gesture_probe
+                .pending_commit_finish
+                .lock()
+                .unwrap()
+                .take()
+        {
+            self.inner
+                .finish_plugin_parameter_commit(context, key, sequence, accepted);
+        }
+        let restart = self
+            .gesture_probe
+            .restart_generation
+            .swap(0, std::sync::atomic::Ordering::AcqRel);
+        if restart != 0 {
+            let result = self.inner.restart_audio(restart - 1, 9876);
+            *self.gesture_probe.restart_result.lock().unwrap() = Some(result);
+        }
         self.inner.poll();
+        if self.inner.plugin_state_restore_ready().is_some() {
+            self.gesture_probe.restore_ready.store(true, Release);
+        }
+        let start = self.gesture_probe.controller_start.lock().unwrap().take();
+        if let Some((request, state)) = start {
+            match self.inner.begin_plugin_controller_page(request, &state) {
+                Ok(()) => *self.gesture_probe.controller_active.lock().unwrap() = Some(request),
+                Err(error) => {
+                    *self.gesture_probe.controller_result.lock().unwrap() = Some(Err(error))
+                }
+            }
+        }
+        let active = *self.gesture_probe.controller_active.lock().unwrap();
+        if let Some(request) = active {
+            match self.inner.poll_plugin_controller_page(request) {
+                Ok(hex_session::service::PluginControllerPageResult::Pending) => {}
+                result => {
+                    *self.gesture_probe.controller_active.lock().unwrap() = None;
+                    *self.gesture_probe.controller_result.lock().unwrap() = Some(result);
+                }
+            }
+        }
         self.pending_observation_generation.store(
             match self.inner.pending_observation.as_ref() {
                 Some(EditorAudioEvent::Publication { context, .. }) => {
@@ -313,6 +653,7 @@ pub(super) struct ResidentHarness {
     pub(super) plugin_queued: Arc<AtomicBool>,
     pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
     pub(super) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
+    pub(super) gesture_probe: Arc<GestureProbe>,
 }
 impl ResidentHarness {
     pub(super) fn new() -> Self {
@@ -447,6 +788,7 @@ impl ResidentHarness {
         let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let publication_probe = Arc::new(Mutex::new(None));
+        let gesture_probe = Arc::new(GestureProbe::default());
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
@@ -460,6 +802,7 @@ impl ResidentHarness {
                 file_publication_waiting: Arc::clone(&file_publication_waiting),
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
                 publication_probe: Arc::clone(&publication_probe),
+                gesture_probe: Arc::clone(&gesture_probe),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
@@ -479,6 +822,7 @@ impl ResidentHarness {
             file_publication_waiting,
             pending_observation_generation,
             publication_probe,
+            gesture_probe,
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
@@ -665,9 +1009,31 @@ impl ResidentHarness {
         let mut host = [0.0; 512];
         let mut slot = self.callback.lock().unwrap();
         let callback = slot.as_mut().unwrap();
+        let mut result = Ok(());
         let counts = allocation_counter::measure(|| {
-            callback.render_native_direct(&mut pcm, &mut host).unwrap()
+            result = callback.render_native_direct(&mut pcm, &mut host);
         });
+        if let Err(error) = result {
+            let status = self.audio.as_ref().and_then(EditorAudio::status);
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            panic!(
+                "headless plugin callback: {error:?}, position={:?}, fault={:?}, stream={:?}, endpoint_faults={:?}, staged_extent={:?}",
+                status.map(|status| status.position.load(Acquire)),
+                status.and_then(|status| status.render_fault_snapshot()),
+                status.map(|status| (
+                    status.stream_buffering.load(Acquire),
+                    status.stream_committed_frames.load(Acquire)
+                )),
+                callback.native_faults_on_control(),
+                callback.native_partial_callback_on_control()
+            );
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            panic!(
+                "headless plugin callback: {error:?}, position={:?}, fault={:?}",
+                status.map(|status| status.position.load(Acquire)),
+                status.and_then(|status| status.render_fault_snapshot())
+            );
+        }
         assert_eq!(
             (
                 counts.count_total,
@@ -780,8 +1146,9 @@ impl ResidentHarness {
                 .filter(|(revision, _)| *revision > after)
             {
                 panic!(
-                    "native graph rejected after {after}: revision={revision}, reason={reason:?}, submitted={:?}",
-                    self.submitted
+                    "native graph rejected after {after}: revision={revision}, reason={reason:?}, submitted={:?}, handoff diagnostic={}",
+                    self.submitted,
+                    hex_engine::playback::test_handoff_failure_code()
                 );
             }
             if let Some((revision, metadata)) =

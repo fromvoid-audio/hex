@@ -37,6 +37,7 @@ pub(super) struct Fence {
     // Callback is the sole writer of acknowledgement and allowed keyboard epoch.
     ack: AtomicU64,
     accepted: AtomicBool,
+    unsettled_stream: AtomicBool,
     keyboard_epoch: AtomicU64,
     abort: AtomicU64,
     retired: AtomicU64,
@@ -73,6 +74,33 @@ impl Fence {
     }
     pub(super) fn ordinary_native_epoch_active(&self) -> bool {
         self.native_epoch_active() && self.ordinary_native_epoch.load(SeqCst)
+    }
+    /// Advance only the revision of an already acknowledged ordinary source.
+    /// The caller proves the exact successor is installed before this atomic
+    /// change; the odd gate remains held throughout.
+    pub(super) fn advance_ordinary_native_epoch_source(
+        &self,
+        token: StoppedEditFence,
+        previous: AppliedAudioSource,
+        successor: AppliedAudioSource,
+    ) -> bool {
+        if !self.ordinary_native_epoch_active()
+            || !self.matches_source(token, previous)
+            || successor.output_identity != previous.output_identity
+            || successor.context != previous.context
+            || successor.audio_revision <= previous.audio_revision
+        {
+            return false;
+        }
+        self.audio
+            .compare_exchange(
+                previous.audio_revision,
+                successor.audio_revision,
+                SeqCst,
+                SeqCst,
+            )
+            .is_ok()
+            && self.matches_source(token, successor)
     }
     pub(super) fn native_epoch_context(
         &self,
@@ -146,6 +174,7 @@ impl Fence {
         self.ordinary_native_epoch
             .store(matches!(native_epoch, NativeEpoch::Ordinary), SeqCst);
         self.native_epoch_position_valid.store(false, SeqCst);
+        self.unsettled_stream.store(false, SeqCst);
         self.output.store(source.output_identity, SeqCst);
         self.generation
             .store(source.context.project_generation, SeqCst);
@@ -228,6 +257,34 @@ impl Fence {
         );
         self.ack.store(operation, SeqCst);
     }
+    // A streamed action can be dequeued before its actual transport terminal.
+    // Refuse this exact native fence rather than witnessing an obsolete stop.
+    fn refuse_unsettled_native_stream(&self, operation: u64, consumed: u64) {
+        if operation & 1 == 0
+            || self.gate() != operation
+            || !self.native_epoch_active()
+            || consumed < self.cut.load(SeqCst)
+        {
+            return;
+        }
+        if self.abort.load(SeqCst) == operation {
+            self.retired.store(operation, SeqCst);
+            return;
+        }
+        if self.ack.load(SeqCst) == operation {
+            return;
+        }
+        self.unsettled_stream.store(true, SeqCst);
+        self.accepted.store(false, SeqCst);
+        self.ack.store(operation, SeqCst);
+    }
+    fn unsettled_stream_cut(&self, token: StoppedEditFence) -> Option<u64> {
+        (self.state(token) == StoppedEditFenceState::Refused
+            && self.gate() == token.operation
+            && self.output.load(SeqCst) == token.output
+            && self.unsettled_stream.load(SeqCst))
+        .then(|| self.cut.load(SeqCst))
+    }
     pub(super) fn state(&self, token: StoppedEditFence) -> StoppedEditFenceState {
         if self.gate() != token.operation
             || self.output.load(SeqCst) != token.output
@@ -270,6 +327,12 @@ impl Status {
     }
 }
 impl PublicationControl {
+    /// Exact refused native-fence witness that an earlier streamed transport
+    /// action had not yet reached its terminal. This does not grant source or
+    /// playback authority; the caller must wait for the returned prefix.
+    pub fn stopped_native_unsettled_stream_cut(&self, token: StoppedEditFence) -> Option<u64> {
+        self.status.sampler_edit.unsettled_stream_cut(token)
+    }
     /// Fence a resident structural edit while allowing the existing runtime to keep playing.
     /// The ready witness selects live inheritance instead of a prepared stopped cursor.
     pub fn request_live_arrangement_edit_fence(
@@ -397,6 +460,13 @@ impl Callback {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.status.sampler_edit.native_epoch.load(Acquire) {
+            if self.stream_pending_play.is_some() || self.stream_action_pending() {
+                self.status.sampler_edit.refuse_unsettled_native_stream(
+                    operation,
+                    self.status.consumed_command.load(Acquire),
+                );
+                return;
+            }
             let source = self.current_native_epoch_fence_source();
             if self.status.sampler_edit.ack.load(SeqCst) != operation {
                 let active = self.active.as_ref().and_then(ActivePublication::legacy);
@@ -525,6 +595,88 @@ mod tests {
             sampler_edit_gate,
             action: PlaybackAction::Transport(PlaybackCommand::Play),
         }
+    }
+    #[test]
+    fn native_fence_refuses_unsettled_stream_only_after_its_command_cut() {
+        let fence = Fence::default();
+        let token = fence
+            .begin_ordinary_native_epoch_source(source(), 4)
+            .unwrap();
+        fence.refuse_unsettled_native_stream(token.operation, 3);
+        assert_eq!(fence.state(token), StoppedEditFenceState::Pending);
+        assert_eq!(fence.unsettled_stream_cut(token), None);
+        fence.refuse_unsettled_native_stream(token.operation, 4);
+        assert_eq!(fence.state(token), StoppedEditFenceState::Refused);
+        assert_eq!(fence.unsettled_stream_cut(token), Some(4));
+        fence.release(token);
+        assert_eq!(fence.unsettled_stream_cut(token), None);
+        let next = fence
+            .begin_ordinary_native_epoch_source(source(), 4)
+            .unwrap();
+        fence.acknowledge(next.operation, Some(source()), false, 0, false, 4);
+        assert_eq!(fence.state(next), StoppedEditFenceState::Ready);
+        assert_eq!(fence.unsettled_stream_cut(next), None);
+        fence.release(next);
+    }
+    #[test]
+    fn unsettled_stream_refusal_retires_a_racing_abort() {
+        let fence = Fence::default();
+        let token = fence
+            .begin_ordinary_native_epoch_source(source(), 4)
+            .unwrap();
+        fence.refuse_unsettled_native_stream(token.operation, 4);
+        // A release can set abort after the callback checked it but before
+        // the callback published its refusal ACK.
+        fence.abort.store(token.operation, SeqCst);
+        fence.refuse_unsettled_native_stream(token.operation, 4);
+        fence.retire_abort_on_control();
+        assert_eq!(fence.gate(), token.operation + 1);
+    }
+    #[test]
+    fn ordinary_native_fence_advances_only_to_matching_successor() {
+        let fence = Fence::default();
+        let old = source();
+        let token = fence.begin_ordinary_native_epoch_source(old, 0).unwrap();
+        fence.acknowledge(token.operation, Some(old), false, 0, false, 0);
+        let next = AppliedAudioSource {
+            audio_revision: old.audio_revision + 1,
+            ..old
+        };
+        assert!(!fence.advance_ordinary_native_epoch_source(
+            token,
+            old,
+            AppliedAudioSource {
+                context: hex_engine::AudioSourceContext {
+                    editor_revision: old.context.editor_revision + 1,
+                    ..old.context
+                },
+                ..next
+            }
+        ));
+        assert!(!fence.advance_ordinary_native_epoch_source(
+            token,
+            old,
+            AppliedAudioSource {
+                output_identity: old.output_identity + 1,
+                ..next
+            }
+        ));
+        assert!(!fence.advance_ordinary_native_epoch_source(token, old, old));
+        assert!(fence.matches_source(token, old));
+        assert!(fence.advance_ordinary_native_epoch_source(token, old, next));
+        assert!(!fence.matches_source(token, old));
+        assert!(fence.matches_source(token, next));
+        assert!(!fence.permits(play(1, 0)));
+        assert!(!fence.advance_ordinary_native_epoch_source(token, old, next));
+        fence.release(token);
+        assert!(!fence.advance_ordinary_native_epoch_source(
+            token,
+            next,
+            AppliedAudioSource {
+                audio_revision: next.audio_revision + 1,
+                ..next
+            }
+        ));
     }
     #[test]
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

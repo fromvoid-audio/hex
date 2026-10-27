@@ -114,6 +114,72 @@ fn values_and_coalesced_terminal_preserve_raw_zero_and_f64() {
 }
 
 #[test]
+fn plugin_cancel_signals_exact_inflight_operation_without_displacing_its_ack() {
+    let (_, origin, _) = fixture();
+    let mut client = GestureClient::default();
+    let key = client.begin_plugin(origin).unwrap();
+    let begin = client.next_request().unwrap();
+    client.mark_submitted();
+    client.cancel().unwrap();
+    assert_eq!(client.urgent_plugin_cancel(), Some(begin));
+    assert_eq!(
+        client.urgent_plugin_cancel(),
+        Some(begin),
+        "full FIFO retries the same signal"
+    );
+    client.mark_urgent_plugin_cancel_submitted();
+    assert_eq!(client.urgent_plugin_cancel(), None);
+    assert_eq!(
+        client.next_request(),
+        None,
+        "original ACK still owns the slot"
+    );
+    let mut stale = ack(begin, true);
+    stale.key.token += 1;
+    assert!(!client.acknowledge(&stale));
+    assert!(client.acknowledge(&ack(begin, true)));
+    assert_eq!(client.next_request(), Some(GestureRequest::Cancel { key }));
+}
+
+#[test]
+fn plugin_cancel_during_commit_waits_for_real_terminal_then_restores_refused_preview() {
+    let (_, origin, _) = fixture();
+    let mut client = GestureClient::default();
+    let key = client.begin_plugin(origin).unwrap();
+    let begin = client.next_request().unwrap();
+    client.mark_submitted();
+    assert!(client.acknowledge(&ack(begin, true)));
+    client.finish_plugin(value(0.75)).unwrap();
+    let commit = client.next_request().unwrap();
+    client.mark_submitted();
+    client.cancel().unwrap();
+    assert_eq!(client.urgent_plugin_cancel(), Some(commit));
+    client.mark_urgent_plugin_cancel_submitted();
+    let mut refused = ack(commit, false);
+    refused.preview_retained = true;
+    let retained = client.snapshot().unwrap();
+    assert!(client.acknowledge_with_snapshot(&refused, Some(retained)));
+    assert_eq!(client.next_request(), Some(GestureRequest::Cancel { key }));
+
+    let mut completed = GestureClient::default();
+    completed.begin_plugin(origin).unwrap();
+    let begin = completed.next_request().unwrap();
+    completed.mark_submitted();
+    assert!(completed.acknowledge(&ack(begin, true)));
+    completed.finish_plugin(value(0.75)).unwrap();
+    let commit = completed.next_request().unwrap();
+    completed.mark_submitted();
+    completed.cancel().unwrap();
+    assert!(
+        completed.acknowledge(&ack(commit, true)),
+        "accepted commit wins the race"
+    );
+    assert!(completed.snapshot().is_none());
+    assert!(completed.next_request().is_none());
+    assert!(completed.urgent_plugin_cancel().is_none());
+}
+
+#[test]
 fn hostless_begin_refuses_without_canonical_or_gesture_mutation() {
     let (mut session, origin, prepared) = fixture();
     let before = session.project().clone();
@@ -127,6 +193,172 @@ fn hostless_begin_refuses_without_canonical_or_gesture_mutation() {
     };
     let outcome = machine.handle(&mut session, request, Some(&prepared), 9);
     assert!(!outcome.ack.accepted);
+    assert!(machine.snapshot().is_none());
+    assert_eq!(session.project(), &before);
+}
+
+#[test]
+fn stale_retirement_preserves_the_key_fence_and_does_not_retire_another_gesture() {
+    let (mut session, origin, prepared) = fixture();
+    let before = session.project().clone();
+    let key = GestureKey {
+        generation: 9,
+        token: 4,
+    };
+    let mut machine = GestureMachine::default();
+    let begin = GestureRequest::BeginPlugin { key, origin };
+    assert!(
+        machine
+            .handle_prepared(&mut session, begin, Some(&prepared), 9, |_, _| Ok(None))
+            .ack
+            .accepted
+    );
+    machine.retire_if_key(GestureKey {
+        generation: 9,
+        token: 3,
+    });
+    assert_eq!(machine.snapshot().unwrap().key, key);
+    machine.retire_if_key(key);
+    assert!(machine.snapshot().is_none());
+    assert!(
+        !machine
+            .handle_prepared(&mut session, begin, Some(&prepared), 9, |_, _| Ok(None))
+            .ack
+            .accepted
+    );
+    assert_eq!(session.project(), &before);
+}
+
+#[test]
+fn pending_plugin_operations_retain_the_exact_request_and_do_not_commit() {
+    let (mut session, origin, prepared) = fixture();
+    let before = session.project().clone();
+    let key = GestureKey {
+        generation: 9,
+        token: 1,
+    };
+    let mut machine = GestureMachine::default();
+    let begin = GestureRequest::BeginPlugin { key, origin };
+    let pending = machine.handle_prepared(&mut session, begin, Some(&prepared), 9, |_, _| {
+        Err(SessionError::PluginPending)
+    });
+    assert!(pending.pending && !pending.ack.accepted);
+    assert!(machine.snapshot().is_none());
+    let accepted =
+        machine.handle_prepared(&mut session, begin, Some(&prepared), 9, |_, _| Ok(None));
+    assert!(!accepted.pending && accepted.ack.accepted);
+
+    let change = GestureRequest::ChangePlugin {
+        key,
+        sequence: 1,
+        value: value(0.5),
+    };
+    let pending = machine.handle_prepared(&mut session, change, Some(&prepared), 9, |_, _| {
+        Err(SessionError::PluginPending)
+    });
+    assert!(pending.pending && !pending.ack.accepted);
+    assert_eq!(machine.snapshot().unwrap().sequence, 0);
+    let accepted =
+        machine.handle_prepared(&mut session, change, Some(&prepared), 9, |_, _| Ok(None));
+    assert!(!accepted.pending && accepted.ack.accepted);
+
+    let commit = GestureRequest::CommitPlugin {
+        key,
+        sequence: 2,
+        value: value(0.75),
+    };
+    let mut preview_calls = 0;
+    let pending = machine.handle_prepared(
+        &mut session,
+        commit,
+        Some(&prepared),
+        9,
+        |session, op| match op {
+            GesturePreparation::Plugin(PluginGesturePreparation::Preview(_)) => {
+                preview_calls += 1;
+                Ok(Some((
+                    Arc::new(session.project().clone()),
+                    Arc::clone(&prepared),
+                )))
+            }
+            GesturePreparation::Plugin(PluginGesturePreparation::Commit(_)) => {
+                Err(SessionError::PluginPending)
+            }
+            _ => panic!("unexpected plugin operation"),
+        },
+    );
+    assert!(pending.pending && !pending.ack.accepted);
+    assert!(
+        pending
+            .playback
+            .as_ref()
+            .is_some_and(|actual| Arc::ptr_eq(actual, &prepared))
+    );
+    assert_eq!(preview_calls, 1);
+    assert_eq!(machine.snapshot().unwrap().sequence, 2);
+    assert_eq!(session.project(), &before);
+    let committed =
+        machine.handle_prepared(&mut session, commit, Some(&prepared), 9, |session, op| {
+            assert!(matches!(
+                op,
+                GesturePreparation::Plugin(PluginGesturePreparation::Commit(_))
+            ));
+            session.editor.execute(Command::ReplaceDeviceState {
+                device: origin.device,
+                state: state(2),
+            })?;
+            Ok(Some((
+                Arc::new(session.project().clone()),
+                Arc::clone(&prepared),
+            )))
+        });
+    assert!(!committed.pending && committed.ack.accepted && committed.canonical_changed);
+    assert!(machine.snapshot().is_none());
+}
+
+#[test]
+fn pending_plugin_restore_keeps_the_accepted_preview_until_terminal() {
+    let (mut session, origin, prepared) = fixture();
+    let before = session.project().clone();
+    let key = GestureKey {
+        generation: 9,
+        token: 1,
+    };
+    let mut machine = GestureMachine::default();
+    for request in [
+        GestureRequest::BeginPlugin { key, origin },
+        GestureRequest::ChangePlugin {
+            key,
+            sequence: 1,
+            value: value(0.75),
+        },
+    ] {
+        let outcome =
+            machine.handle_prepared(&mut session, request, Some(&prepared), 9, |_, _| Ok(None));
+        assert!(!outcome.pending && outcome.ack.accepted);
+    }
+    let preview = machine.snapshot().unwrap();
+    let cancel = GestureRequest::Cancel { key };
+    let pending =
+        machine.handle_prepared(&mut session, cancel, Some(&prepared), 9, |_, operation| {
+            assert!(matches!(
+                operation,
+                GesturePreparation::Plugin(PluginGesturePreparation::Restore { .. })
+            ));
+            Err(SessionError::PluginPending)
+        });
+    assert!(pending.pending && !pending.ack.accepted);
+    assert_eq!(machine.snapshot(), Some(preview));
+    assert_eq!(session.project(), &before);
+    let restored =
+        machine.handle_prepared(&mut session, cancel, Some(&prepared), 9, |_, operation| {
+            assert!(matches!(
+                operation,
+                GesturePreparation::Plugin(PluginGesturePreparation::Restore { .. })
+            ));
+            Ok(None)
+        });
+    assert!(!restored.pending && restored.ack.accepted);
     assert!(machine.snapshot().is_none());
     assert_eq!(session.project(), &before);
 }
@@ -210,6 +442,15 @@ fn canonical_rebase_revalidates_plugin_without_replaying_input_or_fabricating_a_
     assert!(rebased.ack.accepted && !rebased.ack.source_lost);
     assert!(rebased.playback.is_none() && rebased.preview_project.is_none());
     assert_eq!(validations, 1);
+    assert_eq!(machine.snapshot(), Some(active));
+    assert_eq!(session.project(), &canonical);
+
+    let pending = machine
+        .rebase_prepared(&mut session, Some(&prepared), &mut |_, _| {
+            Err(SessionError::PluginPending)
+        })
+        .unwrap();
+    assert!(pending.pending && !pending.ack.accepted && pending.ack.reason.is_none());
     assert_eq!(machine.snapshot(), Some(active));
     assert_eq!(session.project(), &canonical);
 

@@ -10,6 +10,45 @@ use hex_project::LoopRegion;
 use shared_source::{render_source_instrument_chunk, shared_source_has_route};
 use std::sync::Arc;
 
+/// The compensated route supplies one physical frame and its retained input
+/// arrival. Other routes keep the existing batched zero-latency behavior.
+#[allow(clippy::too_many_arguments)] // Original suffix and the callback's borrowed timing/endpoint.
+fn process_detached_suffix(
+    chain: &mut hex_lattice::NativeRuntimeChain,
+    suffix_start: usize,
+    input_arrival: u32,
+    frames: &mut [Frame],
+    frame_offset: usize,
+    compensation: Option<&crate::signal_graph::SignalRuntime>,
+    clock: &dyn hex_lattice::NativeInstrumentClock,
+    foreign: &mut dyn hex_lattice::ForeignProcessors,
+) -> Result<(), SessionPlaybackError> {
+    if let Some(compensation) =
+        compensation.filter(|runtime| runtime.graph.plan.max_latency_frames() > 0)
+    {
+        super::return_effect_tails::process_timed_suffix(
+            chain,
+            suffix_start,
+            input_arrival,
+            frames,
+            frame_offset,
+            Some(compensation),
+            clock,
+            foreign,
+        )
+    } else {
+        chain
+            .process_range_with_foreign(
+                suffix_start..chain.len(),
+                frames,
+                frame_offset,
+                Some(clock),
+                foreign,
+            )
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)
+    }
+}
+
 impl SessionPlayback {
     /// Render a complete block transactionally. A refusal after any chunk
     /// silences the requested block and leaves committed route/clock state as-is.
@@ -1579,7 +1618,15 @@ impl SessionPlayback {
                 )?;
             }
         }
-        self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
+        self.render_detached_tails(
+            performance_frame,
+            arrangement_frame,
+            arrangement_loop_pass,
+            output,
+            frame_offset,
+            capture,
+            foreign,
+        )?;
         self.render_return_buses(
             output,
             frame_offset,
@@ -1754,13 +1801,25 @@ impl SessionPlayback {
         }
         Ok(())
     }
-    fn render_detached_tails(
+    #[allow(clippy::too_many_arguments)] // Original clocks and endpoint belong to this render segment.
+    pub(super) fn render_detached_tails(
         &mut self,
         performance_frame: u64,
+        arrangement_frame: u64,
+        arrangement_loop_pass: u64,
         output: &mut [Frame],
         frame_offset: usize,
         capture: &mut Option<&mut dyn CaptureSink>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        let revision = Arc::clone(&self.revision);
+        let clock = crate::effect_clock::ArrangementEffectClock::session(
+            revision.session().timing(),
+            arrangement_frame,
+            performance_frame,
+            arrangement_loop_pass,
+            self.playing,
+        );
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let table = self.revision.session().sine_table().as_ref();
         // Removed stateless tracks retain their copied linear mix. Stateful
@@ -1859,9 +1918,16 @@ impl SessionPlayback {
                     .copied()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let effect_count = chain.len();
-                chain
-                    .process_range(suffix_start..effect_count, tail_output)
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                process_detached_suffix(
+                    chain,
+                    suffix_start,
+                    self.tail_input_arrivals[group_index],
+                    tail_output,
+                    frame_offset,
+                    self.compensation.as_ref(),
+                    &clock,
+                    foreign,
+                )?;
                 let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
                 *self
                     .tail_output_scratch
@@ -1937,9 +2003,16 @@ impl SessionPlayback {
                     .copied()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let effect_count = chain.len();
-                chain
-                    .process_range(suffix_start..effect_count, tail_output)
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                process_detached_suffix(
+                    chain,
+                    suffix_start,
+                    self.tail_input_arrivals[group_index],
+                    tail_output,
+                    frame_offset,
+                    self.compensation.as_ref(),
+                    &clock,
+                    foreign,
+                )?;
                 let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
                 *self
                     .tail_output_scratch
@@ -1978,10 +2051,15 @@ impl SessionPlayback {
         // owns output. Advance that suffix exactly once per render chunk using
         // real zero input, then keep its captured matrix and mix in the path.
         for group_index in 0..self.tail_groups.len() {
-            if rendered_tail_suffixes
+            if self
+                .tail_compensated_main
                 .get(group_index)
                 .copied()
-                .unwrap_or(true)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?
+                || rendered_tail_suffixes
+                    .get(group_index)
+                    .copied()
+                    .unwrap_or(true)
                 || !self
                     .tail_output_scratch
                     .get(group_index)
@@ -2006,9 +2084,16 @@ impl SessionPlayback {
             }
             let mut tail_buffer = [[0.0; 2]; 256];
             let tail_output = &mut tail_buffer[..output.len()];
-            chain
-                .process_range(suffix_start..effect_count, tail_output)
-                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            process_detached_suffix(
+                chain,
+                suffix_start,
+                self.tail_input_arrivals[group_index],
+                tail_output,
+                frame_offset,
+                self.compensation.as_ref(),
+                &clock,
+                foreign,
+            )?;
             let active = !chain.speculative_range_is_quiescent(suffix_start..effect_count);
             *self
                 .tail_output_scratch

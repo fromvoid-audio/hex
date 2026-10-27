@@ -17,10 +17,106 @@ enum Stage {
     Fence,
     Return,
     Renew(usize),
+    Flush(usize),
     Prepare(usize),
     Ready,
 }
 impl Restore {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn observation(
+        &self,
+        control: &PublicationControl,
+    ) -> (&'static str, StoppedEditFenceState) {
+        let stage = match self.stage {
+            Stage::Fence => "fence",
+            Stage::Return => "return",
+            Stage::Renew(_) => "renew",
+            Stage::Flush(_) => "flush",
+            Stage::Prepare(_) => "prepare",
+            Stage::Ready => "ready",
+        };
+        (stage, control.stopped_edit_fence_state(self.fence))
+    }
+    pub(super) fn finish_gesture_graph(
+        &self,
+        context: AudioSourceContext,
+        source: hex_audio::prepared::AppliedAudioSource,
+        control: &mut PublicationControl,
+    ) -> bool {
+        if self.context != context
+            || source.context != context
+            || self.source.output_identity != source.output_identity
+            || self.submitted != Some(source.audio_revision)
+        {
+            return false;
+        }
+        control.release_stopped_edit_fence(self.fence);
+        true
+    }
+    pub(super) fn begin_gesture_rollback(
+        &mut self,
+        context: AudioSourceContext,
+        source: hex_audio::prepared::AppliedAudioSource,
+        control: &mut PublicationControl,
+    ) -> bool {
+        if self.context != context
+            || self.source.output_identity != source.output_identity
+            || self.submitted != Some(source.audio_revision)
+            || source.context != context
+        {
+            return false;
+        }
+        if control
+            .advance_ordinary_native_epoch_fence(self.fence, self.source, source)
+            .is_err()
+        {
+            return false;
+        }
+        self.source = source;
+        self.submitted = None;
+        self.result = None;
+        self.stage = Stage::Return;
+        true
+    }
+    // A refused callback did not install the submitted graph. Keep the same
+    // fence and original source until the newly loaned endpoints are returned
+    // and the previously accepted parameter is flushed back to the instance.
+    pub(super) fn begin_refused_gesture_rollback(
+        &mut self,
+        receipt: hex_session::service::ResidentPublicationReceipt,
+        control: &PublicationControl,
+    ) -> bool {
+        if self.context != receipt.context
+            || self.source.output_identity != receipt.output_identity
+            || self.submitted != Some(receipt.audio_revision)
+            || control.output_identity() != Some(receipt.output_identity)
+            || control.stopped_edit_fence_state(self.fence) != StoppedEditFenceState::Ready
+        {
+            return false;
+        }
+        self.submitted = None;
+        self.result = None;
+        self.stage = Stage::Return;
+        true
+    }
+    pub(super) fn ready_for_gesture(&self, context: AudioSourceContext) -> bool {
+        self.context == context && matches!(self.result, Some(Ok(()))) && self.submitted.is_none()
+    }
+    // Before Return the original graph and native source remain in place and
+    // no SDK point has been sent. Later errors require their own recovery.
+    pub(super) fn gesture_fence_refusal(&self, context: AudioSourceContext) -> Option<&str> {
+        if self.context != context
+            || !matches!(self.stage, Stage::Fence)
+            || self.submitted.is_some()
+        {
+            return None;
+        }
+        self.result.as_ref()?.as_ref().err().map(String::as_str)
+    }
+    pub(super) fn has_original_output(&self, control: &PublicationControl) -> bool {
+        control.output_identity() == Some(self.source.output_identity)
+            && control.status.recording_source() == Some(self.source)
+    }
     pub(super) fn submitted(&self) -> bool {
         self.submitted.is_some()
     }
@@ -65,6 +161,12 @@ impl Plugins {
         let fence = control
             .request_ordinary_native_epoch_fence(source)
             .map_err(str::to_owned)?;
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if let Some(observed) = &self.progress
+            && let Ok(mut observed) = observed.try_lock()
+        {
+            observed.stopped_error = None;
+        }
         self.restore = Some(Restore {
             context,
             source,
@@ -121,7 +223,40 @@ impl Plugins {
         &mut self,
         control: &mut PublicationControl,
         context: Option<AudioSourceContext>,
+        cancellation: Option<&hex_session::service::RequestCancellation>,
     ) {
+        let play_won = self.restore.as_ref().is_some_and(|restore| {
+            matches!(restore.stage, Stage::Fence)
+                && restore.result.is_none()
+                && control.stopped_edit_fence_state(restore.fence) == StoppedEditFenceState::Refused
+                && context == Some(restore.context)
+                && control.output_identity() == Some(restore.source.output_identity)
+                && control.status.recording_source() == Some(restore.source)
+                && (control.status.playing.load(Acquire)
+                    || control
+                        .stopped_native_unsettled_stream_cut(restore.fence)
+                        .is_some())
+                && control.native_source_control_open()
+                && !control.status.device_fault.load(Acquire)
+                && !control.status.render_fault.load(Acquire)
+                && !cancellation.is_some_and(|request| request.is_cancelled())
+                && self.stopped_gesture_point.as_ref().is_some_and(|point| {
+                    point.context == restore.context && !point.flushed && point.fence_requested
+                })
+        });
+        if play_won {
+            if let Some(restore) = self.restore.take() {
+                let unsettled = control.stopped_native_unsettled_stream_cut(restore.fence);
+                control.release_stopped_edit_fence(restore.fence);
+                if let Some(point) = self.stopped_gesture_point.as_mut() {
+                    point.wait_stream_cut = unsettled;
+                }
+            }
+            if let Some(point) = self.stopped_gesture_point.as_mut() {
+                point.fence_requested = false;
+            }
+            return;
+        }
         let Some(restore) = self.restore.as_mut() else {
             return;
         };
@@ -129,6 +264,11 @@ impl Plugins {
             if control.output_identity() == Some(restore.source.output_identity)
                 && control.status.applied_revision.load(Acquire) == revision
             {
+                if self.stopped_gesture_point.is_some() {
+                    // Session consumes the exact callback receipt before it
+                    // releases this fence or starts cancellation rollback.
+                    return;
+                }
                 control.release_stopped_edit_fence(restore.fence);
                 self.restore = None;
             }
@@ -137,7 +277,7 @@ impl Plugins {
         if restore.result.is_some() {
             return;
         }
-        let result = (|| {
+        let result: Result<bool, String> = (|| {
             if context != Some(restore.context)
                 || control.output_identity() != Some(restore.source.output_identity)
             {
@@ -147,6 +287,11 @@ impl Plugins {
                 Stage::Fence => match control.stopped_edit_fence_state(restore.fence) {
                     StoppedEditFenceState::Pending => {}
                     StoppedEditFenceState::Refused => {
+                        if control.status.device_fault.load(Acquire)
+                            || control.status.render_fault.load(Acquire)
+                        {
+                            return Err("audio output fault while preparing vst3 parameter".into());
+                        }
                         return Err("stop playback before restoring vst3 effects".into());
                     }
                     StoppedEditFenceState::Ready => restore.stage = Stage::Return,
@@ -166,8 +311,19 @@ impl Plugins {
                                 source.binding.graph,
                             ) {
                                 Ok(binding) => {
+                                    let previous = source.binding;
                                     source.binding = binding;
                                     source.queued = false;
+                                    if let Some(point) = self.stopped_gesture_point.as_mut()
+                                        && point.binding == previous
+                                    {
+                                        point.binding = binding;
+                                        if let Some(gesture) = self.gesture.as_mut()
+                                            && gesture.binding == previous
+                                        {
+                                            gesture.binding = binding;
+                                        }
+                                    }
                                 }
                                 Err(
                                     "native preparation is busy"
@@ -180,8 +336,59 @@ impl Plugins {
                         }
                         restore.stage = Stage::Renew(index + 1);
                     } else {
-                        restore.stage = Stage::Prepare(0);
+                        restore.stage = if let Some(point) = self.stopped_gesture_point.as_ref() {
+                            let index = self
+                                .sources
+                                .iter()
+                                .position(|source| source.binding == point.binding)
+                                .ok_or("stopped vst3 gesture source disappeared")?;
+                            Stage::Flush(index)
+                        } else {
+                            Stage::Prepare(0)
+                        };
                     }
+                }
+                Stage::Flush(index) => {
+                    let point = self
+                        .stopped_gesture_point
+                        .as_mut()
+                        .ok_or("stopped vst3 gesture disappeared")?;
+                    let source = self
+                        .sources
+                        .get(index)
+                        .ok_or("stopped vst3 source disappeared")?;
+                    let gesture = self.gesture.ok_or("stopped vst3 gesture disappeared")?;
+                    if point.binding != source.binding
+                        || point.context != restore.context
+                        || point.output != restore.source.output_identity
+                        || gesture.binding != point.binding
+                    {
+                        return Err("stopped vst3 gesture identity changed".into());
+                    }
+                    if !point.cancel_requested || point.rollback {
+                        let value = if point.rollback {
+                            gesture.last_value
+                        } else {
+                            point.value
+                        };
+                        match control.flush_native_source_parameter_on_control(
+                            point.binding,
+                            gesture.origin.parameter,
+                            value.normalized(),
+                            &mut || cancellation.is_some_and(|request| request.is_cancelled()),
+                        ) {
+                            Ok(Some(true)) => {
+                                point.flushed = !point.rollback;
+                                point.rollback = false;
+                            }
+                            Ok(Some(false)) | Ok(None) => {
+                                return Err("stopped vst3 parameter flush refused".into());
+                            }
+                            Err("native preparation is busy") => return Ok(false),
+                            Err(reason) => return Err(reason.into()),
+                        }
+                    }
+                    restore.stage = Stage::Prepare(0);
                 }
                 Stage::Prepare(index) => {
                     let Some(source) = self.sources.get_mut(index) else {
@@ -211,7 +418,15 @@ impl Plugins {
         match result {
             Ok(true) => restore.result = Some(Ok(())),
             Ok(false) => {}
-            Err(error) => restore.result = Some(Err(bounded_error(error))),
+            Err(error) => {
+                #[cfg(all(test, feature = "allocation-probe"))]
+                if let Some(observed) = &self.progress
+                    && let Ok(mut observed) = observed.try_lock()
+                {
+                    observed.stopped_error = Some(error.clone());
+                }
+                restore.result = Some(Err(bounded_error(error)));
+            }
         }
     }
 }

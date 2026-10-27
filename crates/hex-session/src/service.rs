@@ -28,6 +28,8 @@ mod console_track_tests;
 mod export_lane;
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
+#[cfg(test)]
+mod pending_plugin_gesture_tests;
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
@@ -38,12 +40,15 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, PluginParameterGestureError, PluginParameterGestureInput,
-    PluginParameterGestureResult, ResidentEffectPreparation, ResidentFileInput,
-    ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
-    ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
-    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, PluginControllerPage, PluginControllerPageRequest,
+    PluginControllerPageResult, PluginControllerParameter, PluginControllerPlainValue,
+    PluginParameterGestureError, PluginParameterGestureInput, PluginParameterGestureResult,
+    PluginRecoveryCandidate, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
+    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationReceipt, ResidentPublicationRefusal,
+    ResidentPublicationTerminal, ResidentRetainedReceipt, ResidentRetiredIdentity,
+    ResidentRuntimeLoop, StalePluginGestureDisposition, StoppedGestureCompletion, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -224,6 +229,8 @@ pub struct Event {
     pub recovery_failure: Option<Arc<RecoveryFailure>>,
     /// Original failing batch member, kept separate from app-owned explanation.
     pub audio_batch_failure: Option<AudioBatchMemberFailure>,
+    /// Completes one ordered ordinary FIFO submission. Keyed priority plugin
+    /// restores have their own gesture ACK and do not advance FIFO receipts.
     pub request_complete: bool,
     /// Metadata-only completion of one first-load action, on success or refusal.
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
@@ -271,6 +278,116 @@ pub struct Event {
     pub tuning_gesture_request: bool,
     pub active_tuning_gesture: Option<TuningGestureSnapshot>,
     pub tuning_library: Option<TuningLibraryResult>,
+}
+
+// One admitted plugin request and any already-published final preview. The
+// latter must survive a pending commit/capture; neither field is an ACK.
+struct PendingPluginGesture {
+    request: GestureRequest,
+    context: hex_engine::AudioSourceContext,
+    document_intent: u64,
+    fifo_completion: bool,
+    rebase: bool,
+    barrier: bool,
+    preview: Option<Arc<PreparedRevision>>,
+    publication: Option<resident_audio::PendingPluginPublication>,
+    stopped_recovery: Option<resident_audio::PendingPluginRecovery>,
+    cancellation_requested: bool,
+    explicit_cancel_requested: bool,
+}
+struct PendingPluginHistory {
+    publication: resident_audio::PendingPluginPublication,
+    fifo_completion: bool,
+}
+impl PendingPluginGesture {
+    fn poll_cancellation(
+        &mut self,
+        mailbox: &std::sync::Mutex<Option<GestureRequest>>,
+        current: hex_engine::AudioSourceContext,
+        current_intent: u64,
+        sink: &mut dyn WorkerAudioSink,
+    ) {
+        let cancellation = mailbox.try_lock().ok().and_then(|mut slot| slot.take());
+        if let Some(request) = cancellation {
+            self.request_cancel(request, true, sink);
+        }
+        self.cancel_if_stale(current, current_intent, sink);
+    }
+
+    fn request_cancel(
+        &mut self,
+        request: GestureRequest,
+        explicit: bool,
+        sink: &mut dyn WorkerAudioSink,
+    ) -> bool {
+        if self.request != request {
+            return false;
+        }
+        self.explicit_cancel_requested |= explicit;
+        if !self.cancellation_requested {
+            sink.cancel_pending_plugin_parameter(self.context, request);
+            self.cancellation_requested = true;
+        }
+        true
+    }
+
+    fn cancel_if_stale(
+        &mut self,
+        current: hex_engine::AudioSourceContext,
+        current_intent: u64,
+        sink: &mut dyn WorkerAudioSink,
+    ) -> bool {
+        (self.context != current || self.document_intent != current_intent)
+            && self.request_cancel(self.request, false, sink)
+    }
+}
+
+fn finish_stale_plugin_gesture(
+    sink: Option<&mut (dyn WorkerAudioSink + 'static)>,
+    context: hex_engine::AudioSourceContext,
+    request: GestureRequest,
+    machine: &mut crate::device_gesture::GestureMachine,
+    awaiting_restore: &mut Option<crate::device_gesture::GestureKey>,
+    completed: &mut Option<GestureRequest>,
+) -> crate::device_gesture::GestureOutcome {
+    let disposition = sink.map_or(StalePluginGestureDisposition::Pending, |sink| {
+        sink.finish_stale_plugin_parameter(context, request)
+    });
+    let (pending, source_lost, reason) = match disposition {
+        StalePluginGestureDisposition::Pending => (true, false, None),
+        StalePluginGestureDisposition::Restored => (
+            false,
+            false,
+            Some("plugin gesture context changed · original preview restored".into()),
+        ),
+        StalePluginGestureDisposition::SourceLost(reason) => {
+            (false, true, Some(reason.to_lowercase()))
+        }
+    };
+    if !pending {
+        machine.retire_if_key(request.key());
+        if *awaiting_restore == Some(request.key()) {
+            *awaiting_restore = None;
+        }
+        if completed.is_some_and(|completed| completed.key() == request.key()) {
+            *completed = None;
+        }
+    }
+    crate::device_gesture::GestureOutcome {
+        ack: GestureAck {
+            preview_retained: false,
+            source_lost,
+            key: request.key(),
+            phase: request.phase(),
+            sequence: request.sequence(),
+            accepted: false,
+            reason,
+        },
+        pending,
+        playback: None,
+        preview_project: None,
+        canonical_changed: false,
+    }
 }
 
 mod verified_gain;
@@ -546,6 +663,15 @@ pub enum Request {
     InsertPluginEffect(PluginEffectInsertion),
     /// Worker-internal wakeup; never a FIFO request completion.
     ContinuePluginEffect,
+    /// Worker-internal wakeup for one retained plugin parameter operation.
+    ContinuePluginParameterGesture,
+    /// Worker-internal wakeup for the exact plugin history publication.
+    ContinuePluginHistory,
+    /// Interrupt only the exact in-flight plugin operation; its ordinary
+    /// gesture acknowledgement still waits for the actual host terminal.
+    CancelPendingPluginParameter {
+        request: GestureRequest,
+    },
     /// Internal fresh-output state restoration; no authored edit or revision.
     ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
@@ -893,6 +1019,9 @@ pub struct Service {
     #[cfg(test)]
     export_test_hook: ExportTestHook,
     requests: request_cancellation::Sender,
+    // One exact, nonblocking cancellation intent; it never carries an ACK.
+    plugin_cancel: Arc<std::sync::Mutex<Option<GestureRequest>>>,
+    plugin_terminal: SyncSender<QueuedRequest>,
     events: diagnostics::EventReceiver,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
@@ -1151,6 +1280,9 @@ impl Service {
             (Some(arrangement_seek), None)
         };
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
+        let (plugin_terminal_tx, plugin_terminal_rx) = mpsc::sync_channel(1);
+        let plugin_cancel = Arc::new(std::sync::Mutex::new(None));
+        let worker_plugin_cancel = Arc::clone(&plugin_cancel);
         let diagnostics = Arc::new(diagnostics::Hooks::default());
         let worker_diagnostics = Arc::clone(&diagnostics);
         let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1244,6 +1376,8 @@ impl Service {
                     session,
                     history_capacity,
                     request_rx,
+                    worker_plugin_cancel,
+                    plugin_terminal_rx,
                     worker_document_intent,
                     events,
                     ExportLane::new(export_work_tx, finished_rx, export_worker),
@@ -1257,6 +1391,8 @@ impl Service {
             #[cfg(test)]
             export_test_hook,
             requests: request_cancellation::Sender::new(request_tx, document_intent),
+            plugin_cancel,
+            plugin_terminal: plugin_terminal_tx,
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             export_events: export_event_rx,
@@ -1269,11 +1405,57 @@ impl Service {
         })
     }
 
-    /// Submit without waiting for worker capacity.
+    /// Submit without waiting for worker capacity. Plugin cancellation intent
+    /// uses a single control-side mailbox and does not emit a completion event;
+    /// the original gesture keeps its slot until its actual terminal.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        if let Request::CancelPendingPluginParameter { request: gesture } = request {
+            let original = Request::CancelPendingPluginParameter { request: gesture };
+            if self.shutdown.load(Ordering::Acquire) || self._worker.is_finished() {
+                return Err(SubmitError::Closed(original));
+            }
+            let Ok(mut slot) = self.plugin_cancel.try_lock() else {
+                return Err(SubmitError::Busy(original));
+            };
+            if slot.is_some_and(|existing| existing != gesture) {
+                return Err(SubmitError::Busy(original));
+            }
+            *slot = Some(gesture);
+            return Ok(());
+        }
         let diagnostic = self.diagnostics.begin(&request);
         let result = self.submit_traced(request, diagnostic);
+        self.diagnostics.returned(diagnostic, &result);
+        result
+    }
+
+    /// Submit the exact plugin restore after its prior gesture terminal. This
+    /// one-slot lane returns the keyed gesture acknowledgement and may pass a
+    /// FIFO head held for the same in-flight operation. It does not complete
+    /// an ordinary FIFO request; no other edits use it.
+    #[allow(clippy::result_large_err)]
+    pub fn submit_plugin_cancel(&self, gesture: GestureRequest) -> Result<(), SubmitError> {
+        let request = Request::DeviceGesture(gesture);
+        if !matches!(gesture, GestureRequest::Cancel { .. }) {
+            return Err(SubmitError::Busy(request));
+        }
+        let diagnostic = self.diagnostics.begin(&request);
+        let queued = QueuedRequest {
+            request,
+            document_intent: self.requests.intent(),
+            fifo_completion: false,
+            diagnostic,
+            diagnostic_origin: diagnostics::DiagnosticOrigin::Submitted,
+        };
+        let result = match self.plugin_terminal.try_send(queued) {
+            Ok(()) => {
+                self.requests.wake_plugin_terminal();
+                Ok(())
+            }
+            Err(TrySendError::Full(queued)) => Err(SubmitError::Full(queued.request)),
+            Err(TrySendError::Disconnected(queued)) => Err(SubmitError::Closed(queued.request)),
+        };
         self.diagnostics.returned(diagnostic, &result);
         result
     }
@@ -1809,6 +1991,8 @@ fn run_worker(
     mut session: Session,
     history_capacity: usize,
     requests: Receiver<QueuedRequest>,
+    plugin_cancel: Arc<std::sync::Mutex<Option<GestureRequest>>>,
+    plugin_terminal: Receiver<QueuedRequest>,
     document_intent: Arc<std::sync::atomic::AtomicU64>,
     mut events: WorkerEvents,
     mut export_lane: ExportLane,
@@ -2053,15 +2237,33 @@ fn run_worker(
 
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
     let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
+    let mut pending_plugin_gesture: Option<PendingPluginGesture> = None;
+    let mut pending_plugin_history: Option<PendingPluginHistory> = None;
+    let mut pending_plugin_recovery: Option<resident_audio::PendingPluginRecovery> = None;
+    // At most the first ordinary FIFO item waits here while the gesture owns
+    // its native terminal. All later requests remain in the bounded channel.
+    let mut deferred_plugin_request = None;
+    let mut deferred_plugin_barrier_failure: Option<String> = None;
+    let mut awaiting_plugin_restore = None;
+    let mut completed_plugin_request = None;
     let mut pending_stopped_restore = None;
     while let Some(queued) = events.next_request_with_control_poll(
         &requests,
         &document_intent,
+        &plugin_cancel,
+        &plugin_terminal,
+        &mut awaiting_plugin_restore,
+        completed_plugin_request,
+        device_gesture.snapshot().map(|snapshot| snapshot.key),
+        &mut deferred_plugin_request,
         session.native_reservation.is_some(),
         pending_plugin_effect
             .as_ref()
             .map(|pending| &pending.insertion),
         pending_stopped_restore,
+        pending_plugin_gesture.as_mut(),
+        pending_plugin_history.as_mut(),
+        pending_plugin_recovery.as_mut(),
         hex_engine::AudioSourceContext {
             project_generation,
             editor_revision: revision,
@@ -2127,19 +2329,26 @@ fn run_worker(
     ) {
         events.begin_diagnostics(&queued, project_generation, revision);
         events.begin_request(&document_intent, queued.document_intent);
+        let request_document_intent = queued.document_intent;
+        let request_fifo_completion = queued.fifo_completion;
+        let request_diagnostic = queued.diagnostic;
+        let request_diagnostic_origin = queued.diagnostic_origin;
         let request = queued.request;
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
         };
         let mut seek_submitted = false;
-        let request_complete = !matches!(
-            &request,
-            Request::ContinueSamplerEdit
-                | Request::ContinuePluginEffect
-                | Request::ContinuePluginStateRestore
-                | Request::ContinueStoppedPlaybackRestore
-        );
+        let mut request_complete = request_fifo_completion
+            && !matches!(
+                &request,
+                Request::ContinueSamplerEdit
+                    | Request::ContinuePluginEffect
+                    | Request::ContinuePluginParameterGesture
+                    | Request::ContinuePluginHistory
+                    | Request::ContinuePluginStateRestore
+                    | Request::ContinueStoppedPlaybackRestore
+            );
         let mut plugin_effect_complete = Vec::new();
         let mut sampler_edit_complete = None;
         if matches!(
@@ -2578,97 +2787,111 @@ fn run_worker(
         let barrier = request.finalizes_parameter_gesture();
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
-        let mut barrier_failure = resolution_failure.or_else(|| match &request {
-            Request::BounceArrangement {
-                project_generation: captured,
-                revision: captured_revision,
-                control,
-                ..
-            } => {
-                if *captured != project_generation
-                    || *captured_revision != revision
-                    || control.is_cancelled()
-                {
-                    Some("bounce cancelled · target changed".into())
-                } else if compiled
-                    .as_ref()
-                    .is_some_and(|(_, p)| p.gain_recording_track().is_some())
-                {
-                    Some("finish gain recording before bouncing".into())
-                } else if pending_sampler_parameter.is_some()
-                    || device_gesture.snapshot().is_some()
-                    || tuning_gesture.snapshot().is_some()
-                {
-                    Some("finish or cancel the active gesture before bouncing".into())
-                } else {
-                    None
-                }
-            }
-            Request::EditArrangementSection {
-                project_generation: captured,
-                revision: captured_revision,
-                command,
-            } => {
-                if *captured != project_generation || *captured_revision != revision {
-                    Some("arrangement section target changed".into())
-                } else if !arrangement_sections::is_command(command) {
-                    Some("section request requires a structural marker command".into())
-                } else if pending_sampler_parameter.is_some()
-                    || device_gesture.snapshot().is_some()
-                    || tuning_gesture.snapshot().is_some()
-                {
-                    Some("finish or cancel the active gesture before editing sections".into())
-                } else {
-                    None
-                }
-            }
-            Request::SamplerEdit(SamplerEdit::Midi(edit)) => {
-                if pending_sampler_parameter.is_some() {
-                    Some("sampler edit is already preparing".into())
-                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
-                {
-                    Some("finish or cancel the active gesture before sampler midi editing".into())
-                } else if edit.request_id == 0
-                    || edit.project_generation != project_generation
-                    || edit.revision != revision
-                    || edit.cancel.load(Ordering::Acquire)
-                {
-                    Some("sampler midi target changed or edit was cancelled".into())
-                } else {
-                    None
-                }
-            }
-            Request::SamplerEdit(SamplerEdit::History(edit)) => {
-                if pending_sampler_parameter.is_some() {
-                    Some("sampler edit is already preparing".into())
-                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
-                {
-                    Some("finish or cancel the active gesture before sampler history".into())
-                } else {
-                    let mut edit = SamplerEdit::History(edit.clone());
-                    if events.resident_publication_enabled()
-                        && session.audio_mode() == DocumentAudioMode::Resident
+        let mut barrier_failure = (barrier && deferred_plugin_request.is_none())
+            .then(|| deferred_plugin_barrier_failure.take())
+            .flatten()
+            .or(resolution_failure)
+            .or_else(|| match &request {
+                Request::BounceArrangement {
+                    project_generation: captured,
+                    revision: captured_revision,
+                    control,
+                    ..
+                } => {
+                    if *captured != project_generation
+                        || *captured_revision != revision
+                        || control.is_cancelled()
                     {
-                        edit.validate_resident(&session, project_generation, revision)
-                            .err()
+                        Some("bounce cancelled · target changed".into())
+                    } else if compiled
+                        .as_ref()
+                        .is_some_and(|(_, p)| p.gain_recording_track().is_some())
+                    {
+                        Some("finish gain recording before bouncing".into())
+                    } else if pending_sampler_parameter.is_some()
+                        || device_gesture.snapshot().is_some()
+                        || tuning_gesture.snapshot().is_some()
+                    {
+                        Some("finish or cancel the active gesture before bouncing".into())
                     } else {
-                        edit.validate(&session, project_generation, revision).err()
+                        None
                     }
                 }
-            }
-            Request::CompareDevice {
-                owner, expected, ..
-            } => device_comparison::preflight(
-                &session,
-                project_generation,
-                revision,
-                *owner,
-                *expected,
-            )
-            .err(),
-            _ => None,
-        });
+                Request::EditArrangementSection {
+                    project_generation: captured,
+                    revision: captured_revision,
+                    command,
+                } => {
+                    if *captured != project_generation || *captured_revision != revision {
+                        Some("arrangement section target changed".into())
+                    } else if !arrangement_sections::is_command(command) {
+                        Some("section request requires a structural marker command".into())
+                    } else if pending_sampler_parameter.is_some()
+                        || device_gesture.snapshot().is_some()
+                        || tuning_gesture.snapshot().is_some()
+                    {
+                        Some("finish or cancel the active gesture before editing sections".into())
+                    } else {
+                        None
+                    }
+                }
+                Request::SamplerEdit(SamplerEdit::Midi(edit)) => {
+                    if pending_sampler_parameter.is_some() {
+                        Some("sampler edit is already preparing".into())
+                    } else if device_gesture.snapshot().is_some()
+                        || tuning_gesture.snapshot().is_some()
+                    {
+                        Some(
+                            "finish or cancel the active gesture before sampler midi editing"
+                                .into(),
+                        )
+                    } else if edit.request_id == 0
+                        || edit.project_generation != project_generation
+                        || edit.revision != revision
+                        || edit.cancel.load(Ordering::Acquire)
+                    {
+                        Some("sampler midi target changed or edit was cancelled".into())
+                    } else {
+                        None
+                    }
+                }
+                Request::SamplerEdit(SamplerEdit::History(edit)) => {
+                    if pending_sampler_parameter.is_some() {
+                        Some("sampler edit is already preparing".into())
+                    } else if device_gesture.snapshot().is_some()
+                        || tuning_gesture.snapshot().is_some()
+                    {
+                        Some("finish or cancel the active gesture before sampler history".into())
+                    } else {
+                        let mut edit = SamplerEdit::History(edit.clone());
+                        if events.resident_publication_enabled()
+                            && session.audio_mode() == DocumentAudioMode::Resident
+                        {
+                            edit.validate_resident(&session, project_generation, revision)
+                                .err()
+                        } else {
+                            edit.validate(&session, project_generation, revision).err()
+                        }
+                    }
+                }
+                Request::CompareDevice {
+                    owner, expected, ..
+                } => device_comparison::preflight(
+                    &session,
+                    project_generation,
+                    revision,
+                    *owner,
+                    *expected,
+                )
+                .err(),
+                _ => None,
+            });
         if barrier && barrier_failure.is_none() {
+            let barrier_snapshot = device_gesture
+                .snapshot()
+                .filter(|snapshot| snapshot.plugin_value.is_some());
+            let mut barrier_publication = None;
+            let mut barrier_stopped_recovery = None;
             let device_finished = if events.resident_publication_enabled()
                 && session.audio_mode() == DocumentAudioMode::Resident
             {
@@ -2687,10 +2910,17 @@ fn run_worker(
                     compiled.as_ref().map(|(_, artifact)| artifact),
                     project_generation,
                     |session, operation| {
+                        if matches!(
+                            operation,
+                            crate::device_gesture::GesturePreparation::Plugin(_)
+                        ) && (barrier_snapshot.is_none() || deferred_plugin_request.is_some())
+                        {
+                            return Err(SessionError::Invalid("plugin barrier owner unavailable"));
+                        }
                         let sink = events
                             .resident_audio()
                             .ok_or(SessionError::Invalid("native preview output unavailable"))?;
-                        resident_preview::device_operation(
+                        resident_preview::device_operation_with_plugin_publication(
                             session,
                             operation,
                             hex_engine::AudioSourceContext {
@@ -2701,6 +2931,8 @@ fn run_worker(
                             &mut resident_preview,
                             sink,
                             admission,
+                            &mut barrier_publication,
+                            &mut barrier_stopped_recovery,
                         )
                     },
                 )
@@ -2712,6 +2944,44 @@ fn run_worker(
                 )
             };
             if let Some(outcome) = device_finished {
+                if outcome.pending {
+                    if let Some(snapshot) = barrier_snapshot
+                        && let Some(value) = snapshot.plugin_value
+                        && deferred_plugin_request.is_none()
+                    {
+                        pending_plugin_gesture = Some(PendingPluginGesture {
+                            request: GestureRequest::CommitPlugin {
+                                key: snapshot.key,
+                                sequence: snapshot.sequence.max(1),
+                                value,
+                            },
+                            context: hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            document_intent: request_document_intent,
+                            fifo_completion: false,
+                            rebase: false,
+                            barrier: true,
+                            preview: outcome.playback,
+                            publication: barrier_publication,
+                            stopped_recovery: barrier_stopped_recovery,
+                            cancellation_requested: false,
+                            explicit_cancel_requested: false,
+                        });
+                        deferred_plugin_request = Some(request_cancellation::QueuedRequest {
+                            request,
+                            document_intent: request_document_intent,
+                            fifo_completion: request_fifo_completion,
+                            diagnostic: request_diagnostic,
+                            diagnostic_origin: request_diagnostic_origin,
+                        });
+                        continue;
+                    }
+                    // Only plugin preparation may return Pending here; its
+                    // owner and FIFO slot were checked before admission.
+                    barrier_failure = Some("plugin barrier owner unavailable".into());
+                }
                 gesture_ack = Some(outcome.ack.clone());
                 gesture_protocol_ack = true;
                 if outcome.ack.accepted {
@@ -2739,7 +3009,7 @@ fn run_worker(
                         restore_prepared = Some(prepared);
                     }
                 } else {
-                    barrier_failure = outcome.ack.reason;
+                    barrier_failure = barrier_failure.or(outcome.ack.reason);
                     restore_prepared = outcome.playback;
                 }
             } else if let Some(outcome) = if events.resident_publication_enabled()
@@ -2889,6 +3159,9 @@ fn run_worker(
                     | Request::ContinueSamplerEdit
                     | Request::InsertPluginEffect(_)
                     | Request::ContinuePluginEffect
+                    | Request::ContinuePluginParameterGesture
+                    | Request::ContinuePluginHistory
+                    | Request::CancelPendingPluginParameter { .. }
                     | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
@@ -3060,54 +3333,135 @@ fn run_worker(
                         }
                     }
                 }
-                Request::DeviceGesture(gesture) => {
-                    gesture_request = true;
-                    gesture_protocol_ack = true;
-                    let outcome = if tuning_gesture.snapshot().is_some()
-                        && matches!(
-                            gesture,
-                            GestureRequest::Begin { .. }
-                                | GestureRequest::BeginPlugin { .. }
-                                | GestureRequest::BeginSnapshot { .. }
-                                | GestureRequest::BeginEqCreation { .. }
-                        ) {
-                        crate::device_gesture::GestureOutcome {
-                            ack: GestureAck {
-                                preview_retained: false,
-                                source_lost: false,
-                                key: gesture.key(),
-                                phase: gesture.phase(),
-                                sequence: gesture.sequence(),
-                                accepted: false,
-                                reason: Some("project tuning gesture is active".into()),
-                            },
-                            playback: None,
-                            preview_project: None,
-                            canonical_changed: false,
+                request @ (Request::DeviceGesture(_) | Request::ContinuePluginParameterGesture) => {
+                    let continuing = matches!(request, Request::ContinuePluginParameterGesture);
+                    let mut retained_preview = None;
+                    let mut retained_publication = None;
+                    let mut retained_stopped_recovery = None;
+                    let mut cancellation_requested = false;
+                    let mut explicit_cancel_requested = false;
+                    let mut rebasing = false;
+                    let mut barrier_continuation = false;
+                    let mut original_document_intent = request_document_intent;
+                    let mut original_fifo_completion = request_fifo_completion;
+                    let current_context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
+                    let mut original_context = current_context;
+                    let gesture = match request {
+                        Request::DeviceGesture(gesture) => Some(gesture),
+                        Request::ContinuePluginParameterGesture => {
+                            let ready = pending_plugin_gesture.as_ref().is_some_and(|pending| {
+                                events.resident_audio().is_some_and(|sink| {
+                                    if let Some(recovery) = pending.stopped_recovery.as_ref() {
+                                        recovery.stopped_gesture_ready(sink)
+                                    } else if let Some(publication) = pending.publication.as_ref() {
+                                        publication.gesture_ready(sink, pending.context)
+                                    } else {
+                                        sink.plugin_parameter_gesture_ready(
+                                            pending.context,
+                                            pending.request,
+                                        )
+                                    }
+                                })
+                            });
+                            if ready {
+                                pending_plugin_gesture.take().map(|pending| {
+                                    retained_preview = pending.preview;
+                                    retained_publication = pending.publication;
+                                    retained_stopped_recovery = pending.stopped_recovery;
+                                    cancellation_requested = pending.cancellation_requested;
+                                    explicit_cancel_requested = pending.explicit_cancel_requested;
+                                    rebasing = pending.rebase;
+                                    barrier_continuation = pending.barrier;
+                                    original_document_intent = pending.document_intent;
+                                    original_fifo_completion = pending.fifo_completion;
+                                    original_context = pending.context;
+                                    pending.request
+                                })
+                            } else {
+                                None
+                            }
                         }
-                    } else if events.resident_publication_enabled()
-                        && session.audio_mode() == DocumentAudioMode::Resident
-                    {
-                        let admission = export_lane.admission_with_resident_owners(
-                            compiled.as_ref().map(|(_, prepared)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(prepared),
-                                }
-                            }),
-                            resident_seek.as_ref(),
-                            None,
-                        );
-                        device_gesture.handle_prepared(
-                            &mut session,
-                            gesture,
-                            compiled.as_ref().map(|(_, artifact)| artifact),
-                            project_generation,
-                            |session, operation| {
+                        _ => None,
+                    };
+                    if let Some(gesture) = gesture {
+                        gesture_request = !rebasing && !barrier_continuation;
+                        gesture_protocol_ack = !rebasing;
+                        let mut outcome = if continuing
+                            && original_context != current_context
+                            && retained_publication.is_none()
+                            && retained_stopped_recovery.is_none()
+                        {
+                            finish_stale_plugin_gesture(
+                                events.resident_audio(),
+                                original_context,
+                                gesture,
+                                &mut device_gesture,
+                                &mut awaiting_plugin_restore,
+                                &mut completed_plugin_request,
+                            )
+                        } else if !continuing && pending_plugin_gesture.is_some() {
+                            crate::device_gesture::GestureOutcome {
+                                ack: GestureAck {
+                                    preview_retained: false,
+                                    source_lost: false,
+                                    key: gesture.key(),
+                                    phase: gesture.phase(),
+                                    sequence: gesture.sequence(),
+                                    accepted: false,
+                                    reason: Some(
+                                        "another plugin gesture operation is pending".into(),
+                                    ),
+                                },
+                                pending: false,
+                                playback: None,
+                                preview_project: None,
+                                canonical_changed: false,
+                            }
+                        } else if tuning_gesture.snapshot().is_some()
+                            && matches!(
+                                gesture,
+                                GestureRequest::Begin { .. }
+                                    | GestureRequest::BeginPlugin { .. }
+                                    | GestureRequest::BeginSnapshot { .. }
+                                    | GestureRequest::BeginEqCreation { .. }
+                            )
+                        {
+                            crate::device_gesture::GestureOutcome {
+                                ack: GestureAck {
+                                    preview_retained: false,
+                                    source_lost: false,
+                                    key: gesture.key(),
+                                    phase: gesture.phase(),
+                                    sequence: gesture.sequence(),
+                                    accepted: false,
+                                    reason: Some("project tuning gesture is active".into()),
+                                },
+                                pending: false,
+                                playback: None,
+                                preview_project: None,
+                                canonical_changed: false,
+                            }
+                        } else if events.resident_publication_enabled()
+                            && session.audio_mode() == DocumentAudioMode::Resident
+                        {
+                            let admission = export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                None,
+                            );
+                            let mut prepare = |session: &mut Session, operation| {
                                 let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                     "native preview output unavailable",
                                 ))?;
-                                resident_preview::device_operation(
+                                resident_preview::device_operation_with_plugin_publication(
                                     session,
                                     operation,
                                     hex_engine::AudioSourceContext {
@@ -3118,46 +3472,156 @@ fn run_worker(
                                     &mut resident_preview,
                                     sink,
                                     admission,
+                                    &mut retained_publication,
+                                    &mut retained_stopped_recovery,
                                 )
-                            },
-                        )
-                    } else {
-                        device_gesture.handle(
-                            &mut session,
-                            gesture,
-                            compiled.as_ref().map(|(_, artifact)| artifact),
-                            project_generation,
-                        )
-                    };
-                    let native_terminal_accepted = events.resident_publication_enabled()
-                        && session.audio_mode() == DocumentAudioMode::Resident
-                        && outcome.ack.accepted
-                        && matches!(
-                            gesture.phase(),
-                            crate::device_gesture::GesturePhase::Commit
-                                | crate::device_gesture::GesturePhase::Cancel
-                        );
-                    gesture_ack = Some(outcome.ack);
-                    if let Some(prepared) = outcome.playback {
-                        if native_terminal_accepted && !outcome.canonical_changed {
-                            compiled = Some((revision, Arc::clone(&prepared)));
-                        }
-                        if outcome.canonical_changed {
-                            unsaved = true;
-                            replacement_revision = Some(prepared);
-                        } else if matches!(
-                            gesture,
-                            GestureRequest::Change { .. }
-                                | GestureRequest::ChangePlugin { .. }
-                                | GestureRequest::ChangePair { .. }
-                                | GestureRequest::ChangeSnapshot { .. }
-                                | GestureRequest::ChangeEqCreation { .. }
-                        ) {
-                            preview_prepared = Some(prepared);
-                            preview_project = outcome.preview_project;
+                            };
+                            if rebasing {
+                                device_gesture
+                                    .rebase_prepared(
+                                        &mut session,
+                                        compiled.as_ref().map(|(_, artifact)| artifact),
+                                        &mut prepare,
+                                    )
+                                    .unwrap_or_else(|| crate::device_gesture::GestureOutcome {
+                                        ack: GestureAck {
+                                            preview_retained: false,
+                                            source_lost: false,
+                                            key: gesture.key(),
+                                            phase: gesture.phase(),
+                                            sequence: gesture.sequence(),
+                                            accepted: false,
+                                            reason: None,
+                                        },
+                                        pending: true,
+                                        playback: None,
+                                        preview_project: None,
+                                        canonical_changed: false,
+                                    })
+                            } else {
+                                device_gesture.handle_prepared(
+                                    &mut session,
+                                    gesture,
+                                    compiled.as_ref().map(|(_, artifact)| artifact),
+                                    project_generation,
+                                    prepare,
+                                )
+                            }
                         } else {
-                            restore_prepared = Some(prepared);
+                            device_gesture.handle(
+                                &mut session,
+                                gesture,
+                                compiled.as_ref().map(|(_, artifact)| artifact),
+                                project_generation,
+                            )
+                        };
+                        if !outcome.pending
+                            && let Some(publication) = retained_publication.as_mut()
+                        {
+                            // A stale/rejected gesture path did not consume the
+                            // published candidate. Retain it for recovery rather
+                            // than dropping a graph that may have installed.
+                            publication.quarantine();
+                            outcome.pending = true;
+                            outcome.ack.accepted = false;
                         }
+                        if !outcome.pending && retained_stopped_recovery.is_some() {
+                            outcome.pending = true;
+                            outcome.ack.accepted = false;
+                        }
+                        if outcome.pending {
+                            let held_preview = outcome.playback.or(retained_preview);
+                            if original_context == current_context {
+                                preview_prepared = held_preview.clone();
+                            }
+                            pending_plugin_gesture = Some(PendingPluginGesture {
+                                request: gesture,
+                                context: original_context,
+                                document_intent: original_document_intent,
+                                fifo_completion: original_fifo_completion,
+                                rebase: rebasing,
+                                barrier: barrier_continuation,
+                                preview: held_preview,
+                                publication: retained_publication,
+                                stopped_recovery: retained_stopped_recovery,
+                                cancellation_requested,
+                                explicit_cancel_requested,
+                            });
+                            gesture_protocol_ack = false;
+                            request_complete = false;
+                        } else {
+                            if barrier_continuation && !outcome.ack.accepted {
+                                deferred_plugin_barrier_failure =
+                                    Some(outcome.ack.reason.clone().unwrap_or_else(|| {
+                                        "plugin gesture could not be completed".into()
+                                    }));
+                            }
+                            if continuing && !rebasing {
+                                request_complete = original_fifo_completion;
+                            }
+                            if matches!(gesture, GestureRequest::Cancel { .. }) {
+                                if awaiting_plugin_restore == Some(gesture.key())
+                                    && (outcome.ack.accepted || outcome.ack.source_lost)
+                                {
+                                    awaiting_plugin_restore = None;
+                                    completed_plugin_request = None;
+                                }
+                            } else if matches!(
+                                gesture,
+                                GestureRequest::BeginPlugin { .. }
+                                    | GestureRequest::ChangePlugin { .. }
+                                    | GestureRequest::CommitPlugin { .. }
+                            ) && device_gesture
+                                .snapshot()
+                                .is_some_and(|snapshot| snapshot.key == gesture.key())
+                            {
+                                completed_plugin_request = Some(gesture);
+                                if explicit_cancel_requested {
+                                    awaiting_plugin_restore = Some(gesture.key());
+                                }
+                            }
+                            let native_terminal_accepted = events.resident_publication_enabled()
+                                && session.audio_mode() == DocumentAudioMode::Resident
+                                && outcome.ack.accepted
+                                && matches!(
+                                    gesture.phase(),
+                                    crate::device_gesture::GesturePhase::Commit
+                                        | crate::device_gesture::GesturePhase::Cancel
+                                );
+                            if outcome.ack.preview_retained && outcome.playback.is_none() {
+                                preview_prepared = retained_preview;
+                            }
+                            gesture_ack = Some(outcome.ack);
+                            if let Some(prepared) = outcome.playback {
+                                if native_terminal_accepted && !outcome.canonical_changed {
+                                    compiled = Some((revision, Arc::clone(&prepared)));
+                                }
+                                if outcome.canonical_changed {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                } else if matches!(
+                                    gesture,
+                                    GestureRequest::Change { .. }
+                                        | GestureRequest::ChangePlugin { .. }
+                                        | GestureRequest::ChangePair { .. }
+                                        | GestureRequest::ChangeSnapshot { .. }
+                                        | GestureRequest::ChangeEqCreation { .. }
+                                ) {
+                                    preview_prepared = Some(prepared);
+                                    preview_project = outcome.preview_project;
+                                } else {
+                                    restore_prepared = Some(prepared);
+                                }
+                            }
+                        }
+                    }
+                }
+                Request::CancelPendingPluginParameter { request } => {
+                    gesture_request = true;
+                    if let Some(pending) = pending_plugin_gesture.as_mut()
+                        && let Some(sink) = events.resident_audio()
+                    {
+                        pending.request_cancel(request, true, sink);
                     }
                 }
                 Request::TuningGesture(gesture) => {
@@ -5394,6 +5858,101 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string().to_lowercase()),
                     }
                 }
+                Request::ContinuePluginHistory => {
+                    if let Some(pending) = pending_plugin_history.take() {
+                        if let Some(sink) = events.resident_audio() {
+                            match pending.publication.resolve(&mut session, sink) {
+                                resident_audio::PluginPublicationResolution::Applied(snapshot) => {
+                                    unsaved = true;
+                                    replacement_revision = Some(Arc::clone(&snapshot.prepared));
+                                    resident_snapshot = Some(snapshot);
+                                    status = Some("history committed".into());
+                                    request_complete = pending.fifo_completion;
+                                }
+                                resident_audio::PluginPublicationResolution::Refused(reason) => {
+                                    error = Some(
+                                        format!("plugin history refused: {reason:?}")
+                                            .to_lowercase(),
+                                    );
+                                    request_complete = pending.fifo_completion;
+                                }
+                                resident_audio::PluginPublicationResolution::Waiting(
+                                    publication,
+                                )
+                                | resident_audio::PluginPublicationResolution::Indeterminate(
+                                    publication,
+                                )
+                                | resident_audio::PluginPublicationResolution::Conflict(
+                                    publication,
+                                ) => {
+                                    pending_plugin_history = Some(PendingPluginHistory {
+                                        publication,
+                                        fifo_completion: pending.fifo_completion,
+                                    });
+                                }
+                            }
+                        } else {
+                            pending_plugin_history = Some(pending);
+                        }
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                        && session
+                            .editor
+                            .next_history_requires_plugin_publication(matches!(
+                                &request,
+                                Request::Redo
+                            )) =>
+                {
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    let result = session
+                        .editor
+                        .prepare_plugin_history(matches!(request, Request::Redo))
+                        .map_err(SessionError::from)
+                        .and_then(|token| match token {
+                            Some(token) => match events.resident_audio() {
+                                Some(sink) => session
+                                    .stage_plugin_publication(
+                                        token,
+                                        hex_engine::AudioSourceContext {
+                                            project_generation,
+                                            editor_revision: revision,
+                                        },
+                                        sink,
+                                        admission,
+                                        resident_snapshot.as_ref(),
+                                    )
+                                    .map(Some),
+                                None => {
+                                    session.editor.cancel_plugin_state(token);
+                                    Err(SessionError::Invalid("native worker unavailable"))
+                                }
+                            },
+                            None => Ok(None),
+                        });
+                    match result {
+                        Ok(Some(publication)) => {
+                            pending_plugin_history = Some(PendingPluginHistory {
+                                publication,
+                                fifo_completion: request_fifo_completion,
+                            });
+                            request_complete = false;
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
                 request @ (Request::Undo | Request::Redo)
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
@@ -5829,7 +6388,33 @@ fn run_worker(
                     }
                 }
                 Request::ContinuePluginStateRestore => {
-                    if let Some(sink) = events.resident_audio()
+                    if let Some(recovery) = pending_plugin_recovery.take() {
+                        if let Some(sink) = events.resident_audio() {
+                            match recovery.terminal(sink) {
+                                ResidentPublicationTerminal::Applied => {
+                                    sink.finish_plugin_state_restore(recovery.context, true);
+                                    recovery
+                                        .snapshot
+                                        .inputs
+                                        .cancel_retired_from(&recovery.previous_inputs);
+                                    compiled =
+                                        Some((revision, Arc::clone(&recovery.snapshot.prepared)));
+                                    resident_snapshot = Some(recovery.snapshot);
+                                    status = Some("vst3 playback restored".into());
+                                }
+                                ResidentPublicationTerminal::Refused(reason) => {
+                                    sink.finish_plugin_state_restore(recovery.context, false);
+                                    error = Some(
+                                        format!("vst3 restoration refused: {reason:?}")
+                                            .to_lowercase(),
+                                    );
+                                }
+                                _ => pending_plugin_recovery = Some(recovery),
+                            }
+                        } else {
+                            pending_plugin_recovery = Some(recovery);
+                        }
+                    } else if let Some(sink) = events.resident_audio()
                         && let Some(context) = sink.plugin_state_restore_ready()
                     {
                         // Metadata-only A/B edits retain this exact preparation source through
@@ -5848,20 +6433,20 @@ fn run_worker(
                                 "finish the active gesture before restoring vst3 state",
                             ))
                         } else {
-                            session.restore_plugin_state_snapshot(
+                            session.stage_plugin_state_recovery(
                                 context, sink,
                                 export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None),
                                 resident_snapshot.as_ref(),
                             )
                         };
-                        sink.finish_plugin_state_restore(context, result.is_ok());
                         match result {
-                            Ok(snapshot) => {
-                                compiled = Some((revision, Arc::clone(&snapshot.prepared)));
-                                resident_snapshot = Some(snapshot);
-                                status = Some("vst3 playback prepared".into());
+                            Ok(recovery) => {
+                                pending_plugin_recovery = Some(recovery);
                             }
-                            Err(reason) => error = Some(reason.to_string()),
+                            Err(reason) => {
+                                sink.finish_plugin_state_restore(context, false);
+                                error = Some(reason.to_string());
+                            }
                         }
                     }
                 }
@@ -6514,7 +7099,26 @@ fn run_worker(
             keyboard_activation = None;
             keyboard_tuning_hint = None;
         }
-        if canonical_changed && !project_replaced && device_gesture.snapshot().is_some() {
+        if let Some(pending) = pending_plugin_gesture.as_mut()
+            && let Some(sink) = events.resident_audio()
+        {
+            // A changed document/revision invalidates the old request, but it
+            // cannot retire the native token. The original sink must still
+            // drain its actual terminal before Session reports an outcome.
+            pending.cancel_if_stale(
+                hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                },
+                document_intent.load(Ordering::Acquire),
+                sink,
+            );
+        }
+        if canonical_changed
+            && !project_replaced
+            && pending_plugin_gesture.is_none()
+            && device_gesture.snapshot().is_some()
+        {
             let outcome = if events.resident_publication_enabled()
                 && session.audio_mode() == DocumentAudioMode::Resident
             {
@@ -6560,7 +7164,7 @@ fn run_worker(
                     );
                     if outcome
                         .as_ref()
-                        .is_some_and(|outcome| !outcome.ack.accepted)
+                        .is_some_and(|outcome| !outcome.pending && !outcome.ack.accepted)
                     {
                         resident_preview = None;
                     }
@@ -6576,13 +7180,40 @@ fn run_worker(
                 )
             };
             if let Some(outcome) = outcome {
-                gesture_ack = Some(outcome.ack);
-                preview_prepared = outcome.playback;
-                preview_project = outcome.preview_project;
-                restore_prepared = preview_prepared
-                    .is_none()
-                    .then_some(restore_prepared)
-                    .flatten();
+                if outcome.pending {
+                    if let Some(snapshot) = device_gesture.snapshot()
+                        && let Some(value) = snapshot.plugin_value
+                    {
+                        pending_plugin_gesture = Some(PendingPluginGesture {
+                            request: GestureRequest::ChangePlugin {
+                                key: snapshot.key,
+                                sequence: snapshot.sequence,
+                                value,
+                            },
+                            context: hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            document_intent: request_document_intent,
+                            fifo_completion: false,
+                            rebase: true,
+                            barrier: false,
+                            preview: outcome.playback,
+                            publication: None,
+                            stopped_recovery: None,
+                            cancellation_requested: false,
+                            explicit_cancel_requested: false,
+                        });
+                    }
+                } else {
+                    gesture_ack = Some(outcome.ack);
+                    preview_prepared = outcome.playback;
+                    preview_project = outcome.preview_project;
+                    restore_prepared = preview_prepared
+                        .is_none()
+                        .then_some(restore_prepared)
+                        .flatten();
+                }
             }
         } else if canonical_changed && !project_replaced && tuning_gesture.snapshot().is_some() {
             let outcome = if events.resident_publication_enabled()
@@ -6892,6 +7523,19 @@ fn run_worker(
                 tuning_library,
             },
             |mut audio| {
+                if let Some(pending) = pending_plugin_gesture.as_mut()
+                    && let Some(sink) = audio.as_deref_mut()
+                {
+                    pending.poll_cancellation(
+                        &plugin_cancel,
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        document_intent.load(Ordering::Acquire),
+                        sink,
+                    );
+                }
                 if let Some(seek) = resident_seek.as_mut() {
                     seek.drive(
                         &session,
@@ -10838,6 +11482,8 @@ mod service_tests {
                 requests,
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ),
+            plugin_cancel: Arc::new(std::sync::Mutex::new(None)),
+            plugin_terminal: mpsc::sync_channel(1).0,
             events: diagnostics::EventReceiver::new(
                 events,
                 Arc::new(diagnostics::Hooks::default()),

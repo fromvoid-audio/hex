@@ -6,6 +6,14 @@ pub struct AppliedAudioSource {
     pub audio_revision: u64,
     pub output_identity: u64,
 }
+/// Bounded observation of the callback's installed source. `Pending` is not
+/// evidence that a source was removed or replaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioSourceObservation {
+    Pending,
+    Absent,
+    Applied(AppliedAudioSource),
+}
 #[derive(Default)]
 pub(super) struct AppliedSourceStatus {
     sequence: AtomicU64,
@@ -13,6 +21,8 @@ pub(super) struct AppliedSourceStatus {
     generation: AtomicU64,
     editor: AtomicU64,
     audio: AtomicU64,
+    #[cfg(feature = "allocation-probe")]
+    test_contended: AtomicBool,
 }
 impl AppliedSourceStatus {
     pub(super) fn publish(&self, source: Option<AppliedAudioSource>) {
@@ -28,7 +38,11 @@ impl AppliedSourceStatus {
             .store(source.map_or(0, |s| s.audio_revision), SeqCst);
         self.sequence.store(before.wrapping_add(2), SeqCst);
     }
-    pub(super) fn read(&self) -> Option<AppliedAudioSource> {
+    fn observe(&self) -> AudioSourceObservation {
+        #[cfg(feature = "allocation-probe")]
+        if self.test_contended.load(Acquire) {
+            return AudioSourceObservation::Pending;
+        }
         for _ in 0..3 {
             let before = self.sequence.load(SeqCst);
             if before & 1 != 0 {
@@ -39,20 +53,36 @@ impl AppliedSourceStatus {
             let editor = self.editor.load(SeqCst);
             let audio = self.audio.load(SeqCst);
             if before == self.sequence.load(SeqCst) {
-                return (root != 0 && audio != 0).then_some(AppliedAudioSource {
-                    context: hex_engine::AudioSourceContext {
-                        project_generation: generation,
-                        editor_revision: editor,
-                    },
-                    audio_revision: audio,
-                    output_identity: root,
-                });
+                return if root != 0 && audio != 0 {
+                    AudioSourceObservation::Applied(AppliedAudioSource {
+                        context: hex_engine::AudioSourceContext {
+                            project_generation: generation,
+                            editor_revision: editor,
+                        },
+                        audio_revision: audio,
+                        output_identity: root,
+                    })
+                } else {
+                    AudioSourceObservation::Absent
+                };
             }
         }
-        None
+        AudioSourceObservation::Pending
+    }
+    pub(super) fn read(&self) -> Option<AppliedAudioSource> {
+        match self.observe() {
+            AudioSourceObservation::Applied(source) => Some(source),
+            AudioSourceObservation::Pending | AudioSourceObservation::Absent => None,
+        }
     }
 }
 impl Status {
+    /// Force the bounded recording-source reader to report contention for a
+    /// controlled test. This never changes the callback's source or seqlock.
+    #[cfg(feature = "allocation-probe")]
+    pub fn hold_recording_source_observation_for_test(&self, held: bool) {
+        self.recording_source.test_contended.store(held, Release);
+    }
     /// Exact installed source for native epoch renewal. Ordinary native effects
     /// reuse the coherent recording-source ACK and its matching native revision;
     /// constructor/sampler `applied_audio_source` keeps its existing meaning.
@@ -70,8 +100,22 @@ impl Status {
     /// Canonical source captured with the actual installed ordinary or eligible
     /// graph. This is correlation, not sink delivery or admission authority.
     pub fn recording_source(&self) -> Option<AppliedAudioSource> {
-        let source = self.recording_source.read()?;
-        (self.applied_revision.load(Acquire) == source.audio_revision).then_some(source)
+        match self.recording_source_observation() {
+            AudioSourceObservation::Applied(source) => Some(source),
+            AudioSourceObservation::Pending | AudioSourceObservation::Absent => None,
+        }
+    }
+    /// Distinguish a stable absence from a contended or not-yet-coherent
+    /// callback observation. Neither result grants source custody.
+    pub fn recording_source_observation(&self) -> AudioSourceObservation {
+        match self.recording_source.observe() {
+            AudioSourceObservation::Applied(source)
+                if self.applied_revision.load(Acquire) != source.audio_revision =>
+            {
+                AudioSourceObservation::Pending
+            }
+            result => result,
+        }
     }
     /// Actual active constructor source, independent of delivery of Submitted
     /// events. None includes bounded-reader contention or a legacy install.
@@ -84,6 +128,43 @@ impl Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recording_source_distinguishes_contention_from_stable_absence() {
+        let status = Status::default();
+        assert_eq!(
+            status.recording_source_observation(),
+            AudioSourceObservation::Absent
+        );
+        let source = AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 7,
+            },
+            audio_revision: 3,
+            output_identity: 9,
+        };
+        status.recording_source.publish(Some(source));
+        assert_eq!(
+            status.recording_source_observation(),
+            AudioSourceObservation::Pending
+        );
+        status.applied_revision.store(3, Release);
+        assert_eq!(
+            status.recording_source_observation(),
+            AudioSourceObservation::Applied(source)
+        );
+        status.recording_source.sequence.store(3, SeqCst);
+        assert_eq!(
+            status.recording_source_observation(),
+            AudioSourceObservation::Pending
+        );
+        status.recording_source.sequence.store(4, SeqCst);
+        status.recording_source.publish(None);
+        assert_eq!(
+            status.recording_source_observation(),
+            AudioSourceObservation::Absent
+        );
+    }
     #[test]
     fn missing_unacked_contended_or_legacy_source_is_never_reported_as_applied() {
         let status = Status::default();
