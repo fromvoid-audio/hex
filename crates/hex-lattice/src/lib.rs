@@ -1849,6 +1849,20 @@ impl NativeRuntimeChain {
             {
                 return Err(DeviceContractError::InvalidDescriptor);
             }
+            if let Some(window) = external
+                && entries
+                    .iter()
+                    .filter(|entry| {
+                        !entry.automation_frozen
+                            && entry.owner == window.identity.owner()
+                            && entry.device_id == window.identity.device_id()
+                    })
+                    .take(2)
+                    .count()
+                    > 1
+            {
+                return Err(DeviceContractError::InvalidDescriptor);
+            }
             for entry in entries {
                 let input = requested
                     .filter(|requested| {

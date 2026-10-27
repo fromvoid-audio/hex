@@ -159,7 +159,7 @@ impl PreparedRevision {
             || !crate::scalar_automation::projection_matches(&binding.source, project.tempo_map())
         {
             return Err(Invalid(
-                "scalar automation source rate differs from project",
+                "scalar automation source rate or projection differs from project",
             ));
         }
         let mut prepared = Self::prepare_for_native_parameter_input(

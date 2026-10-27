@@ -212,6 +212,29 @@ fn scalar_host_stages_use_shared_host_mapping_and_projection_or_latency_changes_
             target,
             source: source(f.editor.project().tempo_map()),
         };
+        // Refuse stale projection before introducing any incompatible processor.
+        f.editor
+            .execute(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(150_000_000).unwrap(),
+            })
+            .unwrap();
+        let error = PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            binding,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.0,
+            "scalar automation source rate or projection differs from project"
+        );
+        let current = ScalarAutomationBinding {
+            device,
+            target,
+            source: source(f.editor.project().tempo_map()),
+        };
         f.editor
             .execute(Command::InsertDevice {
                 track: f.tracks[0],
@@ -223,32 +246,66 @@ fn scalar_host_stages_use_shared_host_mapping_and_projection_or_latency_changes_
                 .unwrap(),
             })
             .unwrap();
-        assert!(
-            PreparedRevision::prepare_with_scalar_automation(
-                f.editor.project(),
-                &f.media,
-                Arc::new(SineTable::new()),
-                None,
-                binding.clone()
-            )
-            .is_err(),
-            "compensated processing cannot use an undelayed scalar origin"
-        );
-        // Current destination-map identity is checked independently of a catalog lease.
-        f.editor
-            .execute(Command::SetProjectTempo {
-                tempo: hex_project::Tempo::new(150_000_000).unwrap(),
-            })
-            .unwrap();
-        assert!(
-            PreparedRevision::prepare_with_scalar_automation(
-                f.editor.project(),
-                &f.media,
-                Arc::new(SineTable::new()),
-                None,
-                binding
-            )
-            .is_err()
+        let error = PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            current,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.0,
+            "scalar automation requires uncompensated stage origins"
         );
     }
+}
+
+#[test]
+fn staged_seek_and_candidate_handoff_plan_the_same_scalar_window_without_committing() {
+    let (_, _, revision, mut pages) = fixture(DeviceAutomationTarget::Parameter(parameter::GAIN));
+    let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let action = runtime
+        .prepare_stream_action(crate::playback::PlaybackAction::Session(
+            SessionPlaybackCommand::Seek(4094),
+        ))
+        .unwrap();
+    let mut speculative = Vec::new();
+    let window = runtime
+        .visit_prepared_stream_action(&action, 4, &mut |extent| {
+            speculative.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(window.arrangement_frame, 4094);
+    assert_eq!(
+        runtime.arrangement_frame(),
+        0,
+        "preflight cannot commit the seek"
+    );
+    runtime.commit_stream_action(action).unwrap();
+    let mut actual = Vec::new();
+    runtime
+        .visit_next_stream_chunk(4, None, &mut |extent| {
+            actual.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(actual, speculative);
+    let mut candidate = SessionPlayback::new(revision).unwrap();
+    let mut handoff = Vec::new();
+    let proposed = candidate
+        .preview_stream_handoff(&mut runtime, 4, None, &mut |extent| {
+            handoff.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(proposed.arrangement_frame, 4094);
+    assert_eq!(handoff, actual);
+    assert_eq!(runtime.arrangement_frame(), 4094);
+    let mut output = [[0.0; 2]; 4];
+    runtime.render_with_pages(&mut output, &mut pages).unwrap();
+    assert_eq!(output[0], [0.0; 2]);
+    assert_eq!(output[2], [0.25, -0.5]);
 }

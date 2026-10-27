@@ -746,7 +746,9 @@ impl ParameterAutomationBlock<'_> {
         target: DeviceAutomationTarget,
         offset: usize,
     ) -> Option<CanonicalValue> {
-        let normalized = self.external?.value_at(target, offset)?;
+        let external = self.external?;
+        external.targets().binary_search(&target).ok()?;
+        let normalized = external.value_at(target, offset)?;
         self.program
             .lanes
             .get(index)?
