@@ -266,10 +266,14 @@ pub(crate) fn quote_with_input(
     device: &hex_project::Device,
     input: Option<NativeParameterInputTarget>,
 ) -> Result<usize, crate::AudioStorageError> {
-    let (provider, host, points) = reading_counts(device)?;
-    let provider = provider
-        .checked_add(usize::from(input_needs_provider_fallback(device, input)?))
-        .ok_or(crate::AudioStorageError::Overflow)?;
+    quote_with_inputs_and_external(device, input, &[])
+}
+pub(crate) fn quote_with_inputs_and_external(
+    device: &hex_project::Device,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+) -> Result<usize, crate::AudioStorageError> {
+    let (provider, host, points, _) = counts_with_external(device, input, external)?;
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(provider, host, points)
         .ok_or(crate::AudioStorageError::Overflow)
 }
@@ -281,12 +285,75 @@ pub(crate) fn input_construction_growth_overlap(
     device: &hex_project::Device,
     input: Option<NativeParameterInputTarget>,
 ) -> Result<usize, crate::AudioStorageError> {
+    input_and_external_growth_overlap(device, input, &[])
+}
+pub(crate) fn input_and_external_growth_overlap(
+    device: &hex_project::Device,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+) -> Result<usize, crate::AudioStorageError> {
+    let (provider, host, _, added_external) = counts_with_external(device, input, external)?;
+    if added_external {
+        // Any previous vector during sequential insertion is no larger than
+        // the final union. This bound covers its overlap with the new backing.
+        return hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(
+            provider, host, 0,
+        )
+        .ok_or(crate::AudioStorageError::Overflow);
+    }
     if !input_needs_provider_fallback(device, input)? {
         return Ok(0);
     }
     let (provider, host, _) = reading_counts(device)?;
     hex_lattice::PreparedParameterAutomation::quoted_storage_bytes_with_host(provider, host, 0)
         .ok_or(crate::AudioStorageError::Overflow)
+}
+
+fn counts_with_external(
+    device: &hex_project::Device,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+) -> Result<(usize, usize, usize, bool), crate::AudioStorageError> {
+    let (mut provider, mut host, points) = reading_counts(device)?;
+    let live_fallback = input_needs_provider_fallback(device, input)?;
+    provider = provider
+        .checked_add(usize::from(live_fallback))
+        .ok_or(crate::AudioStorageError::Overflow)?;
+    let mut added_external = false;
+    for (index, target) in external
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| target.device == device.id())
+    {
+        if target.device_type != device.state().type_id()
+            || external[..index]
+                .iter()
+                .any(|old| old.device == target.device && old.target == target.target)
+        {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        if device
+            .reading_automation()
+            .any(|lane| lane.target == target.target)
+            || (live_fallback
+                && input.is_some_and(|live| {
+                    live.device == target.device && live.target == target.target
+                }))
+        {
+            continue;
+        }
+        if target.target.provider_parameter().is_some() {
+            provider = provider
+                .checked_add(1)
+                .ok_or(crate::AudioStorageError::Overflow)?;
+        } else {
+            host = host
+                .checked_add(1)
+                .ok_or(crate::AudioStorageError::Overflow)?;
+        }
+        added_external = true;
+    }
+    Ok((provider, host, points, added_external))
 }
 fn input_needs_provider_fallback(
     device: &hex_project::Device,

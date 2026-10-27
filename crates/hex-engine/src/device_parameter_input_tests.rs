@@ -55,9 +55,19 @@ fn external_reading_union_keeps_live_arm_and_distinct_provider_and_host_slots() 
         program.storage_vectors().2.is_empty(),
         "external targets do not add authored points"
     );
+    let quote = quote_with_inputs_and_external(current, Some(gain), &[gain, mute, host]).unwrap();
+    assert!(quote >= program.storage_bytes().unwrap());
+    let live_only = prepare_with_registry_and_input(current, &registry, Some(gain)).unwrap();
+    let growth =
+        input_and_external_growth_overlap(current, Some(gain), &[gain, mute, host]).unwrap();
+    assert!(
+        growth >= live_only.storage_bytes().unwrap(),
+        "old reading vectors coexist during growth"
+    );
     assert!(
         prepare_with_registry_inputs_and_external(current, &registry, None, &[gain, gain]).is_err()
     );
+    assert!(quote_with_inputs_and_external(current, None, &[gain, gain]).is_err());
 }
 #[test]
 fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_domains() {
