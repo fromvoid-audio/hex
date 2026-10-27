@@ -440,7 +440,7 @@ impl EditorView {
                     "{:.2}b",
                     raw as f64 / hex_project::BeatTime::ONE.raw() as f64
                 ),
-                raw.is_multiple_of(hex_project::BeatTime::ONE.raw() * 4),
+                raw % (hex_project::BeatTime::ONE.raw() * 4) == 0,
                 false,
                 false,
             ));
