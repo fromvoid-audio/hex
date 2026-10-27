@@ -514,6 +514,7 @@ pub(super) struct RuntimeStorage<'a> {
 impl RuntimeStorage<'_> {
     pub(super) fn bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<SessionPlayback>();
+        checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
         if self.scalar_automation {
             checked_add(
                 &mut total,
@@ -652,6 +653,7 @@ fn runtime_storage_preflight_bytes(
         )?
         .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
+    checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
     if revision.scalar_automation.is_some() {
         checked_add(
             &mut total,

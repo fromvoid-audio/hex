@@ -2141,6 +2141,8 @@ pub struct Project {
     main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
+    // A legacy whole-project renderer cannot silently omit recorded parameters.
+    requires_scalar_automation: bool,
     shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
@@ -2258,6 +2260,7 @@ impl Project {
             main_device_chain: Arc::from([]),
             main_output_latency_frames: 0,
             has_streamed_sources,
+            requires_scalar_automation: false,
             shared_contexts: owned_shared::OwnedShared::new_owned(
                 shared_analytic::SharedAnalyticContextTable::default(),
             ),
@@ -2839,6 +2842,12 @@ impl RendererRuntime {
         mut pages: Option<&mut P>,
         began: &mut bool,
     ) -> Result<(), Invalid> {
+        if project.requires_scalar_automation {
+            output.fill([0.0; 2]);
+            return Err(Invalid(
+                "recorded parameters require shared session playback",
+            ));
+        }
         let volume_clock = project.midi_volume_timing();
         let volume_timing = volume_clock
             .as_ref()

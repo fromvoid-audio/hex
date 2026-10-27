@@ -251,13 +251,20 @@ impl AudioCandidateReservationQuote {
             )?
             .checked_add(session_workspace)
             .ok_or(AudioStorageError::Overflow)?,
-            data_rows: counts.rows,
+            // One fixed control-allocated span buffer under the Session owner.
+            data_rows: counts
+                .rows
+                .checked_add(1)
+                .ok_or(AudioStorageError::Overflow)?,
             handle_rows: counts.handles,
             member_rows: groups.checked_mul(2).ok_or(AudioStorageError::Overflow)?,
             transfer_rows: groups,
             metadata_data_bytes: counts
                 .bytes
                 .checked_add(session_bytes)
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<crate::midi_template::MidiSpanBuffer>())
+                })
                 .ok_or(AudioStorageError::Overflow)?,
         })
     }

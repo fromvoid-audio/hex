@@ -121,6 +121,7 @@ impl OwnedShared<crate::Project> {
         if !found {
             return Err(crate::Invalid("scalar automation device is unavailable"));
         }
+        project.requires_scalar_automation = true;
         Ok(())
     }
 

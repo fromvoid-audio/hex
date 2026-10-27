@@ -479,7 +479,9 @@ pub struct SessionPlayback {
     release_order_scratch: u64,
     suppressions: Vec<MidiOccurrenceSuppression>,
     suppression_scratch: Vec<MidiOccurrenceSuppression>,
-    spans: MidiSpanBuffer,
+    // Keep the fixed large span payload out of by-value constructor temporaries.
+    // Its stable Box is allocated on control and retired with this runtime.
+    spans: Box<MidiSpanBuffer>,
     analytic_import: analytic_import::ImportPlan,
     performance_frame: u64,
     arrangement_frame: u64,
@@ -1938,7 +1940,7 @@ impl SessionPlayback {
             release_order_scratch: 0,
             suppressions,
             suppression_scratch,
-            spans: MidiSpanBuffer::default(),
+            spans: Box::new(MidiSpanBuffer::default()),
             analytic_import,
             performance_frame: 0,
             arrangement_frame: 0,

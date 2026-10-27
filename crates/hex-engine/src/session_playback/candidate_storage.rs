@@ -126,6 +126,11 @@ impl SessionPlayback {
             Owner::exclusive(revision),
             Location("session-revision", 0),
         )?;
+        l.bytes(
+            Owner::exclusive(spans.as_ref()),
+            Location("session-midi-span-buffer", 0),
+            std::mem::size_of::<MidiSpanBuffer>(),
+        )?;
         l.vec(routes)?;
         l.vec(route_scratch)?;
         l.vec(device_chains)?;

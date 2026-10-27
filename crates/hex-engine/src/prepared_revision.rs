@@ -219,7 +219,9 @@ impl PreparedRevision {
         previous_project: &Project,
         previous_revision: &Self,
     ) -> Result<Self, Invalid> {
-        if !previous_project.same_except_tuning(project)
+        if self.scalar_automation.is_some()
+            || previous_revision.scalar_automation.is_some()
+            || !previous_project.same_except_tuning(project)
             || self.arrangement.shared_contexts().tuning()
                 != &project.tuning().table().map_err(|e| Invalid(e.0))?
             || previous_revision.arrangement.sample_rate() != previous_project.sample_rate()

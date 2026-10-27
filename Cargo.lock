@@ -2577,6 +2577,7 @@ dependencies = [
  "hex-plugin-scan",
  "hex-plugin-state",
  "hex-project",
+ "hex-storage",
  "hex-stream",
  "hex-tuning",
  "qos-threads",

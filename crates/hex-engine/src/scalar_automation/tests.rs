@@ -124,6 +124,15 @@ fn scalar_pages_drive_real_native_provider_and_live_clear_reveals_recorded_value
         revision.contains_streamed_sources(),
         "scalar-only page dependency enters native preflight"
     );
+    let mut legacy = crate::Renderer::new(revision.arrangement());
+    legacy.play();
+    let mut refused = [[9.0; 2]; 4];
+    assert!(
+        legacy.render(&mut refused).is_err(),
+        "whole-project renderer must not omit recorded parameters"
+    );
+    assert_eq!(refused, [[0.0; 2]; 4]);
+    drop(legacy);
     let mut runtime = SessionPlayback::new(revision).unwrap();
     seek(&mut runtime);
     let mut demand = Vec::new();
