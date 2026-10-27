@@ -702,14 +702,25 @@ impl SessionPlayback {
         let mut output_offset = 0;
         let mut route_changed = false;
         let region = self.active_loop_region();
+        // Pending route frames only change when apply_due_routes consumes them.
+        // Keep the next deadline for this render transaction so compensated
+        // graphs do not rescan every track several times for every sample.
+        let mut next_route = next_pending_frame(&self.route_scratch);
 
         while output_offset < output.len() {
             if let Some(region) = region {
                 (arrangement_frame, arrangement_loop_pass) =
                     normalize_loop_cursor(arrangement_frame, region, arrangement_loop_pass)?;
             }
-            let (captured_release, applied_route) =
-                self.apply_due_routes(performance_frame, arrangement_frame)?;
+            let (captured_release, applied_route) = if self.current_sampler_console
+                || next_route.is_some_and(|next| next <= performance_frame)
+            {
+                let result = self.apply_due_routes(performance_frame, arrangement_frame)?;
+                next_route = next_pending_frame(&self.route_scratch);
+                result
+            } else {
+                (false, false)
+            };
             route_changed |= applied_route;
             if captured_release {
                 self.release_scratch.sort_unstable_by_key(|entry| {
@@ -734,7 +745,7 @@ impl SessionPlayback {
             if current_first_frame {
                 chunk_frames = chunk_frames.min(1);
             }
-            if let Some(next) = next_pending_frame(&self.route_scratch) {
+            if let Some(next) = next_route {
                 if next > performance_frame {
                     let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
                     chunk_frames = chunk_frames.min(until);
