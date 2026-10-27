@@ -86,8 +86,7 @@ pub(crate) fn plan(
             .clip(*id)
             .ok_or(Invalid("selected audio clip no longer exists"))?;
         let events = clip.audio_events();
-        if !clip.active()
-            || events.events.iter().any(|event| !event.active)
+        if events.events.iter().any(|event| !event.active)
             || events.sources.iter().any(|source| {
                 source
                     .clip
