@@ -1,16 +1,12 @@
 //! Real ruler input, worker custody and stable destination ranges after repaint.
 use super::super::midi_canvas::creation_tests::{fixture, pump};
+use super::tests::content_bounds;
 use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::{BeatTime, Command, MidiNoteInsert};
 use hex_session::service::Request;
 fn drag(visual: &mut VisualTestContext, first: f32, last: f32) {
-    let b = visual.debug_bounds("midi-source-ruler").unwrap();
-    let at = |f| {
-        point(
-            b.origin.x + px(1.0) + (b.size.width - px(2.0)) * f,
-            b.center().y,
-        )
-    };
+    let b = content_bounds(visual, "midi-source-ruler");
+    let at = |f| point(b.origin.x + b.size.width * f, b.center().y);
     visual.simulate_mouse_down(at(first), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(at(last), Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(at(last), MouseButton::Left, Modifiers::default());
@@ -38,16 +34,14 @@ fn assert_visible(
     .into();
     let scale = visual.update(|window, _| window.scale_factor());
     for selector in ["midi-source-ruler", "midi-note-roll"] {
-        let bounds = visual.debug_bounds(selector).expect("selection canvas");
+        let bounds = content_bounds(visual, selector);
         assert!(
             visual
                 .rendered_filled_quads(selector)
                 .iter()
                 .any(|(quad, c)| c == &color
                     && quad.size.height
-                        == gpui::ScaledPixels::from(
-                            f32::from(bounds.size.height - px(2.0)) * scale
-                        )),
+                        == gpui::ScaledPixels::from(f32::from(bounds.size.height) * scale)),
             "completed frame retains full-height translucent time highlight in {selector}"
         );
     }
@@ -247,7 +241,7 @@ fn reversed_ruler_selection_snaps_and_cancel_or_stale_render_keeps_baseline(
     assert_visible(&editor, &mut visual, beat, 3 * beat);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for blur in [false, true] {
-        let b = visual.debug_bounds("midi-source-ruler").unwrap();
+        let b = content_bounds(&mut visual, "midi-source-ruler");
         let first = point(b.origin.x + b.size.width / 8.0, b.center().y);
         let last = point(b.origin.x + b.size.width / 2.0, b.center().y);
         visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
@@ -266,15 +260,9 @@ fn reversed_ruler_selection_snaps_and_cancel_or_stale_render_keeps_baseline(
     }
     drag(&mut visual, 0.11, 0.41);
     assert_visible(&editor, &mut visual, beat / 2, 7 * beat / 4);
-    let b = visual.debug_bounds("midi-source-ruler").unwrap();
-    let first = point(
-        b.origin.x + px(1.0) + (b.size.width - px(2.0)) * 0.11,
-        b.center().y,
-    );
-    let last = point(
-        b.origin.x + px(1.0) + (b.size.width - px(2.0)) * 0.41,
-        b.center().y,
-    );
+    let b = content_bounds(&mut visual, "midi-source-ruler");
+    let first = point(b.origin.x + b.size.width * 0.11, b.center().y);
+    let last = point(b.origin.x + b.size.width * 0.41, b.center().y);
     let free = Modifiers {
         platform: true,
         ..Default::default()
@@ -309,7 +297,7 @@ fn actual_source_ack_cancels_old_pointer_and_blur_before_held_copy_ack_keeps_bas
     let beat = BeatTime::ONE.raw();
     drag(&mut visual, 0.25, 0.75);
     assert_visible(&editor, &mut visual, beat, 3 * beat);
-    let b = visual.debug_bounds("midi-source-ruler").unwrap();
+    let b = content_bounds(&mut visual, "midi-source-ruler");
     let first = point(b.origin.x + b.size.width / 8.0, b.center().y);
     let last = point(b.origin.x + b.size.width / 2.0, b.center().y);
     visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
