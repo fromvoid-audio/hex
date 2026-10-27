@@ -86,7 +86,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 "inactive midi note inventory missing",
             ))?,
     )?;
-    if ids.len() > hex_project::MAX_NOTES || ids.iter().any(|id| *id == 0) {
+    if ids.len() > hex_project::MAX_NOTES || ids.contains(&0) {
         return Err(StorageError::Invalid(
             "invalid inactive midi note inventory",
         ));
