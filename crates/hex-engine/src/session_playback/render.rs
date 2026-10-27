@@ -1652,6 +1652,7 @@ impl SessionPlayback {
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // Existing return-stage borrows plus recorded values.
     fn render_return_buses(
         &mut self,
         output: &mut [Frame],
