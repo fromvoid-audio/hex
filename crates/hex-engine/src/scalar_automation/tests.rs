@@ -423,7 +423,7 @@ fn missing_cross_page_scalar_refuses_without_advancing_and_retries_same_window()
     assert_eq!(output[2], [0.25, -0.5]);
 }
 #[test]
-fn scalar_host_stages_use_shared_host_mapping_and_projection_or_latency_changes_refuse() {
+fn scalar_host_stages_use_shared_host_mapping_and_stale_projection_refuses() {
     for target in [
         DeviceAutomationTarget::HostInputGain,
         DeviceAutomationTarget::HostOutputGain,
@@ -474,18 +474,15 @@ fn scalar_host_stages_use_shared_host_mapping_and_projection_or_latency_changes_
                 .unwrap(),
             })
             .unwrap();
-        let error = PreparedRevision::prepare_with_scalar_automation(
+        let prepared = PreparedRevision::prepare_with_scalar_automation(
             f.editor.project(),
             &f.media,
             Arc::new(SineTable::new()),
             None,
             current,
         )
-        .unwrap_err();
-        assert_eq!(
-            error.0,
-            "scalar automation requires uncompensated stage origins"
-        );
+        .unwrap();
+        assert_eq!(prepared.arrangement().main_latency_frames(), 288);
     }
 }
 
