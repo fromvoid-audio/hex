@@ -236,7 +236,7 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
     let p = |pct: usize| timings[(timings.len() - 1) * pct / 100].1 as f64 / 1000.0;
     println!(
         "tracks={tracks} audio_tracks={} operator_tracks={} devices_per_track={devices} processors={} admission=accepted rate={RATE} block={block} seconds={seconds} frames={frame} digest={hash:016x} peak={peak:.8} render_p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_actual_period={late} first_audible_frame={} first_render_us={:.3} handoffs={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late}",
-        (tracks + 1) / 2,
+        tracks.div_ceil(2),
         tracks / 2,
         tracks * devices,
         p(50),
