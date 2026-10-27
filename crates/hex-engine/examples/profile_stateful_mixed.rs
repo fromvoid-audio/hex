@@ -131,7 +131,53 @@ fn digest(hash: &mut u64, frames: &[[f32; 2]]) {
         *hash = hash.wrapping_mul(0x100000001b3);
     }
 }
-fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()> {
+// Independent track composition: compile each original track as a separate
+// project and add its entire output in the original mixer order. This exercises
+// the same device implementations but not the shared 100-track mixing graph.
+fn composition_oracle(
+    project: &Project,
+    media: &BTreeMap<hex_project::AssetId, Audio>,
+    table: &Arc<SineTable>,
+    block: usize,
+    total: usize,
+) -> Result<Vec<[f32; 2]>> {
+    let snapshot = project.snapshot();
+    let mut sum = vec![[0.0_f32; 2]; total];
+    let mut output = vec![[0.0_f32; 2]; block];
+    for track in &snapshot.tracks {
+        let mut isolated = snapshot.clone();
+        isolated.tracks.retain(|candidate| candidate.id == track.id);
+        isolated
+            .native_sources
+            .retain(|source| source.receiver == Some(track.id));
+        let isolated = Project::from_snapshot(isolated)?;
+        let prepared = revision(&isolated, media, table, None)?;
+        let mut playback = playback(prepared)?;
+        for (offset, chunk) in sum.chunks_mut(block).enumerate() {
+            playback.render(&mut output[..chunk.len()])?;
+            for (mixed, source) in chunk.iter_mut().zip(&output) {
+                for channel in 0..2 {
+                    if !source[channel].is_finite() {
+                        return Err(format!(
+                            "nonfinite isolated PCM at track {} block {offset}",
+                            track.id
+                        )
+                        .into());
+                    }
+                    mixed[channel] += source[channel];
+                }
+            }
+        }
+    }
+    Ok(sum)
+}
+fn run(
+    tracks: usize,
+    devices: usize,
+    block: usize,
+    seconds: usize,
+    composition: bool,
+) -> Result<()> {
     let (project, media) = fixture(tracks, devices)?;
     let table = Arc::new(SineTable::new());
     let initial = match revision(&project, &media, &table, None) {
@@ -149,6 +195,13 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
         }
         Err(error) => return Err(error),
     };
+    let total = seconds * RATE as usize;
+    let composed = if composition {
+        Some(composition_oracle(&project, &media, &table, block, total)?)
+    } else {
+        None
+    };
+    let mut composition_max_error = 0.0_f32;
     let mut current_revision = Arc::clone(&initial);
     let mut actual = playback(Arc::clone(&initial))?;
     let mut reference = playback(initial)?;
@@ -159,7 +212,6 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
     let mut handoff_plus_render = Vec::new();
     let mut pending_handoff = None;
     let mut hash = 0xcbf29ce484222325;
-    let total = seconds * RATE as usize;
     let mut frame = 0;
     let mut next_handoff = RATE as usize * 10;
     let mut peak = 0.0_f32;
@@ -194,6 +246,20 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
         reference.render(&mut b[..count])?;
         if a[..count] != b[..count] {
             return Err(format!("continuous PCM mismatch at frame {frame}").into());
+        }
+        if let Some(composed) = &composed {
+            for (actual, expected) in a[..count].iter().zip(&composed[frame..frame + count]) {
+                for channel in 0..2 {
+                    let error = (actual[channel] - expected[channel]).abs();
+                    if !error.is_finite() || error > 2.0e-6 {
+                        return Err(format!(
+                            "isolated-track composition mismatch at frame {frame} error={error}"
+                        )
+                        .into());
+                    }
+                    composition_max_error = composition_max_error.max(error);
+                }
+            }
         }
         for (offset, channels) in a[..count].iter().enumerate() {
             for sample in channels {
@@ -236,7 +302,7 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
     handoffs.sort_unstable();
     let p = |pct: usize| timings[(timings.len() - 1) * pct / 100].1 as f64 / 1000.0;
     println!(
-        "tracks={tracks} audio_tracks={} operator_tracks={} devices_per_track={devices} effect_instances={} mutable_instruments={} total_stateful_instances={} admission=accepted rate={RATE} block={block} seconds={seconds} frames={frame} digest={hash:016x} peak={peak:.8} render_p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_actual_period={late} first_audible_frame={} first_render_us={:.3} handoffs={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late}",
+        "tracks={tracks} audio_tracks={} operator_tracks={} devices_per_track={devices} effect_instances={} mutable_instruments={} total_stateful_instances={} admission=accepted rate={RATE} block={block} seconds={seconds} frames={frame} digest={hash:016x} peak={peak:.8} render_p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_actual_period={late} first_audible_frame={} first_render_us={:.3} handoffs={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late} isolated_track_composition={composition} composition_max_error={composition_max_error:.9}",
         tracks.div_ceil(2),
         tracks / 2,
         tracks * devices,
@@ -256,9 +322,9 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 3 {
+    if args.len() != 3 && !(args.len() == 4 && args[3] == "--composition") {
         return Err(
-            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60>".into(),
+            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition]".into(),
         );
     }
     let devices = args[0].parse()?;
@@ -273,7 +339,7 @@ fn main() -> Result<()> {
     println!(
         "headless mixed resident audio and four-voice all-operator arrangement; identical revision handoffs; continuous playback PCM reference; uncontrolled host load; no physical callback or first-audible measurement"
     );
-    run(TRACKS, devices, block, seconds)
+    run(TRACKS, devices, block, seconds, args.len() == 4)
 }
 
 #[cfg(test)]
@@ -303,6 +369,36 @@ mod tests {
             assert_eq!(a, b);
         }
         assert!(a.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        Ok(())
+    }
+
+    #[test]
+    fn isolated_track_composition_matches_and_detects_missing_track() -> Result<()> {
+        let (project, media) = fixture(2, 1)?;
+        let table = Arc::new(SineTable::new());
+        let composed = composition_oracle(&project, &media, &table, 128, 1024)?;
+        let mut full = playback(revision(&project, &media, &table, None)?)?;
+        let mut actual = [[0.0_f32; 2]; 1024];
+        for chunk in actual.chunks_mut(128) {
+            full.render(chunk)?;
+        }
+        assert!(
+            actual
+                .iter()
+                .zip(&composed)
+                .all(|(a, b)| (0..2).all(|c| (a[c] - b[c]).abs() <= 2.0e-6))
+        );
+        let mut missing = project.snapshot();
+        missing.tracks.truncate(1);
+        missing.native_sources.clear();
+        let missing = Project::from_snapshot(missing)?;
+        let incomplete = composition_oracle(&missing, &media, &table, 128, 1024)?;
+        assert!(
+            actual
+                .iter()
+                .zip(&incomplete)
+                .any(|(a, b)| (0..2).any(|c| (a[c] - b[c]).abs() > 2.0e-6))
+        );
         Ok(())
     }
 
