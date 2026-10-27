@@ -856,12 +856,99 @@ pub(crate) struct ReturnBus {
     pub output_meter: std::sync::Arc<hex_lattice::DeviceMeter>,
 }
 
-/// Resolve playback audibility without changing authored activation/mute state.
-/// Solo wins over that track's mute; otherwise any solo suppresses this track.
-/// Shared by resident compilation and prepared/streamed Arrangement tracks;
-/// Session routes borrow those same effective mixes.
-pub(crate) fn effective_track_mute(track: &hex_project::Track, any_soloed: bool) -> bool {
-    !track.soloed() && (track.muted() || any_soloed)
+/// Bounded solo projection for one immutable canonical track inventory. Group
+/// ancestors remain audible, and a soloed group includes its descendants.
+/// Shared-source receiver ancestors are admitted without enabling receiver-local
+/// content. No authored mute or solo flags are changed.
+pub(crate) struct TrackSoloSelection {
+    any: bool,
+    selected: [bool; hex_project::MAX_TRACKS],
+}
+impl TrackSoloSelection {
+    pub(crate) fn prepare(project: &hex_project::Project) -> Self {
+        let tracks = project.tracks();
+        let any = tracks.iter().any(|track| track.soloed());
+        let mut selected = [false; hex_project::MAX_TRACKS];
+        if !any {
+            return Self { any, selected };
+        }
+        // Canonical tracks are bounded and their parent IDs have already been
+        // validated. Resolve indices once before walking at most the inventory.
+        let mut parents = [None; hex_project::MAX_TRACKS];
+        for (index, track) in tracks.iter().enumerate() {
+            parents[index] = track
+                .parent_group()
+                .and_then(|id| tracks.iter().position(|candidate| candidate.id() == id));
+        }
+        for (index, track) in tracks.iter().enumerate() {
+            let mut cursor = Some(index);
+            for _ in 0..tracks.len() {
+                let Some(current) = cursor else {
+                    break;
+                };
+                if tracks[current].soloed() {
+                    selected[index] = true;
+                }
+                if track.soloed() {
+                    selected[current] = true;
+                }
+                cursor = parents[current];
+            }
+        }
+        // Source contributors are ordinary tracks. Their own selected flags
+        // remain unchanged when admitting the receiver's group path.
+        for (index, track) in tracks.iter().enumerate() {
+            if !selected[index] {
+                continue;
+            }
+            let Some(source) = track.source_id() else {
+                continue;
+            };
+            let Some(receiver) = project
+                .native_source(source)
+                .and_then(|source| source.receiver())
+            else {
+                continue;
+            };
+            let Some(receiver_index) = tracks
+                .iter()
+                .position(|candidate| candidate.id() == receiver)
+            else {
+                continue;
+            };
+            let mut cursor = parents[receiver_index];
+            for _ in 0..tracks.len() {
+                let Some(current) = cursor else {
+                    break;
+                };
+                selected[current] = true;
+                cursor = parents[current];
+            }
+        }
+        Self { any, selected }
+    }
+    pub(crate) fn selected(&self, index: usize) -> Result<bool, Invalid> {
+        self.selected
+            .get(index)
+            .copied()
+            .ok_or(Invalid("solo projection track is missing"))
+    }
+    pub(crate) fn muted(&self, index: usize, track: &hex_project::Track) -> Result<bool, Invalid> {
+        let selected = self.selected(index)?;
+        Ok(!track.soloed() && (track.muted() || (self.any && !selected)))
+    }
+    pub(crate) fn source_selected(
+        &self,
+        project: &hex_project::Project,
+        source: hex_project::SourceId,
+    ) -> Result<bool, Invalid> {
+        for (index, contributor) in project.tracks().iter().enumerate() {
+            if contributor.source_id() == Some(source) && self.selected(index)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
