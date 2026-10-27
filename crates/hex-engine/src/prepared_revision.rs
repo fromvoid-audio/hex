@@ -127,6 +127,17 @@ impl std::fmt::Debug for PreparedRevision {
 }
 
 impl PreparedRevision {
+    #[cfg(test)]
+    pub(crate) fn test_install_group_graph(&mut self, canonical: &Project) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.signal_graph =
+            crate::signal_graph::SignalGraph::prepare(&arrangement, &[], canonical).unwrap();
+        for track in &mut arrangement.tracks {
+            track.source_mix = crate::PreparedTrackMix::identity();
+        }
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
     pub fn prepare(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,

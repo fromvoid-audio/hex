@@ -12,7 +12,8 @@ running process. Preserve projects, media, preferences and historical artifacts.
 ## Update and open
 
 ```sh
-./launch          # fetch/fast-forward clean main, optimized build/install/open
+./launch          # verify/open installed app only
+./launch --update # fetch/fast-forward clean main, optimized build/install/open
 ./launch --test   # add full exact-source local CI
 ./launch --open   # verify/open installed app only
 ./launch --help
@@ -59,6 +60,24 @@ machine-specific path; do not create revision-named copies. Packaging builds
 `cargo build --release -p hex-desktop --locked`, uses the configured Developer ID
 certificate/team and preserves original notices. Missing signing identity or
 failed verification refuses publication without an ad-hoc fallback.
+
+For explicit preparation without replacing a running app, the same qualified
+command accepts `--prepare-only`. It requires full exact-source CI and writes a
+verified candidate into the target-bound `.hex-pending-update` store beside the
+configured app. It does not install or launch that candidate; the ordinary
+launcher does not consume it. An update-capable installed test build shows an
+available update and offers `install update on quit` or `save and restart for
+update` in the hex menu. The first waits for a confirmed normal close; the second
+waits for the selected project save and requests one restart after installation.
+Cancelling, a failed save, or a changed project leaves the app running. A changed
+candidate detected before quit also leaves the app running; if the final check
+after quit refuses, reopen the existing app and retry. If an older installed build does not offer these actions, save and quit
+it and use the supported installer once before using the deferred handoff.
+Failure before pending publication preserves the installed app and the previous
+candidate. Interrupted publication uses the existing installer recovery. Avoid
+starting a build or CI while recording: preparation is not evidence of audio
+deadline safety. A restart request is not proof that the new process launched;
+check its build identity and the displayed update status separately.
 
 For explicit VST3 helper packaging, build the pinned clean SDK inputs with
 `crates/hex-plugin-scan/native/macos_bootstrap.py build --help`. The
