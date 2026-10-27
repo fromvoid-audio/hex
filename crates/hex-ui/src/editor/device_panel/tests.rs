@@ -474,6 +474,7 @@ fn settled_device_removal_has_no_stale_warning_or_empty_instrument_block(cx: &mu
 
 #[gpui::test]
 fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
     let (service, state, track, existing, _, _) = actor_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
@@ -484,6 +485,11 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.browser.search.read(cx).focus_handle().focus(window)
+        });
+    });
 
     let source = visual
         .debug_bounds("browser-device-effect-hex.utility")
@@ -532,6 +538,31 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
     });
 
     visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("space").unwrap(),
+        is_held: false,
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(0)),
+            "Space immediately after the device drop must reach transport"
+        );
+    });
+    editor.update(cx, |view, _| view.last_transport_command = None);
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("space").unwrap(),
+        is_held: true,
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.last_transport_command.is_none(),
+            "held Space must not toggle playback repeatedly"
+        )
+    });
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("space").unwrap(),
+    });
     visual.run_until_parked();
     pump_until(&editor, cx, |view| {
         view.state
@@ -554,6 +585,75 @@ fn browser_device_drop_uses_hovered_card_half_and_commits_before_target(cx: &mut
         assert!(view.clip_view_open, "successful drop keeps the pane open");
         assert!(view.device_panel_active);
     });
+}
+
+#[gpui::test]
+fn device_drop_then_space_starts_actual_callback_and_applies_device(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering::Acquire;
+    let _guard = eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, existing, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.browser.section = crate::editor::browser::BrowserSection::Instruments;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1500.0), px(800.0)));
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RenameTrack {
+            track,
+            name: "device track ready".into(),
+        })));
+    });
+    let (mut output, mut backend) =
+        eq_ui_tests::held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.browser.search.read(cx).focus_handle().focus(window)
+        });
+    });
+    let source = visual
+        .debug_bounds("browser-device-effect-hex.utility")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(source.x + px(12.0), source.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let selector = Box::leak(format!("device-drop-card-{}", existing.value()).into_boxed_str());
+    let card = visual.debug_bounds(selector).unwrap();
+    let destination = point(card.origin.x + px(24.0), card.center().y);
+    visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("space");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        let settled = editor.read_with(cx, |view, _| {
+            view.state.as_ref().is_some_and(|state| {
+                state
+                    .project
+                    .track(track)
+                    .is_some_and(|track| track.devices().len() == 2)
+                    && view.applied_project_revision() == Some(state.revision)
+            })
+        });
+        if settled && backend.status().unwrap().playing.load(Acquire) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "drop followed by Space did not both start and apply: {:?}",
+            editor.read_with(cx, |view, _| view.error.clone())
+        );
+    }
 }
 
 #[gpui::test]

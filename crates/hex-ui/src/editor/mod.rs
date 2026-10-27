@@ -458,7 +458,6 @@ fn bind_editor_keys(cx: &mut App) {
     clip_name::bind_keys(cx);
     track_name::bind_keys(cx);
     cx.bind_keys([
-        KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
         KeyBinding::new("s", ToggleSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
@@ -1248,6 +1247,28 @@ impl EditorView {
                 return;
             }
             crate::diagnostics::record_key(cx, event);
+            // A completed drag can leave this window with no mounted editor
+            // focus. Restore it and deliver the first Space press here;
+            // subsequent keys, including repeats, take the normal raw-key path.
+            if event.keystroke.key == "space"
+                && event.keystroke.modifiers == gpui::Modifiers::default()
+                && let Some(entity) = keyboard_entity.upgrade()
+                && !entity.read(cx).focus.contains_focused(window, cx)
+                && !event.context_stack.iter().any(|context| {
+                    context.contains("hex_text_editing")
+                        || context.contains("hex_text_input")
+                        || context.contains("hex_browser_search")
+                })
+            {
+                entity.update(cx, |view, cx| {
+                    view.focus.focus(window);
+                    let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
+                    view.toggle_play();
+                    cx.notify();
+                });
+                cx.stop_propagation();
+                return;
+            }
             if window.window_handle().window_id() == keyboard_window_id
                 && let Some(entity) = keyboard_entity.upgrade()
                 && (entity.read(cx).tuning_audition_accepts(

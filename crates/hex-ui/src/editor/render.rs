@@ -704,6 +704,22 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "space"
+                    && event.keystroke.modifiers == gpui::Modifiers::default()
+                    && !window.context_stack().iter().any(|context| {
+                        context.contains("hex_text_editing")
+                            || context.contains("hex_text_input")
+                            || context.contains("hex_browser_search")
+                    })
+                {
+                    if !event.is_held {
+                        let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
+                        view.toggle_play();
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
                 if !view.time_selection_key_down(event, window, cx)
                     && !view.tuning_audition_down(event, window, cx)
                     && !view.clip_gain_key_down(event, cx)
