@@ -41,7 +41,7 @@ impl DeviceSelectionIds {
 
 #[derive(Clone, Debug)]
 enum Member {
-    Effect(Device),
+    Effect(Box<Device>),
     Instrument(crate::native_sources::SourceBinding),
 }
 impl Member {
@@ -85,7 +85,7 @@ impl Project {
                             members.push(Member::Instrument(binding.clone()));
                         }
                         TrackDeviceRef::Effect(device) if selected.ids().contains(&device.id()) => {
-                            members.push(Member::Effect(device.clone()))
+                            members.push(Member::Effect(Box::new(device.clone())))
                         }
                         _ => {}
                     }
@@ -96,7 +96,7 @@ impl Project {
                     .iter()
                     .filter(|d| selected.ids().contains(&d.id()))
                     .cloned()
-                    .map(Member::Effect),
+                    .map(|device| Member::Effect(Box::new(device))),
             ),
             DeviceChainOwner::Return(id) => {
                 let track = self
@@ -110,7 +110,7 @@ impl Project {
                         .iter()
                         .filter(|d| selected.ids().contains(&d.id()))
                         .cloned()
-                        .map(Member::Effect),
+                        .map(|device| Member::Effect(Box::new(device))),
                 );
             }
         }
