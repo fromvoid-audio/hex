@@ -40,6 +40,10 @@ pub(super) struct State {
     pub(super) source_view: bool,
     viewport: Option<Viewport>,
     frame_bounds: Option<(u64, u64)>,
+    // Last canonical (root position, projected frame), plus the latest admitted
+    // grip (root position, visible frame offset, viewport length). Display only.
+    canonical_start: Option<(u64, u64)>,
+    start_grip: Option<(u64, u64, u64)>,
     frame_domain: Option<std::sync::Arc<hex_project::AudioClipDomain>>,
     source_viewport: Option<Viewport>,
     source_fit_back: Option<Option<Viewport>>,
