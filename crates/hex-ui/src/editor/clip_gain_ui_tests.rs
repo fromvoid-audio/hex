@@ -83,7 +83,6 @@ fn terminal(
             }
             // Deliberately withhold installation until the request terminal.
             // The offline refusal fixture also retains its initial worker event.
-
         }
         assert!(std::time::Instant::now() < until, "gain worker terminal");
         std::thread::yield_now();
