@@ -7,8 +7,9 @@ use hex_engine::{
 };
 use hex_project::{BeatTime, Command, Created};
 use hex_session::service::{
-    CanonicalAudioSourceSnapshot, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, Service, WorkerAudioSink,
+    CanonicalAudioSourceSnapshot, Request, ResidentPublicationAcceptance,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationRefusal, Service,
+    WorkerAudioSink,
 };
 use std::sync::{
     Arc, Mutex,
@@ -161,6 +162,307 @@ impl WorkerAudioSink for Sink {
             audio_revision: revision,
         })
     }
+}
+
+#[gpui::test]
+fn seek_during_latency_rebuild_cancels_the_automatic_resume(cx: &mut gpui::TestAppContext) {
+    let project = hex_project::Project::new(48_000).unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    editor.update(cx, |view, _| {
+        view.latency_rebuild = Some(super::super::audio_admission::LatencyRebuild::Restoring {
+            project: super::super::audio_admission::ProjectRevision {
+                generation: 0,
+                revision: 0,
+            },
+            output: 1,
+            frame: 123,
+        });
+        view.stopped_playback_restore =
+            Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
+        view.request_seek(456);
+        assert!(view.latency_rebuild.is_none());
+        assert!(
+            view.error
+                .as_deref()
+                .unwrap()
+                .contains("wait before seeking")
+        );
+    });
+}
+
+#[gpui::test]
+fn replaced_project_cannot_resume_an_older_latency_rebuild(cx: &mut gpui::TestAppContext) {
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.latency_rebuild = Some(super::super::audio_admission::LatencyRebuild::Restoring {
+            project: super::super::audio_admission::ProjectRevision {
+                generation: 0,
+                revision: 0,
+            },
+            output: 1,
+            frame: 123,
+        });
+        view.project_generation = 1;
+        assert!(!view.tick_latency_rebuild());
+        assert!(view.latency_rebuild.is_none());
+        assert!(view.pending_audio_commands.is_empty());
+    });
+}
+
+#[gpui::test]
+fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
+    cx: &mut gpui::TestAppContext,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut output, mut backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+    let reservation = hex_session::ResidentNativeReservation {
+        storage: hex_engine::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 256,
+            root_rows: 128,
+            max_retained_bytes: bytes.checked_mul(2).unwrap(),
+            max_construction_peak_bytes: bytes.checked_mul(3).unwrap(),
+        },
+        max_scan_frames: 100_000,
+    };
+    output
+        .publication
+        .control()
+        .unwrap()
+        .configure_device_resource_publication_on_control(reservation.storage)
+        .unwrap();
+    let client = output.take_client().unwrap();
+    let (events, receiver) = sync_channel(64);
+    let hold = Arc::new(AtomicBool::new(false));
+    let held = Arc::new(Mutex::new(None));
+    let release = events.clone();
+    let service = Service::with_audio_sink_and_native_reservation(
+        16,
+        8_000_000,
+        None,
+        Box::new(Sink {
+            output,
+            events,
+            hold: Arc::clone(&hold),
+            held: Arc::clone(&held),
+        }),
+        reservation,
+    )
+    .unwrap();
+    let mut receive = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            match service.try_event() {
+                Ok(event) => {
+                    assert!(event.error.is_none(), "{:?}", event.error);
+                    break event;
+                }
+                Err(TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    };
+    receive();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "audio".into(),
+        }))
+        .unwrap();
+    let track = match receive().created.unwrap() {
+        Created::Track(track) => track,
+        other => panic!("{other:?}"),
+    };
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "second".into(),
+        }))
+        .unwrap();
+    let second_track = match receive().created.unwrap() {
+        Created::Track(track) => track,
+        other => panic!("{other:?}"),
+    };
+    let add_limiter = |track| Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    };
+    service.submit(add_limiter(track)).unwrap();
+    let current = receive().state;
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        current.project.as_ref().clone(),
+        Arc::clone(&current.midi_preview),
+    );
+    editor.update(cx, |view, cx| {
+        view.service = service;
+        view.state = Some(current);
+        view.project_generation = 0;
+        view.audio_events = receiver;
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "latency fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.pending_playback = None;
+        view.tick(cx);
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            view.state
+                .as_ref()
+                .is_some_and(|s| view.applied_project_revision == Some(s.revision))
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "initial graph did not apply");
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        view.queue_audio_command(PlaybackCommand::PlayFrom(123))
+    });
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    hold.store(true, std::sync::atomic::Ordering::Release);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(add_limiter(second_track)));
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let rejected_event = loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(cx, |view, cx| {
+            view.tick(cx);
+        });
+        if let Some(event) = held.lock().unwrap().take() {
+            break event;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "candidate observation was not held"
+        );
+        std::thread::yield_now();
+    };
+    release.send(rejected_event).unwrap();
+    let mut captured = None;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut released_restore = false;
+    let mut stopped_seen = false;
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let complete = editor.update(cx, |view, cx| {
+            view.tick(cx);
+            if let Some(super::super::audio_admission::LatencyRebuild::Restoring {
+                frame, ..
+            }) = view.latency_rebuild
+            {
+                captured = Some(frame);
+            }
+            let status = view.audio_status().unwrap();
+            stopped_seen |= captured.is_some() && !status.playing.load(Acquire);
+            if stopped_seen && !released_restore {
+                assert!(
+                    !status.playing.load(Acquire),
+                    "must not resume before restoration metadata"
+                );
+            }
+            captured.is_some()
+                && view.latency_rebuild.is_none()
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|s| view.applied_project_revision == Some(s.revision))
+                && status.playing.load(Acquire)
+        });
+        if captured.is_some()
+            && !released_restore
+            && let Some(event) = held.lock().unwrap().take()
+        {
+            hold.store(false, std::sync::atomic::Ordering::Release);
+            release.send(event).unwrap();
+            released_restore = true;
+        }
+        if complete {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "rebuild did not resume: {:?}",
+            editor.read_with(cx, |view, _| view.error.clone())
+        );
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        let status = view.audio_status().unwrap();
+        assert!(status.position.load(Acquire) >= captured.unwrap());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(second_track)
+                .unwrap()
+                .devices()
+                .len(),
+            1
+        );
+    });
+
+    // A later explicit Stop must win even if another rebuild is in flight.
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(add_limiter(second_track)));
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            matches!(
+                view.latency_rebuild,
+                Some(super::super::audio_admission::LatencyRebuild::Restoring { .. })
+            )
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "second rebuild did not start");
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| view.stop());
+    for _ in 0..100 {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(cx, |view, cx| {
+            view.tick(cx);
+            assert!(view.latency_rebuild.is_none());
+        });
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        assert!(!view.audio_status().unwrap().playing.load(Acquire))
+    });
 }
 
 #[gpui::test]
