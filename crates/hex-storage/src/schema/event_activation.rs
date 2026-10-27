@@ -102,6 +102,7 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
             event.active = true;
         }
     })?;
+    super::audio_alias_projection::synchronize(&mut snapshot)?;
     let neutral =
         Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
     let mut value = super::note_activation::encode(&neutral)?;
@@ -152,6 +153,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if !inactive.is_empty() {
         return Err(StorageError::Invalid("inactive audio event owner missing"));
     }
+    super::audio_alias_projection::synchronize(&mut snapshot)?;
     Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
 }
 
@@ -159,6 +161,51 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
 mod tests {
     use super::*;
     use hex_project::{AudioEventEdit, Command, Created, Editor};
+
+    #[test]
+    fn inactive_audio_aliases_round_trip_without_losing_shared_content() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("import");
+        };
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::SetActive {
+                    events: vec![1],
+                    active: false,
+                },
+            })
+            .unwrap();
+        editor
+            .execute(Command::DuplicateAliasClips(vec![clip]))
+            .unwrap();
+        let expected = editor.project().snapshot();
+        let historical = encode(editor.project()).unwrap();
+        assert_eq!(
+            decode(&serde_json::to_vec(&historical).unwrap())
+                .unwrap()
+                .snapshot(),
+            expected
+        );
+        let current = crate::encode(editor.project()).unwrap();
+        assert_eq!(crate::decode(&current).unwrap().snapshot(), expected);
+        let mut inconsistent = historical;
+        let inactive = inconsistent["inactive_audio_events"]
+            .as_array_mut()
+            .unwrap();
+        assert_eq!(inactive.len(), 2);
+        inactive.pop();
+        assert!(decode(&serde_json::to_vec(&inconsistent).unwrap()).is_err());
+    }
 
     #[test]
     fn previous_schema_migrates_audio_events_active() {
