@@ -63,11 +63,23 @@ impl EditorView {
             .root_position_at(frame, tempo)
             .ok()?
             .clamp(root.view_start, last);
-        Some(
-            self.event_snap_position(raw, platform)
-                .unwrap_or(raw)
-                .clamp(root.view_start, last),
+        let position = self
+            .event_snap_position(raw, platform)
+            .unwrap_or(raw)
+            .clamp(root.view_start, last);
+        // The live musical phase can change its processing clock. Reuse the
+        // owner's scalar resolution for held, pending and canonical markers.
+        let state = self.state.as_ref()?;
+        let source = state.project.clip(self.detail_clip_id()?)?;
+        let resolved = hex_project::preview_view_resize(
+            source,
+            tempo,
+            hex_project::AudioViewResizeOperation::PlayStart { position },
         )
+        .ok()?;
+        resolved
+            .view_start
+            .checked_add(resolved.placement.cycle_phase)
     }
     pub(super) fn begin_audio_play_start(
         &mut self,
