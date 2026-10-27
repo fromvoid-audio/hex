@@ -31,22 +31,42 @@ pub(crate) fn projection_matches(
 /// access for this chunk; failed materialization never becomes a base fallback.
 pub(crate) struct State {
     target: [DeviceAutomationTarget; 1],
-    raw: [Option<hex_project::AutomationValue>; 256],
-    values: [Option<NormalizedAutomationValue>; 256],
+    raw: Vec<Option<hex_project::AutomationValue>>,
+    values: Vec<Option<NormalizedAutomationValue>>,
     frames: usize,
     offset: usize,
     identity: hex_lattice::ProcessorInstanceIdentity,
 }
 impl State {
-    pub(crate) fn new(input: crate::NativeParameterInputTarget) -> Self {
-        Self {
+    /// Fixed DATA reservation, independently checked against actual capacities.
+    /// Empty-to-fixed vectors have no reallocation overlap; the optional Box is
+    /// only this small owner, never a large constructor temporary on the stack.
+    pub(crate) const fn requested_data_bytes() -> usize {
+        std::mem::size_of::<Self>()
+            + 256
+                * (std::mem::size_of::<Option<hex_project::AutomationValue>>()
+                    + std::mem::size_of::<Option<NormalizedAutomationValue>>())
+    }
+    pub(crate) fn new(input: crate::NativeParameterInputTarget) -> Result<Self, Invalid> {
+        fn scratch<T: Copy>() -> Result<Vec<Option<T>>, Invalid> {
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(256)
+                .map_err(|_| Invalid("scalar scratch allocation failed"))?;
+            if values.capacity() != 256 {
+                return Err(Invalid("scalar scratch exceeds its fixed data reservation"));
+            }
+            values.resize(256, None);
+            Ok(values)
+        }
+        Ok(Self {
             target: [input.target()],
-            raw: [None; 256],
-            values: [None; 256],
+            raw: scratch()?,
+            values: scratch()?,
             frames: 0,
             offset: 0,
             identity: input.identity(),
-        }
+        })
     }
     pub(crate) fn fill<P: MediaPages + ?Sized>(
         &mut self,

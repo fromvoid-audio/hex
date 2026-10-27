@@ -514,7 +514,7 @@ impl RuntimeStorage<'_> {
         if self.scalar_automation {
             checked_add(
                 &mut total,
-                std::mem::size_of::<crate::scalar_automation::State>(),
+                crate::scalar_automation::State::requested_data_bytes(),
             )?;
         }
         if self.native_parameter_state {
@@ -652,7 +652,7 @@ fn runtime_storage_preflight_bytes(
     if revision.scalar_automation.is_some() {
         checked_add(
             &mut total,
-            std::mem::size_of::<crate::scalar_automation::State>(),
+            crate::scalar_automation::State::requested_data_bytes(),
         )?;
     }
     if revision.native_parameter_input_target().is_some() {

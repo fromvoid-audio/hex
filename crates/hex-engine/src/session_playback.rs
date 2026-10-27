@@ -1824,11 +1824,14 @@ impl SessionPlayback {
             ));
         }
         let scalar_automation = match revision.scalar_automation.as_ref() {
-            Some(_) => Some(Box::new(crate::scalar_automation::State::new(
-                revision
-                    .native_parameter_input_target()
-                    .ok_or(SessionPlaybackError::DeviceRuntime)?,
-            ))),
+            Some(_) => Some(Box::new(
+                crate::scalar_automation::State::new(
+                    revision
+                        .native_parameter_input_target()
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                )
+                .map_err(|_| SessionPlaybackError::Allocation)?,
+            )),
             None => None,
         };
         let analytic_import = analytic_import::ImportPlan::new()?;
