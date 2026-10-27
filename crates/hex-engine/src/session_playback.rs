@@ -124,6 +124,9 @@ pub enum SessionPlaybackError {
     SessionTempoUnavailable(crate::PreparedTempoError),
     ReleaseBankFull,
     DeviceRuntime,
+    /// An incompatible latency history cannot be transferred while transport
+    /// retains its current position and processing state.
+    LatencyLayoutChanged,
     /// The exact foreign endpoint is still needed by an outgoing tail. A
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
@@ -162,6 +165,9 @@ impl SessionPlaybackError {
             Self::TempoConversion => "session playback timing conversion failed",
             Self::ReleaseBankFull => "session playback outgoing release bank is full",
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
+            Self::LatencyLayoutChanged => {
+                "latency layout changed · stop transport before applying this revision"
+            }
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"
             }

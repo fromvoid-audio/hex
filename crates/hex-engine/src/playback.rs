@@ -217,11 +217,15 @@ pub enum PlaybackHandoffRejection {
     FreshRuntimeCancelled = 7,
     ConstructorClaimsUnavailable = 8,
     StreamedPagesNotReady = 9,
+    LatencyLayoutChanged = 10,
 }
 
 impl PlaybackHandoffRejection {
     pub const fn from_error(error: PlaybackHandoffError) -> Self {
         match error {
+            PlaybackHandoffError::Session(crate::SessionPlaybackError::LatencyLayoutChanged) => {
+                Self::LatencyLayoutChanged
+            }
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
             }
@@ -252,6 +256,7 @@ impl PlaybackHandoffRejection {
             7 => Some(Self::FreshRuntimeCancelled),
             8 => Some(Self::ConstructorClaimsUnavailable),
             9 => Some(Self::StreamedPagesNotReady),
+            10 => Some(Self::LatencyLayoutChanged),
             _ => None,
         }
     }
@@ -279,6 +284,9 @@ impl PlaybackHandoffRejection {
             Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
             Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
+            Self::LatencyLayoutChanged => {
+                "latency layout changed · stop transport before applying this revision"
+            }
         }
     }
 }

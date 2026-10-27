@@ -638,9 +638,7 @@ impl SessionPlayback {
                 || previous.performance_frame != 0
                 || previous.arrangement_frame != 0 =>
             {
-                return Err(SessionPlaybackError::Arrangement(
-                    "latency layout changed · stop transport before applying this revision",
-                ));
+                return Err(SessionPlaybackError::LatencyLayoutChanged);
             }
             _ => 0,
         };
