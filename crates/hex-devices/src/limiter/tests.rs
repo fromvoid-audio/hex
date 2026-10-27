@@ -50,6 +50,35 @@ fn render(
     }
     output
 }
+
+#[test]
+fn meter_reports_committed_post_input_gain_in_both_modes() {
+    for settings in [
+        vec![(GAIN, ParameterValue::Float(6.0))],
+        vec![
+            (MAXIMIZE, ParameterValue::Bool(true)),
+            (THRESHOLD, ParameterValue::Float(-6.0)),
+        ],
+    ] {
+        let mut runtime = factory(48_000, &settings).create_runtime().unwrap();
+        let mut input = [[0.125, -0.25]; 16];
+        runtime.begin_block();
+        runtime.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+        runtime.rollback_block();
+        assert_eq!(runtime.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+
+        let mut input = [[0.125, -0.25]; 16];
+        runtime.begin_block();
+        runtime.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+        runtime.commit_block();
+        let peak = runtime.take_dynamics_meter().unwrap().post_input_peak;
+        assert!(
+            (peak - 0.25 * 10.0_f32.powf(6.0 / 20.0)).abs() < 1e-5,
+            "{peak}"
+        );
+        assert_eq!(runtime.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+    }
+}
 #[test]
 fn state_is_strict_and_inactive_values_survive_mode_switching() {
     for descriptor in state::DESCRIPTORS {
