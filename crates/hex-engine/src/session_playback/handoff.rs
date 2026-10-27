@@ -478,7 +478,7 @@ impl SessionPlayback {
                 // Enumerate its candidate routes before either runtime's capture
                 // epoch, DSP history or one-shot admission is changed.
                 demand.window = Some(
-                    self.visit_stream_chunk_in_scope(
+                    self.visit_stream_chunk_with_history(
                         demand.ordinary,
                         &self.route_scratch,
                         self.performance_frame,
@@ -488,6 +488,7 @@ impl SessionPlayback {
                         demand.playing.unwrap_or(previous.playing),
                         demand.maximum_frames,
                         &mut demand.visit,
+                        super::stream_demand::ScalarOriginHistory::Empty,
                     )
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
                 );
@@ -3399,7 +3400,7 @@ impl SessionPlayback {
                 previous.route_state_generation
             };
             demand.window = Some(
-                self.visit_stream_chunk_in_scope(
+                self.visit_stream_chunk_with_history(
                     demand.ordinary,
                     &self.route_scratch,
                     previous.performance_frame,
@@ -3409,6 +3410,11 @@ impl SessionPlayback {
                     demand.playing.unwrap_or(previous.playing),
                     demand.maximum_frames,
                     &mut demand.visit,
+                    if clock_transfer == 0 {
+                        super::stream_demand::ScalarOriginHistory::Empty
+                    } else {
+                        super::stream_demand::ScalarOriginHistory::Current(previous)
+                    },
                 )
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
             );

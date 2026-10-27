@@ -96,6 +96,25 @@ impl Builder {
     }
 }
 impl SignalGraph {
+    /// Resolve the prepared stage's origin in this actual graph. Project device
+    /// identities are unique; no caller-provided latency becomes authority.
+    pub(crate) fn parameter_arrival(
+        &self,
+        input: crate::NativeParameterInputTarget,
+    ) -> Result<u32, Invalid> {
+        let node = self
+            .typed
+            .binary_search(&NodeId::Device(input.identity().device_id()))
+            .ok()
+            .and_then(|index| self.plan.nodes().get(index))
+            .ok_or(Invalid("parameter stage is absent from the signal graph"))?;
+        Ok(match input.target() {
+            hex_lattice_contract::DeviceAutomationTarget::HostOutputGain => {
+                node.output_arrival_frames
+            }
+            _ => node.input_arrival_frames,
+        })
+    }
     pub(crate) fn prepare(
         project: &Project,
         feeds: &[(usize, usize, f32)],
@@ -914,6 +933,7 @@ impl SignalRuntime {
             &mut hex_lattice::RefuseForeign,
             observer,
             None,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -925,6 +945,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), Invalid> {
         if frames.len() != 1 || chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
@@ -934,8 +955,9 @@ impl SignalRuntime {
             let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
             let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
             let output_clock = OriginClock(output_stamp);
-            crate::native_parameter_input::process_range(
+            crate::native_parameter_input::process_range_with_external(
                 input.as_deref_mut(),
+                external,
                 chain,
                 index..index + 1,
                 frames,
@@ -976,6 +998,7 @@ impl SignalRuntime {
             &mut hex_lattice::RefuseForeign,
             observer,
             None,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -991,6 +1014,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<Frame, Invalid> {
         audio = self.edge(self.graph.tracks[index].source_input, audio)?;
         audio[0] += self.inputs[index][0];
@@ -1005,6 +1029,7 @@ impl SignalRuntime {
             foreign,
             observer,
             input.as_deref_mut(),
+            external,
         )?;
         track.apply_instrument_input_gain(std::slice::from_mut(&mut audio));
         if metered {
@@ -1037,6 +1062,7 @@ impl SignalRuntime {
             foreign,
             observer,
             input,
+            external,
         )?;
         Ok(mixed)
     }
@@ -1058,6 +1084,7 @@ impl SignalRuntime {
             &mut hex_lattice::RefuseForeign,
             observer,
             None,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -1071,6 +1098,7 @@ impl SignalRuntime {
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), Invalid> {
         for (local, &node) in nodes.iter().enumerate() {
             let planned = &self.graph.plan.nodes()[node];
@@ -1078,8 +1106,9 @@ impl SignalRuntime {
             let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
             let output_clock = OriginClock(output_stamp);
             let frames = std::slice::from_mut(frame);
-            crate::native_parameter_input::process_range(
+            crate::native_parameter_input::process_range_with_external(
                 input.as_deref_mut(),
+                external,
                 chain,
                 start + local..start + local + 1,
                 frames,
