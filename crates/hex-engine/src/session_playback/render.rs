@@ -621,11 +621,43 @@ impl SessionPlayback {
     fn render_playing<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        // Move only the existing scratch Box, then restore it on every result.
+        // No callback allocation, new owner, or final source/graph drop occurs.
+        let mut scalar = self
+            .native_parameter_state
+            .as_deref_mut()
+            .and_then(|state| state.scalar.take());
+        let result = self.render_playing_with_scalar(
+            output,
+            pages,
+            observer,
+            capture,
+            sources,
+            foreign,
+            scalar.as_deref_mut(),
+        );
+        if let Some(state) = self.native_parameter_state.as_deref_mut() {
+            state.scalar = scalar;
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_playing_with_scalar<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
         mut pages: Option<&mut P>,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        mut scalar: Option<&mut crate::scalar_automation::State>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -738,6 +770,28 @@ impl SessionPlayback {
             let chunk_end = output_offset
                 .checked_add(chunk_frames)
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            if let Some(scalar) = scalar.as_deref_mut() {
+                let binding = self
+                    .revision
+                    .scalar_automation
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let endpoint = pages
+                    .as_deref_mut()
+                    .ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
+                scalar
+                    .fill(
+                        endpoint,
+                        &binding.source,
+                        arrangement_frame,
+                        chunk_frames,
+                        output_offset,
+                    )
+                    .map_err(|_| SessionPlaybackError::MediaPagesUnavailable)?;
+            }
+            let external = scalar
+                .as_deref()
+                .map(crate::scalar_automation::State::window);
             if upstream_frame_routing {
                 self.render_compensated_route_frame(
                     performance_frame,
@@ -763,6 +817,7 @@ impl SessionPlayback {
                     capture,
                     sources,
                     foreign,
+                    external,
                 )?;
             }
             if current_first_frame {
@@ -834,7 +889,7 @@ impl SessionPlayback {
                         arrangement_loop_pass,
                         true,
                     );
-                    crate::main_chain::process_with_native_input(
+                    crate::main_chain::process_with_native_input_and_external(
                         &mut self.main_chain,
                         &mut output[output_offset..chunk_end],
                         output_offset,
@@ -842,6 +897,7 @@ impl SessionPlayback {
                         self.native_parameter_state
                             .as_deref_mut()
                             .and_then(|state| state.processing.as_mut()),
+                        external,
                         observer,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1065,6 +1121,7 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let region = self.active_loop_region();
         let revision = Arc::clone(&self.revision);
@@ -1186,10 +1243,11 @@ impl SessionPlayback {
                         SourceStage::Audio,
                     )?;
                     if stateful_effects {
-                        crate::native_parameter_input::process_range(
+                        crate::native_parameter_input::process_range_with_external(
                             self.native_parameter_state
                                 .as_deref_mut()
                                 .and_then(|state| state.processing.as_mut()),
+                            external,
                             &mut self.device_chains[index],
                             0..track.instrument_position(),
                             render_output,
@@ -1333,10 +1391,11 @@ impl SessionPlayback {
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
                         let effect_count = chain.len();
-                        crate::native_parameter_input::process_range(
+                        crate::native_parameter_input::process_range_with_external(
                             self.native_parameter_state
                                 .as_deref_mut()
                                 .and_then(|state| state.processing.as_mut()),
+                            external,
                             chain,
                             track.instrument_position()..effect_count,
                             render_output,
@@ -1448,10 +1507,11 @@ impl SessionPlayback {
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
                     let range = 0..chain.len();
-                    crate::native_parameter_input::process_range(
+                    crate::native_parameter_input::process_range_with_external(
                         self.native_parameter_state
                             .as_deref_mut()
                             .and_then(|state| state.processing.as_mut()),
+                        external,
                         chain,
                         range,
                         render_output,
@@ -1599,9 +1659,11 @@ impl SessionPlayback {
             observer,
             capture,
             foreign,
+            external,
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // Existing return-stage borrows plus recorded values.
     fn render_return_buses(
         &mut self,
         output: &mut [Frame],
@@ -1610,6 +1672,7 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         if !arrangement.return_feed_plan.is_empty() {
@@ -1621,10 +1684,11 @@ impl SessionPlayback {
                     .get_mut(index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 let range = 0..chain.len();
-                crate::native_parameter_input::process_range(
+                crate::native_parameter_input::process_range_with_external(
                     self.native_parameter_state
                         .as_deref_mut()
                         .and_then(|state| state.processing.as_mut()),
+                    external,
                     chain,
                     range,
                     frames,
@@ -1692,10 +1756,11 @@ impl SessionPlayback {
                 .get_mut(index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
             let range = 0..chain.len();
-            crate::native_parameter_input::process_range(
+            crate::native_parameter_input::process_range_with_external(
                 self.native_parameter_state
                     .as_deref_mut()
                     .and_then(|state| state.processing.as_mut()),
+                external,
                 chain,
                 range,
                 frames,

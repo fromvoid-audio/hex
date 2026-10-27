@@ -1293,7 +1293,7 @@ impl Playback {
         self.project.sample_rate()
     }
 
-    /// Control-side immutable prepared source facts; these are not page or
+    /// Control-side immutable prepared PCM source facts; these are not page or
     /// native publication authority. Legacy graphs without a complete prepared
     /// revision return an explicit refusal rather than incomplete dependencies.
     pub fn streamed_sources_on_control(
@@ -1305,6 +1305,27 @@ impl Playback {
             .ok_or(Invalid("prepared source inventory unavailable"))?
             .streamed_sources())
     }
+    /// Complete typed dependency inventory for ordinary native publication.
+    /// Actual catalog leases are checked by the output's existing domain owner.
+    pub fn stream_resources_on_control(
+        &self,
+    ) -> Result<impl Iterator<Item = crate::StreamResourceMetadata> + '_, Invalid> {
+        let revision = self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid("prepared source inventory unavailable"))?;
+        Ok(revision
+            .streamed_sources()
+            .cloned()
+            .map(crate::StreamResourceMetadata::Audio)
+            .chain(
+                revision
+                    .scalar_automation
+                    .iter()
+                    .map(|binding| crate::StreamResourceMetadata::Scalar(binding.source.clone())),
+            ))
+    }
+
     /// Whether any Arrangement or Session source needs the streamed page
     /// provider. Cached by the prepared revision, not rescanned per block.
     pub fn contains_streamed_sources(&self) -> bool {
@@ -2072,7 +2093,7 @@ impl Playback {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, Invalid> {
         self.session_runtime
             .as_ref()
@@ -2083,7 +2104,7 @@ impl Playback {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, Invalid> {
         self.session_runtime
             .as_ref()
@@ -2095,7 +2116,7 @@ impl Playback {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
@@ -2108,7 +2129,7 @@ impl Playback {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;

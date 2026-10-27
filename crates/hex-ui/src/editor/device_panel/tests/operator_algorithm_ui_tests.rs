@@ -159,7 +159,27 @@ fn algorithms_replace_the_matrix_and_commit_one_canonical_history_edit(cx: &mut 
             .clone()
     });
     visual.update(|window, _| focus.focus(window));
+    editor.update(cx, |view, _| view.last_transport_command = None);
     visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(0)),
+            "Space controls transport while an algorithm is focused"
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state(),
+            &selected,
+            "Space must not change the algorithm"
+        );
+    });
+    visual.simulate_keystrokes("enter");
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.state.as_ref().is_some_and(|state| {

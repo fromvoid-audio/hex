@@ -44,8 +44,10 @@ mod completed;
 pub use completed::CompletedDraft;
 mod take;
 pub use take::{
-    CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES, MAX_SPANS_PER_STEP,
+    AutomationSharedData, CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES,
+    MAX_SPANS_PER_STEP, PreparedAutomationTake, PreparedAutomationTakeDataLayout,
     ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState,
+    automation_projection_fingerprint,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -466,18 +468,46 @@ impl DraftWriter {
     }
 }
 
-pub struct DraftReader {
+/// Immutable identity of the exact fully validated completed container. The
+/// terminal chain covers the original header and every preceding record. This
+/// detects changed content; it is not a signature or native publication lease.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AutomationContentIdentity {
+    version: u32,
+    file_bytes: u64,
+    terminal_chain: [u8; 32],
+}
+impl AutomationContentIdentity {
+    pub fn version(self) -> u32 {
+        self.version
+    }
+    pub fn file_bytes(self) -> u64 {
+        self.file_bytes
+    }
+    pub fn terminal_chain(self) -> [u8; 32] {
+        self.terminal_chain
+    }
+}
+
+/// The only fixed-record I/O owner, shared by full recovery and lean preparation.
+/// File close/unlock belongs on control/worker after native callback quiescence.
+struct RecordReader {
     file: File,
     path: PathBuf,
+    progress: DraftProgress,
+    records_start: u64,
+    header_chain: [u8; 32],
+}
+
+pub struct DraftReader {
+    records: RecordReader,
     source: Project,
     token: FileToken,
     target: DraftTarget,
     provenance: DraftProvenance,
     capture_clock: Option<CaptureClock>,
-    progress: DraftProgress,
     outcome: DraftOutcome,
-    records_start: u64,
-    header_chain: [u8; 32],
+    complete_identity: Option<AutomationContentIdentity>,
 }
 
 impl DraftReader {
@@ -562,22 +592,25 @@ impl DraftReader {
         // migration, so a later project schema need not strand an older draft.
         let token = FileToken::from_validated_bytes(encode(&source)?.into());
         let mut reader = Self {
-            file,
-            path: path.to_path_buf(),
+            records: RecordReader {
+                file,
+                path: path.to_path_buf(),
+                progress: DraftProgress::default(),
+                records_start: total,
+                header_chain: chain,
+            },
             source,
             token,
             target,
             provenance: meta.provenance,
             capture_clock,
-            progress: DraftProgress::default(),
             outcome: DraftOutcome::Interrupted,
-            records_start: total,
-            header_chain: chain,
+            complete_identity: None,
         };
         let mut previous = None;
         loop {
             let mut record = [0; RECORD_BYTES];
-            let count = read_record(&mut reader.file, &mut record)?;
+            let count = read_record(&mut reader.records.file, &mut record)?;
             if count == 0 {
                 break;
             }
@@ -594,30 +627,38 @@ impl DraftReader {
             }
             match decode_record(&record) {
                 Ok(Record::Event(event)) if validate_event(previous, event).is_ok() => {
-                    let Some(count) = reader.progress.durable_events.checked_add(1) else {
+                    let Some(count) = reader.records.progress.durable_events.checked_add(1) else {
                         reader.outcome = DraftOutcome::Damaged {
                             reason: DraftDamage::InvalidRecord,
                         };
                         break;
                     };
-                    reader.progress.durable_events = count;
-                    reader.progress.accepted_events = count;
+                    reader.records.progress.durable_events = count;
+                    reader.records.progress.accepted_events = count;
                     previous = Some(event);
                     chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
                 }
                 Ok(Record::Terminal(terminal)) if validate_terminal(previous, terminal).is_ok() => {
-                    reader.progress.durable_terminal = Some(terminal);
+                    reader.records.progress.durable_terminal = Some(terminal);
                     reader.outcome = match terminal {
                         DraftTerminal::Finished(clock) => DraftOutcome::Finished(clock),
                         DraftTerminal::Aborted(reason) => DraftOutcome::Aborted(reason),
                         DraftTerminal::Interrupted => DraftOutcome::Interrupted,
                     };
                     let mut extra = [0; 1];
-                    if read_record(&mut reader.file, &mut extra)? != 0 {
-                        reader.progress.durable_terminal = None;
+                    if read_record(&mut reader.records.file, &mut extra)? != 0 {
+                        reader.records.progress.durable_terminal = None;
                         reader.outcome = DraftOutcome::Damaged {
                             reason: DraftDamage::TrailingData,
                         };
+                    } else if matches!(terminal, DraftTerminal::Finished(_)) {
+                        let mut terminal_chain = [0; 32];
+                        terminal_chain.copy_from_slice(&record[PAYLOAD_BYTES..]);
+                        reader.complete_identity = Some(AutomationContentIdentity {
+                            version,
+                            file_bytes: reader.records.file.stream_position()?,
+                            terminal_chain,
+                        });
                     }
                     break;
                 }
@@ -644,13 +685,13 @@ impl DraftReader {
         self.capture_clock
     }
     pub fn progress(&self) -> DraftProgress {
-        self.progress
+        self.records.progress
     }
     pub fn outcome(&self) -> DraftOutcome {
         self.outcome
     }
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.records.path
     }
     /// Compare complete strict canonical project encoding, not volatile identity.
     pub fn source_matches(&self, source: &Project) -> Result<bool, DraftError> {
@@ -662,6 +703,19 @@ impl DraftReader {
     /// are cleared. There is no retained event list/index and no duration cap.
     /// Shared locks exclude cooperating writers; external noncooperating writes
     /// are outside this lock contract and require opening/validating a new reader.
+    pub fn read_events(
+        &mut self,
+        first_ordinal: u64,
+        output: &mut [Option<AppliedEvent>],
+    ) -> Result<usize, DraftError> {
+        self.records.read_events(first_ordinal, output)
+    }
+    fn error(&self, source: StorageError) -> DraftError {
+        self.records.error(source)
+    }
+}
+
+impl RecordReader {
     pub fn read_events(
         &mut self,
         first_ordinal: u64,

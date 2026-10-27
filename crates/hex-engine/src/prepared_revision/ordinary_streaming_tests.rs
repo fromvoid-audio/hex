@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 struct Pages<'a> {
     samples: &'a [Frame],
     key: StreamSourceKey,
-    extents: &'a [crate::StreamPageExtent],
+    extents: &'a [crate::StreamResourceExtent],
 }
 
 #[test]
@@ -107,8 +107,8 @@ fn track_limiter_batches_stream_demand_across_loop_without_changing_pcm() {
             );
             assert_eq!(
                 extents,
-                [crate::StreamPageExtent {
-                    source: key,
+                [crate::StreamResourceExtent {
+                    source: key.into(),
                     page_index: 0,
                     start: position as usize,
                     end: position as usize + window.frames,
@@ -141,7 +141,7 @@ impl MediaPages for Pages<'_> {
         assert!(
             self.extents
                 .iter()
-                .any(|extent| extent.source == key && extent.page_index == index)
+                .any(|extent| extent.source == key.into() && extent.page_index == index)
         );
         (key == self.key && index == 0).then_some(BorrowedMediaPage {
             page_index: 0,
@@ -486,8 +486,8 @@ fn main_only_latency_and_retired_main_history_keep_batched_ordinary_stream_deman
                 assert_eq!((actual.position(), actual.performance_frame()), clock);
                 assert_eq!(
                     extents,
-                    [crate::StreamPageExtent {
-                        source: key,
+                    [crate::StreamResourceExtent {
+                        source: key.into(),
                         page_index: 0,
                         start: clock.0 as usize,
                         end: clock.0 as usize + window.frames,

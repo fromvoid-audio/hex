@@ -46,9 +46,30 @@ impl PendingStreamDomain {
         definition_capacity: usize,
         readiness: Option<StreamReadinessReservation>,
     ) -> Result<StreamPreparationBound, StreamRuntimeError> {
+        Self::preparation_bound_with_scalar_sources(
+            config,
+            definitions,
+            definition_capacity,
+            &[],
+            0,
+            readiness,
+        )
+    }
+    pub fn preparation_bound_with_scalar_sources(
+        config: StreamConfig,
+        definitions: &[SourceDefinition],
+        definition_capacity: usize,
+        scalar_definitions: &[ScalarSourceDefinition],
+        scalar_definition_capacity: usize,
+        readiness: Option<StreamReadinessReservation>,
+    ) -> Result<StreamPreparationBound, StreamRuntimeError> {
         let config = config.validate()?;
         if definition_capacity < definitions.len()
-            || definitions.len() > config.max_sources
+            || scalar_definition_capacity < scalar_definitions.len()
+            || definitions
+                .len()
+                .checked_add(scalar_definitions.len())
+                .is_none_or(|count| count > config.max_sources)
             || !crate::footprint::queue_family_supported()
         {
             return Err(StreamRuntimeError::InvalidConfiguration);
@@ -75,11 +96,23 @@ impl PendingStreamDomain {
         let endpoint = Endpoint::requested_data(
             config.page_buffers,
             config.request_capacity,
-            definitions.len(),
+            definitions.len() + scalar_definitions.len(),
         )
         .and_then(crate::EndpointData::bytes)
         .ok_or(StreamRuntimeError::AllocationFailed)?;
+        let scalar_pool = if scalar_definitions.is_empty() {
+            0
+        } else {
+            config
+                .page_buffers
+                .checked_mul(
+                    hex_engine::STREAM_PAGE_FRAMES * std::mem::size_of::<f32>()
+                        + hex_engine::STREAM_PAGE_FRAMES.div_ceil(64) * std::mem::size_of::<u64>(),
+                )
+                .ok_or(StreamRuntimeError::AllocationFailed)?
+        };
         let transport = crate::footprint::sum([
+            scalar_pool,
             pcm,
             config
                 .page_buffers
@@ -111,9 +144,14 @@ impl PendingStreamDomain {
             std::mem::size_of::<()>(),
         ])
         .ok_or(StreamRuntimeError::AllocationFailed)?;
-        let (worker, worker_peak) =
-            crate::worker::preparation_data_bound(config, definitions, definition_capacity)
-                .ok_or(StreamRuntimeError::InvalidConfiguration)?;
+        let (worker, worker_peak) = crate::worker::preparation_data_bound_with_scalar_sources(
+            config,
+            definitions,
+            definition_capacity,
+            scalar_definitions,
+            scalar_definition_capacity,
+        )
+        .ok_or(StreamRuntimeError::InvalidConfiguration)?;
         let disposal = config
             .page_buffers
             .checked_mul(std::mem::size_of::<Box<PageBuffer>>())
@@ -129,7 +167,7 @@ impl PendingStreamDomain {
                 reservation
                     .extents_per_role
                     .checked_mul(6)
-                    .and_then(|n| n.checked_mul(std::mem::size_of::<crate::StreamPageExtent>()))
+                    .and_then(|n| n.checked_mul(std::mem::size_of::<crate::StreamResourceExtent>()))
                     .ok_or(StreamRuntimeError::AllocationFailed)?
             }
             Some(_) => return Err(StreamRuntimeError::InvalidConfiguration),
@@ -146,6 +184,15 @@ impl PendingStreamDomain {
             readiness_bytes,
             hex_engine::STREAM_PAGE_FRAMES
                 .checked_mul(std::mem::size_of::<hex_engine::Frame>())
+                .and_then(|bytes| {
+                    bytes.checked_add(if scalar_definitions.is_empty() {
+                        0
+                    } else {
+                        hex_engine::STREAM_PAGE_FRAMES * std::mem::size_of::<f32>()
+                            + hex_engine::STREAM_PAGE_FRAMES.div_ceil(64)
+                                * std::mem::size_of::<u64>()
+                    })
+                })
                 .ok_or(StreamRuntimeError::AllocationFailed)?,
         ])
         .ok_or(StreamRuntimeError::AllocationFailed)?;
@@ -154,8 +201,10 @@ impl PendingStreamDomain {
             construction_peak_data_bytes: peak,
             shared_handle_bound: 22usize
                 .checked_add(definitions.len())
+                .and_then(|n| n.checked_add(scalar_definitions.len().checked_mul(2)?))
+                .and_then(|n| n.checked_add(if scalar_definitions.is_empty() { 0 } else { 2 }))
                 .ok_or(StreamRuntimeError::AllocationFailed)?,
-            source_reader_bound: definitions.len(),
+            source_reader_bound: definitions.len() + scalar_definitions.len(),
         })
     }
     /// Once this succeeds, no owning Err may discard the live pair. The host
@@ -166,17 +215,39 @@ impl PendingStreamDomain {
         readiness: Option<StreamReadinessReservation>,
         allowance: StreamPreparationAllowance,
     ) -> Result<Self, StreamRuntimeError> {
-        let bound =
-            Self::preparation_bound(config, &definitions, definitions.capacity(), readiness)?;
+        Self::try_start_with_scalar_sources_on_control(
+            config,
+            definitions,
+            Vec::new(),
+            readiness,
+            allowance,
+        )
+    }
+    pub fn try_start_with_scalar_sources_on_control(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+        readiness: Option<StreamReadinessReservation>,
+        allowance: StreamPreparationAllowance,
+    ) -> Result<Self, StreamRuntimeError> {
+        let bound = Self::preparation_bound_with_scalar_sources(
+            config,
+            &definitions,
+            definitions.capacity(),
+            &scalar_definitions,
+            scalar_definitions.capacity(),
+            readiness,
+        )?;
         if bound.retained_data_bytes > allowance.max_retained_data_bytes
             || bound.construction_peak_data_bytes > allowance.max_construction_peak_data_bytes
             || bound.shared_handle_bound > allowance.max_shared_handle_bound
         {
             return Err(StreamRuntimeError::InvalidConfiguration);
         }
-        let (runtime, disposal) = StreamRuntime::new_factory(
+        let (runtime, disposal) = StreamRuntime::new_factory_with_scalar_sources(
             config,
             definitions,
+            scalar_definitions,
             true,
             #[cfg(test)]
             None,

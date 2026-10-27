@@ -13,6 +13,32 @@ pub const MAX_AUTOMATION_LANES: usize = 256;
 pub const MAX_AUTOMATION_POINTS: usize = 65_536;
 pub const MAX_AUTOMATION_POINTS_PER_LANE: usize = 1_024;
 
+/// Validated normalized scalar, independent of project storage and device units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NormalizedAutomationValue(f32);
+impl NormalizedAutomationValue {
+    pub fn new(value: f32) -> Result<Self, Error> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(Self(value))
+    }
+    pub fn get(self) -> f32 {
+        self.0
+    }
+}
+/// Borrowed, fully available normalized samples. None means uncovered, not a
+/// missing page. Targets must remain sorted and unique throughout the borrow.
+pub trait ExternalParameterAutomation {
+    fn frames(&self) -> usize;
+    fn targets(&self) -> &[DeviceAutomationTarget];
+    fn value_at(
+        &self,
+        target: DeviceAutomationTarget,
+        offset: usize,
+    ) -> Option<NormalizedAutomationValue>;
+}
+
 /// One checked canonical transient control. Host gains never use provider IDs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NativeTransientValue {
@@ -410,6 +436,18 @@ impl PreparedParameterAutomation {
         descriptor: ParameterDescriptor,
         semantics: ParameterSemantics,
     ) -> Result<(), Error> {
+        let target = DeviceAutomationTarget::Parameter(descriptor.id);
+        self.validate_input_target(target)?;
+        self.prepare_external_provider(descriptor, semantics)?;
+        self.input_target = Some(target);
+        Ok(())
+    }
+    /// Add a shared provider reading slot without arming a live gesture.
+    pub fn prepare_external_provider(
+        &mut self,
+        descriptor: ParameterDescriptor,
+        semantics: ParameterSemantics,
+    ) -> Result<(), Error> {
         semantics.validate(descriptor)?;
         if semantics.access != ParameterAccess::ReadWrite
             || semantics.automation != ParameterAutomation::DeviceArrangementEnvelope
@@ -421,8 +459,6 @@ impl PreparedParameterAutomation {
         {
             return Err(Error::InvalidDescriptor);
         }
-        let target = DeviceAutomationTarget::Parameter(descriptor.id);
-        self.validate_input_target(target)?;
         let mapping = Mapping::prepare(descriptor, semantics)?;
         match self.ids.binary_search(&descriptor.id) {
             Ok(index) => {
@@ -459,7 +495,35 @@ impl PreparedParameterAutomation {
                 }
             }
         }
-        self.input_target = Some(target);
+        Ok(())
+    }
+    /// Host reading slots use the same normalization as authored host curves.
+    pub fn prepare_external_host(&mut self, target: DeviceAutomationTarget) -> Result<(), Error> {
+        let slot = match target {
+            DeviceAutomationTarget::HostInputGain => self.host_input,
+            DeviceAutomationTarget::HostOutputGain => self.host_output,
+            DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+        };
+        if slot.is_some() {
+            return Ok(());
+        }
+        if self.lanes.len() >= MAX_AUTOMATION_LANES {
+            return Err(Error::RuntimeBudgetExceeded);
+        }
+        self.lanes
+            .try_reserve_exact(1)
+            .map_err(|_| Error::RuntimeAllocation)?;
+        let index = self.lanes.len();
+        self.lanes.push(PreparedParameterAutomationLane {
+            descriptor: None,
+            mapping: Mapping::HostGain,
+            source: PreparedLaneSource::BaseFallback,
+        });
+        match target {
+            DeviceAutomationTarget::HostInputGain => self.host_input = Some(index),
+            DeviceAutomationTarget::HostOutputGain => self.host_output = Some(index),
+            DeviceAutomationTarget::Parameter(_) => return Err(Error::InvalidDescriptor),
+        }
         Ok(())
     }
     /// Arm host staging without inventing a provider ID or requiring a provider
@@ -581,6 +645,7 @@ impl PreparedParameterAutomation {
             clock,
             frames,
             input: None,
+            external: None,
         }
     }
     /// Overlay one final canonical value. No clock is inferred: the engine must
@@ -605,12 +670,54 @@ impl PreparedParameterAutomation {
         }
         Ok(block)
     }
+    pub(crate) fn block_with_optional_external<'a>(
+        &'a self,
+        clock: Option<&'a dyn NativeInstrumentClock>,
+        frames: usize,
+        input: Option<NativeTransientValue>,
+        external: Option<&'a dyn ExternalParameterAutomation>,
+    ) -> Result<ParameterAutomationBlock<'a>, Error> {
+        match external {
+            Some(external) => self.block_with_external(clock, frames, input, external),
+            None => self.block_with_input(clock, frames, input),
+        }
+    }
+
+    /// Compose available scalar samples through the existing normalization law.
+    /// Page availability and stage origins are established by the render owner.
+    pub fn block_with_external<'a>(
+        &'a self,
+        clock: Option<&'a dyn NativeInstrumentClock>,
+        frames: usize,
+        input: Option<NativeTransientValue>,
+        external: &'a dyn ExternalParameterAutomation,
+    ) -> Result<ParameterAutomationBlock<'a>, Error> {
+        let mut block = self.block_with_input(clock, frames, input)?;
+        if external.frames() != frames || external.targets().len() > MAX_AUTOMATION_LANES {
+            return Err(Error::InvalidDescriptor);
+        }
+        let mut previous = None;
+        for &target in external.targets() {
+            if previous.is_some_and(|prior| prior >= target)
+                || match target {
+                    DeviceAutomationTarget::Parameter(id) => self.ids.binary_search(&id).is_err(),
+                    _ => !self.has_host_target(target),
+                }
+            {
+                return Err(Error::InvalidDescriptor);
+            }
+            previous = Some(target);
+        }
+        block.external = Some(external);
+        Ok(block)
+    }
 }
 pub struct ParameterAutomationBlock<'a> {
     program: &'a PreparedParameterAutomation,
     clock: Option<&'a dyn NativeInstrumentClock>,
     frames: usize,
     input: Option<CanonicalValue>,
+    external: Option<&'a dyn ExternalParameterAutomation>,
 }
 impl ParameterAutomationBlock<'_> {
     /// Native host gain in linear amplitude units, from the same exact integer
@@ -629,8 +736,25 @@ impl ParameterAutomationBlock<'_> {
             DeviceAutomationTarget::HostOutputGain => self.program.host_output?,
             DeviceAutomationTarget::Parameter(_) => return None,
         };
-        self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?)?
+        self.external_value(index, target, offset)
+            .or_else(|| self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?))?
             .host_gain()
+    }
+    fn external_value(
+        &self,
+        index: usize,
+        target: DeviceAutomationTarget,
+        offset: usize,
+    ) -> Option<CanonicalValue> {
+        let external = self.external?;
+        external.targets().binary_search(&target).ok()?;
+        let normalized = external.value_at(target, offset)?;
+        self.program
+            .lanes
+            .get(index)?
+            .mapping
+            .value(normalized.get())
+            .ok()
     }
     fn value_at_beat(&self, index: usize, beat: u64) -> Option<CanonicalValue> {
         let lane = self.program.lanes.get(index)?;
@@ -676,7 +800,8 @@ impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
             return input.provider();
         }
         let index = self.program.ids.binary_search(&parameter).ok()?;
-        self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?)?
+        self.external_value(index, DeviceAutomationTarget::Parameter(parameter), offset)
+            .or_else(|| self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?))?
             .provider()
     }
     fn values_at(&self, offset: usize, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
@@ -693,8 +818,13 @@ impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
             {
                 self.input.and_then(CanonicalValue::provider)
             } else {
-                beat.and_then(|beat| self.value_at_beat(index, beat))
-                    .and_then(CanonicalValue::provider)
+                self.external_value(
+                    index,
+                    DeviceAutomationTarget::Parameter(self.program.ids[index]),
+                    offset,
+                )
+                .or_else(|| beat.and_then(|beat| self.value_at_beat(index, beat)))
+                .and_then(CanonicalValue::provider)
             };
         }
         Ok(())
