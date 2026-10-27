@@ -26,6 +26,20 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_update_runtime_import_does_not_load_build_tools(self):
+        spec = importlib.util.spec_from_file_location(
+            "hex_update_runtime", Path(__file__).resolve().parents[1] / "hex-test-build.py")
+        runtime = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = runtime
+        try:
+            spec.loader.exec_module(runtime)
+            self.assertFalse(hasattr(runtime, "ci"))
+            self.assertFalse(hasattr(runtime, "changelog"))
+            self.assertTrue(callable(runtime.apply_after_approved_parent_exit))
+            self.assertIsNot(runtime.DeliveryError, delivery.DeliveryError)
+        finally:
+            sys.modules.pop(spec.name, None)
+
     def test_full_checkpoint_delivery_requires_unchanged_original_report_and_log(self):
         # Synthetic full-plan certificates exercise the consumer, not app CI.
         runner = delivery.ci.LocalCiRunner(self.root)
@@ -308,6 +322,20 @@ class DeliveryTests(unittest.TestCase):
         delivery.recover(self.app)
         self.assertFalse(self.workspace.exists())
 
+    def test_publication_verifier_timeout_restores_old_app(self):
+        self.bundle(self.app, b"old")
+        self.bundle(self.stage)
+        original = delivery.verify
+        def timeout_installed(path):
+            if path == self.app:
+                raise subprocess.TimeoutExpired("codesign", 30)
+            return original(path)
+        with patch.object(delivery, "verify", side_effect=timeout_installed):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                delivery.activate(self.app, self.stage)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+        self.assertEqual((self.stage / "Contents/MacOS/hex").read_bytes(), b"new")
+
     def test_interruption_after_publication_finishes_cleanup(self):
         self.bundle(self.app, b"old")
         self.bundle(self.stage)
@@ -462,8 +490,77 @@ class DeliveryTests(unittest.TestCase):
     def test_build_only_source_drift_during_signing_preserves_installed_app(self):
         self.assert_production_build(build_only=True, drift="signing")
 
+    def test_supervisor_packaging_seals_fixed_runtime_and_rejects_changed_binary(self):
+        self.stage.mkdir()
+        policy = {"version": 1, "interpreter": "/fixed/python", "interpreter_sha256": "a" * 64,
+                  "interpreter_device": 1, "interpreter_inode": 2}
+        helper_signature = {"identifier": delivery.UPDATE_HELPER_ID, "team_identifier": SIGNING["team_identifier"]}
+        commands = []
+        def native(argv, **kwargs):
+            commands.append(argv)
+            if argv[0] == "/usr/bin/swiftc":
+                binary = Path(argv[argv.index("-o") + 1])
+                binary.write_bytes(b"native helper fixture")
+                binary.chmod(0o755)
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        with patch.object(delivery, "_python_runtime_identity", return_value=policy), \
+                patch.object(delivery, "native_signature", return_value=helper_signature), \
+                patch.object(delivery.subprocess, "run", side_effect=native):
+            evidence = delivery.stage_update_supervisor(self.stage, SIGNING)
+            helper = self.stage / delivery.UPDATE_HELPER
+            self.assertEqual(evidence["identifier"], delivery.UPDATE_HELPER_ID)
+            self.assertEqual(json.loads((helper / "Contents/Resources/policy.json").read_text()), policy)
+            self.assertTrue((helper / "Contents/Resources/entry.py").is_file())
+            self.assertTrue((helper / "Contents/Resources/runtime/scripts/hex-test-build.py").is_file())
+            self.assertTrue(any(argv[:2] == ["/usr/bin/codesign", "--verify"] for argv in commands))
+            delivery.verify_update_supervisor(self.stage, {"update_supervisor": evidence, "signing": SIGNING})
+            (helper / "Contents/MacOS/hex-update").write_bytes(b"tampered")
+            with self.assertRaisesRegex(delivery.DeliveryError, "executable changed"):
+                delivery.verify_update_supervisor(self.stage, {"update_supervisor": evidence, "signing": SIGNING})
+
+    def test_runtime_verifies_new_candidate_native_source_not_old_runtime_source(self):
+        self.stage.mkdir()
+        native = delivery.discovery_builder()
+        candidate_root = self.stage / delivery.UPDATE_HELPER / "Contents/Resources/runtime/crates/hex-plugin-scan/native"
+        candidate_root.mkdir(parents=True)
+        for name in native.SOURCES:
+            shutil.copy2(delivery.ROOT / "crates/hex-plugin-scan/native" / name, candidate_root / name)
+        changed = candidate_root / native.SOURCES[1]
+        changed.write_bytes(changed.read_bytes() + b"\n// newer candidate\n")
+        receipt = {"update_supervisor": {"native_sources": list(native.SOURCES), "native_sdk_pins": native.PINS}}
+        digest, pins = delivery.candidate_native_provenance(self.stage, receipt)
+        self.assertNotEqual(digest, native.source_digest())
+        app = self.stage / "Contents/Helpers" / delivery.DISCOVERY_APP
+        for path in (app / "Contents/MacOS/hex-vst3-factory-scan", app / "Contents/Resources/sdk-notices.json",
+                     app / "Contents/_CodeSignature/CodeResources"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"fixture")
+        info = app / "Contents/Info.plist"
+        info.write_bytes(plistlib.dumps({"CFBundleExecutable": "hex-vst3-factory-scan",
+                                        "CFBundleIdentifier": "org.portalsurfer.hex.vst3.discovery"}))
+        packaged = self.stage / delivery.DISCOVERY_RECEIPT
+        packaged.parent.mkdir(parents=True, exist_ok=True)
+        data = {"version": 1, "platform": "darwin-arm64", "scope": "native-macos-factory-discovery",
+                "sdk_pins": pins, "source_sha256": digest, "source_commit": "a" * 40,
+                "source_dirty": False, "package_layout": "hex-app-discovery-v1",
+                "factory_fixtures": [], "factory_scan_fault_helper": None,
+                "bundle_files": native.inventory(app)}
+        packaged.write_text(json.dumps(data))
+        with patch.object(native, "macho"), patch.object(delivery, "discovery_builder", return_value=native):
+            with self.assertRaisesRegex(ValueError, "stale bootstrap"):
+                delivery.validate_discovery_input(packaged, "a" * 40, packaged=True)
+            self.assertEqual(delivery.validate_discovery_input(packaged, "a" * 40, packaged=True,
+                                                               provenance=(digest, pins)), data)
+            (app / "Contents/Resources/sdk-notices.json").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "changed bundle"):
+                delivery.validate_discovery_input(packaged, "a" * 40, packaged=True,
+                                                  provenance=(digest, pins))
+
     def test_prepare_two_candidates_while_installed_app_is_running(self):
         self.assert_production_build(build_only=False, prepare_only=True)
+
+    def test_post_publication_receipt_failure_reports_installed_app(self):
+        self.assert_production_build(build_only=False, prepare_only=True, followup_failure=True)
 
     def test_pending_store_requires_target_ownership_and_preserves_unknown_contents(self):
         pending = delivery.pending_candidate(self.app)
@@ -513,7 +610,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse((self.root / ".hex-pending-update").exists())
 
     def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
-                                prepare_only=False):
+                                prepare_only=False, followup_failure=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -609,7 +706,8 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(runner, "_check_disk_headroom", return_value=True), \
                 patch.object(delivery.ci.ci_target_storage, "inspect", return_value={
                     "platform": "darwin", "status": "identified", "filesystem_type": "apfs"}), \
-                patch.object(delivery, "optimized_artifact", side_effect=artifact_guard), \
+                patch.multiple(delivery, optimized_artifact=Mock(side_effect=artifact_guard),
+                               stage_update_supervisor=Mock(return_value=None)), \
                 patch.object(delivery, "native_signature", return_value=SIGNED), \
                 patch.object(delivery, "run", side_effect=tool), \
                 patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event), returncode=0)):
@@ -687,6 +785,18 @@ class DeliveryTests(unittest.TestCase):
                     with self.assertRaisesRegex(delivery.DeliveryError, "injected installed"):
                         delivery._apply_verified_pending(self.app, selected)
                 self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                if followup_failure:
+                    original_write = delivery.write_json
+                    def fail_sidecar(path, value):
+                        if path == sidecar:
+                            raise OSError("sidecar unavailable")
+                        return original_write(path, value)
+                    with patch.object(delivery, "run", return_value=""), patch.object(delivery, "write_json", side_effect=fail_sidecar):
+                        with self.assertRaisesRegex(delivery.PublicationFollowupFailed, "update installed"):
+                            delivery._apply_verified_pending(self.app, selected)
+                    self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                    self.assertEqual(sidecar.read_bytes(), b"old adjacent receipt")
+                    return
                 with patch.object(delivery, "run", return_value=""):
                     installed = delivery._apply_verified_pending(self.app, selected)
                 self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")

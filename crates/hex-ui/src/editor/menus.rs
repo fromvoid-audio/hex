@@ -1,7 +1,8 @@
 //! Native application menus dispatch the editor's existing guarded actions.
 use super::{
-    NewProject, OpenProject, OpenRecentProject, OpenRelinkedProject, OpenSettings, Quit,
-    RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject, SaveAsProject, SaveProject,
+    CancelUpdate, InstallUpdateOnQuit, NewProject, OpenProject, OpenRecentProject,
+    OpenRelinkedProject, OpenSettings, Quit, RecoverPreviousSave, RecoverSavedProject,
+    RecoverUntitledProject, SaveAndRestartForUpdate, SaveAsProject, SaveProject,
 };
 use crate::theme;
 use gpui::{App, Menu, MenuItem};
@@ -17,6 +18,12 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
             name: theme::text("hex"),
             items: vec![
                 MenuItem::action(theme::text("settings…"), OpenSettings),
+                MenuItem::action(theme::text("install update on quit"), InstallUpdateOnQuit),
+                MenuItem::action(
+                    theme::text("save and restart for update"),
+                    SaveAndRestartForUpdate,
+                ),
+                MenuItem::action(theme::text("cancel update"), CancelUpdate),
                 MenuItem::separator(),
                 MenuItem::action(theme::text("quit hex"), Quit),
             ],

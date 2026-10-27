@@ -859,6 +859,11 @@ impl EditorView {
         true
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn mark_theme_save_pending_for_update_test(&mut self) {
+        self.theme_settings.saving = true;
+    }
+
     pub(super) fn render_theme_settings(
         &mut self,
         cx: &mut Context<Self>,
