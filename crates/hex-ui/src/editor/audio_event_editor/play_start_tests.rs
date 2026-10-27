@@ -444,3 +444,82 @@ fn frozen_start_outside_release_retains_a_readable_last_source_frame(cx: &mut Te
     });
     assert!(visual.debug_bounds("audio-play-start-handle").is_some());
 }
+
+#[gpui::test]
+fn live_musical_start_keeps_grabbed_marker_visible_through_ack_and_history(
+    cx: &mut TestAppContext,
+) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    for command in [
+        Command::SetTempoPoint {
+            beat: hex_project::BeatTime::from_quarters(2).unwrap(),
+            tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+        },
+        Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+    }
+    let (before, span) = editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        let state = v.state.as_ref().unwrap();
+        let source = state.project.clip(clip).unwrap();
+        assert!(matches!(
+            source.audio_event_root().timing,
+            hex_project::AudioClipTiming::Musical { .. }
+        ));
+        cx.notify();
+        (
+            state.project.snapshot(),
+            (source.start(), source.duration()),
+        )
+    });
+    visual.run_until_parked();
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = visual
+        .debug_bounds("audio-play-start-handle")
+        .unwrap()
+        .center();
+    let up = point(down.x + body.size.width * 0.9, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    let event = terminal(&mut visual, &editor);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    for _ in 0..2 {
+        repaint(&mut visual, &editor);
+        assert!((marker_fraction(&mut visual) - 0.9).abs() < 0.004);
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        (marker_fraction(&mut visual) - 0.9).abs() < 0.004,
+        "new root-frame mapping must retain the grabbed source point"
+    );
+    let after = editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        let source = state.project.clip(clip).unwrap();
+        assert_eq!((source.start(), source.duration()), span);
+        state.project.snapshot()
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    assert!(marker_fraction(&mut visual).abs() < 0.004);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    assert!((marker_fraction(&mut visual) - 0.9).abs() < 0.004);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+    });
+}
