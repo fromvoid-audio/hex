@@ -736,7 +736,8 @@ def apply_after_approved_parent_exit(parent_pid: int, approval_fd: int, ready_fd
     observer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(observer)
     try:
-        observer.observe_parent_exit(parent_pid, approval_fd, ready_fd, timeout=observer_timeout)
+        observer.observe_parent_exit(parent_pid, approval_fd, ready_fd,
+                                     target / "Contents/MacOS/hex", timeout=observer_timeout)
     except observer.ExitObservationError as error:
         raise DeliveryError(str(error)) from error
     return _apply_verified_pending(target, selected_receipt_sha256)

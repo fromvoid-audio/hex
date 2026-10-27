@@ -22,16 +22,21 @@ delivery = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = delivery
 spec.loader.exec_module(delivery)
 delivery._apply_verified_pending = lambda target, selected: 'approved'
+import pending_update_exit as observer
 try:
-    result = delivery.apply_after_approved_parent_exit(int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), None, '', observer_timeout=1)
-except delivery.DeliveryError as e:
+    observer.observe_parent_exit(int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[6], timeout=1)
+    result = delivery._apply_verified_pending(None, '')
+except observer.ExitObservationError as e:
     result = 'refused: ' + str(e)
 with open(sys.argv[5] + '.tmp', 'w') as output:
     output.write(result)
 os.replace(sys.argv[5] + '.tmp', sys.argv[5])
 """
+actual_exe = subprocess.check_output(['/bin/ps', '-ww', '-p', str(os.getpid()), '-o', 'comm='], text=True).strip()
+if mode == 'wrong_executable':
+    actual_exe = '/bin/sh'
 subprocess.Popen([sys.executable, '-c', helper, root, str(os.getpid()),
-                  str(read_approval), str(write_ready), result],
+                  str(read_approval), str(write_ready), result, actual_exe],
                  pass_fds=(read_approval, write_ready), stdout=subprocess.DEVNULL,
                  stderr=None, close_fds=True)
 os.close(read_approval)
@@ -65,7 +70,8 @@ class ParentExitTests(unittest.TestCase):
             result = Path(directory) / 'result'
             parent = subprocess.run([sys.executable, '-c', PARENT, str(ROOT), str(result), mode],
                                     capture_output=True, timeout=15)
-            self.assertNotIn(parent.returncode, (90, 91), parent.stderr.decode())
+            if mode != 'wrong_executable':
+                self.assertNotIn(parent.returncode, (90, 91), parent.stderr.decode())
             deadline = time.monotonic() + 8
             while not result.exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
@@ -82,6 +88,11 @@ class ParentExitTests(unittest.TestCase):
                 status, result = self.observe(mode)
                 self.assertEqual(status, 0)
                 self.assertTrue(result.startswith('refused:'), result)
+
+    def test_refuses_wrong_parent_executable_before_readiness(self):
+        status, result = self.observe('wrong_executable')
+        self.assertEqual(status, 91)
+        self.assertIn('parent executable does not match', result)
 
     def test_refuses_nonzero_exit_or_signal_after_approval(self):
         for mode in ('failure', 'signal'):

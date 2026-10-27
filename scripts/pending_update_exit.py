@@ -10,6 +10,8 @@ from __future__ import annotations
 from contextlib import closing
 import os
 import select
+import stat
+import subprocess
 import time
 
 APPROVAL = b"hex-update-approved-v1\n"
@@ -23,7 +25,7 @@ class ExitObservationError(Exception):
 
 
 def observe_parent_exit(parent_pid: int, approval_fd: int, ready_fd: int,
-                        *, timeout: float = 60.0) -> None:
+                        parent_executable, *, timeout: float = 60.0) -> None:
     """Wait for an approval and this exact parent's zero-status exit.
 
     The caller must keep both pipes private, retain the selected candidate, and
@@ -50,6 +52,18 @@ def observe_parent_exit(parent_pid: int, approval_fd: int, ready_fd: int,
         ]
         try:
             queue.control(events, 0, 0)
+            # kqueue pins the process before consulting its path, so a reused
+            # PID cannot become the observed process during the check.
+            result = subprocess.run(["/bin/ps", "-ww", "-p", str(parent_pid), "-o", "comm="],
+                                    capture_output=True, text=True, timeout=5, check=True)
+            paths = result.stdout.splitlines()
+            if len(paths) != 1 or not paths[0].strip().startswith("/"):
+                raise ExitObservationError("parent executable is unavailable")
+            expected = os.stat(parent_executable)
+            actual = os.stat(paths[0].strip())
+            if (not stat.S_ISREG(expected.st_mode) or not stat.S_ISREG(actual.st_mode)
+                    or (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino)):
+                raise ExitObservationError("parent executable does not match target")
             if os.getppid() != parent_pid:
                 raise ExitObservationError("parent changed during observation setup")
             if os.write(ready_fd, READY) != len(READY):
@@ -84,5 +98,5 @@ def observe_parent_exit(parent_pid: int, approval_fd: int, ready_fd: int,
                         raise ExitObservationError("unexpected observer event")
             if approval != APPROVAL:
                 raise ExitObservationError("shutdown was not approved")
-        except OSError as error:
+        except (OSError, subprocess.SubprocessError) as error:
             raise ExitObservationError("could not observe approved shutdown") from error
