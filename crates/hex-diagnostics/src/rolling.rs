@@ -133,8 +133,7 @@ impl SessionWriter {
                 io::Error::new(
                     error.kind(),
                     format!(
-                        "active session log moved to {}; replacement publication failed: {error}",
-                        self.archive(1).display()
+                        "active session log moved to its .1.log sibling; replacement publication failed: {error}"
                     ),
                 )
             })?;
@@ -349,7 +348,10 @@ mod tests {
         assert_eq!(shared.statistics().abandoned, 1);
         let failure = shared.last_error.lock().unwrap().clone().unwrap();
         assert!(failure.contains("injected staged publication failure"));
-        assert!(failure.contains(&newest.display().to_string()), "{failure}");
+        assert!(
+            failure.contains("active session log moved to its .1.log sibling"),
+            "{failure}"
+        );
         drop(writer);
         fs::remove_dir_all(directory).unwrap();
     }
