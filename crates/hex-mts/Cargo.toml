@@ -1,0 +1,13 @@
+[package]
+name = "hex-mts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+hex-tuning = { path = "../hex-tuning" }
+mts-esp-master-adapter = { path = "../../third_party/mts-esp-master", version = "=0.1.0" }
+
+[lints]
+workspace = true

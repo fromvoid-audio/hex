@@ -8,11 +8,16 @@ use hex_widgets::{DeviceLayout, DeviceSectionSurface, device_compact_section, de
 /// The accepted native device body, below the shared fourteen-pixel header.
 pub(crate) const BODY_HEIGHT: f32 = 168.0;
 pub(crate) const GENERIC_FRAME_WIDTH: f32 = 286.0;
+pub(crate) const SAMPLER_FRAME_WIDTH: f32 = 1040.0;
 pub(crate) const UTILITY_FRAME_WIDTH: f32 = 144.0;
 pub(crate) const SATURATOR_FRAME_WIDTH: f32 = 230.0;
 pub(crate) const EQ8_FRAME_WIDTH: f32 = 600.0;
+pub(crate) const DELAY_FRAME_WIDTH: f32 = 500.0;
+pub(crate) const LIMITER_FRAME_WIDTH: f32 = 300.0;
 pub(crate) const COMPRESSOR_FRAME_WIDTH: f32 = 326.0;
+pub(crate) const OVERDRIVE_FRAME_WIDTH: f32 = 174.0;
 pub(crate) const GATE_FRAME_WIDTH: f32 = 142.0;
+pub(crate) const REVERB_FRAME_WIDTH: f32 = 608.0;
 pub(crate) const AUTO_PAN_FRAME_WIDTH: f32 = 144.0;
 pub(crate) const VECTOR_SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
 pub(crate) const VECTOR_DETAIL_WIDTH: f32 = 340.0;
@@ -216,4 +221,43 @@ pub(crate) fn tabbed_detail(detail: impl IntoElement, tabs: impl IntoElement) ->
                 .px(px(4.0))
                 .child(tabs),
         )
+}
+
+/// Shared graph-dominant EQ geometry. Caller supplies the real bound controls.
+/// The catalog uses these same slots with explicitly view-local fixtures.
+pub(crate) fn eq_sidebar(
+    id: impl Into<gpui::SharedString>,
+    content: impl IntoElement,
+    controls: impl IntoElement,
+) -> gpui::Stateful<Div> {
+    let id = id.into();
+    let scroll_id = gpui::SharedString::from(format!("{id}-scroll"));
+    div()
+        .id(id)
+        .w(px(160.0))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .p(px(2.0))
+        .gap(px(2.0))
+        .text_size(px(8.0))
+        .line_height(px(10.0))
+        .child(
+            div()
+                .id(scroll_id)
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(content),
+        )
+        .child(div().w_full().h(px(14.0)).flex_shrink_0().child(controls))
+}
+
+pub(crate) fn eq_graph_body(graph: impl IntoElement, sidebar: impl IntoElement) -> Div {
+    body()
+        .gap(px(2.0))
+        .child(plot(graph).min_w_0())
+        .child(sidebar)
 }

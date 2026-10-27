@@ -5,11 +5,13 @@ use hex_project::{BeatTime, GainInterpolation, GainPoint, ReturnFeedSnapshot};
 fn ramp() -> Vec<GainPoint> {
     vec![
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::ZERO,
             gain: 0.25,
             outgoing: GainInterpolation::Linear,
         },
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::ONE,
             gain: 1.25,
             outgoing: GainInterpolation::Step,
@@ -134,6 +136,8 @@ fn automated_analytic_capture_applies_absolute_gain_once_with_metering() {
         let mut reference = linear(Arc::clone(&revision));
         let mut expected = [[0.0; 2]; 512];
         reference.render(&mut expected).unwrap();
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
         let mut runtime = linear(revision);
         runtime.set_device_metering(metered);
         let plan = runtime
@@ -162,6 +166,22 @@ fn automated_analytic_capture_applies_absolute_gain_once_with_metering() {
                     );
                     assert!((main_frame[channel] - contribution[channel] * 0.25).abs() < 1e-7);
                 }
+            }
+            if metered {
+                let expected_peak = capture
+                    .output(0)
+                    .unwrap()
+                    .iter()
+                    .flatten()
+                    .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+                let actual = observation
+                    .track_output_meter(project.tracks()[0].id())
+                    .unwrap()
+                    .take_track_output();
+                assert!(
+                    (actual - expected_peak).abs() < 1e-7,
+                    "meter must follow automated post-fader output"
+                );
             }
             offset += count;
         }

@@ -7,7 +7,7 @@ pub const MAX_DEVICES: usize = crate::MAX_TRACKS * (MAX_DEVICES_PER_TRACK + 1)
 pub const DEFAULT_INSTRUMENT_TYPE_ID: DeviceTypeId =
     DeviceTypeId::from_static("hex.instrument.sine");
 
-/// Neutral default envelope shared by new tracks and legacy-schema migration.
+/// Neutral envelope for explicit Sine insertion and existing legacy-schema readers.
 /// Project/storage do not depend on the DSP definition or its implementation.
 pub fn default_instrument_state() -> Result<NativeDeviceState, Invalid> {
     NativeDeviceState::new(DEFAULT_INSTRUMENT_TYPE_ID, 1, Vec::new())
@@ -16,9 +16,11 @@ pub fn default_instrument_state() -> Result<NativeDeviceState, Invalid> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
+    pub(crate) automation: Vec<crate::DeviceAutomation>,
     pub(crate) id: DeviceId,
     pub(crate) state: NativeDeviceState,
     pub(crate) bypassed: bool,
+    pub(crate) comparison: Option<crate::DeviceComparison>,
 }
 impl Device {
     pub fn id(&self) -> DeviceId {
@@ -47,11 +49,15 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::Device(id))
         }
         Command::RemoveInstrument { track } => {
-            let target = project.track_mut(track)?;
-            if target.instrument.take().is_none() {
+            if project
+                .track(track)
+                .ok_or(Invalid("track no longer exists"))?
+                .instrument
+                .is_none()
+            {
                 return Err(Invalid("instrument slot is already empty"));
             }
-            target.instrument_position = None;
+            project.bind_track_source(track, None)?;
             Ok(crate::Created::None)
         }
         Command::RemoveDevice(id) => {
@@ -78,6 +84,12 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                     })
             {
                 project.returns[track].devices.remove(index);
+            } else if let Some(index) = project
+                .main_devices
+                .iter()
+                .position(|device| device.id == id)
+            {
+                project.main_devices.remove(index);
             } else {
                 return Err(Invalid("device no longer exists"));
             }
@@ -100,17 +112,21 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceState { device, state } => {
-            project.device_mut(device)?.state = state;
+            project.edit_device(device, |d| d.replace_state(state))?;
             Ok(crate::Created::None)
         }
         Command::ReplaceDeviceStateWithIdentityReservation {
             device,
             expected_state,
+            expected_variant,
             state,
             expected_next_id,
             reserved_ids,
         } => {
             if project.next_id != expected_next_id
+                || project
+                    .device(device)
+                    .is_none_or(|entry| entry.active_variant() != expected_variant)
                 || project
                     .device(device)
                     .ok_or(Invalid("device no longer exists"))?
@@ -124,12 +140,39 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             let next = expected_next_id
                 .checked_add(reserved_ids)
                 .ok_or(Invalid("project identity space exhausted"))?;
-            project.device_mut(device)?.state = state;
+            project.edit_device(device, |d| d.replace_state(state))?;
             project.next_id = next;
             Ok(crate::Created::None)
         }
+        Command::CompareDevice {
+            device,
+            expected,
+            action,
+        } => {
+            project.edit_device(device, |d| d.compare(expected, action))?;
+            Ok(crate::Created::None)
+        }
+        Command::ReplaceDeviceComparison {
+            device,
+            state,
+            comparison,
+        } => {
+            if let Some(value) = &comparison {
+                value.validate(&state)?;
+            }
+            project.edit_device(device, |target| {
+                target.validate_automation_provider(&state)?;
+                target.state = state;
+                target.comparison = comparison;
+                Ok(())
+            })?;
+            Ok(crate::Created::None)
+        }
         Command::SetDeviceBypass { device, bypassed } => {
-            project.device_mut(device)?.bypassed = bypassed;
+            project.edit_device(device, |d| {
+                d.bypassed = bypassed;
+                Ok(())
+            })?;
             Ok(crate::Created::None)
         }
         _ => Err(Invalid("command is not a device edit")),
@@ -153,12 +196,20 @@ fn insert_instrument(
     if total_devices >= MAX_DEVICES {
         return Err(Invalid("project device limit reached"));
     }
+    let name = target.name.clone();
     let id = DeviceId(project.allocate_id()?);
-    project.track_mut(track)?.instrument = Some(Device {
-        id,
-        state,
-        bypassed: false,
-    });
+    let binding = project.register_instrument(
+        name,
+        Device {
+            automation: Vec::new(),
+            comparison: None,
+            id,
+            state,
+            bypassed: false,
+        },
+        track,
+    )?;
+    project.track_mut(track)?.instrument = Some(binding);
     project.track_mut(track)?.instrument_position = Some(0);
     Ok(id)
 }
@@ -203,6 +254,8 @@ fn insert(
     target.devices.insert(
         index,
         Device {
+            automation: Vec::new(),
+            comparison: None,
             id,
             state,
             bypassed: false,
@@ -417,6 +470,18 @@ fn move_track_device(
         return Err(Invalid("track device limit reached"));
     }
 
+    let receiver_transfer = match source {
+        DeviceLocation::Instrument { track } => {
+            let source_track = project.tracks[track].id;
+            project.tracks[track].source_id().filter(|source| {
+                project
+                    .native_source(*source)
+                    .is_some_and(|definition| definition.receiver() == Some(source_track))
+            })
+        }
+        DeviceLocation::Effect { .. } => None,
+    };
+
     let moving = match source {
         DeviceLocation::Effect { track, index } => {
             let old_position = project.tracks[track].instrument_position;
@@ -425,7 +490,7 @@ fn move_track_device(
                 project.tracks[track].instrument_position =
                     old_position.and_then(|p| p.checked_sub(1));
             }
-            (device, false)
+            (Some(device), None)
         }
         DeviceLocation::Instrument { track } => {
             let device = project.tracks[track]
@@ -433,35 +498,41 @@ fn move_track_device(
                 .take()
                 .ok_or(Invalid("instrument slot is already empty"))?;
             project.tracks[track].instrument_position = None;
-            (device, true)
+            (None, Some(device))
         }
     };
-    let target = &mut project.tracks[target_index];
-    if moving.1 {
-        let position = chain_effect_index_before(target, before)?;
-        target.instrument = Some(moving.0);
-        target.instrument_position = Some(position);
-    } else {
-        let position = chain_effect_index_before(target, before)?;
-        let before_instrument = before.is_some_and(|anchor| {
-            target
-                .instrument
-                .as_ref()
-                .is_some_and(|instrument| instrument.id == anchor)
-        });
-        target.devices.insert(position, moving.0);
-        if before_instrument
-            || target
-                .instrument_position
-                .is_some_and(|instrument_position| position < instrument_position)
-        {
-            target.instrument_position = Some(
+    {
+        let target = &mut project.tracks[target_index];
+        if let Some(binding) = moving.1 {
+            let position = chain_effect_index_before(target, before)?;
+            target.instrument = Some(binding);
+            target.instrument_position = Some(position);
+        } else {
+            let position = chain_effect_index_before(target, before)?;
+            let before_instrument = before.is_some_and(|anchor| {
                 target
+                    .instrument
+                    .as_ref()
+                    .is_some_and(|instrument| instrument.id == anchor)
+            });
+            let device = moving.0.ok_or(Invalid("moving effect is missing"))?;
+            target.devices.insert(position, device);
+            if before_instrument
+                || target
                     .instrument_position
-                    .and_then(|instrument_position| instrument_position.checked_add(1))
-                    .ok_or(Invalid("instrument position overflow"))?,
-            );
+                    .is_some_and(|instrument_position| position < instrument_position)
+            {
+                target.instrument_position = Some(
+                    target
+                        .instrument_position
+                        .and_then(|instrument_position| instrument_position.checked_add(1))
+                        .ok_or(Invalid("instrument position overflow"))?,
+                );
+            }
         }
+    }
+    if let Some(source) = receiver_transfer {
+        project.set_native_source_receiver(source, Some(target_track))?;
     }
     Ok(())
 }
@@ -476,7 +547,12 @@ mod tests {
     }
     fn track_id(editor: &mut crate::Editor, name: &str) -> TrackId {
         match editor
-            .execute(Command::AddTrack { name: name.into() })
+            .execute(Command::InsertTrackWithDevice {
+                name: name.into(),
+                before_track: None,
+                slot: crate::TrackDeviceSlot::Instrument,
+                state: crate::default_instrument_state().unwrap(),
+            })
             .unwrap()
         {
             crate::Created::Track(id) => id,
@@ -498,6 +574,72 @@ mod tests {
     }
 
     #[test]
+    fn opaque_identity_reservation_slot_switch_refuses_before_prepare() {
+        let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "track");
+        let device = device_id(&mut editor, track);
+        let command = Command::ReplaceDeviceStateWithIdentityReservation {
+            device,
+            expected_state: editor.project().device(device).unwrap().state().clone(),
+            expected_variant: crate::DeviceVariant::A,
+            state: state(vec![9]),
+            expected_next_id: editor.project().next_identity(),
+            reserved_ids: 1,
+        };
+        editor
+            .execute(Command::CompareDevice {
+                device,
+                expected: crate::DeviceVariant::A,
+                action: crate::DeviceComparisonAction::Switch,
+            })
+            .unwrap();
+        let before = editor.project().snapshot();
+        let calls = std::cell::Cell::new(0);
+        let result = editor.execute_prepared(command, |_| {
+            calls.set(calls.get() + 1);
+            Ok::<(), Invalid>(())
+        });
+        assert!(
+            result.is_err(),
+            "an A-origin edit must not retarget identical B"
+        );
+        assert_eq!(calls.get(), 0, "refuse before preparation");
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().device(device).unwrap().active_variant(),
+            crate::DeviceVariant::A
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), before);
+        // A fresh B-owned capture remains a valid identity-reserving edit.
+        let entry = editor.project().device(device).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceStateWithIdentityReservation {
+                device,
+                expected_state: entry.state().clone(),
+                expected_variant: entry.active_variant(),
+                state: state(vec![9]),
+                expected_next_id: editor.project().next_identity(),
+                reserved_ids: 1,
+            })
+            .unwrap();
+        assert_eq!(
+            editor.project().device(device).unwrap().active_variant(),
+            crate::DeviceVariant::B
+        );
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &state(vec![9])
+        );
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &state(vec![7])
+        );
+    }
+
+    #[test]
     fn opaque_identity_reservation_rejects_stale_edits_and_undo_never_reuses_ids() {
         let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
         let track = track_id(&mut editor, "track");
@@ -507,6 +649,7 @@ mod tests {
         let command = Command::ReplaceDeviceStateWithIdentityReservation {
             device,
             expected_state: expected.clone(),
+            expected_variant: crate::DeviceVariant::A,
             state: state(vec![9]),
             expected_next_id: first,
             reserved_ids: 41,
@@ -527,6 +670,7 @@ mod tests {
                 .execute(Command::ReplaceDeviceStateWithIdentityReservation {
                     device,
                     expected_state: expected,
+                    expected_variant: crate::DeviceVariant::A,
                     state: state(vec![10]),
                     expected_next_id: first + 41,
                     reserved_ids: u64::MAX
@@ -791,7 +935,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             [instrument, first, destination_effect]
         );
-        assert!(editor.project().device(destination_instrument).is_none());
+        assert!(
+            editor.project().device(destination_instrument).is_some(),
+            "unlink retains the original source device"
+        );
+        assert!(
+            editor
+                .project()
+                .native_sources()
+                .iter()
+                .any(|source| source.instrument().id() == destination_instrument)
+        );
         let before_failure = editor.project().snapshot();
         assert!(
             editor

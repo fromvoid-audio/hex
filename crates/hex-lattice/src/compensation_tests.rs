@@ -30,7 +30,11 @@ struct FixedRuntime {
 }
 
 impl NativeProcessorRuntime for FixedRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         for frame in frames {
             let delayed = self.history[0];
             self.history.rotate_left(1);
@@ -72,6 +76,57 @@ fn instance(
         sample_rate: 48_000,
         configuration: None,
         definition,
+    }
+}
+
+#[test]
+fn paired_taps_bracket_whole_entry_and_preserve_bypass_pcm() {
+    for owner in [
+        ProcessorChainOwner::Track(1),
+        ProcessorChainOwner::Return(1),
+    ] {
+        for bypassed in [false, true] {
+            let make_chain = || {
+                let mut prepared = instance(9, None, bypassed);
+                prepared.owner = owner;
+                prepared.matrix = StereoMatrix::new([[0.5, 0.0], [0.0, -0.5]]).unwrap();
+                let mut chain = NativeRuntimeChain::new(vec![prepared]).unwrap();
+                chain.entries[0].input_gain = 2.0;
+                chain.entries[0].output_gain = 0.25;
+                chain
+            };
+            let input = [[0.5, -0.25], [0.0, 0.0], [-0.5, 0.25]];
+            let mut expected = input;
+            make_chain().process_block(&mut expected).unwrap();
+            let mut actual = input;
+            let mut observations = Vec::new();
+            make_chain()
+                .process_range_tapped_with_clock(
+                    0..1,
+                    &mut actual,
+                    17,
+                    Some(&Clock),
+                    Some(&Clock),
+                    &mut |got_owner, device, _, phase, offset, audio| {
+                        assert_eq!((got_owner, device, offset), (owner, 9, 17));
+                        observations.push((phase, audio.to_vec()));
+                    },
+                )
+                .unwrap();
+            assert_eq!(actual, expected, "observation cannot change PCM");
+            assert_eq!(
+                observations,
+                vec![
+                    (NodeSignalPhase::Input, input.to_vec()),
+                    (NodeSignalPhase::Output, actual.to_vec()),
+                ]
+            );
+            if bypassed {
+                assert_eq!(actual, input);
+            } else {
+                assert_eq!(actual, [[0.125, 0.0625], [0.0, 0.0], [-0.125, -0.0625]]);
+            }
+        }
     }
 }
 
@@ -198,16 +253,21 @@ struct ClockRuntime {
     last_beat: u64,
 }
 impl NativeProcessorRuntime for ClockRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         frames.fill([7.0, 9.0]);
     }
     fn process_block_with_clock(
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
         let Some(clock) = clock else {
-            self.process_block(frames);
+            self.process_block(frames, _resources);
             return;
         };
         for (offset, frame) in frames.iter_mut().enumerate() {
@@ -219,13 +279,18 @@ impl NativeProcessorRuntime for ClockRuntime {
             ];
         }
     }
-    fn process_bypassed_block(&mut self, _frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         self.last_beat = 99;
     }
     fn process_bypassed_block_with_clock(
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
         self.last_beat = clock
             .and_then(|clock| clock.beat_at_offset(frames.len().saturating_sub(1)))
@@ -277,7 +342,7 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
     chain.begin_block();
     let mut frames = [[0.0; 2]; 4];
     chain
-        .process_range_with_clock(0..1, &mut frames, Some(&Clock))
+        .process_range_with_clock(0..1, &mut frames, Some(&Clock), Some(&Clock))
         .unwrap();
     assert_eq!(
         frames,
@@ -290,6 +355,7 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
             &mut frames,
             17,
             Some(&Clock),
+            Some(&Clock),
             &mut |owner, id, _, offset, audio| {
                 assert_eq!(owner, ProcessorChainOwner::Track(1));
                 assert_eq!(id, 1);
@@ -301,10 +367,10 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
     assert_eq!(observed, frames);
     chain.process_range(0..1, &mut frames).unwrap();
     assert_eq!(frames, [[7.0, 9.0]; 4]);
-    chain.process_block(&mut frames);
+    chain.process_block(&mut frames).unwrap();
     assert_eq!(frames, [[7.0, 9.0]; 4]);
     assert_eq!(
-        chain.process_range_with_clock(0..2, &mut frames, Some(&Clock)),
+        chain.process_range_with_clock(0..2, &mut frames, Some(&Clock), Some(&Clock)),
         Err(DeviceContractError::InvalidDescriptor)
     );
 }
@@ -321,7 +387,7 @@ fn bypass_private_clock_uses_offsets_while_audible_samples_are_preserved() {
         chain.begin_block();
         let mut frames = [[1.0, -0.5]; 4];
         chain
-            .process_range_with_clock(0..1, &mut frames, Some(&Clock))
+            .process_range_with_clock(0..1, &mut frames, Some(&Clock), Some(&Clock))
             .unwrap();
         assert_eq!(frames, [[1.0, -0.5]; 4]);
         let runtime = chain.entries[0]

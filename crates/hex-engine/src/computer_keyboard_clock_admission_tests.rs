@@ -50,6 +50,7 @@ impl MutableInstrumentRuntime for ClockRequiredRuntime {
         &self,
         events: &[NativeInstrumentEvent],
         _: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         let mut active = self.active;
         for event in events {
@@ -67,6 +68,7 @@ impl MutableInstrumentRuntime for ClockRequiredRuntime {
         &self,
         clock: Option<&dyn NativeInstrumentClock>,
         frames: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         let clock = clock.ok_or(NativeInstrumentRuntimeError::InvalidEventBatch)?;
         clock
@@ -79,7 +81,12 @@ impl MutableInstrumentRuntime for ClockRequiredRuntime {
         }
         Ok(())
     }
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [Frame]) {
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [Frame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for event in events {
             self.active = matches!(event, NativeInstrumentEvent::NoteOn { .. });
         }

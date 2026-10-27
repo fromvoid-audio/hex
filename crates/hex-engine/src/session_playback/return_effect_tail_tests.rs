@@ -38,7 +38,11 @@ impl PreparedNativeProcessor for HoldDefinition {
 }
 
 impl NativeProcessorRuntime for HoldRuntime {
-    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             if *frame != [0.0; 2] {
                 self.remaining = 4;
@@ -105,7 +109,11 @@ impl PreparedNativeProcessor for ScaleDefinition {
 }
 
 impl NativeProcessorRuntime for ScaleRuntime {
-    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             frame[0] *= self.0;
             frame[1] *= self.0;
@@ -234,7 +242,7 @@ fn active_tail_chain(
     let mut chain =
         NativeRuntimeChain::new(tail_instances(return_id, count, frames, bytes)).unwrap();
     chain.begin_block();
-    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.process_block(&mut [[0.1, -0.1]]).unwrap();
     chain.commit_block();
     chain
 }
@@ -266,6 +274,8 @@ fn prepared_return_project_with_bus(
             gain: return_gain,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
+                comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
                 state: {
@@ -340,6 +350,8 @@ fn eq8_return_project(gain_db: f32, q: f32, kind: u32) -> Project {
         gain: 1.0,
         muted: false,
         devices: vec![DeviceSnapshot {
+            automation: Vec::new(),
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state,
@@ -370,7 +382,7 @@ fn playback(project: &Project) -> SessionPlayback {
 fn active_chain(return_id: ReturnId, matrix: StereoMatrix) -> NativeRuntimeChain {
     let mut chain = NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
     chain.begin_block();
-    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.process_block(&mut [[0.1, -0.1]]).unwrap();
     chain.commit_block();
     chain
 }
@@ -379,6 +391,53 @@ fn warm(playback: &mut SessionPlayback) {
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut output = [[0.0; 2]; 256];
     playback.render(&mut output).unwrap();
+}
+
+#[test]
+fn unchanged_main_configuration_with_incompatible_history_refuses_without_losing_old_audio() {
+    let project = super::tests::project(1.0, 0, 8 << 32);
+    let state = Arc::new(NativeDeviceState::new(HOLD_TYPE, 1, vec![0]).unwrap());
+    let chain = |definition: Arc<dyn PreparedNativeProcessor>| {
+        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Main,
+            device_id: 17,
+            device_type: HOLD_TYPE,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(Arc::clone(&state)),
+            definition: Some(definition),
+        }])
+        .unwrap()
+    };
+    let mut previous = playback(&project);
+    let mut oracle = playback(&project);
+    previous.main_chain = chain(Arc::new(HoldDefinition));
+    oracle.main_chain = chain(Arc::new(HoldDefinition));
+    warm(&mut previous);
+    warm(&mut oracle);
+    let mut candidate = playback(&project);
+    // Model an incompatible provider behind unchanged immutable metadata.
+    // No changed suffix was selected, so no history exclusion is justified.
+    candidate.main_chain = chain(Arc::new(ScaleDefinition(0.5)));
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::DeviceRuntime)
+    );
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(previous.performance_frame, oracle.performance_frame);
 }
 
 #[test]
@@ -393,6 +452,7 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         snapshot.session = hex_project::SessionSnapshot::default();
         // One-frame source creates actual history, then only residuals remain.
         snapshot.assets = vec![hex_project::AssetSnapshot {
+            original_source: None,
             id: 30,
             path: "tail.wav".into(),
             source_sample_rate: 48_000,
@@ -402,6 +462,7 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         }];
         snapshot.tracks[0].content = hex_project::TrackContentSnapshot::Hybrid {
             audio_clips: vec![hex_project::ClipSnapshot {
+                active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 edit: None,
@@ -424,6 +485,7 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         let source_project = Project::from_snapshot(snapshot).unwrap();
         let source_project = super::tests::with_utility_filter_state(&source_project, true, false);
         let audio = crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap();
+        let original_pcm = Arc::downgrade(&audio.frames);
         let media = BTreeMap::from([(source_project.assets().next().unwrap().id(), audio)]);
         let table = Arc::new(hex_devices::SineTable::new());
         let prepare = |project: &Project| {
@@ -470,6 +532,9 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                     .unwrap();
         } else {
             candidate_snapshot.tracks.clear();
+            for source in &mut candidate_snapshot.native_sources {
+                source.receiver = None;
+            }
             candidate_snapshot.return_tracks.clear();
         }
         let candidate_project = Project::from_snapshot(candidate_snapshot).unwrap();
@@ -532,6 +597,20 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
             candidate = next;
             assert!(candidate.tail_track_ids.contains(&Some(track_id)));
         }
+        // Capture plans are separate control owners of their revision, not transferred tails.
+        // The exhausted capture is no longer borrowed after its stale-plan assertions above.
+        drop(donor_plan);
+        // Neither transferred effect tails nor their copied scalar release entries retain old
+        // ordinary Audio leaves. Destroy the actual donor on control before rendering its tails.
+        drop(media);
+        assert!(original_pcm.upgrade().is_some());
+        drop(old);
+        if !replacement {
+            assert!(
+                original_pcm.upgrade().is_none(),
+                "retiring the donor frees old clip PCM while its effect tail continues"
+            );
+        }
         let plan = candidate
             .output_capture_plan(
                 &[
@@ -541,6 +620,9 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                 512,
             )
             .unwrap();
+        candidate.set_device_metering(true);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&candidate.revision).unwrap();
         let arrangement_before = candidate.arrangement_frame;
         let performance_before = candidate.performance_frame;
         candidate.arrangement_frame = u64::MAX - 300;
@@ -559,6 +641,22 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         assert_eq!(candidate.arrangement_frame, u64::MAX - 300);
         assert!(refused_main.iter().flatten().all(|sample| *sample == 0.0));
         assert!(refused_capture.output(0).unwrap().is_empty());
+        if replacement {
+            assert_eq!(
+                observation
+                    .track_output_meter(track_id)
+                    .unwrap()
+                    .take_track_output(),
+                0.0
+            );
+            assert_eq!(
+                observation
+                    .return_output_meter(return_id)
+                    .unwrap()
+                    .take_track_output(),
+                0.0
+            );
+        }
         candidate.arrangement_frame = arrangement_before;
         let mut main = [[0.0; 2]; 8];
         let mut track = main;
@@ -574,6 +672,23 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                 .render_with_capture(&mut main[offset..offset + frames], &mut capture)
                 .unwrap();
             assert_eq!(capture.valid_frames(), frames);
+            if replacement {
+                for (index, meter) in [
+                    observation.track_output_meter(track_id).unwrap(),
+                    observation.return_output_meter(return_id).unwrap(),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let expected = capture
+                        .output(index)
+                        .unwrap()
+                        .iter()
+                        .flatten()
+                        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+                    assert_eq!(meter.take_track_output(), expected);
+                }
+            }
             offset += frames;
         }
         for index in 0..8 {
@@ -1056,15 +1171,21 @@ fn failed_block_restores_tail_history_for_the_next_render_attempt() {
 
     bank.begin_block();
     let mut failed_attempt = [[0.0; 2]; 1];
-    bank.render_chunk(&mut failed_attempt, 0, &mut None)
-        .unwrap();
+    bank.render_chunk(
+        &mut failed_attempt,
+        0,
+        &mut None,
+        &mut hex_lattice::RefuseForeign,
+    )
+    .unwrap();
     assert_eq!(failed_attempt[0], [0.375, -0.75]);
     bank.rollback_block();
     assert!(bank.slots()[0].as_ref().unwrap().output_active);
 
     bank.begin_block();
     let mut retry = [[0.0; 2]; 1];
-    bank.render_chunk(&mut retry, 0, &mut None).unwrap();
+    bank.render_chunk(&mut retry, 0, &mut None, &mut hex_lattice::RefuseForeign)
+        .unwrap();
     assert_eq!(retry, failed_attempt);
     bank.commit_block();
     assert!(bank.slots()[0].as_ref().unwrap().output_active);
@@ -1250,6 +1371,9 @@ fn full_return_tail_bank_refuses_atomically_and_retries_after_stop() {
 fn feed_capture_includes_retired_return_tail_once_without_refeeding_it() {
     let mut snapshot = prepared_return_project(true, 0.5).snapshot();
     snapshot.tracks.clear();
+    for source in &mut snapshot.native_sources {
+        source.receiver = None;
+    }
     snapshot.return_tracks[0].gain = 1.0;
     snapshot.session = hex_project::SessionSnapshot::default();
     let source_id = snapshot.return_tracks[0].id;

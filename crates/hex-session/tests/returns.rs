@@ -73,8 +73,11 @@ fn return_workflow_routes_pcm_edits_devices_history_and_current_schema_roundtrip
     assert!(initial.playback.is_some());
     let track_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {
@@ -360,7 +363,7 @@ fn return_workflow_routes_pcm_edits_devices_history_and_current_schema_roundtrip
     assert!(!saved.state.unsaved);
     let bytes = fs::read(&path).expect("saved document bytes");
     let document: serde_json::Value = serde_json::from_slice(&bytes).expect("project json");
-    assert_eq!(document["version"], 29);
+    assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     let persisted = hex_storage::load(&path).expect("load schema 25 project");
@@ -497,8 +500,11 @@ fn eq_eight_processes_on_regular_and_return_device_chains() {
     wait(&service);
     let track_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "eq source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {
@@ -598,8 +604,11 @@ fn return_send_gesture_previews_transiently_and_save_barrier_commits_once() {
     wait(&service);
     let track_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {
@@ -989,6 +998,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
     }
     service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key,
             sequence: 1,
             value: ParameterValue::Float(f32::INFINITY),
@@ -1042,6 +1052,7 @@ fn rejected_send_gesture_values_and_removed_targets_never_change_canonical_state
     assert!(removed.active_device_gesture.is_none());
     service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: false,
             key: remove_key,
             sequence: 2,
             value: ParameterValue::Float(0.9),

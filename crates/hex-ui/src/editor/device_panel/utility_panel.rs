@@ -120,6 +120,11 @@ pub(super) fn render_body(
         )
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control(if mid_side {
+                    "mid/side"
+                } else {
+                    "stereo width"
+                }),
                 description: if mid_side {
                     "mid/side · right-click for width".into()
                 } else {
@@ -176,6 +181,7 @@ pub(super) fn render_body(
                 .id(("utility-cutoff", device.value()))
                 .tooltip(|_, cx| {
                     cx.new(|_| super::super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: "bass mono cutoff".into(),
                     })
                     .into()
@@ -188,6 +194,7 @@ pub(super) fn render_body(
                 .debug_selector(|| format!("utility-bass-mono-audition-{}", device.value()))
                 .tooltip(|_, cx| {
                     cx.new(|_| super::super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: "bass mono audition".into(),
                     })
                     .into()

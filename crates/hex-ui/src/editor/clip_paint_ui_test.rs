@@ -61,7 +61,7 @@ fn clip_paint_double_click_hold_previews_then_commits_once(cx: &mut TestAppConte
             view.last_enqueued_edit.clone().expect("release edit")
         });
         assert!(
-            matches!(command, Command::PlaceMidiClip { track: id, start, length }
+            matches!(command, Command::PlaceMidiClipWithOverwrite { track: id, start, length }
             if id == track && start == BeatTime::from_quarters(4).unwrap()
                 && length == BeatTime::from_quarters(4).unwrap())
         );
@@ -126,7 +126,7 @@ fn clip_paint_minimum_length(cx: &mut TestAppContext) {
         let y = lane.top + 22.0;
         assert!(view.begin_clip_paint(x, y, false));
         assert!(view.finish_clip_paint(x, y, false));
-        assert!(matches!(view.last_enqueued_edit, Some(Command::PlaceMidiClip { length, .. }) if length == BeatTime::ONE));
+        assert!(matches!(view.last_enqueued_edit, Some(Command::PlaceMidiClipWithOverwrite { length, .. }) if length == BeatTime::ONE));
     });
 }
 
@@ -149,7 +149,7 @@ fn clip_paint_free_drag_uses_pointer_beats(cx: &mut TestAppContext) {
             let end = state.project.tempo_map().frame_to_beat(super::seek::pointer_to_frame(end_x, lane.left, lane.width, viewport).unwrap()).unwrap();
             assert!(view.begin_clip_paint(x, y, false));
             assert!(view.finish_clip_paint(end_x, y, false));
-            assert!(matches!(view.last_enqueued_edit, Some(Command::PlaceMidiClip { start: actual, length, .. }) if actual == start.min(end) && length.raw() == end.raw().abs_diff(start.raw())));
+            assert!(matches!(view.last_enqueued_edit, Some(Command::PlaceMidiClipWithOverwrite { start: actual, length, .. }) if actual == start.min(end) && length.raw() == end.raw().abs_diff(start.raw())));
         });
     }
 }
@@ -238,7 +238,9 @@ fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestA
             assert!(view.active_clip_drag.is_none());
             view.last_enqueued_edit.clone().expect("painted clip edit")
         });
-        assert!(matches!(command, Command::PlaceMidiClip { track: id, .. } if id == track));
+        assert!(
+            matches!(command, Command::PlaceMidiClipWithOverwrite { track: id, .. } if id == track)
+        );
         let before = canonical.project().clone();
         let Created::Clip(painted) = canonical.execute(command).expect("paint over clip body")
         else {
@@ -246,11 +248,66 @@ fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestA
         };
         assert_ne!(painted, clip);
         assert!(canonical.project().midi_clip(painted).is_some());
+        let result = canonical.project().track(track).unwrap();
+        let tempo = canonical.project().tempo_map();
+        let mut bounds: Vec<_> = result
+            .clips()
+            .iter()
+            .map(|clip| (clip.start(), clip.start() + clip.duration(), clip.id()))
+            .chain(result.midi_clips().iter().map(|clip| {
+                (
+                    tempo.beat_to_frame(clip.start()).unwrap(),
+                    tempo
+                        .beat_to_frame(BeatTime::from_raw(clip.start().raw() + clip.length().raw()))
+                        .unwrap(),
+                    clip.id(),
+                )
+            }))
+            .collect();
+        bounds.sort_by_key(|bound| bound.0);
+        assert_eq!(
+            bounds.len(),
+            3,
+            "interior paint must cut before/middle/after instead of layering over a full original"
+        );
+        assert_eq!(bounds[1].2, painted);
+        assert_eq!(bounds[0].1, bounds[1].0);
+        assert_eq!(bounds[1].1, bounds[2].0);
+        let after = canonical.project().tracks().to_vec();
+        // All three canonical fragments expose independent real header targets.
+        let media = canonical
+            .project()
+            .assets()
+            .map(|asset| {
+                (
+                    asset.id(),
+                    hex_engine::Audio::new(48_000, vec![[0.0; 2]; asset.frames() as usize])
+                        .unwrap(),
+                )
+            })
+            .collect();
+        let (_, result_preview) =
+            hex_engine::compile::project_with_midi_preview(canonical.project(), &media)
+                .expect("prepared hybrid fragments");
+        let (result_handle, result_editor) =
+            editor_window(cx, canonical.project().clone(), Arc::new(result_preview));
+        let mut result_visual = VisualTestContext::from_window(result_handle, cx);
+        result_visual.run_until_parked();
+        for (_, _, id) in bounds {
+            let header = result_visual
+                .debug_bounds(Box::leak(
+                    format!("clip-drag-surface-{}", id.value()).into_boxed_str(),
+                ))
+                .expect("independent fragment header");
+            result_visual.simulate_click(header.center(), Modifiers::default());
+            result_editor.read_with(cx, |view, _| assert_eq!(view.selected_clip(), Some(id)));
+        }
         assert!(canonical.undo());
         assert!(canonical.project().midi_clip(painted).is_none());
         assert_eq!(canonical.project().tracks(), before.tracks());
         assert!(canonical.redo());
         assert!(canonical.project().midi_clip(painted).is_some());
+        assert_eq!(canonical.project().tracks(), after);
     }
 }
 
@@ -390,7 +447,7 @@ fn clip_review_visible_body_wins_over_occluded_edges(cx: &mut TestAppContext) {
         editor.read_with(cx, |view, _| {
             assert!(matches!(
                 view.last_enqueued_edit,
-                Some(Command::PlaceMidiClip { .. })
+                Some(Command::PlaceMidiClipWithOverwrite { .. })
             ))
         });
     }

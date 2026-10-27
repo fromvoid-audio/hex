@@ -1,0 +1,15 @@
+{
+  "baseline_dependency_commit": "fc1dcc93c7177cd4200414ce6f5a5277ed7473f1",
+  "candidate_dependency_commit": "1f45886ee60801d503493f10f0f142d234cdf817",
+  "benchmark_sha256": "29cf75a043637ca2fee26d2f0d799477610c34474b31a33c09940d1b4a9b267c",
+  "command": "cargo run --release --offline --manifest-path /tmp/hex-w05-parameter-profile/Cargo.toml",
+  "build": "separate std-only measurement crate; default Cargo release optimization; four local dependency crates; compilation outside timed region",
+  "hardware": "Apple M5 Pro",
+  "os": "macOS 26.6.2 (25G83)",
+  "rustc": "1.94.0 (4a4ef493e 2026-03-02)",
+  "workload": "production Operator registry default state; 64 harmonic parameters93..156; independent requested-value readback after every patch",
+  "warmups": 4,
+  "samples": 16,
+  "timed_region": "registry.patch_parameters only, including its internal preparation/allocation; caller output checking and destruction excluded",
+  "limitations": "Uncontrolled machine load. Control-side timing only; not whole UI duration, audio callback, physical deadline or proven timeout cause."
+}

@@ -208,6 +208,7 @@ pub trait PreparedAnalyticContinuation: Any + Send + Sync {
         note: &PreparedSharedAnalyticNote,
         age_frames: u64,
         gate_frames: u64,
+        _resources: &dyn crate::DeviceResources,
     ) -> Result<StereoFrame, AnalyticContinuationError>;
 }
 
@@ -320,6 +321,7 @@ mod tests {
             note: &PreparedSharedAnalyticNote,
             age_frames: u64,
             gate_frames: u64,
+            _resources: &dyn crate::DeviceResources,
         ) -> Result<StereoFrame, AnalyticContinuationError> {
             self.validate_note(note)?;
             let gain = self.gain_at(target, parameters)?;
@@ -356,18 +358,39 @@ mod tests {
         let note = PreparedSharedAnalyticNote::new([0; 8], 10);
         let gain = enabled.parameters_at(id(3), &on, 104).unwrap();
         assert_eq!(
-            enabled.sample_with_parameters(id(3), &gain, &note, 25, 30),
+            enabled.sample_with_parameters(
+                id(3),
+                &gain,
+                &note,
+                25,
+                30,
+                &crate::EMPTY_DEVICE_RESOURCES
+            ),
             Ok([0.75; 2])
         );
         let tail_gain = disabled.parameters_at(id(2), &detached, 104).unwrap();
         assert_eq!(
-            disabled.sample_with_parameters(id(2), &tail_gain, &note, 25, 30),
+            disabled.sample_with_parameters(
+                id(2),
+                &tail_gain,
+                &note,
+                25,
+                30,
+                &crate::EMPTY_DEVICE_RESOURCES
+            ),
             Ok([0.0; 2])
         );
         let endpoint = enabled.parameters_at(id(3), &on, 106).unwrap();
         assert_eq!(endpoint, enabled.endpoint(id(3)));
         assert_eq!(
-            enabled.sample_with_parameters(id(3), &endpoint, &note, 40, 30),
+            enabled.sample_with_parameters(
+                id(3),
+                &endpoint,
+                &note,
+                40,
+                30,
+                &crate::EMPTY_DEVICE_RESOURCES
+            ),
             Ok([0.0; 2])
         );
     }
@@ -398,7 +421,14 @@ mod tests {
         );
         let note = PreparedSharedAnalyticNote::new([0; 8], 9);
         assert_eq!(
-            source.sample_with_parameters(id(1), &frame, &note, 0, 1),
+            source.sample_with_parameters(
+                id(1),
+                &frame,
+                &note,
+                0,
+                1,
+                &crate::EMPTY_DEVICE_RESOURCES
+            ),
             Err(AnalyticContinuationError::InvalidNote)
         );
         assert_eq!(

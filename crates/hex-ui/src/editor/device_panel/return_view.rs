@@ -6,22 +6,13 @@ pub(super) fn render(
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
-    return_id: hex_project::ReturnId,
+    owner: EffectBusOwner,
 ) -> Stateful<Div> {
-    let Some(return_track) = state
-        .project
-        .return_tracks()
-        .iter()
-        .find(|track| track.id() == return_id)
-    else {
-        return empty_panel("return target is no longer available");
+    let Some(devices) = owner.devices(&state.project).map(<[_]>::to_vec) else {
+        return empty_panel("effect target is no longer available");
     };
-    let devices = return_track.devices().to_vec();
     let alive: HashSet<_> = devices.iter().map(hex_project::Device::id).collect();
-    view.device_panel.selected_device = view
-        .device_panel
-        .selected_device
-        .filter(|id| alive.contains(id));
+    view.device_panel.reconcile_selection(&alive);
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
@@ -62,8 +53,12 @@ pub(super) fn render(
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
-        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
-        GestureTarget::ReturnSend { .. } => false,
+        GestureTarget::DeviceParameterSnapshot { device }
+        | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
+        GestureTarget::ReturnSend { .. }
+        | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackBalance { .. }
+        | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
             view.device_panel.controls.get(key),
@@ -95,9 +90,10 @@ pub(super) fn render(
             .find(|device| device.id() == id)
             .map(|device| device.state().type_id())
     });
+    // The shared retirement helper owns both legacy and current EQ graphs.
     let alive_eq8: HashSet<_> = devices
         .iter()
-        .filter(|device| device.state().type_id().as_str() == Ok("hex.eq8"))
+        .filter(|device| matches!(device.state().type_id().as_str(), Ok("hex.eq8" | "hex.eq")))
         .map(hex_project::Device::id)
         .collect();
     retire_removed_eq8_graphs(view, cx, &alive_eq8);
@@ -114,23 +110,8 @@ pub(super) fn render(
         .eq8_graph_gestures
         .retain(|device, _| alive_eq8.contains(device));
     if let Some(audio) = view.audio.as_mut()
-        && let Some(target) = audio.control.spectrum_desired()
-        && matches!(target.identity.owner, hex_engine::ProcessorChainOwner::Return(id) if id == return_id.value())
-        && !devices.iter().any(|device| {
-            device.id().value() == target.identity.device_id
-                && device.state().type_id() == target.identity.device_type
-                && matches!(
-                    target.identity.device_type.as_str(),
-                    Ok("hex.eq8" | "hex.eq")
-                )
-        })
-    {
-        let _ = audio.control.spectrum_clear();
-        view.device_panel.spectrum_result = None;
-    }
-    if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.audition_desired()
-        && matches!(target.identity.owner, hex_engine::ProcessorChainOwner::Return(id) if id == return_id.value())
+        && target.identity.owner == owner.processor()
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
                 && device.state().type_id() == target.identity.device_type
@@ -186,6 +167,7 @@ pub(super) fn render(
         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
         .tooltip(|_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: "add native effect".into(),
             })
             .into()
@@ -199,7 +181,7 @@ pub(super) fn render(
         .device_panel
         .message
         .clone()
-        .unwrap_or_else(|| format!("{} · return effects", return_track.name()));
+        .unwrap_or_else(|| owner.title(&state.project).unwrap_or_default());
     let track_name_view = title_label(title, view.device_panel.message.is_some());
     let header = div()
         .id("device-panel-header")
@@ -214,11 +196,11 @@ pub(super) fn render(
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .child(track_name_view)
         .child(add_button);
-    let chain = super::return_drag::render_chain(view, window, cx, return_id, &devices);
+    let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);
     let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
-        root = root.child(render_return_add_menu(cx, return_id, catalog));
+        root = root.child(render_return_add_menu(cx, owner, catalog));
     }
     root
 }
@@ -227,13 +209,11 @@ pub(super) fn render_return_effect(
     view: &mut EditorView,
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
-    return_id: hex_project::ReturnId,
-    devices: &[hex_project::Device],
-    index: usize,
+    owner: EffectBusOwner,
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let id = device.id();
-    let selected = view.device_panel.selected_device == Some(id);
+    let selected = view.device_panel.is_selected(id);
     let device_view = view
         .device_panel
         .views
@@ -246,72 +226,23 @@ pub(super) fn render_return_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let bypassed = device.bypassed();
-    let before_up = index.checked_sub(1).map(|previous| devices[previous].id());
-    let after_down = devices.get(index + 2).map(|device| device.id());
-    let has_down = index + 1 < devices.len();
+    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
-    actions = actions.child(
-        action_button(
-            format!("device-bypass-{}", id.value()),
-            if bypassed { "⊘" } else { "●" },
-            "toggle device bypass",
-            if bypassed {
-                theme::DeviceActionRole::Muted
-            } else {
-                theme::DeviceActionRole::Normal
-            },
-            selected,
-        )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
-                    device: id,
-                    bypassed: !bypassed,
-                }));
-            }
-            cx.notify();
-        })),
-    );
-    if let Some(before) = before_up {
-        actions = actions.child(
-            action_button(
-                format!("return-device-up-{}", id.value()),
-                "‹",
-                "move effect left",
-                theme::DeviceActionRole::Normal,
+    if device_view.is_ok() {
+        actions = actions
+            .child(super::super::device_preset::actions(
+                id,
+                NativeDeviceClass::Effect,
                 selected,
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                if finalize_controls(view, cx) {
-                    view.enqueue_device_barrier(Request::Edit(Command::MoveReturnDevice {
-                        device: id,
-                        before: Some(before),
-                    }));
-                }
-                cx.notify();
-            })),
-        );
-    }
-    if has_down {
-        actions = actions.child(
-            action_button(
-                format!("return-device-down-{}", id.value()),
-                "›",
-                "move effect right",
-                theme::DeviceActionRole::Normal,
+                cx,
+            ))
+            .child(super::super::device_comparison::actions(
+                view,
+                device,
+                NativeDeviceClass::Effect,
                 selected,
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                if finalize_controls(view, cx) {
-                    view.enqueue_device_barrier(Request::Edit(Command::MoveReturnDevice {
-                        device: id,
-                        before: after_down,
-                    }));
-                }
-                cx.notify();
-            })),
-        );
+                cx,
+            ));
     }
     actions = actions.child(
         action_button(
@@ -321,29 +252,49 @@ pub(super) fn render_return_effect(
             theme::DeviceActionRole::Destructive,
             selected,
         )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(id)));
+        .on_click(cx.listener(move |view, _, window, cx| {
+            if finalize_controls(view, cx)
+                && view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(id)))
+            {
+                keyboard::after_pointer_removal(view, id, window, cx);
             }
             cx.notify();
         })),
     );
-    if device_view.is_ok() {
-        actions = actions.child(super::super::device_preset::actions(
-            id,
-            NativeDeviceClass::Effect,
-            selected,
-            cx,
-        ));
-    }
     let rendered = match &device_view {
+        _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
+            let body = vst3_status_body(view, device);
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text("vst3"),
+                ),
+                theme::device_frame_style(selected),
+                leading,
+                actions,
+                body,
+            )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
+            .into_any_element()
+        }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.limiter") {
+                super::limiter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
                 super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.reverb") {
+                super::reverb_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.delay") {
+                super::delay_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
+                super::overdrive_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
@@ -357,7 +308,7 @@ pub(super) fn render_return_effect(
                     view,
                     cx,
                     id,
-                    hex_engine::ProcessorChainOwner::Return(return_id.value()),
+                    owner.processor(),
                     device.state(),
                     device_view,
                     sample_rate,
@@ -367,7 +318,7 @@ pub(super) fn render_return_effect(
                     view,
                     cx,
                     id,
-                    hex_engine::ProcessorChainOwner::Return(return_id.value()),
+                    owner.processor(),
                     device.state(),
                     device_view,
                     view.state
@@ -396,9 +347,11 @@ pub(super) fn render_return_effect(
                     theme::text(device_view.name.clone()),
                 ),
                 theme::device_frame_style(selected),
+                leading,
                 actions,
                 body,
             )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
             .into_any_element()
         }
         Err(error) => {
@@ -419,9 +372,11 @@ pub(super) fn render_return_effect(
             device_frame(
                 device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
                 theme::device_frame_style(selected),
+                leading,
                 actions,
                 body,
             )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
             .into_any_element()
         }
     };
@@ -437,9 +392,13 @@ pub(super) fn render_return_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
+        Ok("hex.limiter") => super::limiter_panel::FRAME_WIDTH,
         Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
+        Ok("hex.reverb") => super::reverb_panel::FRAME_WIDTH,
+        Ok("hex.delay") => super::delay_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
+        Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
@@ -452,7 +411,12 @@ pub(super) fn render_return_effect(
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
-        .capture_any_mouse_down(device_selection_listener(id, cx))
+        .capture_any_mouse_down(device_selection_listener(
+            id,
+            view.project_generation,
+            view.device_panel.owner,
+            cx,
+        ))
         .child(rendered)
         .child(super::gain_meters::render(
             view,
@@ -464,7 +428,7 @@ pub(super) fn render_return_effect(
 
 fn render_return_add_menu(
     cx: &mut Context<EditorView>,
-    return_track: hex_project::ReturnId,
+    owner: EffectBusOwner,
     effects: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
 ) -> impl IntoElement {
     let mut menu = div()
@@ -472,12 +436,17 @@ fn render_return_add_menu(
         .debug_selector(|| "device-add-menu".into())
         .absolute()
         .top(px(DEVICE_PANEL_HEADER_HEIGHT))
+        .left(px(4.0))
         .right(px(4.0))
-        .h(px(23.0))
+        .max_h(px(crate::device_composition::BODY_HEIGHT))
+        .overflow_y_scroll()
+        .occlude()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(3.0))
         .px(px(4.0))
+        .py(px(2.0))
         .bg(rgb(theme::color(theme::PaletteRole::Raised)));
     match effects {
         Ok(entries) if !entries.is_empty() => {
@@ -485,7 +454,8 @@ fn render_return_add_menu(
                 let type_id = entry.type_id;
                 let label = format!("effect · {}", entry.name);
                 let id = format!(
-                    "add-return-effect-{}",
+                    "add-{}-effect-{}",
+                    owner.prefix(),
                     type_id.as_str().unwrap_or("unknown")
                 );
                 menu = menu.child(
@@ -493,6 +463,8 @@ fn render_return_add_menu(
                         .id(ElementId::Name(id.clone().into()))
                         .debug_selector(move || id.clone())
                         .h(px(18.0))
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
                         .px(px(5.0))
                         .flex()
                         .items_center()
@@ -502,22 +474,16 @@ fn render_return_add_menu(
                         .cursor(gpui::CursorStyle::PointingHand)
                         .child(theme::text(label))
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            let request = match hex_engine::default_native_device_state_for_class(
-                                NativeDeviceClass::Effect,
-                                type_id,
-                            ) {
-                                Ok(state) => Request::Edit(Command::InsertReturnDevice {
-                                    return_track,
-                                    before: None,
-                                    state,
-                                }),
-                                Err(error) => {
-                                    view.device_panel.message =
-                                        Some(error.to_string().to_lowercase());
-                                    cx.notify();
-                                    return;
-                                }
+                            let Some(revision) = view.state.as_ref().map(|state| state.revision)
+                            else {
+                                return;
                             };
+                            let request = owner.insert_request(
+                                view.project_generation,
+                                revision,
+                                None,
+                                type_id,
+                            );
                             if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
                                 view.device_panel.add_menu_open = false;
                                 view.device_panel.message = None;

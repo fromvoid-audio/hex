@@ -2,10 +2,25 @@
 //! Observed source files are not general resolved-source or runtime attestation.
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::PathBuf};
+// SHA output arrays no longer implement LowerHex; keep durable 64-byte text.
+fn digest_hex(digest: [u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+    output
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
     println!("cargo:rerun-if-env-changed=CARGO_HOME");
+    println!("cargo:rerun-if-env-changed=HEX_GUARDED_CARGO_CONFIG_FINGERPRINT");
+    let guarded_config = env::var("HEX_GUARDED_CARGO_CONFIG_FINGERPRINT")
+        .ok()
+        .is_some_and(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()));
     println!("cargo:rustc-check-cfg=cfg(hex_stream_rtrb_source_observation_matches)");
     let source = env::var_os("CARGO_HOME")
         .map(PathBuf::from)
@@ -25,7 +40,12 @@ fn main() {
     for directory in config_dirs {
         for name in ["config", "config.toml"] {
             let path = directory.join(name);
-            println!("cargo:rerun-if-changed={}", path.display());
+            // Supported entrypoints fingerprint absent config paths before
+            // Cargo and refuse a changed snapshot at completion. Raw Cargo
+            // keeps the conservative missing-file refresh behavior.
+            if path.exists() || !guarded_config {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
             if path.exists() {
                 return;
             }
@@ -73,7 +93,7 @@ fn main() {
         let path = candidates[0].join(file);
         println!("cargo:rerun-if-changed={}", path.display());
         let Ok(bytes) = fs::read(path) else { return };
-        if format!("{:x}", Sha256::digest(bytes)) != pin {
+        if digest_hex(Sha256::digest(bytes).into()) != pin {
             return;
         }
     }

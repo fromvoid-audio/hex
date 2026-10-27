@@ -1,6 +1,7 @@
 //! Whole requested-output transaction and exact content-origin tests.
 use super::*;
 use crate::signal_graph::tests::{fixture, prepare};
+use crate::{Audio, SineTable};
 #[test]
 fn compensation_late_failure_rolls_back_all_rings_and_node_histories() {
     let f = fixture(&[&[], &[7]], 1024);
@@ -12,18 +13,24 @@ fn compensation_late_failure_rolls_back_all_rings_and_node_histories() {
         runtime.render(&mut [[0.0; 2]; 4]).unwrap();
     }
     tested.arrangement_frame = u64::MAX - 300;
-    let mut observed = 0;
+    let mut observed = [0; 2];
     let mut output = [[9.0; 2]; 512];
     assert!(
         tested
-            .render_with_post_node_observer(
+            .render_with_node_signal_observer(
                 &mut output,
-                Some(&mut |_, _, _: &[Frame]| observed += 1)
+                Some(&mut |_, phase, _, _: &[Frame]| {
+                    let index = match phase {
+                        crate::NodeSignalPhase::Input => 0,
+                        crate::NodeSignalPhase::Output => 1,
+                    };
+                    observed[index] += 1;
+                })
             )
             .is_err()
     );
     assert!(
-        observed > 0,
+        observed.iter().all(|count| *count > 0),
         "fault must occur after speculative processing"
     );
     assert_eq!(output, [[0.0; 2]; 512]);
@@ -82,7 +89,13 @@ fn dry_fader_clock_reports_downstream_main_delivery_delay() {
 
 #[test]
 fn computer_keyboard_positive_latency_refusal_preserves_authored_runtime() {
-    let f = fixture(&[&[7]], 1024);
+    let mut f = fixture(&[&[7]], 1024);
+    f.editor
+        .execute(hex_project::Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
     let revision = prepare(&f).unwrap();
     let mut tested = crate::playback::Playback::from_prepared(Arc::clone(&revision));
     let mut oracle = crate::playback::Playback::from_prepared(revision);
@@ -109,6 +122,12 @@ fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partiti
     let frames = 16_000;
     let configure = |delay: u32| {
         let mut f = fixture(&[&[delay]], frames);
+        f.editor
+            .execute(Command::InsertInstrument {
+                track: f.tracks[0],
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
         let class = crate::NativeDeviceClass::Instrument;
         let mut state = crate::default_native_device_state_for_class(
             class,
@@ -183,5 +202,334 @@ fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partiti
         let actual = render(Arc::clone(&delayed), frames + 7, partition);
         assert_eq!(actual[..7], [[0.0; 2]; 7]);
         assert_eq!(actual[7..], expected);
+    }
+}
+
+#[test]
+fn main_removal_and_serial_replacement_keep_old_larger_stamp_horizon_and_pending_pcm() {
+    use crate::signal_graph::tests::state;
+    use hex_project::{Command, Created};
+    for routed in [false, true] {
+        for replacement in [false, true] {
+            let mut f = if routed {
+                fixture(&[&[7]], 64)
+            } else {
+                fixture(&[&[]], 64)
+            };
+            if routed {
+                let Created::ReturnTrack(bus) = f
+                    .editor
+                    .execute(Command::AddReturnTrack {
+                        name: "delayed".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("return")
+                };
+                f.editor
+                    .execute(Command::InsertReturnDevice {
+                        return_track: bus,
+                        before: None,
+                        state: state(5).unwrap(),
+                    })
+                    .unwrap();
+                f.editor
+                    .execute(Command::SetReturnSend {
+                        track: f.tracks[0],
+                        return_track: bus,
+                        gain: 1.0,
+                    })
+                    .unwrap();
+            }
+            let Created::Device(main) = f
+                .editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: state(3).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("main")
+            };
+            let original = prepare(&f).unwrap();
+            let old_horizon = original.arrangement().main_latency_frames();
+            let warm = old_horizon as usize - 1;
+            let mut old = SessionPlayback::new(Arc::clone(&original)).unwrap();
+            let mut oracle = SessionPlayback::new(original).unwrap();
+            for runtime in [&mut old, &mut oracle] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut vec![[0.0; 2]; warm]).unwrap();
+            }
+            f.editor.execute(Command::RemoveDevice(main)).unwrap();
+            if replacement {
+                for _ in 0..2 {
+                    f.editor
+                        .execute(Command::InsertMainDevice {
+                            before: None,
+                            state: state(1).unwrap(),
+                        })
+                        .unwrap();
+                }
+            }
+            let revision = prepare(&f).unwrap();
+            let graph = Arc::clone(revision.arrangement().signal_graph.as_ref().unwrap());
+            assert!(revision.arrangement().main_latency_frames() < old_horizon);
+            let mut next = SessionPlayback::new(revision).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            let history = next.compensation.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&history.graph, &graph));
+            assert!(
+                history.delays.history_horizon() >= old_horizon,
+                "old origins cannot shrink with current Main"
+            );
+            // A second coherent handoff while the detached Main is still
+            // audible carries the same bank owner, without refeeding it.
+            let mut continued = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            continued.try_inherit_state_from(&mut next).unwrap();
+            let mut next = continued;
+            let mut expected = [[0.0; 2]; 4];
+            let mut actual = expected;
+            oracle.render(&mut expected).unwrap();
+            assert!(expected.iter().flatten().any(|s| *s != 0.0));
+            next.render(&mut actual).unwrap();
+            assert_eq!(
+                actual, expected,
+                "old output once; routed={routed}, replacement={replacement}"
+            );
+        }
+    }
+}
+
+#[test]
+fn neutral_zero_graph_metadata_allocates_no_delay_runtime_and_keeps_first_sample() {
+    let f = fixture(&[&[]], 8);
+    let revision = prepare(&f).unwrap();
+    let graph = revision.arrangement().signal_graph.as_ref().unwrap();
+    assert!(!graph.needs_runtime());
+    let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert!(runtime.compensation.is_none());
+    let renderer = crate::Renderer::new(revision.arrangement());
+    assert!(renderer.runtime.compensation.is_none());
+    assert!(runtime.accounted_runtime_storage_bytes().unwrap() >= graph.table_bytes().unwrap());
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 8];
+    runtime.render(&mut actual).unwrap();
+    assert_eq!(&actual[..], f.samples.as_slice());
+}
+
+#[test]
+fn main_removal_retains_old_tail_and_applies_future_source_mix_once() {
+    use crate::signal_graph::tests::state;
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[]], 64);
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 0.5,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::Balance {
+            track: f.tracks[0],
+            balance: 0.25,
+        })
+        .unwrap();
+    f.editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let Created::Device(main) = f
+        .editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("main")
+    };
+    let original = prepare(&f).unwrap();
+    let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
+    let mut old_tail = SessionPlayback::new(original).unwrap();
+    for runtime in [&mut donor, &mut old_tail] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 2]).unwrap();
+    }
+    f.editor.execute(Command::RemoveDevice(main)).unwrap();
+    let current = prepare(&f).unwrap();
+    assert!(
+        !current
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .unwrap()
+            .needs_runtime()
+    );
+    let mut ordinary = SessionPlayback::new(Arc::clone(&current)).unwrap();
+    assert!(ordinary.compensation.is_none());
+    ordinary.apply(SessionPlaybackCommand::Seek(2)).unwrap();
+    ordinary.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = [[0.0; 2]; 64];
+    ordinary.render(&mut expected).unwrap();
+    assert!(expected[61].iter().any(|sample| *sample != 0.0));
+    let mut residual = [[0.0; 2]; 64];
+    old_tail.render(&mut residual).unwrap();
+    assert!(residual[1].iter().any(|sample| *sample != 0.0));
+    assert!(residual[2..].iter().flatten().all(|sample| *sample == 0.0));
+    for (frame, tail) in expected.iter_mut().zip(residual) {
+        frame[0] += tail[0];
+        frame[1] += tail[1];
+    }
+    let mut carried = SessionPlayback::new(current).unwrap();
+    carried.try_inherit_state_from(&mut donor).unwrap();
+    assert!(carried.compensation.is_some());
+    let mut actual = [[0.0; 2]; 64];
+    carried.render(&mut actual).unwrap();
+    assert_eq!(
+        actual, expected,
+        "future source mix once plus independent old residual"
+    );
+}
+
+#[path = "compensation_tests/monitor_clock.rs"]
+mod monitor_clock;
+
+#[path = "compensation_tests/cue.rs"]
+mod cue;
+
+#[test]
+fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission() {
+    let mut f = fixture(&[&[], &[]], 128);
+    let mut old = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    f.editor
+        .execute(hex_project::Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Track(f.tracks[0]),
+            destination: f.tracks[1],
+            gain: 0.5,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert!(candidate.compensation.is_some());
+    let before = (
+        old.capture_epoch,
+        candidate.capture_epoch,
+        old.performance_frame,
+        candidate.performance_frame,
+        candidate.candidate_admission_open,
+    );
+    let mut pages = Vec::new();
+    let window = candidate
+        .preview_stream_handoff_with_scope(
+            &mut old,
+            64,
+            None,
+            &mut |extent| {
+                pages.push(extent);
+                Ok(())
+            },
+            true,
+        )
+        .unwrap();
+    assert_eq!(window.frames, 0);
+    assert!(pages.is_empty());
+    assert_eq!(
+        (
+            old.capture_epoch,
+            candidate.capture_epoch,
+            old.performance_frame,
+            candidate.performance_frame,
+            candidate.candidate_admission_open
+        ),
+        before
+    );
+    let running = candidate
+        .preview_stream_handoff_with_scope(&mut old, 64, Some(true), &mut |_| Ok(()), true)
+        .unwrap();
+    assert_eq!(running.frames, 64);
+    assert_eq!(
+        (
+            old.capture_epoch,
+            candidate.capture_epoch,
+            old.performance_frame,
+            candidate.performance_frame,
+            candidate.candidate_admission_open
+        ),
+        before
+    );
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let mut oracle = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut candidate, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut actual = [[0.0; 2]; 64];
+    let mut expected = actual;
+    candidate.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn gain_recording_delivery_delay_includes_the_complete_serial_main_chain() {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Command, Created, Editor, Project};
+    for (lookaheads, expected_delay) in [(&[2_u32][..], 288_u64), (&[0_u32, 2][..], 360_u64)] {
+        let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "serial main".into(),
+                path: "memory/serial-main.wav".into(),
+                source_sample_rate: 48000,
+                source_frames: 4096,
+                playback_frames: 4096,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        for &lookahead in lookaheads {
+            let definition = &hex_devices::limiter::DEFINITION;
+            let state = definition
+                .patch_parameter(
+                    &definition.default_state().unwrap(),
+                    hex_devices::limiter::parameter::LOOKAHEAD,
+                    ParameterValue::Choice(lookahead),
+                )
+                .unwrap();
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
+        let media = std::collections::BTreeMap::from([(
+            asset,
+            Audio::new(48000, vec![[0.01, -0.02]; 4096]).unwrap(),
+        )]);
+        let revision = PreparedRevision::prepare_for_gain_recording(
+            editor.project(),
+            &media,
+            Arc::new(SineTable::new()),
+            None,
+            track,
+        )
+        .unwrap();
+        assert_eq!(
+            u64::from(revision.arrangement().main_latency_frames()),
+            expected_delay
+        );
+        let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        assert_eq!(
+            runtime.gain_recording_clock(track.value()),
+            Some((0, expected_delay, 0)),
+            "serial Main delay must be added after the pre-Main sum"
+        );
+        let mut initial = [[1.0; 2]; 16];
+        runtime.render(&mut initial).unwrap();
+        assert_eq!(initial, [[0.0; 2]; 16]);
+        assert_eq!(
+            runtime.gain_recording_clock(track.value()),
+            Some((16, expected_delay, 0))
+        );
     }
 }

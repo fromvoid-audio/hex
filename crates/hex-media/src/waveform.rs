@@ -77,6 +77,109 @@ impl Waveform {
         })
     }
 
+    /// Exact resident-PCM extrema for a caller-bounded range. Returns `None`
+    /// when PCM is not retained or the range exceeds the caller's work limit.
+    fn exact_peaks_for_frames(
+        &self,
+        start: usize,
+        end: usize,
+        max_frames: usize,
+    ) -> Option<[Peak; 2]> {
+        let start = start.min(self.source_frames);
+        let end = end.min(self.source_frames);
+        if start >= end || end - start > max_frames {
+            return None;
+        }
+        let frames = self.samples.as_ref()?.frames().get(start..end)?;
+        let mut peaks = frames.first()?.map(|sample| Peak {
+            min: sample,
+            max: sample,
+        });
+        for frame in &frames[1..] {
+            merge(
+                &mut peaks,
+                frame.map(|sample| Peak {
+                    min: sample,
+                    max: sample,
+                }),
+            );
+        }
+        Some(peaks)
+    }
+
+    /// Exact extrema using cached whole bins and at most `max_pcm_frames`
+    /// resident frames at the two partial boundaries. Returns `None` when the
+    /// source has no retained PCM or the boundary work exceeds that limit.
+    pub fn bounded_exact_peaks_for_frames(
+        &self,
+        start: usize,
+        end: usize,
+        max_pcm_frames: usize,
+    ) -> Option<[Peak; 2]> {
+        self.samples.as_ref()?;
+        let start = start.min(self.source_frames);
+        let end = end.min(self.source_frames);
+        if start >= end || self.bins.is_empty() || self.bins.len() > self.source_frames {
+            return None;
+        }
+        let count = self.bins.len();
+        let width = self.source_frames / count;
+        let extra = self.source_frames % count;
+        let wide_frames = (width + 1).saturating_mul(extra);
+        let bin_at = |frame: usize| {
+            if frame < wide_frames {
+                frame / (width + 1)
+            } else {
+                extra + (frame - wide_frames) / width
+            }
+        };
+        let boundary = |bin: usize| bin * width + bin.min(extra);
+        let first = bin_at(start);
+        let last = bin_at(end - 1);
+        if first == last {
+            if start == boundary(first) && end == boundary(first + 1) {
+                return self.bins.get(first).copied();
+            }
+            return self.exact_peaks_for_frames(start, end, max_pcm_frames);
+        }
+        let whole_start = if start == boundary(first) {
+            start
+        } else {
+            boundary(first + 1)
+        };
+        let whole_end = if end == boundary(last + 1) {
+            end
+        } else {
+            boundary(last)
+        };
+        let partial = (whole_start - start).checked_add(end - whole_end)?;
+        if partial > max_pcm_frames {
+            return None;
+        }
+        let mut result = None;
+        if start < whole_start {
+            include(
+                &mut result,
+                self.exact_peaks_for_frames(start, whole_start, max_pcm_frames)?,
+            );
+        }
+        if whole_start < whole_end {
+            let first_whole = first + usize::from(start < whole_start);
+            let after_whole = last + usize::from(whole_end == end);
+            include(
+                &mut result,
+                self.cached_peaks_for_bins(first_whole, after_whole)?,
+            );
+        }
+        if whole_end < end {
+            include(
+                &mut result,
+                self.exact_peaks_for_frames(whole_end, end, max_pcm_frames)?,
+            );
+        }
+        result
+    }
+
     /// Signed channel extrema for a half-open source range, with no allocation.
     /// Deep zoom reads at most 64 shared PCM frames; wider queries use cached
     /// pairwise extrema and conservatively include intersecting boundary bins.
@@ -117,8 +220,10 @@ impl Waveform {
                 extra + (frame - wide_frames) / width
             }
         };
-        let mut left = bin_at(start);
-        let mut right = bin_at(end - 1) + 1;
+        self.cached_peaks_for_bins(bin_at(start), bin_at(end - 1) + 1)
+    }
+
+    fn cached_peaks_for_bins(&self, mut left: usize, mut right: usize) -> Option<[Peak; 2]> {
         let mut level = 0;
         let mut result = None;
         while left < right {
@@ -156,7 +261,16 @@ fn include(result: &mut Option<[Peak; 2]>, peaks: [Peak; 2]) {
     }
 }
 
+/// Summary for editor deep zoom: shares resident PCM for exact sub-bin queries.
 pub fn summarize(audio: &Audio, requested_bins: usize) -> Result<Waveform, ImportError> {
+    let mut waveform = summarize_peaks(audio, requested_bins)?;
+    waveform.samples = Some(audio.clone());
+    Ok(waveform)
+}
+
+/// Peak-only browser metadata. Decoded PCM is borrowed during construction and
+/// is not kept alive by the summary or its range-query hierarchy.
+pub fn summarize_peaks(audio: &Audio, requested_bins: usize) -> Result<Waveform, ImportError> {
     if requested_bins == 0 || requested_bins > MAX_BINS {
         return Err(ImportError::LimitExceeded("waveform bins must be 1..65536"));
     }
@@ -185,14 +299,107 @@ pub fn summarize(audio: &Audio, requested_bins: usize) -> Result<Waveform, Impor
         bins.push(peaks);
         start = end;
     }
-    let mut waveform = Waveform::from_peaks(frames.len(), bins)?;
-    waveform.samples = Some(audio.clone());
-    Ok(waveform)
+    Waveform::from_peaks(frames.len(), bins)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_exact_peaks_respect_residency_limits_and_ranges() {
+        let mut frames = vec![[0.0, 0.0]; 1_000];
+        frames[300] = [0.75, -0.5];
+        let audio = Audio::new(48_000, frames).unwrap();
+        let resident = summarize(&audio, 1).unwrap();
+        let peak_only = summarize_peaks(&audio, 1).unwrap();
+        let zero = [Peak { min: 0.0, max: 0.0 }; 2];
+        assert_eq!(resident.exact_peaks_for_frames(200, 300, 100), Some(zero));
+        assert_eq!(resident.exact_peaks_for_frames(200, 301, 100), None);
+        assert_eq!(
+            resident.exact_peaks_for_frames(300, 301, 1).unwrap()[0].max,
+            0.75
+        );
+        assert_eq!(
+            resident.exact_peaks_for_frames(900, usize::MAX, 100),
+            Some(zero)
+        );
+        assert_eq!(resident.exact_peaks_for_frames(1_000, 1_001, 100), None);
+        assert_eq!(peak_only.exact_peaks_for_frames(200, 300, 100), None);
+    }
+
+    #[test]
+    fn bounded_hierarchy_matches_pcm_for_partial_and_whole_bins() {
+        let frames: Vec<_> = (0..257)
+            .map(|i| [((i * 37) % 97) as f32, -(((i * 29) % 89) as f32)])
+            .collect();
+        let audio = Audio::new(48_000, frames).unwrap();
+        let resident = summarize(&audio, 17).unwrap();
+        let peak_only = summarize_peaks(&audio, 17).unwrap();
+        for start in 0..257 {
+            for end in (start + 1)..=257 {
+                assert_eq!(
+                    resident.bounded_exact_peaks_for_frames(start, end, 64),
+                    resident.exact_peaks_for_frames(start, end, 257),
+                    "range {start}..{end}"
+                );
+            }
+        }
+        // The first bin contains 16 frames. Aligned whole bins need no PCM
+        // boundary reads; a partial range must respect the supplied budget.
+        assert!(resident.bounded_exact_peaks_for_frames(0, 16, 0).is_some());
+        assert!(resident.bounded_exact_peaks_for_frames(1, 31, 1).is_none());
+        assert!(
+            peak_only
+                .bounded_exact_peaks_for_frames(0, 16, 64)
+                .is_none()
+        );
+        let mut malformed = resident.clone();
+        malformed.bins.clear();
+        assert!(
+            malformed
+                .bounded_exact_peaks_for_frames(0, 16, 64)
+                .is_none()
+        );
+    }
+
+    #[test]
+    #[ignore = "manual optimized waveform query comparison"]
+    fn event_detail_query_profile() {
+        use std::{hint::black_box, time::Instant};
+        let frames: Vec<_> = (0..4_194_000)
+            .map(|i| {
+                let v = ((i % 257) as f32 / 128.0) - 1.0;
+                [v, -v]
+            })
+            .collect();
+        let audio = Audio::new(48_000, frames).unwrap();
+        let waveform = summarize(&audio, 1_024).unwrap();
+        let run = |exact: bool| {
+            let start = Instant::now();
+            for _ in 0..50 {
+                for column in 0..2_000 {
+                    let left = column * 2_097;
+                    let right = left + 2_097;
+                    let peaks = if exact {
+                        waveform.bounded_exact_peaks_for_frames(left, right, 2_097)
+                    } else {
+                        waveform.peaks_for_frames(left, right)
+                    };
+                    black_box(peaks);
+                }
+            }
+            start.elapsed()
+        };
+        // Warm both paths; each pass queries 4,194,000 frames.
+        black_box(run(false));
+        black_box(run(true));
+        println!(
+            "summary={:?} exact={:?} passes=50 frames_per_pass=4194000 columns=2000",
+            run(false),
+            run(true)
+        );
+    }
     #[test]
     fn nondivisible_source_keeps_every_transient_and_stereo_extrema() {
         let audio = Audio::new(
@@ -234,6 +441,68 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn detailed_browser_summary_keeps_impulses_and_releases_pcm() {
+        let mut frames = vec![[0.125, -0.25]; 8195];
+        frames[4097] = [-1.0, 0.875];
+        frames[8194] = [0.75, -0.9];
+        let audio = Audio::new(48_000, frames).unwrap();
+        let summary = summarize_peaks(&audio, 4096).unwrap();
+        assert_eq!(summary.bins.len(), 4096);
+        assert!(
+            summary.samples.is_none(),
+            "browser cache must not retain decoded PCM"
+        );
+        assert!(!summary.shares_audio_with(&audio));
+        assert_eq!(
+            summary.peaks_for_frames(4097, 4098),
+            Some([
+                Peak {
+                    min: -1.0,
+                    max: 0.125
+                },
+                Peak {
+                    min: -0.25,
+                    max: 0.875
+                }
+            ])
+        );
+        assert_eq!(
+            summary.peaks_for_frames(8193, 8195),
+            Some([
+                Peak {
+                    min: 0.125,
+                    max: 0.75
+                },
+                Peak {
+                    min: -0.9,
+                    max: -0.25
+                }
+            ])
+        );
+        drop(audio);
+        assert_eq!(
+            summary.peaks_for_frames(0, 2),
+            Some([
+                Peak {
+                    min: 0.125,
+                    max: 0.125
+                },
+                Peak {
+                    min: -0.25,
+                    max: -0.25
+                }
+            ])
+        );
+        let silence = Audio::new(8000, vec![[0.0; 2]; 3]).unwrap();
+        let tiny = summarize_peaks(&silence, 4096).unwrap();
+        assert_eq!(tiny.bins.len(), 3);
+        assert_eq!(
+            tiny.peaks_for_frames(0, 3),
+            Some([Peak { min: 0.0, max: 0.0 }; 2])
+        );
+    }
+
     #[test]
     fn tiny_sources_and_limits_are_explicit() {
         let audio = Audio::new(48_000, vec![[0.25, -0.25]]).unwrap();

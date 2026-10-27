@@ -5,6 +5,8 @@ use gpui::{Bounds, PathBuilder, Pixels, Window, point, px, rgb};
 
 /// Micro dial tile metrics shared with native device layout owners.
 pub const MICRO_DIAL_WIDTH: f32 = 58.0;
+/// A micro dial with space for full frequency values and units.
+pub const WIDE_MICRO_DIAL_WIDTH: f32 = 74.0;
 pub const MICRO_DIAL_HEIGHT: f32 = 40.0;
 pub const MICRO_DIAL_DIAMETER: f32 = 18.0;
 

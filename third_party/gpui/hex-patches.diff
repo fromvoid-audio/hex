@@ -1,6 +1,8 @@
+diff --git a/src/accessibility.rs b/src/accessibility.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/accessibility.rs
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,247 @@
 +//! Bounded semantic control snapshots. Native backends never retain application pointers.
 +use crate::{App, Bounds, Pixels, SharedString, Window};
 +use std::{
@@ -32,6 +34,8 @@
 +/// User-facing semantics of a control, independent of its painted shape.
 +#[derive(Clone, Debug, PartialEq)]
 +pub enum AccessibilityValue {
++    /// A stateless action, with no editable value or option inventory.
++    Button,
 +    /// A finite adjustable canonical value and its actual formatted readout.
 +    Number {
 +        /// Canonical current value.
@@ -59,7 +63,7 @@
 +pub enum AccessibilityAction {
 +    /// Move keyboard focus without editing the parameter.
 +    Focus,
-+    /// Activate a boolean or open a choice control.
++    /// Activate a stateless action, boolean, or choice control.
 +    Press,
 +    /// Apply the control's existing positive keyboard step.
 +    Increment,
@@ -125,7 +129,7 @@
 +                        && (*min..=*max).contains(value)
 +                        && text_ok(text)
 +                }
-+                AccessibilityValue::Toggle(_) => true,
++                AccessibilityValue::Button | AccessibilityValue::Toggle(_) => true,
 +                AccessibilityValue::Choice { selected, options } => {
 +                    !options.is_empty()
 +                        && options.len() <= 128
@@ -140,7 +144,7 @@
 +            + self.status.as_ref().map_or(0, |text| text.len())
 +            + match &self.value {
 +                AccessibilityValue::Number { text, .. } => text.len(),
-+                AccessibilityValue::Toggle(_) => 0,
++                AccessibilityValue::Button | AccessibilityValue::Toggle(_) => 0,
 +                AccessibilityValue::Choice { options, .. } => {
 +                    options.iter().map(|text| text.len()).sum()
 +                }
@@ -156,7 +160,9 @@
 +            (AccessibilityAction::Focus, _) => true,
 +            (
 +                AccessibilityAction::Press,
-+                AccessibilityValue::Toggle(_) | AccessibilityValue::Choice { .. },
++                AccessibilityValue::Button
++                | AccessibilityValue::Toggle(_)
++                | AccessibilityValue::Choice { .. },
 +            ) => true,
 +            (
 +                AccessibilityAction::Increment | AccessibilityAction::Decrement,
@@ -244,9 +250,35 @@
 +    /// Typed payload, revalidated against current semantics.
 +    pub action: AccessibilityAction,
 +}
+diff --git a/src/app.rs b/src/app.rs
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1122,0 +1123,10 @@
++    /// Select paths, optionally starting in an exact native directory.
++    /// Platforms without a directory override retain their ordinary picker.
++    pub fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.platform.prompt_for_paths_with_directory(options, directory)
++    }
++
+@@ -1374,0 +1385 @@
++                window.cancel_pointer_capture(cx);
+diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -122,0 +123,12 @@
+@@ -120,6 +120,24 @@
+ }
+
+ impl TestAppContext {
++    /// Verify private draw-order queries against an independent linear scan.
++    /// Test support only; no native graphics or public scene API.
++    pub fn verify_draw_order_queries(&self) -> std::result::Result<(), String> {
++        crate::bounds_tree::verify_ordering()
++    }
++
 +    /// Verify private cached-scene replay against the retained legacy painter.
 +    /// Test support only; no window, native graphics or public scene API.
 +    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
@@ -259,7 +291,77 @@
 +        self.test_platform.cursor_style()
 +    }
 +
-@@ -677,0 +690,45 @@
+     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
+     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
+         let arc_dispatcher = Arc::new(dispatcher.clone());
+@@ -140,6 +158,24 @@
+             fn_name,
+             on_quit: Rc::new(RefCell::new(Vec::default())),
+         }
++    }
++
++    /// Opt into real macOS font registration and shaping for a disposable test.
++    /// Call before opening any window. This retains the deterministic test
++    /// platform and never creates an OS window or changes system font settings.
++    /// Default test contexts continue to use the no-op text system.
++    #[cfg(all(target_os = "macos", feature = "font-kit"))]
++    pub fn use_native_text_system(&mut self) -> Result<()> {
++        let mut app = self.app.borrow_mut();
++        if !app.windows.is_empty() {
++            bail!("native test text system must be selected before opening windows");
++        }
++        let text_system = Arc::new(TextSystem::new(Arc::new(
++            crate::platform::MacTextSystem::new(),
++        )));
++        app.text_system = Arc::clone(&text_system);
++        self.text_system = text_system;
++        Ok(())
+     }
+
+     /// Create a single TestAppContext, for non-multi-client tests
+@@ -305,6 +341,38 @@
+         self.test_platform.simulate_new_path_selection(select_path);
+     }
+
++    /// Whether the test platform has an outstanding Open picker request.
++    pub fn did_prompt_for_paths(&self) -> bool {
++        self.test_platform.did_prompt_for_paths()
++    }
++
++    /// Complete the test platform Open picker; this does not show a native picker.
++    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
++        self.test_platform.simulate_paths_selection(paths);
++    }
++
++    /// Arguments of the pending injected Open request; never a native panel probe.
++    pub fn pending_open_directory(&self) -> Option<Option<std::path::PathBuf>> {
++        self.test_platform.pending_open_directory()
++    }
++    /// Initial directory and suggested name of an injected Save request.
++    pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
++        self.test_platform.pending_save_options()
++    }
++    /// Complete the injected Open request with a platform error, without a panel.
++    pub fn simulate_paths_error(&self, message: &str) {
++        self.test_platform.simulate_paths_error(message);
++    }
++    /// Complete the injected Save request with a platform error, without a panel.
++    pub fn simulate_new_path_error(&self, message: &str) {
++        self.test_platform.simulate_new_path_error(message);
++    }
++    /// Pure NSURL roundtrip in the Mac dependency; no panel is shown or configured.
++    #[cfg(target_os = "macos")]
++    pub fn picker_directory_url_roundtrip(&self, directory: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
++        crate::MacPlatform::picker_directory_url_for_test(directory)
++    }
++
+     /// Simulates clicking a button in an platform-level alert dialog.
+     #[track_caller]
+     pub fn simulate_prompt_answer(&self, button: &str) {
+@@ -675,6 +743,118 @@
+ }
+
+ impl VisualTestContext {
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -284,6 +386,73 @@
 +        })
 +    }
 +
++    /// Filled quad fragments inside a debug element in the completed scene,
++    /// clipped to its bounds and each replay/content mask. Canvas primitives do
++    /// not have individual element selectors. This is scene geometry, not native
++    /// framebuffer readback; it draws no frame and injects no input.
++    pub fn rendered_filled_quads(
++        &mut self,
++        selector: &'static str,
++    ) -> Vec<(Bounds<crate::ScaledPixels>, crate::Background)> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let scaled = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.quads.iter().filter_map(|quad| {
++                let visible = quad.bounds.intersect(&scaled).intersect(&quad.content_mask.bounds);
++                (!quad.background.is_transparent()
++                    && visible.size.width > crate::ScaledPixels(0.0)
++                    && visible.size.height > crate::ScaledPixels(0.0))
++                    .then(|| (visible, quad.background.clone()))
++            }).collect()
++        })
++    }
++
++    /// Border color, widths and ancestor mask of the last matching scene quad.
++    /// Reads completed paint under test support without changing layout or input.
++    pub fn rendered_border(
++        &mut self,
++        selector: &'static str,
++    ) -> Option<(crate::Hsla, crate::Edges<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
++                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
++        })
++    }
++
++    /// Completed quad fragments for a debug element, including cache replay
++    /// masks. The caller can check coverage and ordering across all fragments.
++    /// This is scene evidence, not native framebuffer/pixel readback.
++    pub fn rendered_quad_paint_layers(
++        &mut self,
++        selector: &'static str,
++        border: bool,
++    ) -> Vec<((u32, usize), Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let scaled = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.quads.iter().enumerate()
++                .filter(|(_, quad)| quad.bounds == scaled && if border {
++                    quad.border_widths != crate::Edges::default()
++                } else {
++                    !quad.background.is_transparent()
++                })
++                .map(|(index, quad)| ((quad.order, index), quad.content_mask.bounds))
++                .collect()
++        })
++    }
++
 +    /// Rounded geometry and ancestor mask of the last filled scene quad matching
 +    /// an element's debug bounds, in scaled pixels. This is scene evidence, not
 +    /// GPU framebuffer or native display readback.
@@ -305,9 +474,16 @@
 +        })
 +    }
 +
+     /// Provides a `Window` and `App` for the duration of the closure.
+     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+         self.cx
+diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
-@@ -35,0 +36,15 @@
+@@ -33,16 +33,31 @@
+     }
+
+     pub fn insert(&mut self, new_bounds: Bounds<U>) -> u32 {
 +        self.insert_with_order(new_bounds, None)
 +    }
 +
@@ -323,35 +499,264 @@
 +    }
 +
 +    fn insert_with_order(&mut self, new_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
-@@ -38 +53,2 @@
+         // If the tree is empty, make the root the new leaf.
+-        if self.root.is_none() {
 -            let new_node = self.push_leaf(new_bounds, 1);
++        let Some(root) = self.root else {
 +            let order = reserved.unwrap_or(1);
 +            let new_node = self.push_leaf(new_bounds, order);
-@@ -40 +56 @@
+             self.root = Some(new_node);
 -            return 1;
+-        }
 +            return order;
-@@ -67,2 +83,4 @@
++        };
+
+         // Search for the best place to add the new leaf based on heuristics.
+-        let mut max_intersecting_ordering = 0;
+-        let mut index = self.root.unwrap();
++        let mut index = root;
+         while let Node::Internal {
+             left,
+             right,
+@@ -57,19 +72,14 @@
+
+             // Descend to the best-fit child, based on which one would increase
+             // the surface area the least. This attempts to keep the tree balanced
+-            // in terms of surface area. If there is an intersection with the other child,
+-            // add its keys to the intersections vector.
++            // in terms of surface area. Draw order is resolved after descent.
+             let left_cost = new_bounds.union(self.nodes[left].bounds()).half_perimeter();
+             let right_cost = new_bounds
+                 .union(self.nodes[right].bounds())
+                 .half_perimeter();
+             if left_cost < right_cost {
 -                max_intersecting_ordering =
 -                    self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
-+                if reserved.is_none() {
-+                    max_intersecting_ordering =
-+                        self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
-+                }
-@@ -71,2 +89,4 @@
+                 index = left;
+             } else {
 -                max_intersecting_ordering =
 -                    self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
-+                if reserved.is_none() {
-+                    max_intersecting_ordering =
-+                        self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
-+                }
-@@ -90 +110 @@
+                 index = right;
+             }
+         }
+@@ -78,20 +88,25 @@
+         // We'll insert a new parent node above the leaf and attach our new leaf to it.
+         let sibling = index;
+
+-        // Check for collision with the located leaf node
+-        let Node::Leaf {
+-            bounds: sibling_bounds,
+-            order: sibling_ordering,
+-            ..
+-        } = &self.nodes[index]
+-        else {
+-            unreachable!();
+-        };
 -        if sibling_bounds.intersects(&new_bounds) {
-+        if reserved.is_none() && sibling_bounds.intersects(&new_bounds) {
-@@ -94 +114 @@
+-            max_intersecting_ordering = cmp::max(max_intersecting_ordering, *sibling_ordering);
+-        }
+-
 -        let ordering = max_intersecting_ordering + 1;
++        // Resolve the nearby leaf first, then the same sibling subtrees as the
++        // original descent, from nearest to farthest. A useful high order can
++        // prune older branches sooner. Do not test placement-path bounds: their
++        // origin + size representation may round a union edge inward.
++        let mut max_intersecting_ordering = 0;
++        if reserved.is_none() {
++            max_intersecting_ordering = self.find_max_ordering(sibling, &new_bounds, 0);
++            let mut child = sibling;
++            for &parent in self.stack.iter().rev() {
++                if let Node::Internal { left, right, .. } = &self.nodes[parent] {
++                    let other = if *left == child { *right } else { *left };
++                    max_intersecting_ordering =
++                        self.find_max_ordering(other, &new_bounds, max_intersecting_ordering);
++                }
++                child = parent;
++            }
++        }
++
 +        let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
+         let new_node = self.push_leaf(new_bounds, ordering);
+         let new_parent = self.push_internal(sibling, new_node);
+
+@@ -149,12 +164,18 @@
+                 if bounds.intersects(node_bounds) && max_ordering < *node_max_ordering {
+                     let left_max_ordering = self.nodes[*left].max_ordering();
+                     let right_max_ordering = self.nodes[*right].max_ordering();
++                    // The first result can satisfy the other child's already
++                    // loaded upper bound, avoiding another recursive query.
+                     if left_max_ordering > right_max_ordering {
+                         max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
+-                        max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
++                        if max_ordering < right_max_ordering {
++                            max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
++                        }
+                     } else {
+                         max_ordering = self.find_max_ordering(*right, bounds, max_ordering);
+-                        max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
++                        if max_ordering < left_max_ordering {
++                            max_ordering = self.find_max_ordering(*left, bounds, max_ordering);
++                        }
+                     }
+                 }
+             }
+@@ -236,6 +257,150 @@
+     }
+ }
+
++#[cfg(any(test, feature = "test-support"))]
++pub(crate) fn verify_ordering() -> Result<(), String> {
++    ordering_verification::verify()
++}
++
++// Std-only fixtures use Hex's existing locked test-support dependency graph.
++#[cfg(any(test, feature = "test-support"))]
++mod ordering_verification {
++    use super::*;
++    use crate::{Point, Size};
++
++    fn require(value: bool, message: &str) -> Result<(), String> {
++        if value {
++            Ok(())
++        } else {
++            Err(message.to_owned())
++        }
++    }
++
++    fn rect(x: f32, y: f32, width: f32, height: f32) -> Bounds<f32> {
++        Bounds {
++            origin: Point { x, y },
++            size: Size { width, height },
++        }
++    }
++
++    pub(super) fn verify() -> Result<(), String> {
++        // A higher-order child can miss the query entirely; tied maxima can
++        // occur in disjoint children. Resolve both against an independent scan,
++        // including an initial maximum that already satisfies either subtree.
++        for orders in [[3, 7], [7, 3], [7, 7]] {
++            let mut tree = BoundsTree::default();
++            let leaves = [
++                (rect(0.0, 0.0, 4.0, 4.0), orders[0]),
++                (rect(20.0, 0.0, 4.0, 4.0), orders[1]),
++            ];
++            let left = tree.push_leaf(leaves[0].0, leaves[0].1);
++            let right = tree.push_leaf(leaves[1].0, leaves[1].1);
++            let root = tree.push_internal(left, right);
++            for query in [
++                rect(1.0, 1.0, 1.0, 1.0),
++                rect(21.0, 1.0, 1.0, 1.0),
++                rect(0.0, 0.0, 24.0, 4.0),
++                rect(10.0, 1.0, 1.0, 1.0),
++            ] {
++                for initial in [0, 3, 7, 9] {
++                    let expected = leaves
++                        .iter()
++                        .filter(|(bounds, _)| bounds.intersects(&query))
++                        .map(|(_, order)| *order)
++                        .fold(initial, cmp::max);
++                    require(
++                        tree.find_max_ordering(root, &query, initial) == expected,
++                        "sibling maxima query differs from independent leaf scan",
++                    )?;
++                }
++            }
++        }
++        for scale in [1.0, 2.0] {
++            for seed in 1..=24_u64 {
++                let mut tree = BoundsTree::default();
++                let mut leaves: Vec<(Bounds<f32>, u32)> = Vec::new();
++                let mut random = seed;
++                for i in 0..128 {
++                    if i % 43 == 0 {
++                        tree.clear();
++                        leaves.clear();
++                    }
++                    random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
++                    let x = ((random >> 16) % 512) as f32 * 0.25 - 64.0;
++                    let y = ((random >> 32) % 256) as f32 * 0.5 - 64.0;
++                    let bounds = if i % 7 == 0 {
++                        rect((i % 16) as f32 * 4.0 * scale, 0.0, 4.0 * scale, 8.0 * scale)
++                    } else {
++                        rect(
++                            x * scale,
++                            y * scale,
++                            (i % 9) as f32 * 0.5 * scale,
++                            (i % 11) as f32 * 0.25 * scale,
++                        )
++                    };
++                    let order = if i % 13 == 0 {
++                        let base = leaves.iter().map(|(_, order)| *order).max().unwrap_or(0) + 1;
++                        let span = (i % 5) as u32;
++                        require(
++                            tree.reserve(bounds, span) == Some(base),
++                            "reserved draw-order interval differs from scan",
++                        )?;
++                        base + span
++                    } else {
++                        // Independent linear oracle; no tree topology/query is
++                        // used to establish the expected maximum or next order.
++                        let order = leaves
++                            .iter()
++                            .filter(|(b, _)| b.intersects(&bounds))
++                            .map(|(_, order)| *order)
++                            .max()
++                            .unwrap_or(0)
++                            + 1;
++                        require(
++                            tree.insert(bounds) == order,
++                            "live draw order differs from linear scan",
++                        )?;
++                        order
++                    };
++                    leaves.push((bounds, order));
++                }
++            }
++        }
++        // A union represented as origin + size may round its far edge inward.
++        // Placement-path bounds must not introduce a new overlap-pruning test.
++        let mut rounded = BoundsTree::default();
++        require(
++            rounded.insert(rect(0.1, 0.0, 0.18, 1.0)) == 1,
++            "near leaf order",
++        )?;
++        require(
++            rounded.insert(rect(-1_000_000.0, 0.0, 1.0, 1.0)) == 1,
++            "far leaf order",
++        )?;
++        require(
++            rounded.insert(rect(0.26, 0.0, 0.005, 1.0)) == 2,
++            "rounded ancestor bounds hid an intersecting leaf",
++        )?;
++        let mut edge = BoundsTree::default();
++        let bounds = rect(-2.0, 0.25, 8.0, 4.0);
++        require(
++            edge.reserve(bounds, u32::MAX - 2) == Some(1),
++            "near-maximum reservation failed",
++        )?;
++        require(
++            edge.reserve(bounds, 1).is_none(),
++            "overflowing reservation was admitted",
++        )?;
++        require(
++            edge.insert(bounds) == u32::MAX,
++            "refusal changed following live order",
++        )?;
++        edge.clear();
++        require(edge.insert(bounds) == 1, "clear retained old order state")?;
++        Ok(())
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/src/elements/div.rs b/src/elements/div.rs
 --- a/src/elements/div.rs
 +++ b/src/elements/div.rs
+@@ -47 +47 @@
+-const DRAG_THRESHOLD: f64 = 2.;
++use crate::window::POINTER_DRAG_THRESHOLD;
 @@ -1227,0 +1228 @@
 +        accessibility: None,
 @@ -1236,0 +1238,4 @@
@@ -384,7 +789,119 @@
 +                        );
 +                    }
 +                }
-@@ -2906,0 +2935,12 @@
+@@ -1789,0 +1818,20 @@
++        if self.hover_style.is_some()
++            || self.group_hover_style.is_some()
++            || self.hover_listener.is_some()
++            || self.tooltip_builder.is_some()
++        {
++            let group = self
++                .group_hover_style
++                .as_ref()
++                .and_then(|style| GroupHitboxes::dependency(&style.group, cx));
++            let group_hitbox = group.map(|(id, _)| id);
++            let painted_hover = !cx.has_active_drag()
++                && !window.is_pointer_dragging()
++                && (hitbox.is_some_and(|hitbox| hitbox.is_hovered(window))
++                    || group_hitbox.is_some_and(|id| id.is_hovered(window)));
++            window.observe_pointer_hover(
++                hitbox.map(|hitbox| hitbox.id),
++                group.map(|(_, bounds)| bounds),
++                painted_hover,
++            );
++        }
+@@ -1845 +1893 @@
+-                                                GroupHitboxes::push(group, hitbox.id, cx);
++                                                GroupHitboxes::push(group, hitbox, cx);
+@@ -2087,0 +2136,4 @@
++        let tracks_pointer_click = !click_listeners.is_empty()
++            || drag_listener.is_some()
++            || self.active_style.is_some()
++            || self.group_active_style.is_some();
+@@ -2159 +2211 @@
+-                            && (event.position - mouse_down.position).magnitude() > DRAG_THRESHOLD
++                            && (event.position - mouse_down.position).magnitude() > POINTER_DRAG_THRESHOLD
+@@ -2261,4 +2313 @@
+-                window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+-                    if phase != DispatchPhase::Bubble {
+-                        return;
+-                    }
++                window.on_pointer_hover_change(move |window, cx| {
+@@ -2266,0 +2316 @@
++                        && !window.is_pointer_dragging()
+@@ -2274,0 +2325,3 @@
++                        true
++                    } else {
++                        false
+@@ -2298 +2351,2 @@
+-                        pending_mouse_down.borrow().is_none()
++                        !window.is_pointer_dragging()
++                            && pending_mouse_down.borrow().is_none()
+@@ -2305 +2359,3 @@
+-                        pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
++                        !window.is_pointer_dragging()
++                            && pending_mouse_down.borrow().is_none()
++                            && hitbox.is_hovered(window)
+@@ -2321,0 +2378,21 @@
++            if tracks_pointer_click {
++                let pending = element_state.pending_mouse_down.clone();
++                let clicked = active_state.clone();
++                window.on_pointer_hover_change(move |window, _| {
++                    if !window.has_pointer_capture() {
++                        return false;
++                    }
++                    // An explicit gesture owns the press. Clear framework-only
++                    // click/drag latches after its initiating press propagates,
++                    // without delivering a mouse-up or invoking a user action.
++                    // These records replay with cached/deferred paint and run
++                    // during input, including a press/release with no repaint.
++                    let had_press = pending
++                        .as_ref()
++                        .is_some_and(|pending| pending.borrow_mut().take().is_some());
++                    let mut clicked = clicked.borrow_mut();
++                    let was_clicked = clicked.is_clicked();
++                    *clicked = ElementClickedState::default();
++                    had_press || was_clicked
++                });
++            }
+@@ -2498 +2575 @@
+-            if !cx.has_active_drag() {
++            if !cx.has_active_drag() && !window.is_pointer_dragging() {
+@@ -2758,0 +2836,6 @@
++                        // A capture listener can consume movement before this
++                        // pending tooltip receives its cancellation event.
++                        if window.is_pointer_dragging() {
++                            active_tooltip.borrow_mut().take();
++                            return;
++                        }
+@@ -2874,0 +2958,4 @@
++// Bounds are conservative invalidation metadata only. Style calculation still
++// uses the current group's actual hitbox and ordinary occlusion rules.
++type GroupHitboxDependency = (HitboxId, Bounds<Pixels>);
++
+@@ -2876 +2963 @@
+-pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[HitboxId; 1]>>);
++pub(crate) struct GroupHitboxes(HashMap<SharedString, SmallVec<[GroupHitboxDependency; 1]>>);
+@@ -2881,0 +2969,4 @@
++        Self::dependency(name, cx).map(|(id, _)| id)
++    }
++
++    fn dependency(name: &SharedString, cx: &mut App) -> Option<GroupHitboxDependency> {
+@@ -2886,4 +2977,4 @@
+-            .cloned()
+-    }
+-
+-    pub fn push(name: SharedString, hitbox_id: HitboxId, cx: &mut App) {
++            .copied()
++    }
++
++    pub fn push(name: SharedString, hitbox: &Hitbox, cx: &mut App) {
+@@ -2894 +2985 @@
+-            .push(hitbox_id);
++            .push((hitbox.id, hitbox.bounds.intersect(&hitbox.content_mask.bounds)));
+@@ -2904,0 +2996,12 @@
++}
++
 +impl Stateful<Div> {
 +    /// Attach native semantics to this stateful control without changing its layout.
 +    pub fn accessibility(
@@ -395,24 +912,50 @@
 +        self.element = self.element.accessibility(descriptor, action);
 +        self
 +    }
-+}
-+
+diff --git a/src/gpui.rs b/src/gpui.rs
 --- a/src/gpui.rs
 +++ b/src/gpui.rs
 @@ -8,0 +9,2 @@
 +mod accessibility;
 +pub use accessibility::*;
+diff --git a/src/interactive.rs b/src/interactive.rs
 --- a/src/interactive.rs
 +++ b/src/interactive.rs
-@@ -363,0 +364,4 @@
+@@ -88,0 +89,2 @@
++    /// The platform cancelled the physical gesture.
++    Cancelled,
+@@ -363,0 +366,16 @@
 +    /// True when the platform inverted device scroll direction for user preferences.
 +    /// Raw `delta` remains suitable for ordinary content scrolling.
 +    pub direction_inverted_from_device: bool,
 +
-@@ -374,0 +379,14 @@
++    /// True for platform-reported inertial continuation after physical input.
++    /// Neutral by default. Ordinary content scrolling keeps using raw `delta`.
++    pub is_momentum: bool,
++
++    /// Physical wheel increments, when the platform knows them independently
++    /// of content-line preferences. Fractional increments are retained. Uses
++    /// the same preference-direction convention as `delta`, except a backend
++    /// with per-axis direction reports may normalize these ticks to device
++    /// direction and leave `direction_inverted_from_device` false. Content
++    /// scrolling must use `delta`, not this optional parameter-input metadata.
++    pub wheel_ticks: Option<Point<f32>>,
++
+@@ -374,0 +393,25 @@
 +}
 +
 +impl ScrollWheelEvent {
++    /// Opt-in physical detents, with user-preference inversion undone once.
++    pub fn physical_wheel_ticks(&self) -> Option<Point<f32>> {
++        self.wheel_ticks.map(|ticks| {
++            if self.direction_inverted_from_device {
++                point(-ticks.x, -ticks.y)
++            } else {
++                ticks
++            }
++        })
++    }
++
 +    /// Device-direction delta before the platform's user-preference inversion.
 +    /// This is opt-in: ordinary scrolling should continue using `delta`.
 +    pub fn physical_delta(&self) -> ScrollDelta {
@@ -424,12 +967,21 @@
 +            ScrollDelta::Lines(delta) => ScrollDelta::Lines(point(-delta.x, -delta.y)),
 +        }
 +    }
+diff --git a/src/platform.rs b/src/platform.rs
 --- a/src/platform.rs
 +++ b/src/platform.rs
 @@ -0,0 +1,2 @@
 +#[cfg(any(target_os = "macos", test))]
 +mod accessibility_bridge;
-@@ -491,0 +494,8 @@
+@@ -221,0 +224,7 @@
++    fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        _directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.prompt_for_paths(options)
++    }
+@@ -491,0 +501,8 @@
 +    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
 +    /// Revoke before accepted close callbacks or UI-owned resources are released.
 +    fn revoke_accessibility(&self) {}
@@ -438,25 +990,32 @@
 +        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
 +    ) {
 +    }
-@@ -1228,0 +1239 @@
+@@ -1228,0 +1246 @@
 +                hide_native_window_controls: Default::default(),
-@@ -1257,0 +1269,4 @@
+@@ -1257,0 +1276,4 @@
 +
 +    /// Hide the standard macOS close, minimize, and zoom buttons.
 +    /// This does not change the native titlebar or window movement/resizing flags.
 +    pub hide_native_window_controls: bool,
-@@ -1411,0 +1427,4 @@
+@@ -1411,0 +1434,4 @@
 +    /// A persistent invisible cursor for a window-scoped pointer adjustment.
 +    /// macOS uses a transparent image, without changing NSCursor hide counts.
 +    Hidden,
 +
-@@ -1438,0 +1458,6 @@
-+
+@@ -1439,0 +1466,6 @@
 +    /// A bracket cursor for trimming an item from its left edge.
 +    ResizeLeftBracket,
 +
 +    /// A bracket cursor for trimming an item from its right edge.
 +    ResizeRightBracket,
++
+@@ -1442,0 +1475,4 @@
++
++    /// Repeat/loop editing cursor. macOS caches original circular-arrow artwork;
++    /// other platforms retain a horizontal resize fallback.
++    Loop,
+diff --git a/src/platform/accessibility_bridge.rs b/src/platform/accessibility_bridge.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/platform/accessibility_bridge.rs
 @@ -0,0 +1,288 @@
@@ -748,35 +1307,738 @@
 +        assert!(!bridge.revoke());
 +    }
 +}
+diff --git a/src/platform/linux/platform.rs b/src/platform/linux/platform.rs
 --- a/src/platform/linux/platform.rs
 +++ b/src/platform/linux/platform.rs
 @@ -705 +705 @@
 -            CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
 +            CursorStyle::Hidden | CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
-@@ -712,0 +713,2 @@
+@@ -713 +713,3 @@
+-            CursorStyle::ResizeLeftRight => &["ew-resize", "sb_h_double_arrow"],
 +            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
 +            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
++            CursorStyle::ResizeLeftRight | CursorStyle::Loop => &["ew-resize", "sb_h_double_arrow"],
+diff --git a/src/platform/linux/wayland.rs b/src/platform/linux/wayland.rs
 --- a/src/platform/linux/wayland.rs
 +++ b/src/platform/linux/wayland.rs
 @@ -17 +17 @@
 -            CursorStyle::Arrow => Shape::Default,
 +            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
-@@ -24,0 +25,2 @@
+@@ -25 +25,3 @@
+-            CursorStyle::ResizeLeftRight => Shape::EwResize,
 +            CursorStyle::ResizeLeftBracket => Shape::WResize,
 +            CursorStyle::ResizeRightBracket => Shape::EResize,
++            CursorStyle::ResizeLeftRight | CursorStyle::Loop => Shape::EwResize,
+diff --git a/src/platform/linux/wayland/client.rs b/src/platform/linux/wayland/client.rs
 --- a/src/platform/linux/wayland/client.rs
 +++ b/src/platform/linux/wayland/client.rs
-@@ -1790,0 +1791 @@
-+                                direction_inverted_from_device: false,
-@@ -1802,0 +1804 @@
-+                            direction_inverted_from_device: false,
+@@ -192,0 +193,250 @@
++// Axis metadata stays local to one wl_pointer.frame. Raw content accumulators
++// retain their original arithmetic and routing; only optional parameter ticks
++// are normalized per original axis before Shift can collapse both onto x.
++#[derive(Clone, Copy, Default, PartialEq)]
++enum AxisDirection {
++    #[default]
++    Unknown,
++    Identical,
++    Inverted,
++    Ambiguous,
++}
++
++impl AxisDirection {
++    fn observe(&mut self, direction: WEnum<wl_pointer::AxisRelativeDirection>) {
++        let next = match direction {
++            WEnum::Value(wl_pointer::AxisRelativeDirection::Identical) => Self::Identical,
++            WEnum::Value(wl_pointer::AxisRelativeDirection::Inverted) => Self::Inverted,
++            _ => Self::Ambiguous,
++        };
++        *self = match (*self, next) {
++            (Self::Unknown, next) => next,
++            (old, next) if old == next => old,
++            _ => Self::Ambiguous,
++        };
++    }
++}
++
++#[derive(Default)]
++struct AxisTicks {
++    // [original protocol axis][routed output axis], horizontal then vertical.
++    lines: [[f32; 2]; 2],
++    directions: [AxisDirection; 2],
++    pending_direction: [bool; 2],
++}
++
++impl AxisTicks {
++    fn index(axis: wl_pointer::Axis) -> Option<usize> {
++        match axis {
++            wl_pointer::Axis::HorizontalScroll => Some(0),
++            wl_pointer::Axis::VerticalScroll => Some(1),
++            _ => None,
++        }
++    }
++
++    fn record(&mut self, original: wl_pointer::Axis, routed: wl_pointer::Axis, lines: f32) {
++        if let (Some(original), Some(routed)) = (Self::index(original), Self::index(routed)) {
++            self.lines[original][routed] += lines;
++        }
++    }
++
++    fn physical(&self, raw: Point<f32>) -> Point<f32> {
++        if !self.directions.contains(&AxisDirection::Inverted) {
++            // Preserve the old f32 accumulation/division exactly in all fallback
++            // cases. Unknown/conflicting direction never guesses an inversion.
++            return raw.map(|lines| lines / SCROLL_LINES);
++        }
++        let signed = |original: usize, routed: usize| {
++            let lines = self.lines[original][routed];
++            if self.directions[original] == AxisDirection::Inverted {
++                -lines
++            } else {
++                lines
++            }
++        };
++        point(
++            (signed(0, 0) + signed(1, 0)) / SCROLL_LINES,
++            (signed(0, 1) + signed(1, 1)) / SCROLL_LINES,
++        )
++    }
++}
++
++struct AxisFrame {
++    axis_source: AxisSource,
++    continuous_scroll_delta: Option<Point<Pixels>>,
++    discrete_scroll_delta: Option<Point<f32>>,
++    vertical_modifier: f32,
++    horizontal_modifier: f32,
++    scroll_event_received: bool,
++    ticks: AxisTicks,
++}
++
++impl Default for AxisFrame {
++    fn default() -> Self {
++        Self {
++            axis_source: AxisSource::Wheel,
++            continuous_scroll_delta: None,
++            discrete_scroll_delta: None,
++            vertical_modifier: -1.0,
++            horizontal_modifier: -1.0,
++            scroll_event_received: false,
++            ticks: AxisTicks::default(),
++        }
++    }
++}
++
++impl AxisFrame {
++    fn fold(
++        &mut self,
++        event: &wl_pointer::Event,
++        shift: bool,
++    ) -> Option<(ScrollDelta, Option<Point<f32>>)> {
++        match event {
++            wl_pointer::Event::AxisSource {
++                axis_source: WEnum::Value(axis_source),
++            } => {
++                self.axis_source = *axis_source;
++            }
++            wl_pointer::Event::Axis {
++                axis: WEnum::Value(axis),
++                value,
++                ..
++            } => {
++                if let Some(original) = AxisTicks::index(*axis) {
++                    if !std::mem::take(&mut self.ticks.pending_direction[original]) {
++                        // A direction report describes one paired Axis, not all
++                        // later motion of that axis in this frame.
++                        self.ticks.directions[original] = AxisDirection::Ambiguous;
++                    }
++                }
++                if self.axis_source == AxisSource::Wheel {
++                    return None;
++                }
++                let axis = if shift {
++                    wl_pointer::Axis::HorizontalScroll
++                } else {
++                    *axis
++                };
++                let axis_modifier = match axis {
++                    wl_pointer::Axis::VerticalScroll => self.vertical_modifier,
++                    wl_pointer::Axis::HorizontalScroll => self.horizontal_modifier,
++                    _ => 1.0,
++                };
++                self.scroll_event_received = true;
++                let scroll_delta = self
++                    .continuous_scroll_delta
++                    .get_or_insert(point(px(0.0), px(0.0)));
++                let modifier = 3.0;
++                match axis {
++                    wl_pointer::Axis::VerticalScroll => {
++                        scroll_delta.y += px(*value as f32 * modifier * axis_modifier);
++                    }
++                    wl_pointer::Axis::HorizontalScroll => {
++                        scroll_delta.x += px(*value as f32 * modifier * axis_modifier);
++                    }
++                    _ => unreachable!(),
++                }
++            }
++            wl_pointer::Event::AxisDiscrete {
++                axis: WEnum::Value(axis),
++                discrete,
++            } => {
++                let original_axis = *axis;
++                self.scroll_event_received = true;
++                let axis = if shift {
++                    wl_pointer::Axis::HorizontalScroll
++                } else {
++                    *axis
++                };
++                let axis_modifier = match axis {
++                    wl_pointer::Axis::VerticalScroll => self.vertical_modifier,
++                    wl_pointer::Axis::HorizontalScroll => self.horizontal_modifier,
++                    _ => 1.0,
++                };
++
++                let scroll_delta = self.discrete_scroll_delta.get_or_insert(point(0.0, 0.0));
++                self.ticks.record(
++                    original_axis,
++                    axis,
++                    *discrete as f32 * axis_modifier * SCROLL_LINES,
++                );
++                match axis {
++                    wl_pointer::Axis::VerticalScroll => {
++                        scroll_delta.y += *discrete as f32 * axis_modifier * SCROLL_LINES;
++                    }
++                    wl_pointer::Axis::HorizontalScroll => {
++                        scroll_delta.x += *discrete as f32 * axis_modifier * SCROLL_LINES;
++                    }
++                    _ => unreachable!(),
++                }
++            }
++            wl_pointer::Event::AxisValue120 {
++                axis: WEnum::Value(axis),
++                value120,
++            } => {
++                let original_axis = *axis;
++                self.scroll_event_received = true;
++                let axis = if shift {
++                    wl_pointer::Axis::HorizontalScroll
++                } else {
++                    *axis
++                };
++                let axis_modifier = match axis {
++                    wl_pointer::Axis::VerticalScroll => self.vertical_modifier,
++                    wl_pointer::Axis::HorizontalScroll => self.horizontal_modifier,
++                    _ => unreachable!(),
++                };
++
++                let scroll_delta = self.discrete_scroll_delta.get_or_insert(point(0.0, 0.0));
++                let wheel_percent = *value120 as f32 / 120.0;
++                self.ticks.record(
++                    original_axis,
++                    axis,
++                    wheel_percent * axis_modifier * SCROLL_LINES,
++                );
++                match axis {
++                    wl_pointer::Axis::VerticalScroll => {
++                        scroll_delta.y += wheel_percent * axis_modifier * SCROLL_LINES;
++                    }
++                    wl_pointer::Axis::HorizontalScroll => {
++                        scroll_delta.x += wheel_percent * axis_modifier * SCROLL_LINES;
++                    }
++                    _ => unreachable!(),
++                }
++            }
++            wl_pointer::Event::AxisRelativeDirection {
++                axis: WEnum::Value(axis),
++                direction,
++            } => {
++                if let Some(axis) = AxisTicks::index(*axis) {
++                    self.ticks.directions[axis].observe(*direction);
++                    self.ticks.pending_direction[axis] = true;
++                }
++            }
++            wl_pointer::Event::Frame => {
++                // Drain even without motion or a focused window: per-frame
++                // direction reports must never affect the next logical group.
++                let mut ticks = std::mem::take(&mut self.ticks);
++                for axis in 0..2 {
++                    if ticks.pending_direction[axis] {
++                        ticks.directions[axis] = AxisDirection::Ambiguous;
++                    }
++                }
++                if self.scroll_event_received {
++                    self.scroll_event_received = false;
++                    let continuous = self.continuous_scroll_delta.take();
++                    let discrete = self.discrete_scroll_delta.take();
++                    let physical = discrete.map(|raw| ticks.physical(raw));
++                    if let Some(continuous) = continuous {
++                        return Some((ScrollDelta::Pixels(continuous), physical));
++                    } else if let Some(discrete) = discrete {
++                        return Some((ScrollDelta::Lines(discrete), physical));
++                    }
++                }
++            }
++            _ => {}
++        }
++        None
++    }
++}
++
+@@ -220 +470 @@
+-    axis_source: AxisSource,
++    axis_frame: AxisFrame,
+@@ -222,5 +471,0 @@
+-    continuous_scroll_delta: Option<Point<Pixels>>,
+-    discrete_scroll_delta: Option<Point<f32>>,
+-    vertical_modifier: f32,
+-    horizontal_modifier: f32,
+-    scroll_event_received: bool,
+@@ -599,2 +844 @@
+-            scroll_event_received: false,
+-            axis_source: AxisSource::Wheel,
++            axis_frame: AxisFrame::default(),
+@@ -602,4 +845,0 @@
+-            continuous_scroll_delta: None,
+-            discrete_scroll_delta: None,
+-            vertical_modifier: -1.0,
+-            horizontal_modifier: -1.0,
+@@ -1689,122 +1929,21 @@
+-            // Axis Events
+-            wl_pointer::Event::AxisSource {
+-                axis_source: WEnum::Value(axis_source),
+-            } => {
+-                state.axis_source = axis_source;
+-            }
+-            wl_pointer::Event::Axis {
+-                axis: WEnum::Value(axis),
+-                value,
+-                ..
+-            } => {
+-                if state.axis_source == AxisSource::Wheel {
+-                    return;
+-                }
+-                let axis = if state.modifiers.shift {
+-                    wl_pointer::Axis::HorizontalScroll
+-                } else {
+-                    axis
+-                };
+-                let axis_modifier = match axis {
+-                    wl_pointer::Axis::VerticalScroll => state.vertical_modifier,
+-                    wl_pointer::Axis::HorizontalScroll => state.horizontal_modifier,
+-                    _ => 1.0,
+-                };
+-                state.scroll_event_received = true;
+-                let scroll_delta = state
+-                    .continuous_scroll_delta
+-                    .get_or_insert(point(px(0.0), px(0.0)));
+-                let modifier = 3.0;
+-                match axis {
+-                    wl_pointer::Axis::VerticalScroll => {
+-                        scroll_delta.y += px(value as f32 * modifier * axis_modifier);
+-                    }
+-                    wl_pointer::Axis::HorizontalScroll => {
+-                        scroll_delta.x += px(value as f32 * modifier * axis_modifier);
+-                    }
+-                    _ => unreachable!(),
+-                }
+-            }
+-            wl_pointer::Event::AxisDiscrete {
+-                axis: WEnum::Value(axis),
+-                discrete,
+-            } => {
+-                state.scroll_event_received = true;
+-                let axis = if state.modifiers.shift {
+-                    wl_pointer::Axis::HorizontalScroll
+-                } else {
+-                    axis
+-                };
+-                let axis_modifier = match axis {
+-                    wl_pointer::Axis::VerticalScroll => state.vertical_modifier,
+-                    wl_pointer::Axis::HorizontalScroll => state.horizontal_modifier,
+-                    _ => 1.0,
+-                };
+-
+-                let scroll_delta = state.discrete_scroll_delta.get_or_insert(point(0.0, 0.0));
+-                match axis {
+-                    wl_pointer::Axis::VerticalScroll => {
+-                        scroll_delta.y += discrete as f32 * axis_modifier * SCROLL_LINES;
+-                    }
+-                    wl_pointer::Axis::HorizontalScroll => {
+-                        scroll_delta.x += discrete as f32 * axis_modifier * SCROLL_LINES;
+-                    }
+-                    _ => unreachable!(),
+-                }
+-            }
+-            wl_pointer::Event::AxisValue120 {
+-                axis: WEnum::Value(axis),
+-                value120,
+-            } => {
+-                state.scroll_event_received = true;
+-                let axis = if state.modifiers.shift {
+-                    wl_pointer::Axis::HorizontalScroll
+-                } else {
+-                    axis
+-                };
+-                let axis_modifier = match axis {
+-                    wl_pointer::Axis::VerticalScroll => state.vertical_modifier,
+-                    wl_pointer::Axis::HorizontalScroll => state.horizontal_modifier,
+-                    _ => unreachable!(),
+-                };
+-
+-                let scroll_delta = state.discrete_scroll_delta.get_or_insert(point(0.0, 0.0));
+-                let wheel_percent = value120 as f32 / 120.0;
+-                match axis {
+-                    wl_pointer::Axis::VerticalScroll => {
+-                        scroll_delta.y += wheel_percent * axis_modifier * SCROLL_LINES;
+-                    }
+-                    wl_pointer::Axis::HorizontalScroll => {
+-                        scroll_delta.x += wheel_percent * axis_modifier * SCROLL_LINES;
+-                    }
+-                    _ => unreachable!(),
+-                }
+-            }
+-            wl_pointer::Event::Frame => {
+-                if state.scroll_event_received {
+-                    state.scroll_event_received = false;
+-                    let continuous = state.continuous_scroll_delta.take();
+-                    let discrete = state.discrete_scroll_delta.take();
+-                    if let Some(continuous) = continuous {
+-                        if let Some(window) = state.mouse_focused_window.clone() {
+-                            let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
+-                                position: state.mouse_location.unwrap(),
+-                                delta: ScrollDelta::Pixels(continuous),
+-                                modifiers: state.modifiers,
+-                                touch_phase: TouchPhase::Moved,
+-                            });
+-                            drop(state);
+-                            window.handle_input(input);
+-                        }
+-                    } else if let Some(discrete) = discrete
+-                        && let Some(window) = state.mouse_focused_window.clone()
+-                    {
+-                        let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
+-                            position: state.mouse_location.unwrap(),
+-                            delta: ScrollDelta::Lines(discrete),
+-                            modifiers: state.modifiers,
+-                            touch_phase: TouchPhase::Moved,
+-                        });
+-                        drop(state);
+-                        window.handle_input(input);
+-                    }
++            event @ (wl_pointer::Event::AxisSource { .. }
++            | wl_pointer::Event::Axis { .. }
++            | wl_pointer::Event::AxisDiscrete { .. }
++            | wl_pointer::Event::AxisValue120 { .. }
++            | wl_pointer::Event::AxisRelativeDirection { .. }
++            | wl_pointer::Event::Frame) => {
++                let shift = state.modifiers.shift;
++                if let Some((delta, wheel_ticks)) = state.axis_frame.fold(&event, shift)
++                    && let Some(window) = state.mouse_focused_window.clone()
++                {
++                    let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
++                        direction_inverted_from_device: false,
++                        is_momentum: false,
++                        position: state.mouse_location.unwrap(),
++                        delta,
++                        wheel_ticks,
++                        modifiers: state.modifiers,
++                        touch_phase: TouchPhase::Moved,
++                    });
++                    drop(state);
++                    window.handle_input(input);
+@@ -2159,0 +2299,280 @@
++
++#[cfg(test)]
++mod axis_frame_tests {
++    use super::*;
++    use wl_pointer::{Axis, AxisRelativeDirection as Direction, Event};
++
++    fn direction(axis: Axis, direction: WEnum<Direction>) -> Event {
++        Event::AxisRelativeDirection {
++            axis: WEnum::Value(axis),
++            direction,
++        }
++    }
++
++    fn tick(axis: Axis, value120: i32) -> Event {
++        Event::AxisValue120 {
++            axis: WEnum::Value(axis),
++            value120,
++        }
++    }
++
++    fn axis(axis: Axis, value: f64) -> Event {
++        Event::Axis {
++            time: 0,
++            axis: WEnum::Value(axis),
++            value,
++        }
++    }
++
++    fn source(source: AxisSource) -> Event {
++        Event::AxisSource {
++            axis_source: WEnum::Value(source),
++        }
++    }
++
++    fn finish(frame: &mut AxisFrame) -> (ScrollDelta, Option<Point<f32>>) {
++        frame.fold(&Event::Frame, false).expect("motion frame")
++    }
++
++    fn raw_bits(delta: ScrollDelta) -> (bool, [u32; 2]) {
++        match delta {
++            ScrollDelta::Lines(p) => (false, [p.x.to_bits(), p.y.to_bits()]),
++            ScrollDelta::Pixels(p) => (true, [f32::from(p.x).to_bits(), f32::from(p.y).to_bits()]),
++        }
++    }
++
++    #[test]
++    fn axis_frame_v9_direction_order_and_mixed_axes() {
++        for inverted_h in [false, true] {
++            for inverted_v in [false, true] {
++                for late in [false, true] {
++                    let mut f = AxisFrame::default();
++                    let h = direction(
++                        Axis::HorizontalScroll,
++                        WEnum::Value(if inverted_h {
++                            Direction::Inverted
++                        } else {
++                            Direction::Identical
++                        }),
++                    );
++                    let v = direction(
++                        Axis::VerticalScroll,
++                        WEnum::Value(if inverted_v {
++                            Direction::Inverted
++                        } else {
++                            Direction::Identical
++                        }),
++                    );
++                    if !late {
++                        f.fold(&h, false);
++                        f.fold(&v, false);
++                    }
++                    f.fold(&tick(Axis::VerticalScroll, 120), false);
++                    f.fold(&tick(Axis::HorizontalScroll, -240), false);
++                    if late {
++                        f.fold(&h, false);
++                        f.fold(&v, false);
++                    }
++                    f.fold(&axis(Axis::HorizontalScroll, -2.0), false);
++                    f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++                    let (raw, ticks) = finish(&mut f);
++                    // Exact baseline content bits: direction metadata cannot change it.
++                    assert_eq!(
++                        raw_bits(raw),
++                        (false, [6.0f32.to_bits(), (-3.0f32).to_bits()])
++                    );
++                    assert_eq!(
++                        ticks,
++                        Some(point(
++                            if inverted_h { -2.0 } else { 2.0 },
++                            if inverted_v { 1.0 } else { -1.0 }
++                        ))
++                    );
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn axis_frame_shift_collapses_only_after_original_direction() {
++        let mut f = AxisFrame::default();
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            true,
++        );
++        f.fold(
++            &direction(Axis::HorizontalScroll, WEnum::Value(Direction::Identical)),
++            true,
++        );
++        f.fold(&tick(Axis::VerticalScroll, 120), true);
++        f.fold(&tick(Axis::HorizontalScroll, 240), true);
++        f.fold(&axis(Axis::VerticalScroll, 1.0), true);
++        f.fold(&axis(Axis::HorizontalScroll, 2.0), true);
++        let (raw, ticks) = finish(&mut f);
++        assert_eq!(
++            raw_bits(raw),
++            (false, [(-9.0f32).to_bits(), 0.0f32.to_bits()])
++        );
++        assert_eq!(ticks, Some(point(-1.0, 0.0)));
++        // Existing event helper must not invert these normalized ticks again.
++        let event = ScrollWheelEvent {
++            delta: raw,
++            wheel_ticks: ticks,
++            ..Default::default()
++        };
++        assert_eq!(event.physical_wheel_ticks(), ticks);
++        assert_eq!(raw_bits(event.physical_delta()), raw_bits(raw));
++    }
++
++    #[test]
++    fn axis_frame_pixels_plus_ticks_and_continuous_only() {
++        let mut f = AxisFrame::default();
++        f.fold(&source(AxisSource::Finger), false);
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++        let (raw, ticks) = finish(&mut f);
++        assert_eq!(
++            raw_bits(raw),
++            (true, [0.0f32.to_bits(), (-3.0f32).to_bits()])
++        );
++        assert_eq!(ticks, Some(point(0.0, 0.25)));
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++        let (raw, ticks) = finish(&mut f);
++        assert_eq!(
++            raw_bits(raw),
++            (true, [0.0f32.to_bits(), (-3.0f32).to_bits()])
++        );
++        assert_eq!(ticks, None); // Do not invent detents for continuous motion.
++    }
++
++    #[test]
++    fn axis_frame_conflict_unknown_and_independent_known_axis() {
++        for reports in [
++            [
++                WEnum::Value(Direction::Inverted),
++                WEnum::Value(Direction::Identical),
++            ],
++            [WEnum::Unknown(999), WEnum::Value(Direction::Inverted)],
++            [WEnum::Value(Direction::Inverted), WEnum::Unknown(999)],
++        ] {
++            let mut f = AxisFrame::default();
++            for report in reports {
++                f.fold(&direction(Axis::VerticalScroll, report), true);
++                f.fold(&axis(Axis::VerticalScroll, 1.0), true);
++            }
++            f.fold(
++                &direction(Axis::HorizontalScroll, WEnum::Value(Direction::Inverted)),
++                true,
++            );
++            f.fold(&tick(Axis::VerticalScroll, 120), true);
++            f.fold(&tick(Axis::HorizontalScroll, 240), true);
++            f.fold(&axis(Axis::HorizontalScroll, 1.0), true);
++            let (raw, ticks) = finish(&mut f);
++            assert_eq!(
++                raw_bits(raw),
++                (false, [(-9.0f32).to_bits(), 0.0f32.to_bits()])
++            );
++            // Only vertical falls back; the independent horizontal axis corrects.
++            assert_eq!(ticks, Some(point(1.0, 0.0)));
++        }
++    }
++
++    #[test]
++    fn axis_frame_fractions_large_zero_and_cancellation() {
++        for values in [
++            [30, 0, 0],
++            [-30, 0, 0],
++            [240, 0, 0],
++            [-240, 0, 0],
++            [30, -30, 0],
++            [0, 0, 0],
++        ] {
++            for inverted in [false, true] {
++                let mut f = AxisFrame::default();
++                if inverted {
++                    f.fold(
++                        &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++                        false,
++                    );
++                }
++                for value in values {
++                    f.fold(&tick(Axis::VerticalScroll, value), false);
++                }
++                f.fold(&axis(Axis::VerticalScroll, 0.0), false);
++                let (raw, ticks) = finish(&mut f);
++                let expected = -(values.into_iter().sum::<i32>() as f32) / 120.0;
++                let ScrollDelta::Lines(raw) = raw else {
++                    panic!("lines");
++                };
++                assert_eq!(raw.y, expected * SCROLL_LINES);
++                assert_eq!(
++                    ticks.unwrap().y,
++                    if inverted { -expected } else { expected }
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn axis_frame_missing_report_cannot_inherit_a_previous_pair() {
++        let mut f = AxisFrame::default();
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.5)));
++        // A report without its required Axis must not normalize a whole frame.
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.25)));
++    }
++
++    #[test]
++    fn axis_frame_pre_v9_discrete_and_frame_retirement() {
++        let mut f = AxisFrame::default();
++        f.fold(
++            &Event::AxisDiscrete {
++                axis: WEnum::Value(Axis::VerticalScroll),
++                discrete: -2,
++            },
++            false,
++        );
++        assert_eq!(finish(&mut f).1, Some(point(0.0, 2.0)));
++        assert!(f.fold(&Event::Frame, false).is_none());
++        // No motion/window delivery must still discard this direction report.
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        assert!(f.fold(&Event::Frame, false).is_none());
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        // Discard the fold result exactly as Dispatch does with no focused window.
++        let _undelivered = finish(&mut f);
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.25)));
++        f.fold(
++            &Event::AxisRelativeDirection {
++                axis: WEnum::Unknown(99),
++                direction: WEnum::Value(Direction::Inverted),
++            },
++            false,
++        );
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.25)));
++    }
++}
+diff --git a/src/platform/linux/x11/client.rs b/src/platform/linux/x11/client.rs
 --- a/src/platform/linux/x11/client.rs
 +++ b/src/platform/linux/x11/client.rs
-@@ -2217,0 +2218 @@
+@@ -2217,0 +2218,2 @@
 +        direction_inverted_from_device: false,
++        is_momentum: false,
+@@ -2219,0 +2222 @@
++        wheel_ticks: Some(delta.map(|lines| lines / SCROLL_LINES)),
+diff --git a/src/platform/mac/accessibility.rs b/src/platform/mac/accessibility.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/platform/mac/accessibility.rs
-@@ -0,0 +1,1000 @@
+@@ -0,0 +1,1049 @@
 +//! AppKit bridge: cross-thread objects contain data only; window/GPUI owners stay on UI.
 +use super::*;
 +use crate::platform::accessibility_bridge::{Bridge, Registry, WindowKey};
@@ -960,7 +2222,7 @@
 +            }
 +            let value_bytes = match &descriptor.value {
 +                crate::AccessibilityValue::Number { text, .. } => text.len(),
-+                crate::AccessibilityValue::Toggle(_) => 0,
++                crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => 0,
 +                crate::AccessibilityValue::Choice { options, .. } => {
 +                    options.iter().map(|text| text.len()).sum()
 +                }
@@ -1447,6 +2709,7 @@
 +    };
 +    unsafe {
 +        ns_string(match node.descriptor.value {
++            crate::AccessibilityValue::Button => "AXButton",
 +            crate::AccessibilityValue::Number { .. } => "AXSlider",
 +            crate::AccessibilityValue::Toggle(_) => "AXCheckBox",
 +            crate::AccessibilityValue::Choice { .. } => "AXPopUpButton",
@@ -1462,6 +2725,7 @@
 +    };
 +    unsafe {
 +        match node.descriptor.value {
++            crate::AccessibilityValue::Button => nil,
 +            crate::AccessibilityValue::Number { value, .. } => {
 +                msg_send![class!(NSNumber), numberWithDouble: value]
 +            }
@@ -1484,7 +2748,7 @@
 +            crate::AccessibilityValue::Choice { selected, options } => {
 +                options.get(selected).map_or(nil, |text| ns_string(text))
 +            }
-+            crate::AccessibilityValue::Toggle(_) => nil,
++            crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => nil,
 +        }
 +    }
 +}
@@ -1589,7 +2853,7 @@
 +                    }
 +                }
 +            }
-+            crate::AccessibilityValue::Toggle(_) => {}
++            crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => {}
 +        }
 +    }
 +}
@@ -1638,6 +2902,53 @@
 +                refused: false,
 +            },
 +        )
++    }
++    #[test]
++    fn appkit_stateless_button_has_button_role_no_value_and_only_action_semantics() {
++        let (_owner, mut snapshot) = fixture();
++        let descriptor = &mut snapshot.nodes[0].node.descriptor;
++        descriptor.value = crate::AccessibilityValue::Button;
++        descriptor.name = "clear search".into();
++        assert!(descriptor.permits(&crate::AccessibilityAction::Press));
++        assert!(descriptor.permits(&crate::AccessibilityAction::Focus));
++        for action in [
++            crate::AccessibilityAction::Increment,
++            crate::AccessibilityAction::Decrement,
++            crate::AccessibilityAction::SetNumber(1.0),
++            crate::AccessibilityAction::Choose(0),
++        ] {
++            assert!(!descriptor.permits(&action));
++        }
++        descriptor.enabled = false;
++        assert!(!descriptor.permits(&crate::AccessibilityAction::Press));
++        descriptor.enabled = true;
++        let descriptor = descriptor.clone();
++        let mut registry = Registry::default();
++        let bridge: Arc<NativeBridge> = registry.register(13, |_| ()).unwrap();
++        bridge.publish(snapshot);
++        // Same existing AppKit test boundary: release the actual semantic object
++        // before assertions, including when a getter returns the wrong role.
++        unsafe {
++            let class = Class::get("GPUISemanticControl").unwrap();
++            let object: id = msg_send![class, new];
++            assert!(!object.is_null());
++            (*object).set_ivar(
++                "semanticState",
++                Box::into_raw(Box::new(ElementData {
++                    bridge: bridge.clone(),
++                    id: descriptor.id,
++                    owner: descriptor.lifetime,
++                })) as *mut c_void,
++            );
++            let role: id = msg_send![object, accessibilityRole];
++            let expected = ns_string("AXButton");
++            let button: BOOL = msg_send![role, isEqualToString: expected];
++            let value: id = msg_send![object, accessibilityValue];
++            let description: id = msg_send![object, accessibilityValueDescription];
++            let _: () = msg_send![object, release];
++            assert_eq!(button, YES);
++            assert!(value.is_null() && description.is_null());
++        }
 +    }
 +    #[test]
 +    fn appkit_boolean_getters_follow_snapshot_and_revocation() {
@@ -1777,13 +3088,19 @@
 +        send_sync::<ElementData>();
 +    }
 +}
+diff --git a/src/platform/mac/events.rs b/src/platform/mac/events.rs
 --- a/src/platform/mac/events.rs
 +++ b/src/platform/mac/events.rs
-@@ -235,0 +236,2 @@
+@@ -221,0 +222 @@
++                        NSEventPhase::NSEventPhaseCancelled => TouchPhase::Cancelled,
+@@ -235,0 +237,2 @@
 +                    let direction_inverted: cocoa::base::BOOL =
 +                        msg_send![native_event, isDirectionInvertedFromDevice];
-@@ -236,0 +239 @@
+@@ -236,0 +240,3 @@
 +                        direction_inverted_from_device: direction_inverted == YES,
++                        is_momentum: native_event.momentumPhase() != NSEventPhase::NSEventPhaseNone,
++                        wheel_ticks: None,
+diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 --- a/src/platform/mac/platform.rs
 +++ b/src/platform/mac/platform.rs
 @@ -22 +22 @@
@@ -1796,7 +3113,10 @@
 +        NSSize, NSString, NSUInteger, NSURL,
 @@ -45,0 +46 @@
 +    rc::StrongPtr,
-@@ -70,0 +72,89 @@
+@@ -53 +54 @@
+-    ffi::{CStr, OsStr, c_void},
++    ffi::{CStr, CString, OsStr, c_void},
+@@ -70,0 +72,142 @@
 +
 +/// A cached transparent cursor avoids NSCursor's process-wide hide count.
 +fn make_hidden_cursor() -> Option<StrongPtr> {
@@ -1886,26 +3206,124 @@
 +        Some(StrongPtr::new(cursor))
 +    }
 +}
-@@ -179,0 +270,3 @@
++
++/// Original high-contrast circular-arrow loop cursor artwork; cached by `MacPlatformState`.
++fn make_loop_cursor() -> Option<StrongPtr> {
++    unsafe {
++        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
++        if image == nil {
++            return None;
++        }
++        let image = StrongPtr::new(image);
++        let _: () = msg_send![*image, lockFocus];
++        let path: id = msg_send![class!(NSBezierPath), bezierPath];
++        if path == nil {
++            let _: () = msg_send![*image, unlockFocus];
++            return None;
++        }
++
++        // An open circular arc with a tangent arrowhead. Original vector
++        // artwork, centered hotspot; black stroke with white outline remains
++        // legible over both light and dark clips.
++        for index in 0..=24 {
++            let angle = (45.0 + f64::from(index) * 270.0 / 24.0).to_radians();
++            let point = NSPoint::new(12.0 + angle.cos() * 7.0, 12.0 + angle.sin() * 7.0);
++            if index == 0 {
++                let _: () = msg_send![path, moveToPoint: point];
++            } else {
++                let _: () = msg_send![path, lineToPoint: point];
++            }
++        }
++        let tip = NSPoint::new(16.95, 7.05);
++        let _: () = msg_send![path, moveToPoint: NSPoint::new(12.0, 6.5)];
++        let _: () = msg_send![path, lineToPoint: tip];
++        let _: () = msg_send![path, lineToPoint: NSPoint::new(17.5, 2.1)];
++
++        let white: id = msg_send![class!(NSColor), whiteColor];
++        let _: () = msg_send![white, setStroke];
++        let _: () = msg_send![path, setLineWidth: 4.0_f64];
++        let _: () = msg_send![path, setLineCapStyle: 1_isize];
++        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
++        let _: () = msg_send![path, stroke];
++        let black: id = msg_send![class!(NSColor), blackColor];
++        let _: () = msg_send![black, setStroke];
++        let _: () = msg_send![path, setLineWidth: 1.75_f64];
++        let _: () = msg_send![path, stroke];
++        let _: () = msg_send![*image, unlockFocus];
++
++        let allocated: id = msg_send![class!(NSCursor), alloc];
++        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
++        if cursor == nil {
++            return None;
++        }
++        Some(StrongPtr::new(cursor))
++    }
++}
+@@ -179,0 +323,4 @@
 +    hidden_cursor: Option<StrongPtr>,
 +    resize_left_bracket_cursor: Option<StrongPtr>,
 +    resize_right_bracket_cursor: Option<StrongPtr>,
-@@ -199,0 +293,5 @@
++    loop_cursor: Option<StrongPtr>,
+@@ -188,0 +336,10 @@
++    #[cfg(any(test, feature = "test-support"))]
++    pub(crate) fn picker_directory_url_for_test(directory: &Path) -> Result<PathBuf> {
++        unsafe {
++            let pool = NSAutoreleasePool::new(nil);
++            let result = ns_directory_url(directory).and_then(|url| ns_url_to_path(url));
++            pool.drain();
++            result
++        }
++    }
++
+@@ -199,0 +357,5 @@
 +        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
 +            (None, None)
 +        } else {
 +            (make_bracket_cursor(true), make_bracket_cursor(false))
 +        };
-@@ -221,0 +320,3 @@
+@@ -221,0 +384,4 @@
 +            hidden_cursor: if headless { None } else { make_hidden_cursor() },
 +            resize_left_bracket_cursor,
 +            resize_right_bracket_cursor,
-@@ -973,2 +1074,17 @@
++            loop_cursor: if headless { None } else { make_loop_cursor() },
+@@ -713,0 +880,9 @@
++        self.prompt_for_paths_with_directory(options, None)
++    }
++
++    fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        let directory = directory.map(Path::to_owned);
+@@ -718,0 +894,9 @@
++                    if let Some(directory) = directory {
++                        match ns_directory_url(&directory) {
++                            Ok(url) => panel.setDirectoryURL(url),
++                            Err(error) => {
++                                let _ = done_tx.send(Err(error));
++                                return;
++                            }
++                        }
++                    }
+@@ -772,3 +956,7 @@
+-                    let path = ns_string(directory.to_string_lossy().as_ref());
+-                    let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
+-                    panel.setDirectoryURL(url);
++                    match ns_directory_url(&directory) {
++                        Ok(url) => panel.setDirectoryURL(url),
++                        Err(error) => {
++                            let _ = done_tx.send(Err(error));
++                            return;
++                        }
++                    }
+@@ -973,2 +1161,18 @@
 -            let new_cursor: id = match style {
 -                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
 +            let bracket_cursor = {
 +                let state = self.0.lock();
 +                match style {
++                    CursorStyle::Loop => state.loop_cursor.as_ref().map(|cursor| **cursor),
 +                    CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
 +                    CursorStyle::ResizeLeftBracket => state
 +                        .resize_left_bracket_cursor
@@ -1920,12 +3338,29 @@
 +            };
 +            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
 +                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-@@ -983,0 +1100,2 @@
+@@ -980 +1184 @@
+-                CursorStyle::ResizeLeftRight => msg_send![class!(NSCursor), resizeLeftRightCursor],
++                CursorStyle::ResizeLeftRight | CursorStyle::Loop => msg_send![class!(NSCursor), resizeLeftRightCursor],
+@@ -983,0 +1188,2 @@
 +                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
 +                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
-@@ -1008 +1126 @@
+@@ -1008 +1214 @@
 -            };
 +            });
+@@ -1538,0 +1745,12 @@
++// NSURL copies the filesystem representation; no lossy display conversion.
++unsafe fn ns_directory_url(directory: &Path) -> Result<id> {
++    let bytes = CString::new(directory.as_os_str().as_bytes())
++        .context("picker directory contains a nul byte")?;
++    let url: id = unsafe {
++        msg_send![class!(NSURL), fileURLWithFileSystemRepresentation: bytes.as_ptr()
++            isDirectory: YES relativeToURL: nil]
++    };
++    anyhow::ensure!(url != nil, "could not represent picker directory as a file url");
++    Ok(url)
++}
++
+diff --git a/src/platform/mac/window.rs b/src/platform/mac/window.rs
 --- a/src/platform/mac/window.rs
 +++ b/src/platform/mac/window.rs
 @@ -0,0 +1,2 @@
@@ -2053,35 +3488,150 @@
 +        native_accessibility::detach(this);
 @@ -2058,0 +2167 @@
 +    native_accessibility::revoke_object(this);
+diff --git a/src/platform/test/platform.rs b/src/platform/test/platform.rs
 --- a/src/platform/test/platform.rs
 +++ b/src/platform/test/platform.rs
-@@ -93,0 +94,4 @@
+@@ -90 +90,2 @@
+-    new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
++    new_path: VecDeque<(PathBuf, Option<String>, oneshot::Sender<Result<Option<PathBuf>>>)>,
++    paths: VecDeque<(Option<PathBuf>, oneshot::Sender<Result<Option<Vec<PathBuf>>>>)>,
+@@ -93,0 +95,4 @@
 +    pub(crate) fn cursor_style(&self) -> CursorStyle {
 +        *self.active_cursor.lock()
 +    }
 +
+@@ -130 +135 @@
+-        let (path, tx) = self
++        let (path, _, tx) = self
+@@ -155,0 +161,32 @@
++    }
++
++    pub(crate) fn did_prompt_for_paths(&self) -> bool {
++        !self.prompts.borrow().paths.is_empty()
++    }
++
++    pub(crate) fn simulate_paths_selection(&self, paths: Option<Vec<PathBuf>>) {
++        let (_, tx) = self
++            .prompts
++            .borrow_mut()
++            .paths
++            .pop_front()
++            .expect("no pending open paths prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Ok(paths)).ok();
++    }
++
++    pub(crate) fn pending_open_directory(&self) -> Option<Option<PathBuf>> {
++        self.prompts.borrow().paths.front().map(|(directory, _)| directory.clone())
++    }
++    pub(crate) fn pending_save_options(&self) -> Option<(PathBuf, Option<String>)> {
++        self.prompts.borrow().new_path.front().map(|(directory, name, _)| (directory.clone(), name.clone()))
++    }
++    pub(crate) fn simulate_paths_error(&self, message: &str) {
++        let (_, tx) = self.prompts.borrow_mut().paths.pop_front().expect("pending open prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
++    }
++    pub(crate) fn simulate_new_path_error(&self, message: &str) {
++        let (_, _, tx) = self.prompts.borrow_mut().new_path.pop_front().expect("pending save prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
+@@ -335,0 +373,7 @@
++        options: crate::PathPromptOptions,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.prompt_for_paths_with_directory(options, None)
++    }
++
++    fn prompt_for_paths_with_directory(
++        &self,
+@@ -337,2 +381,6 @@
+-    ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
+-        unimplemented!()
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        let (tx, rx) = oneshot::channel();
++        self.background_executor().set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
++        self.prompts.borrow_mut().paths.push_back((directory.map(Path::to_owned), tx));
++        rx
+@@ -344 +392 @@
+-        _suggested_name: Option<&str>,
++        suggested_name: Option<&str>,
+@@ -352 +400 @@
+-            .push_back((directory.to_path_buf(), tx));
++            .push_back((directory.to_path_buf(), suggested_name.map(str::to_owned), tx));
+diff --git a/src/platform/windows/events.rs b/src/platform/windows/events.rs
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
-@@ -555,0 +556 @@
+@@ -548,2 +548,2 @@
+-        let wheel_distance =
+-            (wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_amount as f32;
++        let wheel_ticks = wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
++        let wheel_distance = wheel_ticks * wheel_scroll_amount as f32;
+@@ -555,0 +556,2 @@
 +            direction_inverted_from_device: false,
-@@ -601,0 +603 @@
++            is_momentum: false,
+@@ -566,0 +569,5 @@
++            wheel_ticks: Some(if modifiers.shift {
++                Point { x: wheel_ticks, y: 0.0 }
++            } else {
++                Point { x: 0.0, y: wheel_ticks }
++            }),
+@@ -594,2 +601,2 @@
+-        let wheel_distance =
+-            (-wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_chars as f32;
++        let wheel_ticks = -wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
++        let wheel_distance = wheel_ticks * wheel_scroll_chars as f32;
+@@ -601,0 +609,2 @@
 +            direction_inverted_from_device: false,
++            is_momentum: false,
+@@ -606,0 +616 @@
++            wheel_ticks: Some(Point { x: wheel_ticks, y: 0.0 }),
+diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 --- a/src/platform/windows/util.rs
 +++ b/src/platform/windows/util.rs
 @@ -126,0 +127,2 @@
 +        | CursorStyle::ResizeLeftBracket
 +        | CursorStyle::ResizeRightBracket
+@@ -127,0 +130 @@
++        | CursorStyle::Loop
+diff --git a/src/scene.rs b/src/scene.rs
 --- a/src/scene.rs
 +++ b/src/scene.rs
-@@ -68 +68 @@
+@@ -11,8 +11,9 @@
+ use std::{
+     fmt::Debug,
+     iter::Peekable,
+-    ops::{Add, Range, Sub},
++    ops::{Add, Deref, Range, Sub},
+     slice,
++    sync::Arc,
+ };
+
+ #[allow(non_camel_case_types, unused)]
+@@ -65,7 +66,7 @@
+     }
+
+     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
 -        let mut primitive = primitive.into();
 +        let primitive = primitive.into();
-@@ -81,0 +82,4 @@
+         let clipped_bounds = primitive
+             .bounds()
+             .intersect(&primitive.content_mask().bounds);
+@@ -79,6 +80,10 @@
+             .last()
+             .copied()
+             .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
 +        self.append_primitive(primitive, order);
 +    }
 +
 +    fn append_primitive(&mut self, mut primitive: Primitive, order: DrawOrder) {
-@@ -117,0 +122,121 @@
+         match &mut primitive {
+             Primitive::Shadow(shadow) => {
+                 shadow.order = order;
+@@ -115,6 +120,127 @@
+     }
+
+     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
 +        if self.try_bulk_replay(range.clone(), prev_scene) {
 +            return;
 +        }
@@ -2203,7 +3753,13 @@
 +    }
 +
 +    fn replay_legacy(&mut self, range: Range<usize>, prev_scene: &Scene) {
-@@ -172,0 +298,14 @@
+         for operation in &prev_scene.paint_operations[range] {
+             match operation {
+                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
+@@ -170,6 +296,20 @@
+     }
+ }
+
 +fn finite_replay_bounds(bounds: &Bounds<ScaledPixels>) -> bool {
 +    let values = [
 +        bounds.origin.x.0,
@@ -2218,7 +3774,13 @@
 +        && bounds.size.height.0 >= 0.0
 +}
 +
-@@ -209,0 +349,11 @@
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
+ #[cfg_attr(
+     all(
+@@ -207,6 +347,17 @@
+ }
+
+ impl Primitive {
 +    fn order(&self) -> DrawOrder {
 +        match self {
 +            Primitive::Shadow(value) => value.order,
@@ -2230,7 +3792,105 @@
 +            Primitive::Surface(value) => value.order,
 +        }
 +    }
-@@ -833,0 +984,569 @@
+     pub fn bounds(&self) -> &Bounds<ScaledPixels> {
+         match self {
+             Primitive::Shadow(shadow) => &shadow.bounds,
+@@ -671,6 +822,36 @@
+ #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+ pub(crate) struct PathId(pub(crate) usize);
+
++/// Mutable construction keeps a directly owned Vec; only finished scaled meshes
++/// pay for sharing. Metadata remains in Path, separate from immutable vertex bytes.
++#[derive(Clone)]
++pub(crate) enum PathVertices<P: Clone + Debug + Default + PartialEq> {
++    Owned(Vec<PathVertex<P>>),
++    Shared(Arc<Vec<PathVertex<P>>>),
++}
++impl<P: Clone + Debug + Default + PartialEq> Deref for PathVertices<P> {
++    type Target = [PathVertex<P>];
++    fn deref(&self) -> &Self::Target {
++        match self {
++            Self::Owned(vertices) => vertices.as_slice(),
++            Self::Shared(vertices) => vertices.as_slice(),
++        }
++    }
++}
++impl<P: Clone + Debug + Default + PartialEq> Debug for PathVertices<P> {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        self.deref().fmt(formatter)
++    }
++}
++impl<P: Clone + Debug + Default + PartialEq> PathVertices<P> {
++    fn make_mut(&mut self) -> &mut Vec<PathVertex<P>> {
++        match self {
++            Self::Owned(vertices) => vertices,
++            Self::Shared(vertices) => Arc::make_mut(vertices),
++        }
++    }
++}
++
+ /// A line made up of a series of vertices and control points.
+ #[derive(Clone, Debug)]
+ pub struct Path<P: Clone + Debug + Default + PartialEq> {
+@@ -678,7 +859,8 @@
+     pub(crate) order: DrawOrder,
+     pub(crate) bounds: Bounds<P>,
+     pub(crate) content_mask: ContentMask<P>,
+-    pub(crate) vertices: Vec<PathVertex<P>>,
++    // Scaled Scene clones share mesh bytes; mutable construction stays owned.
++    pub(crate) vertices: PathVertices<P>,
+     pub(crate) color: Background,
+     start: Point<P>,
+     current: Point<P>,
+@@ -691,7 +873,7 @@
+         Self {
+             id: PathId(0),
+             order: DrawOrder::default(),
+-            vertices: Vec::new(),
++            vertices: PathVertices::Owned(Vec::new()),
+             start,
+             current: start,
+             bounds: Bounds {
+@@ -711,11 +893,8 @@
+             order: self.order,
+             bounds: self.bounds.scale(factor),
+             content_mask: self.content_mask.scale(factor),
+-            vertices: self
+-                .vertices
+-                .iter()
+-                .map(|vertex| vertex.scale(factor))
+-                .collect(),
++            vertices: PathVertices::Shared(Arc::new(self.vertices.iter()
++                .map(|vertex| vertex.scale(factor)).collect())),
+             start: self.start.map(|start| start.scale(factor)),
+             current: self.current.scale(factor),
+             contour_count: self.contour_count,
+@@ -780,17 +959,18 @@
+                 size: Default::default(),
+             });
+
+-        self.vertices.push(PathVertex {
++        let vertices = self.vertices.make_mut();
++        vertices.push(PathVertex {
+             xy_position: xy.0,
+             st_position: st.0,
+             content_mask: Default::default(),
+         });
+-        self.vertices.push(PathVertex {
++        vertices.push(PathVertex {
+             xy_position: xy.1,
+             st_position: st.1,
+             content_mask: Default::default(),
+         });
+-        self.vertices.push(PathVertex {
++        vertices.push(PathVertex {
+             xy_position: xy.2,
+             st_position: st.2,
+             content_mask: Default::default(),
+@@ -831,3 +1011,650 @@
+         }
+     }
+ }
 +
 +#[cfg(any(test, feature = "test-support"))]
 +pub(crate) fn verify_bulk_replay() -> Result<(), String> {
@@ -2297,11 +3957,11 @@
 +                order: 0,
 +                bounds,
 +                content_mask: content_mask.clone(),
-+                vertices: vec![PathVertex {
++                vertices: PathVertices::Shared(Arc::new(vec![PathVertex {
 +                    xy_position: bounds.origin,
 +                    st_position: point(0.0, 0.0),
 +                    content_mask,
-+                }],
++                }])),
 +                color: color.into(),
 +                start: bounds.origin,
 +                current: bounds.bottom_right(),
@@ -2576,7 +4236,85 @@
 +        (scene, start..end)
 +    }
 +
++    fn verify_path_clone_value_semantics() -> Result<(), String> {
++        fn bits<P: Clone + Debug + Default + PartialEq>(
++            vertices: &[PathVertex<P>],
++            raw: impl Fn(&P) -> f32,
++        ) -> Vec<[u32; 8]> {
++            vertices
++                .iter()
++                .map(|v| {
++                    [
++                        raw(&v.xy_position.x).to_bits(),
++                        raw(&v.xy_position.y).to_bits(),
++                        v.st_position.x.to_bits(),
++                        v.st_position.y.to_bits(),
++                        raw(&v.content_mask.bounds.origin.x).to_bits(),
++                        raw(&v.content_mask.bounds.origin.y).to_bits(),
++                        raw(&v.content_mask.bounds.size.width).to_bits(),
++                        raw(&v.content_mask.bounds.size.height).to_bits(),
++                    ]
++                })
++                .collect()
++        }
++        let mut original = Path::new(point(Pixels(-0.0), Pixels(0.25)));
++        original.line_to(point(Pixels(2.5), Pixels(-3.75)));
++        original.curve_to(
++            point(Pixels(6.25), Pixels(4.5)),
++            point(Pixels(1.125), Pixels(-0.0)),
++        );
++        let before = bits(&original.vertices, |v| v.0);
++        let before_bounds = original.bounds;
++        let mut edited = original.clone();
++        edited.line_to(point(Pixels(123.0), Pixels(456.0)));
++        require(
++            bits(&original.vertices, |v| v.0) == before && original.bounds == before_bounds,
++            "clone mutation changed original mesh or bounds",
++        )?;
++        require(
++            edited.vertices.len() > original.vertices.len()
++                && !std::ptr::eq(original.vertices.as_ptr(), edited.vertices.as_ptr()),
++            "clone append did not detach mesh storage",
++        )?;
++        let mut shared_edit = original.clone();
++        shared_edit.vertices = PathVertices::Shared(Arc::new(shared_edit.vertices.to_vec()));
++        let shared_before = shared_edit.clone();
++        shared_edit.line_to(point(Pixels(77.0), Pixels(88.0)));
++        require(bits(&shared_before.vertices, |v| v.0) == before,
++                "shared path mutation changed retained mesh")?;
++        let retained = original.clone();
++        original.line_to(point(Pixels(-70.0), Pixels(-80.0)));
++        require(
++            bits(&retained.vertices, |v| v.0) == before,
++            "original mutation changed retained clone",
++        )?;
++        for factor in [0.5, 1.0, 1.25, 2.0, 3.0] {
++            let scaled = retained.scale(factor);
++            let expected = before
++                .iter()
++                .map(|old| {
++                    let mut next = *old;
++                    for i in [0, 1, 4, 5, 6, 7] {
++                        next[i] = (f32::from_bits(old[i]) * factor).to_bits();
++                    }
++                    next
++                })
++                .collect::<Vec<_>>();
++            require(
++                bits(&scaled.vertices, |v| v.0) == expected,
++                "scaled shared path differs from scalar coordinate/ST/mask bits",
++            )?;
++            let other = scaled.clone();
++            require(
++                std::ptr::eq(scaled.vertices.as_ptr(), other.vertices.as_ptr()),
++                "scaled path clone copied mesh storage",
++            )?;
++        }
++        Ok(())
++    }
++
 +    pub(super) fn verify() -> Result<(), String> {
++        verify_path_clone_value_semantics()?;
 +        for scale in [1.0, 2.0] {
 +            for seed in 1..=12 {
 +                let (previous, range) = source(scale, seed);
@@ -2800,11 +4538,13 @@
 +        Ok(())
 +    }
 +}
+diff --git a/src/taffy.rs b/src/taffy.rs
 --- a/src/taffy.rs
 +++ b/src/taffy.rs
 @@ -312 +312 @@
 -            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
 +            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
+diff --git a/src/view.rs b/src/view.rs
 --- a/src/view.rs
 +++ b/src/view.rs
 @@ -25,0 +26 @@
@@ -2834,14 +4574,81 @@
 +                                epoch: self.cache_epoch,
 @@ -325,0 +341 @@
 +            cache_epoch: 0,
+diff --git a/src/window.rs b/src/window.rs
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -667,0 +668 @@
+@@ -53,6 +53,9 @@
+ use util::{ResultExt, measure};
+ use uuid::Uuid;
+ 
++/// Shared threshold for pointer hover suppression and typed drag initiation.
++pub(crate) const POINTER_DRAG_THRESHOLD: f64 = 2.;
++
+ mod prompts;
+ 
+ use crate::util::atomic_incr_if_not_zero;
+@@ -462,6 +465,28 @@
+ pub(crate) type AnyMouseListener =
+     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
+ 
++type CapturedMouseListener = Box<dyn FnMut(&dyn Any, &mut Window, &mut App)>;
++
++// One control-side lease. The owner must witness its live held gesture in paint;
++// cached/deferred replay retains that witness. No callback executes during paint.
++struct PointerCapture {
++    owner: EntityId,
++    button: MouseButton,
++    cursor: CursorStyle,
++    listener: Option<CapturedMouseListener>,
++    cancelled: Option<FrameCallback>,
++}
++
++type PointerHoverListener = Box<dyn Fn(&mut Window, &mut App) -> bool>;
++
++struct PointerHoverObserver {
++    view: EntityId,
++    listener: Option<PointerHoverListener>,
++    hitbox: Option<HitboxId>,
++    group_bounds: Option<Bounds<Pixels>>,
++    painted_hover: bool,
++}
++
+ #[derive(Clone)]
+ pub(crate) struct CursorStyleRequest {
+     pub(crate) hitbox_id: Option<HitboxId>,
+@@ -656,7 +681,7 @@
+     current_view: EntityId,
+     priority: usize,
+     parent_node: DispatchNodeId,
+-    element_id_stack: SmallVec<[ElementId; 32]>,
++    element_id_stack: SmallVec<[ElementId; 8]>,
+     text_style_stack: Vec<TextStyleRefinement>,
+     element: Option<AnyElement>,
+     absolute_offset: Point<Pixels>,
+@@ -665,6 +690,7 @@
+ }
+ 
+ pub(crate) struct Frame {
 +    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-@@ -682 +683 @@
+     pub(crate) focus: Option<FocusId>,
+     pub(crate) window_active: bool,
+     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
+@@ -678,8 +704,10 @@
+     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
+     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
+     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
++    pointer_hover_observers: Vec<PointerHoverObserver>,
++    pointer_capture_owners: Vec<EntityId>,
+     #[cfg(any(test, feature = "test-support"))]
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
-@@ -689,0 +691,33 @@
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+@@ -687,8 +715,42 @@
+     pub(crate) tab_stops: TabStopMap,
+ }
+ 
 +// Test selectors follow paint ordering, including cached and nested view replay.
 +// Retaining only the final map loses each cached view's insertion range and can
 +// incorrectly restore another view's later overwrite of the same selector.
@@ -2875,23 +4682,85 @@
 +    }
 +}
 +
-@@ -691,0 +726 @@
+ #[derive(Clone, Default)]
+ pub(crate) struct PrepaintStateIndex {
 +    accessibility_index: usize,
-@@ -708,0 +744,2 @@
+     hitboxes_index: usize,
+     tooltips_index: usize,
+     deferred_draws_index: usize,
+@@ -703,14 +765,19 @@
+     mouse_listeners_index: usize,
+     input_handlers_index: usize,
+     cursor_styles_index: usize,
++    pointer_hover_observers_index: usize,
++    pointer_capture_owners_index: usize,
+     accessed_element_states_index: usize,
+     tab_handle_index: usize,
+     line_layout_index: LineLayoutIndex,
 +    #[cfg(any(test, feature = "test-support"))]
 +    debug_bounds_index: usize,
-@@ -713,0 +751 @@
+ }
+ 
+ impl Frame {
+     pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
+         Frame {
 +            accessibility: Default::default(),
-@@ -729 +767 @@
+             focus: None,
+             window_active: false,
+             element_states: FxHashMap::default(),
+@@ -724,9 +791,11 @@
+             input_handlers: Vec::new(),
+             tooltip_requests: Vec::new(),
+             cursor_styles: Vec::new(),
++            pointer_hover_observers: Vec::new(),
++            pointer_capture_owners: Vec::new(),
+ 
+             #[cfg(any(test, feature = "test-support"))]
 -            debug_bounds: FxHashMap::default(),
 +            debug_bounds: DebugBounds::default(),
-@@ -740,0 +779 @@
+ 
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             next_inspector_instance_ids: FxHashMap::default(),
+@@ -738,6 +807,7 @@
+     }
+ 
+     pub(crate) fn clear(&mut self) {
 +        self.accessibility = Default::default();
-@@ -753,0 +793,3 @@
-+
+         self.element_states.clear();
+         self.accessed_element_states.clear();
+         self.mouse_listeners.clear();
+@@ -746,12 +816,17 @@
+         self.input_handlers.clear();
+         self.tooltip_requests.clear();
+         self.cursor_styles.clear();
++        self.pointer_hover_observers.clear();
++        self.pointer_capture_owners.clear();
+         self.hitboxes.clear();
+         self.window_control_hitboxes.clear();
+         self.deferred_draws.clear();
+         self.tab_stops.clear();
+         self.focus = None;
+ 
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
-@@ -817,0 +860,9 @@
++
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         {
+             self.next_inspector_instance_ids.clear();
+@@ -760,6 +835,9 @@
+     }
+ 
+     pub(crate) fn cursor_style(&self, window: &Window) -> Option<CursorStyle> {
++        if let Some(capture) = &window.pointer_capture {
++            return Some(capture.cursor);
++        }
+         self.cursor_styles
+             .iter()
+             .rev()
+@@ -815,11 +893,21 @@
+     }
+ }
+ 
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -2901,13 +4770,52 @@
 +    }
 +}
 +
-@@ -822,0 +874 @@
+ /// Holds the state for a specific window.
+ pub struct Window {
+     pub(crate) handle: AnyWindowHandle,
+     pub(crate) invalidator: WindowInvalidator,
+     pub(crate) removed: bool,
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-@@ -1097,0 +1150,3 @@
+     pub(crate) platform_window: Box<dyn PlatformWindow>,
+     display_id: Option<DisplayId>,
+     sprite_atlas: Arc<dyn PlatformAtlas>,
+@@ -833,7 +921,7 @@
+     pub(crate) viewport_size: Size<Pixels>,
+     layout_engine: Option<TaffyLayoutEngine>,
+     pub(crate) root: Option<AnyView>,
+-    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
++    pub(crate) element_id_stack: SmallVec<[ElementId; 8]>,
+     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
+     pub(crate) rendered_entity_stack: Vec<EntityId>,
+     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
+@@ -853,6 +941,10 @@
+     default_prevented: bool,
+     mouse_position: Point<Pixels>,
+     mouse_hit_test: HitTest,
++    pointer_press: Option<(MouseButton, Point<Pixels>)>,
++    pointer_dragging: bool,
++    pointer_capture: Option<PointerCapture>,
++    suppressed_pointer_ups: SmallVec<[MouseButton; 5]>,
+     modifiers: Modifiers,
+     capslock: Capslock,
+     scale_factor: f32,
+@@ -1095,6 +1187,12 @@
+                 handle
+                     .update(&mut cx, |_, window, cx| {
+                         window.active.set(active);
 +                        if !active {
++                            window.cancel_pointer_capture(cx);
 +                            window.hidden_cursor_restore.take();
++                            window.pointer_press = None;
++                            window.pointer_dragging = false;
 +                        }
-@@ -1123,0 +1179,10 @@
+                         window.modifiers = window.platform_window.modifiers();
+                         window.capslock = window.platform_window.capslock();
+                         window
+@@ -1121,6 +1219,16 @@
+                     .log_err();
+             }
+         }));
 +        platform_window.on_accessibility_action({
 +            let mut cx = cx.to_async();
 +            Box::new(move |request: crate::AccessibilityRequest| {
@@ -2918,9 +4826,32 @@
 +                    .unwrap_or(false)
 +            })
 +        });
-@@ -1210,0 +1276 @@
+         platform_window.on_input({
+             let mut cx = cx.to_async();
+             Box::new(move |event| {
+@@ -1208,6 +1316,7 @@
+             handle,
+             invalidator,
+             removed: false,
 +            hidden_cursor_restore: None,
-@@ -1373,0 +1440,7 @@
+             platform_window,
+             display_id,
+             sprite_atlas,
+@@ -1236,6 +1345,10 @@
+             default_prevented: true,
+             mouse_position,
+             mouse_hit_test: HitTest::default(),
++            pointer_press: None,
++            pointer_dragging: false,
++            pointer_capture: None,
++            suppressed_pointer_ups: SmallVec::new(),
+             modifiers,
+             capslock,
+             scale_factor,
+@@ -1371,8 +1484,17 @@
+         }
+     }
+ 
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -2928,10 +4859,17 @@
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-@@ -1375,0 +1449,2 @@
+     /// Close this window.
+     pub fn remove_window(&mut self) {
 +        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-@@ -1910,0 +1986,55 @@
+         self.removed = true;
+     }
+ 
+@@ -1908,6 +2030,61 @@
+         self.platform_window.completed_frame();
+     }
+ 
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -2987,14 +4925,62 @@
 +        })
 +    }
 +
-@@ -1943,0 +2074,4 @@
+     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
+     /// the contents of the new [`Scene`], use [`Self::present`].
+     #[profiling::function]
+@@ -1941,6 +2118,10 @@
+         let previous_window_active = self.rendered_frame.window_active;
+         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+         self.next_frame.clear();
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-@@ -2222,0 +2357 @@
+         let current_focus_path = self.rendered_frame.focus_path();
+         let current_window_active = self.rendered_frame.window_active;
+ 
+@@ -1975,6 +2156,17 @@
+         self.reset_cursor_style(cx);
+         self.refreshing = false;
+         self.invalidator.set_phase(DrawPhase::None);
++        if self.pointer_capture.as_ref().is_some_and(|capture| {
++            !self
++                .rendered_frame
++                .pointer_capture_owners
++                .contains(&capture.owner)
++        }) {
++            // Roots have finished updating their entities. A removed, replaced or
++            // no-longer-held control cannot retain input just because it is alive.
++            self.cancel_pointer_capture(cx);
++            self.reset_cursor_style(cx);
++        }
+         self.needs_present.set(true);
+ 
+         ArenaClearNeeded
+@@ -2086,6 +2278,11 @@
+     }
+ 
+     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
++        // Hoverable tooltips may otherwise retain themselves or wait through a
++        // hide delay even after their source stops being eligible.
++        if self.is_pointer_dragging() {
++            return None;
++        }
+         // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
+         for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
+             let Some(Some(tooltip_request)) = self
+@@ -2220,6 +2417,7 @@
+ 
+     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
+         PrepaintStateIndex {
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2368,8 @@
+             hitboxes_index: self.next_frame.hitboxes.len(),
+             tooltips_index: self.next_frame.tooltip_requests.len(),
+             deferred_draws_index: self.next_frame.deferred_draws.len(),
+@@ -2230,6 +2428,14 @@
+     }
+ 
+     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -3003,16 +4989,52 @@
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -2289,0 +2433,2 @@
+         self.next_frame.hitboxes.extend(
+             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+                 .iter()
+@@ -2284,13 +2490,38 @@
+             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
+             input_handlers_index: self.next_frame.input_handlers.len(),
+             cursor_styles_index: self.next_frame.cursor_styles.len(),
++            pointer_hover_observers_index: self.next_frame.pointer_hover_observers.len(),
++            pointer_capture_owners_index: self.next_frame.pointer_capture_owners.len(),
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             tab_handle_index: self.next_frame.tab_stops.paint_index(),
+             line_layout_index: self.text_system.layout_index(),
 +            #[cfg(any(test, feature = "test-support"))]
 +            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
-@@ -2293,0 +2439,5 @@
+         }
+     }
+ 
+     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.next_frame.debug_bounds.replay(
 +            &self.rendered_frame.debug_bounds.insertion_history
 +                [range.start.debug_bounds_index..range.end.debug_bounds_index],
 +        );
-@@ -3527,7 +3677,11 @@
++        self.next_frame.pointer_capture_owners.extend_from_slice(
++            &self.rendered_frame.pointer_capture_owners
++                [range.start.pointer_capture_owners_index..range.end.pointer_capture_owners_index],
++        );
++        self.next_frame.pointer_hover_observers.extend(
++            self.rendered_frame.pointer_hover_observers[range.start.pointer_hover_observers_index
++                ..range.end.pointer_hover_observers_index]
++                .iter_mut()
++                .map(|observer| PointerHoverObserver {
++                    view: observer.view,
++                    listener: observer.listener.take(),
++                    hitbox: observer.hitbox,
++                    group_bounds: observer.group_bounds,
++                    painted_hover: observer.painted_hover,
++                }),
++        );
+         self.next_frame.cursor_styles.extend(
+             self.rendered_frame.cursor_styles
+                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
+@@ -3524,14 +3755,28 @@
+         subscription
+     }
+ 
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -3031,7 +5053,7 @@
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-@@ -3534,0 +3689,10 @@
+             cx.platform.set_cursor_style(style);
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -3042,10 +5064,391 @@
 +                        style
 +                    });
 +            }
-@@ -3576,0 +3741,6 @@
+         }
+     }
+ 
+@@ -3576,6 +3821,188 @@
+             .unwrap_or_else(|| action.name().to_string())
+     }
+ 
++    /// Record a paint dependency on pressed-pointer hover state. Entries retain
++    /// their insertion ranges through cached/deferred paint replay.
++    pub(crate) fn observe_pointer_hover(
++        &mut self,
++        hitbox: Option<HitboxId>,
++        group_bounds: Option<Bounds<Pixels>>,
++        painted_hover: bool,
++    ) {
++        self.invalidator.debug_assert_paint();
++        let view = self.current_view();
++        self.next_frame
++            .pointer_hover_observers
++            .push(PointerHoverObserver {
++                view,
++                listener: None,
++                hitbox,
++                group_bounds,
++                painted_hover,
++            });
++    }
++
++    /// Register a hover notification independent of mouse-event propagation.
++    /// Notifications run during input, never while painting a view's model.
++    /// Returning true marks the registering view dirty for callback-derived paint.
++    pub(crate) fn on_pointer_hover_change(
++        &mut self,
++        listener: impl Fn(&mut Window, &mut App) -> bool + 'static,
++    ) {
++        self.invalidator.debug_assert_paint();
++        let view = self.current_view();
++        self.next_frame
++            .pointer_hover_observers
++            .push(PointerHoverObserver {
++                view,
++                listener: Some(Box::new(listener)),
++                hitbox: None,
++                group_bounds: None,
++                painted_hover: false,
++            });
++    }
++
++    fn dispatch_pointer_hover(&mut self, cx: &mut App) {
++        let observers = mem::take(&mut self.rendered_frame.pointer_hover_observers);
++        let propagate = cx.propagate_event;
++        let default_prevented = self.default_prevented;
++        for observer in &observers {
++            if let Some(listener) = &observer.listener
++                && listener(self, cx)
++            {
++                let mut invalidation = self.invalidator.inner.borrow_mut();
++                invalidation.dirty_views.insert(observer.view);
++                invalidation.dirty = true;
++            }
++        }
++        // Hover notifications do not consume the active gesture's mouse event.
++        cx.propagate_event = propagate;
++        self.default_prevented = default_prevented;
++        self.rendered_frame.pointer_hover_observers = observers;
++    }
++
++    fn invalidate_pointer_hover(&self) {
++        // This is window-local style state, not a model/entity mutation. Use
++        // existing view-path invalidation without notifying model observers or
++        // forcing unrelated cached clip scenes to render again.
++        let mut invalidation = self.invalidator.inner.borrow_mut();
++        for observer in &self.rendered_frame.pointer_hover_observers {
++            if observer.painted_hover
++                || observer.hitbox.is_some_and(|id| id.is_hovered(self))
++                || observer
++                    .group_bounds
++                    .is_some_and(|bounds| bounds.contains(&self.mouse_position()))
++            {
++                invalidation.dirty_views.insert(observer.view);
++            }
++        }
++        invalidation.dirty = true;
++    }
++
++    /// Claim one pressed pointer for an explicit gesture owner. While held, all
++    /// mouse input goes only to `listener`, including movement outside its bounds;
++    /// keyboard dispatch stays unchanged. The initiating press keeps its normal
++    /// propagation, including gesture-owned ancestor selection. Subsequent mouse
++    /// input is exclusive. Escape reaches existing key handlers before lease
++    /// retirement, preserving their cancellation/propagation guards. Refuses a
++    /// different owner, an absent or
++    /// mismatched press, and an existing typed drag. Call before mutating the gesture.
++    ///
++    /// The owner must call `renew_pointer_capture` while painting its held gesture.
++    /// Missing witnesses (including source replacement), escape, button loss and
++    /// deactivation cancel exactly once outside paint. Normal matching mouse-up
++    /// runs the listener then releases without cancellation. A cancelled press's
++    /// trailing mouse-up is consumed. This lifetime never follows an edit ACK.
++    pub fn capture_pointer(
++        &mut self,
++        owner: EntityId,
++        button: MouseButton,
++        cursor: CursorStyle,
++        listener: impl FnMut(&dyn Any, &mut Window, &mut App) + 'static,
++        cancelled: impl FnOnce(&mut Window, &mut App) + 'static,
++        cx: &App,
++    ) -> bool {
++        if let Some(capture) = &self.pointer_capture {
++            return capture.owner == owner && capture.button == button;
++        }
++        if cx.has_active_drag()
++            || !self
++                .pointer_press
++                .is_some_and(|(pressed, _)| pressed == button)
++        {
++            return false;
++        }
++        self.pointer_capture = Some(PointerCapture {
++            owner,
++            button,
++            cursor,
++            listener: Some(Box::new(listener)),
++            cancelled: Some(Box::new(cancelled)),
++        });
++        true
++    }
++
++    /// Renew the active owner's held-gesture witness and cursor during paint.
++    /// Ordinary hitbox/window cursor requests cannot override this cursor.
++    pub fn renew_pointer_capture(&mut self, owner: EntityId, cursor: CursorStyle) {
++        self.invalidator.debug_assert_paint();
++        if let Some(capture) = &mut self.pointer_capture
++            && capture.owner == owner
++        {
++            capture.cursor = cursor;
++            self.next_frame.pointer_capture_owners.push(owner);
++        }
++    }
++
++    /// Cancel only this owner's active lease, including an admitted press whose
++    /// host then refuses Begin. Other owners and typed drags remain untouched.
++    /// The normal cancellation callback runs immediately outside paint.
++    pub fn cancel_pointer_capture_for(&mut self, owner: EntityId, cx: &mut App) -> bool {
++        if self.pointer_capture.as_ref().is_some_and(|capture| capture.owner == owner) {
++            self.cancel_pointer_capture(cx);
++            true
++        } else {
++            false
++        }
++    }
++
++    pub(crate) fn has_pointer_capture(&self) -> bool {
++        self.pointer_capture.is_some()
++    }
++
++    pub(crate) fn cancel_pointer_capture(&mut self, cx: &mut App) {
++        if let Some(mut capture) = self.pointer_capture.take() {
++            if !self.suppressed_pointer_ups.contains(&capture.button) {
++                // MouseButton has five possible values; unique entries stay
++                // within inline storage even across overlapping cancellations.
++                self.suppressed_pointer_ups.push(capture.button);
++            }
++            self.pointer_press = None;
++            self.pointer_dragging = false;
++            if let Some(cancelled) = capture.cancelled.take() {
++                cancelled(self, cx);
++            }
++            self.invalidate_pointer_hover();
++        }
++    }
++
++    /// Whether an explicit pointer owner is held, or a pressed pointer has moved
++    /// beyond GPUI's drag threshold.
++    ///
++    /// This is window input state, independent of event propagation, view caches,
++    /// and asynchronous edit acknowledgements. It suppresses ordinary hover paint;
++    /// it does not replace a consumer's capture, cancellation or drop contract.
++    /// Release, button loss, escape and window deactivation clear it.
++    pub fn is_pointer_dragging(&self) -> bool {
++        self.pointer_dragging || self.pointer_capture.is_some()
 +    }
 +
 +    /// Dispatch input through this window's existing event path, without exposing
 +    /// private propagation metadata or generating operating-system input events.
 +    pub fn dispatch_input(&mut self, event: PlatformInput, cx: &mut App) {
 +        self.dispatch_event(event, cx);
++    }
++
+     /// Dispatch a mouse or keyboard event on the window.
+     #[profiling::function]
+     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
+@@ -3585,6 +4012,63 @@
+         // Handlers may set this to true by calling `prevent_default`.
+         self.default_prevented = false;
+ 
++        let was_dragging = self.is_pointer_dragging();
++        // Retain isolation for the entire terminal event, even if cancellation
++        // or the owner clears its lease while handling it.
++        let mut isolated_mouse_event = self.pointer_capture.is_some();
++        match &event {
++            PlatformInput::MouseDown(down) => {
++                if self
++                    .pointer_capture
++                    .as_ref()
++                    .is_some_and(|capture| capture.button != down.button)
++                {
++                    // A secondary button pressed during capture must not leak
++                    // its release after the primary gesture has finished.
++                    if !self.suppressed_pointer_ups.contains(&down.button) {
++                        self.suppressed_pointer_ups.push(down.button);
++                    }
++                } else {
++                    self.suppressed_pointer_ups
++                        .retain(|button| *button != down.button);
++                }
++            }
++            PlatformInput::MouseUp(up) if self.suppressed_pointer_ups.contains(&up.button) => {
++                self.suppressed_pointer_ups
++                    .retain(|button| *button != up.button);
++                isolated_mouse_event = true;
++            }
++            PlatformInput::MouseMove(moved)
++                if self
++                    .pointer_capture
++                    .as_ref()
++                    .is_some_and(|capture| moved.pressed_button != Some(capture.button)) =>
++            {
++                self.cancel_pointer_capture(cx);
++            }
++            _ => {}
++        }
++        match &event {
++            PlatformInput::MouseDown(down) if self.pointer_press.is_none() => {
++                self.pointer_press = Some((down.button, down.position));
++            }
++            PlatformInput::MouseMove(moved) => {
++                if let Some((button, origin)) = self.pointer_press {
++                    if moved.pressed_button == Some(button) {
++                        self.pointer_dragging |=
++                            (moved.position - origin).magnitude() > POINTER_DRAG_THRESHOLD;
++                    } else {
++                        self.pointer_press = None;
++                        self.pointer_dragging = false;
++                    }
++                }
++            }
++            PlatformInput::KeyDown(key) if key.keystroke.key == "escape" => {
++                self.pointer_press = None;
++                self.pointer_dragging = false;
++            }
++            _ => {}
++        }
+         let event = match event {
+             // Track the mouse position with our own state, since accessing the platform
+             // API for the mouse position can only occur on the main thread.
+@@ -3662,10 +4146,60 @@
+             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
+         };
+ 
++        let pointer_hover_transition = was_dragging != self.is_pointer_dragging();
++        let keyboard_hover_transition =
++            event.keyboard_event().is_some() && pointer_hover_transition;
++        if keyboard_hover_transition {
++            self.invalidate_pointer_hover();
++            self.dispatch_pointer_hover(cx);
++        }
+         if let Some(any_mouse_event) = event.mouse_event() {
+-            self.dispatch_mouse_event(any_mouse_event, cx);
++            self.dispatch_mouse_event(
++                any_mouse_event,
++                pointer_hover_transition,
++                isolated_mouse_event,
++                cx,
++            );
+         } else if let Some(any_key_event) = event.keyboard_event() {
+             self.dispatch_key_event(any_key_event, cx);
++        }
++
++        if keyboard_hover_transition {
++            self.dispatch_pointer_hover(cx);
++            self.invalidate_pointer_hover();
++        }
++
++        if let PlatformInput::KeyDown(key) = &event
++            && key.keystroke.key == "escape"
++        {
++            // Existing widget key handlers must see their held state so their
++            // cancellation/propagation guards still run. Retire any remaining
++            // lease afterward; the owner may already have cancelled its model.
++            self.cancel_pointer_capture(cx);
++        }
++
++        if let PlatformInput::MouseUp(up) = &event {
++            if self
++                .pointer_capture
++                .as_ref()
++                .is_some_and(|capture| capture.button == up.button)
++            {
++                self.pointer_capture.take();
++            }
++            if self
++                .pointer_press
++                .is_some_and(|(button, _)| button == up.button)
++            {
++                self.pointer_press = None;
++                self.pointer_dragging = false;
++            }
++        }
++        if was_dragging != self.is_pointer_dragging() {
++            self.invalidate_pointer_hover();
++            self.dispatch_pointer_hover(cx);
++        }
++        if isolated_mouse_event != self.pointer_capture.is_some() {
++            self.reset_cursor_style(cx);
+         }
+ 
+         DispatchEventResult {
+@@ -3674,17 +4208,50 @@
+         }
+     }
+ 
+-    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
++    fn dispatch_mouse_event(
++        &mut self,
++        event: &dyn Any,
++        hover_transition: bool,
++        isolated: bool,
++        cx: &mut App,
++    ) {
+         let hit_test = self.rendered_frame.hit_test(self.mouse_position());
+         if hit_test != self.mouse_hit_test {
+             self.mouse_hit_test = hit_test;
+             self.reset_cursor_style(cx);
+         }
+ 
++        if hover_transition {
++            // Use the updated hit test: both painted hover and newly eligible
++            // hover must retire/restore even if capture consumes this event.
++            self.invalidate_pointer_hover();
++        }
++
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         if self.is_inspector_picking(cx) {
+             self.handle_inspector_mouse_event(event, cx);
+             // When inspector is picking, all other mouse handling is skipped.
++            return;
++        }
++
++        if event.is::<MouseMoveEvent>() {
++            self.dispatch_pointer_hover(cx);
++        }
++
++        if isolated {
++            let listener = self
++                .pointer_capture
++                .as_mut()
++                .and_then(|capture| capture.listener.take());
++            if let Some(mut listener) = listener {
++                listener(event, self, cx);
++                if let Some(capture) = &mut self.pointer_capture {
++                    capture.listener = Some(listener);
++                }
++            }
++            // No underlying action, wheel, raw listener or trailing click can
++            // receive this input, even if the owner ignored this event type.
++            cx.stop_propagation();
+             return;
+         }
+ 
+diff --git a/src/element.rs b/src/element.rs
+--- a/src/element.rs
++++ b/src/element.rs
+@@ -272,8 +272,13 @@
+ }
+
+ /// A globally unique identifier for an element, used to track state across frames.
++///
++/// Keep short paths inline without carrying 32 entries through every draw phase
++/// and state-map operation. Longer paths spill into SmallVec's existing dynamic
++/// storage: this is not a depth limit. Equality, hashing and display retain the
++/// entire ordered path. Window's active and deferred stacks use the same capacity.
+ #[derive(Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
+-pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
++pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 8]>);
+
+ impl Display for GlobalElementId {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

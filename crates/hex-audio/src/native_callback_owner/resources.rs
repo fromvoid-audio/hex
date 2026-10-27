@@ -11,6 +11,23 @@ pub(crate) struct ChannelStorage {
     pub(crate) shared_handles: usize,
 }
 impl ChannelStorage {
+    /// The fixed owner Box and terminal payload requested by `reserve::<T>`.
+    /// The enclosing Guard/Terminal values and Arc/allocator internals are not
+    /// additional DATA here. Only that private factory establishes custody.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn owner_reservation<T>() -> Option<Self> {
+        Some(Self {
+            data_bytes: std::mem::size_of::<T>()
+                .checked_add(std::mem::size_of::<OnceLock<Mutex<Box<T>>>>())?,
+            shared_groups: 1,
+            shared_handles: 2,
+        })
+    }
+    pub(crate) fn ring_bytes<T>(capacity: usize) -> Option<usize> {
+        capacity
+            .checked_mul(std::mem::size_of::<T>())?
+            .checked_add(std::mem::size_of::<rtrb::RingBuffer<T>>())
+    }
     pub(crate) fn ring<T>(ring: &rtrb::RingBuffer<T>) -> Option<Self> {
         Some(Self {
             data_bytes: ring
@@ -44,6 +61,7 @@ pub(crate) struct NativeCandidateBoundary {
     data_cell: usize,
     error_cell: usize,
     endpoint_cells: Option<[usize; 2]>,
+    receipt_mailbox: Option<usize>,
     data_bytes: usize,
     anchored: bool,
     channels: ChannelStorage,
@@ -85,12 +103,14 @@ impl NativeCandidateBoundary {
             .checked_add(std::mem::size_of::<Guard<NativeCallbackOwner>>())?
             .checked_add(std::mem::size_of::<Guard<ErrorCallbackOwner>>())?
             .checked_add(data.status.candidate_boundary_data_bytes()?)?
-            .checked_add(channels.data_bytes)?;
+            .checked_add(channels.data_bytes)?
+            .checked_add(data.callback.native_endpoint_bank_data_bytes()?)?;
         Some(Self {
             root: root.root_id(),
             data_cell,
             error_cell,
             endpoint_cells: None,
+            receipt_mailbox: None,
             data_bytes,
             anchored: false,
             channels,
@@ -118,6 +138,14 @@ impl NativeCandidateBoundary {
         let forwarding = client.owner_ref()?.resident_forwarding_storage(control)?;
         self.channels = self.channels.plus(forwarding)?;
         self.data_bytes = self.data_bytes.checked_add(forwarding.data_bytes)?;
+        self.receipt_mailbox = Some(client.receipt_mailbox_identity()?);
+        let receipt_bytes = crate::prepared::retired_scalar_receipts::storage_bytes();
+        self.channels = self.channels.plus(ChannelStorage {
+            data_bytes: receipt_bytes,
+            shared_groups: 1,
+            shared_handles: 2,
+        })?;
+        self.data_bytes = self.data_bytes.checked_add(receipt_bytes)?;
         self.spectrum_reader_bound = true;
         let client_cell = client.guard().shared_cell()?;
         let publication_cell = publication.guard().shared_cell()?;
@@ -157,11 +185,12 @@ impl NativeCandidateBoundary {
                 .as_ref()
                 .zip(endpoints.publication.cell.as_ref())
                 .is_some_and(|(client, publication)| {
-                    expected
-                        == [
-                            Arc::as_ptr(client) as usize,
-                            Arc::as_ptr(publication) as usize,
-                        ]
+                    self.receipt_mailbox == Some(endpoints.receipts.identity())
+                        && expected
+                            == [
+                                Arc::as_ptr(client) as usize,
+                                Arc::as_ptr(publication) as usize,
+                            ]
                 }),
             _ => false,
         };
@@ -199,4 +228,19 @@ impl NativeCandidateBoundary {
             && self.spectrum_reaper_bound
             && self.root == root
     }
+}
+
+/// Normal worker factory's fixed payloads; both carriers and all endpoints are
+/// quoted before opening. A live constructor still validates actual capacities.
+pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
+    std::mem::size_of::<NativeCallbackOwner>()
+        .checked_add(std::mem::size_of::<ErrorCallbackOwner>())?
+        .checked_add(std::mem::size_of::<OnceLock<Mutex<Box<NativeCallbackOwner>>>>())?
+        .checked_add(std::mem::size_of::<OnceLock<Mutex<Box<ErrorCallbackOwner>>>>())?
+        .checked_add(std::mem::size_of::<NativeRetirement>())?
+        .checked_add(std::mem::size_of::<Guard<NativeCallbackOwner>>())?
+        .checked_add(std::mem::size_of::<Guard<ErrorCallbackOwner>>())?
+        .checked_add(crate::prepared::worker_boundary_storage_quote()?)?
+        .checked_add(crate::prepared::native_endpoint_bank_storage_quote()?)?
+        .checked_add(crate::spectrum_worker::constructor_storage_quote()?)
 }

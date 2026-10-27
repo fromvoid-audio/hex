@@ -163,6 +163,6 @@ impl DocumentV26 {
                 "clip name references an unknown arrangement clip",
             ));
         }
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }
 }

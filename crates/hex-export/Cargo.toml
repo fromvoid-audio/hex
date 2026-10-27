@@ -15,6 +15,7 @@ hex-engine = { path = "../hex-engine" }
 rustix = { version = "=1.1.5", features = ["fs"] }
 
 [dev-dependencies]
+hex-tuning = { path = "../hex-tuning" }
 hex-project = { path = "../hex-project" }
 hex-lattice = { path = "../hex-lattice" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }

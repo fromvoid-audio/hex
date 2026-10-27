@@ -123,19 +123,47 @@ fn new_eq(nodes: usize, automated: bool) -> Result<eq::EqState> {
 fn scenarios() -> Result<Vec<Scenario>> {
     let legacy_state = legacy_eight_bells()?;
     let legacy = eq8::EQ8_DEFINITION
-        .prepare_processor(&legacy_state, RATE)?
+        .prepare_processor(
+            &legacy_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: RATE,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )?
         .ok_or("legacy EQ8 did not prepare a processor")?;
     let static_eight_state = new_eq(8, false)?.encode()?;
     let static_eight = eq::EQ_DEFINITION
-        .prepare_processor(&static_eight_state, RATE)?
+        .prepare_processor(
+            &static_eight_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: RATE,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )?
         .ok_or("8-band EQ did not prepare a processor")?;
     let static_max_state = new_eq(64, false)?.encode()?;
     let static_max = eq::EQ_DEFINITION
-        .prepare_processor(&static_max_state, RATE)?
+        .prepare_processor(
+            &static_max_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: RATE,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )?
         .ok_or("64-band static EQ did not prepare a processor")?;
     let automated_state = new_eq(64, true)?.encode()?;
     let automated_max = eq::EQ_DEFINITION
-        .prepare_processor(&automated_state, RATE)?
+        .prepare_processor(
+            &automated_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: RATE,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )?
         .ok_or("64-band automated EQ did not prepare a processor")?;
     Ok(vec![
         Scenario {
@@ -233,9 +261,13 @@ fn profile(scenario: &Scenario, block_frames: usize) -> Result<()> {
             frames.copy_from_slice(&template);
             clock.frame = frame_origin;
             if scenario.clocked {
-                runtime.process_block_with_clock(&mut frames, Some(&clock));
+                runtime.process_block_with_clock(
+                    &mut frames,
+                    Some(&clock),
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
             } else {
-                runtime.process_block(&mut frames);
+                runtime.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             }
             frame_origin = frame_origin
                 .checked_add(block_frames as u64)
@@ -249,9 +281,13 @@ fn profile(scenario: &Scenario, block_frames: usize) -> Result<()> {
         for block in black_box(&mut workload).chunks_exact_mut(block_frames) {
             clock.frame = frame_origin;
             if scenario.clocked {
-                runtime.process_block_with_clock(block, Some(black_box(&clock)));
+                runtime.process_block_with_clock(
+                    block,
+                    Some(black_box(&clock)),
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
             } else {
-                runtime.process_block(block);
+                runtime.process_block(block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             }
             black_box(block);
             frame_origin = frame_origin
@@ -302,8 +338,8 @@ fn legacy_pcm_difference(scenarios: &[Scenario]) -> Result<f32> {
     let mut eq_frames = legacy_frames.clone();
     let mut legacy = legacy;
     let mut eq = eq;
-    legacy.process_block(&mut legacy_frames);
-    eq.process_block(&mut eq_frames);
+    legacy.process_block(&mut legacy_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    eq.process_block(&mut eq_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let _ = check_output(&legacy_frames)?;
     let _ = check_output(&eq_frames)?;
     Ok(legacy_frames

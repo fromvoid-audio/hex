@@ -8,7 +8,7 @@ use crate::{
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterKind,
-    ParameterValue, validated_state_descriptors,
+    ParameterValue,
 };
 use std::{fmt, sync::Arc};
 
@@ -73,9 +73,9 @@ pub fn check_metadata<D: NativeDeviceMetadata + ?Sized>(
     let descriptors = contract(
         definition,
         "state descriptors",
-        validated_state_descriptors(definition, &state),
+        hex_lattice_contract::validated_state_parameters(definition, &state),
     )?;
-    for descriptor in &descriptors {
+    for (descriptor, semantics) in &descriptors {
         let current = contract(
             definition,
             "read parameter",
@@ -91,6 +91,15 @@ pub fn check_metadata<D: NativeDeviceMetadata + ?Sized>(
             "parameter availability",
             definition.parameter_enabled(&state, descriptor.id),
         )?;
+        if semantics.is_some_and(|s| s.access == hex_lattice_contract::ParameterAccess::ReadOnly) {
+            if definition
+                .patch_parameter(&state, descriptor.id, current)
+                .is_ok()
+            {
+                return Err(fail(definition, "read-only parameter accepted"));
+            }
+            continue;
+        }
         if enabled {
             let patched = contract(
                 definition,
@@ -156,12 +165,20 @@ fn chain(
     let prepared = contract(
         definition,
         "effect preparation",
-        registry.prepare_runtime_device(state, rate),
+        registry.prepare_runtime_device(
+            state,
+            &crate::DevicePreparationContext {
+                sample_rate: rate,
+                tuning: &crate::TuningTable::default(),
+                resources: &crate::EMPTY_DEVICE_RESOURCES,
+            },
+        ),
     )?;
     contract(
         definition,
         "runtime admission",
         NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            automation: Default::default(),
             meter: Arc::new(DeviceMeter::default()),
             owner: ProcessorChainOwner::Track(1),
             device_id: 1,
@@ -175,20 +192,25 @@ fn chain(
     )
 }
 fn render(
+    definition: &dyn NativeDeviceDefinition,
     chain: &mut NativeRuntimeChain,
     input: &[StereoFrame],
     partitions: &[usize],
-) -> Vec<StereoFrame> {
+) -> Result<Vec<StereoFrame>, ConformanceFailure> {
     let mut output = input.to_vec();
     let mut offset = 0;
     for &length in partitions {
         let end = offset + length;
         chain.begin_block();
-        chain.process_block(&mut output[offset..end]);
+        contract(
+            definition,
+            "effect processing",
+            chain.process_block(&mut output[offset..end]),
+        )?;
         chain.commit_block();
         offset = end;
     }
-    output
+    Ok(output)
 }
 fn same(left: &[StereoFrame], right: &[StereoFrame], tolerance: f32) -> bool {
     left.len() == right.len()
@@ -222,24 +244,40 @@ pub fn check_effect(
             }
         })
         .collect();
-    let expected = render(&mut whole, &input, &[513]);
-    let partitioned = render(&mut chunks, &input, &[1, 7, 31, 3, 257, 214]);
+    let expected = render(definition, &mut whole, &input, &[513])?;
+    let partitioned = render(definition, &mut chunks, &input, &[1, 7, 31, 3, 257, 214])?;
     if !same(&expected, &partitioned, 1.0e-6) {
         return Err(fail(definition, "finite partition agreement"));
     }
     chunks.reset();
-    if !same(&expected, &render(&mut chunks, &input, &[513]), 0.0) {
+    if !same(
+        &expected,
+        &render(definition, &mut chunks, &input, &[513])?,
+        0.0,
+    ) {
         return Err(fail(definition, "reset reproducibility"));
     }
     let mut bypass = chain(definition, state, sample_rate, true)?;
-    if !same(&input, &render(&mut bypass, &input, &[513]), 0.0) {
+    if !same(
+        &input,
+        &render(definition, &mut bypass, &input, &[513])?,
+        0.0,
+    ) {
         return Err(fail(definition, "bypass changes samples"));
     }
     let mut abandoned = input.clone();
     chunks.begin_block();
-    chunks.process_block(&mut abandoned); // deliberately no commit
-    let continuation = render(&mut whole, &input, &[513]);
-    if !same(&continuation, &render(&mut chunks, &input, &[513]), 0.0) {
+    contract(
+        definition,
+        "abandoned effect processing",
+        chunks.process_block(&mut abandoned),
+    )?; // deliberately no commit
+    let continuation = render(definition, &mut whole, &input, &[513])?;
+    if !same(
+        &continuation,
+        &render(definition, &mut chunks, &input, &[513])?,
+        0.0,
+    ) {
         return Err(fail(
             definition,
             "abandoned render changed committed history",
@@ -251,8 +289,8 @@ pub fn check_effect(
     }
     inherited.inherit_from(&whole);
     if !same(
-        &render(&mut whole, &input, &[513]),
-        &render(&mut inherited, &input, &[513]),
+        &render(definition, &mut whole, &input, &[513])?,
+        &render(definition, &mut inherited, &input, &[513])?,
         0.0,
     ) {
         return Err(fail(definition, "history inheritance changes continuation"));
@@ -281,7 +319,14 @@ pub fn check_instrument(
     let prepared = contract(
         definition,
         "instrument preparation",
-        definition.prepare_instrument(state, sample_rate),
+        definition.prepare_instrument(
+            state,
+            &crate::DevicePreparationContext {
+                sample_rate,
+                tuning: &crate::TuningTable::default(),
+                resources: &crate::EMPTY_DEVICE_RESOURCES,
+            },
+        ),
     )?;
     if contract(
         definition,
@@ -330,11 +375,11 @@ pub fn check_instrument(
             context.prepare_note(60, 100),
         )?;
         let a: Vec<_> = (0..513)
-            .map(|age| context.sample(&note, age, 257))
+            .map(|age| context.sample(&note, age, 257, &crate::EMPTY_DEVICE_RESOURCES))
             .collect();
         let mut b: Vec<_> = (0..513)
             .rev()
-            .map(|age| context.sample(&note, age, 257))
+            .map(|age| context.sample(&note, age, 257, &crate::EMPTY_DEVICE_RESOURCES))
             .collect();
         b.reverse();
         if !same(&a, &b, 0.0) {
@@ -347,8 +392,13 @@ pub fn check_instrument(
         "analytic note preparation",
         prepared.prepare_note(60, 100),
     )?;
-    let a: Vec<_> = (0..513).map(|age| note.sample(age, 257)).collect();
-    let mut b: Vec<_> = (0..513).rev().map(|age| note.sample(age, 257)).collect();
+    let a: Vec<_> = (0..513)
+        .map(|age| note.sample(age, 257, &crate::EMPTY_DEVICE_RESOURCES))
+        .collect();
+    let mut b: Vec<_> = (0..513)
+        .rev()
+        .map(|age| note.sample(age, 257, &crate::EMPTY_DEVICE_RESOURCES))
+        .collect();
     b.reverse();
     if !same(&a, &b, 0.0) {
         return Err(fail(definition, "analytic finite determinism"));
@@ -382,8 +432,12 @@ fn render_instrument<D: NativeDeviceMetadata + ?Sized>(
             });
         }
         pair.begin_block();
-        pair.process_block(&events, &mut output[offset..end])
-            .map_err(|_| fail(definition, "instrument event processing"))?;
+        pair.process_block(
+            &events,
+            &mut output[offset..end],
+            &crate::EMPTY_DEVICE_RESOURCES,
+        )
+        .map_err(|_| fail(definition, "instrument event processing"))?;
         pair.commit_block();
         offset = end;
     }
@@ -395,3 +449,4 @@ mod tests;
 
 /// Registered original fixture for owned-effect host proofs, never a browser device.
 pub mod owned_delay;
+pub mod resource_pcm;

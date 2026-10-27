@@ -187,11 +187,25 @@ fn unchanged_provider_is_the_oracle_for_owner_levels_and_interrupted_clock() {
         assert_eq!(actual, expected);
         assert_eq!(
             provider
-                .sample_with_parameters(root.key.id(), &actual, &note, 517 + offset, u64::MAX)
+                .sample_with_parameters(
+                    root.key.id(),
+                    &actual,
+                    &note,
+                    517 + offset,
+                    u64::MAX,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES
+                )
                 .unwrap()
                 .map(f32::to_bits),
             provider
-                .sample_with_parameters(root.key.id(), &expected, &note, 517 + offset, u64::MAX)
+                .sample_with_parameters(
+                    root.key.id(),
+                    &expected,
+                    &note,
+                    517 + offset,
+                    u64::MAX,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES
+                )
                 .unwrap()
                 .map(f32::to_bits)
         );

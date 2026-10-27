@@ -1,0 +1,82 @@
+{
+  "batches": [
+    {
+      "execution": {
+        "evidence_commit": "ea4492ff33003c6a3a995087ab6cccd796268381",
+        "execution_sha256": "eb7529cf6ca344a457f9f7856e90621f6747ae1bf4a3aa276411ba83fd06fcc0",
+        "origin": "configured mac codex cli",
+        "result_sha256": "80ff2b23e017a75bc553ecbe7696e79cd57a4fac4738bba932d5f58b642eced2"
+      },
+      "generated_at": "2026-10-18T18:23:00.383562+00:00",
+      "generator": "configured codex cli",
+      "input": {
+        "base": "cdba26a815a2286ed43c2a6ed5089f5c9b88613f",
+        "format": 1,
+        "input_sha256": "e2c0bf048f28ac36c9f201ba6e154c669a8f730e582856d2dbb774016ab8ef20",
+        "input_tree": "999a3b3640bf3f2151a96c954175b7368eb776ab2d05d01abb80c2199a9836f2",
+        "prompt_sha256": "29382d674fdfe3640daabe2fea0725685f7a95a01ebae4f8a60cf4b69358627a",
+        "prompt_version": 1,
+        "schema_sha256": "2c3b465d30445567dfb7a75bc850bcc47974b6c20bdd080952f43790cb71a988",
+        "source": "cb8befc4f2dd19d0af1fd02932cb52941653b479",
+        "version": "0.1.0"
+      },
+      "input_sha256": "e2c0bf048f28ac36c9f201ba6e154c669a8f730e582856d2dbb774016ab8ef20",
+      "result": {
+        "entries": [
+          {
+            "category": "features",
+            "commits": [
+              "3b78d458e05b4aeb3d604b7e3c86e424a84154c3"
+            ],
+            "text": "adjust track volume with a live slider or editable db value in resident audio projects. each drag takes one undo step, and automated tracks show “auto”."
+          },
+          {
+            "category": "features",
+            "commits": [
+              "dd6f983d9fcab93704af8da5cd414b3f4eaa6a42"
+            ],
+            "text": "right-click a custom browser place to choose an icon. icon choices are saved for future sessions."
+          },
+          {
+            "category": "improvements",
+            "commits": [
+              "b9d3572fb5ad1ba3a4a92fc0ceb05756420abeaa",
+              "cb8befc4f2dd19d0af1fd02932cb52941653b479"
+            ],
+            "text": "resize the browser sidebar continuously down to icons only, with aligned icons and labels that clip without shifting rows."
+          },
+          {
+            "category": "improvements",
+            "commits": [
+              "a18baca9f21554f964c1316a0ad94572c4ef34f2"
+            ],
+            "text": "focusing browser search selects the current query for quick replacement. click again to position the caret, or drag to select part of the text."
+          },
+          {
+            "category": "improvements",
+            "commits": [
+              "56e6c9c1fce398c7c7e1bdacd6ca08169ffb99d6"
+            ],
+            "text": "names and numeric fields display lowercase while editing, while preserving the original case in saved names and copied text."
+          },
+          {
+            "category": "fixes",
+            "commits": [
+              "5e0677815ded0880cfd436d805a6f86710ac6097"
+            ],
+            "text": "selected audio and midi clips keep their complete outlines visible where they meet track separators."
+          },
+          {
+            "category": "fixes",
+            "commits": [
+              "78d83486f13e2d7981622cee0ebb83d78ea980de"
+            ],
+            "text": "the browser settings button now closes open settings at compact sidebar widths without widening the sidebar."
+          }
+        ],
+        "reason": ""
+      }
+    }
+  ],
+  "format": 1
+}

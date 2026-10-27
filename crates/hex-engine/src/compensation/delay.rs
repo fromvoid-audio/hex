@@ -36,7 +36,15 @@ impl<T: Copy + Default> RingPair<T> {
     }
 
     pub(super) fn storage_bytes(&self) -> Result<usize, CompensationError> {
-        add_bytes(vector_bytes(&self.committed)?, vector_bytes(&self.scratch)?)
+        let Self {
+            committed,
+            scratch,
+            committed_cursor: _,
+            scratch_cursor: _,
+            dirty_start: _,
+            dirty_len: _,
+        } = self;
+        add_bytes(vector_bytes(committed)?, vector_bytes(scratch)?)
     }
 
     pub(super) fn begin(&mut self) {
@@ -103,6 +111,33 @@ impl<T: Copy + Default> RingPair<T> {
         self.dirty_len = 0;
     }
 
+    pub(super) fn capacity(&self) -> usize {
+        self.committed.len()
+    }
+    pub(super) fn copy_history_from(&mut self, source: &Self) {
+        self.committed.fill(T::default());
+        self.scratch.fill(T::default());
+        let valid = source.committed_cursor.valid.min(self.committed.len());
+        for index in 0..valid {
+            let delay = valid - 1 - index;
+            let source_index = (source.committed_cursor.next + source.committed.len() - 1 - delay)
+                % source.committed.len();
+            self.committed[index] = source.committed[source_index];
+            self.scratch[index] = source.committed[source_index];
+        }
+        let cursor = Cursor {
+            next: if self.committed.is_empty() {
+                0
+            } else {
+                valid % self.committed.len()
+            },
+            valid,
+        };
+        self.committed_cursor = cursor;
+        self.scratch_cursor = cursor;
+        self.dirty_start = 0;
+        self.dirty_len = 0;
+    }
     pub(super) fn reset(&mut self) {
         self.committed.fill(T::default());
         self.scratch.fill(T::default());
@@ -125,6 +160,15 @@ pub struct DelayPair {
 }
 
 impl DelayPair {
+    pub(super) fn owned_data_bytes(&self) -> Result<usize, CompensationError> {
+        let Self {
+            ring,
+            delay_frames: _,
+            storage_bytes: _,
+            transaction_active: _,
+        } = self;
+        ring.storage_bytes()
+    }
     pub fn new(delay_frames: u32, limits: CompensationLimits) -> Result<Self, CompensationError> {
         limits.validate()?;
         if delay_frames > limits.max_cumulative_frames {
@@ -213,6 +257,15 @@ impl DelayPair {
         Ok(())
     }
 
+    pub(super) fn can_copy_history_from(&self, source: &Self) -> bool {
+        !self.transaction_active
+            && !source.transaction_active
+            && self.delay_frames == source.delay_frames
+            && self.ring.capacity() == source.ring.capacity()
+    }
+    pub(super) fn copy_history_from(&mut self, source: &Self) {
+        self.ring.copy_history_from(&source.ring);
+    }
     pub fn reset_epoch(&mut self) {
         self.ring.reset();
         self.transaction_active = false;

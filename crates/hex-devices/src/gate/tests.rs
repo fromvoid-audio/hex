@@ -15,7 +15,14 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 
 fn prepared(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn PreparedNativeProcessor> {
     GATE_DEFINITION
-        .prepare_processor(state, sample_rate)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("valid gate preparation")
         .expect("stateful gate")
 }
@@ -137,7 +144,14 @@ fn malformed_state_parameter_cross_control_and_rate_values_are_rejected() {
     for sample_rate in [0, 7_999, 192_001] {
         assert!(
             GATE_DEFINITION
-                .prepare_processor(&state, sample_rate)
+                .prepare_processor(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                    }
+                )
                 .is_err()
         );
     }
@@ -150,7 +164,7 @@ fn linked_peak_threshold_hysteresis_and_exact_ramp_boundaries() {
     let state = state_with(0.0, -6.0, -20.0, 0.25, 0.25, 1.0);
     let mut gate = runtime(&state, 8_000);
     let mut high = [[1.0, -0.25], [0.75, -0.1875]];
-    gate.process_block(&mut high);
+    gate.process_block(&mut high, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let start = db_gain(-20.0);
     let first_attack = start + (1.0 - start) / 2.0;
     assert!((f64::from(high[0][0]) - first_attack).abs() < 1.0e-7);
@@ -158,16 +172,16 @@ fn linked_peak_threshold_hysteresis_and_exact_ramp_boundaries() {
     assert_eq!(high[1], [0.75, -0.1875]);
 
     let mut middle = [[0.6, -0.1]]; // Above return, below threshold: remain open.
-    gate.process_block(&mut middle);
+    gate.process_block(&mut middle, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(middle, [[0.6, -0.1]]);
     let mut below = [[0.4, -0.1]; 3];
-    gate.process_block(&mut below); // Hold two full qualifying frames, then close.
+    gate.process_block(&mut below, &hex_lattice::EMPTY_DEVICE_RESOURCES); // Hold two full qualifying frames, then close.
     assert_eq!(below[0], [0.4, -0.1]);
     assert_eq!(below[1], [0.4, -0.1]);
     let releasing = 1.0 - (1.0 - start) / 8.0;
     assert!((f64::from(below[2][0]) - 0.4 * releasing).abs() < 1.0e-7);
     let mut release = [[0.4, -0.1]; 7];
-    gate.process_block(&mut release);
+    gate.process_block(&mut release, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     for (index, frame) in release.iter().enumerate() {
         let gain = if index == 6 {
             start
@@ -178,7 +192,7 @@ fn linked_peak_threshold_hysteresis_and_exact_ramp_boundaries() {
         assert!((f64::from(frame[1]) + 0.1 * gain).abs() < 1.0e-7);
     }
     let mut closed = [[0.4, -0.1]];
-    gate.process_block(&mut closed);
+    gate.process_block(&mut closed, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!((f64::from(closed[0][0]) - 0.4 * start).abs() < 1.0e-7);
 }
 
@@ -186,23 +200,23 @@ fn linked_peak_threshold_hysteresis_and_exact_ramp_boundaries() {
 fn threshold_equality_opens_hold_zero_closes_and_reopen_attacks_from_release_gain() {
     let mut zero_hold = runtime(&state_with(0.0, 0.0, -20.0, 0.25, 0.0, 1.0), 8_000);
     let mut equality = [[1.0, -0.5], [1.0, -0.5]];
-    zero_hold.process_block(&mut equality);
+    zero_hold.process_block(&mut equality, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(f64::from(equality[0][0]) > 0.1); // threshold precedence opens at equality
     assert_eq!(equality[1], [1.0, -0.5]); // threshold precedence keeps equality open
     let mut low = [[0.0, 0.0], [0.4, -0.2]];
-    zero_hold.process_block(&mut low);
+    zero_hold.process_block(&mut low, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(low[0], [0.0, 0.0]);
     assert!(f64::from(low[1][0]) < 0.4); // below-return immediately begins release
 
     let mut reopening = runtime(&state_with(0.0, -6.0, -20.0, 0.5, 0.0, 1.0), 8_000);
     let mut open = [[1.0, 0.0]; 4];
-    reopening.process_block(&mut open);
+    reopening.process_block(&mut open, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut closing = [[0.4, 0.0]];
-    reopening.process_block(&mut closing);
+    reopening.process_block(&mut closing, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let before_reopen = f64::from(closing[0][0]) / 0.4;
     assert!(before_reopen < 1.0 && before_reopen > db_gain(-20.0));
     let mut reopen = [[1.0, 0.0]];
-    reopening.process_block(&mut reopen);
+    reopening.process_block(&mut reopen, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let after_reopen = f64::from(reopen[0][0]);
     assert!(after_reopen > before_reopen);
     assert!(after_reopen < 1.0);
@@ -213,7 +227,7 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
     let original = state_with(0.0, -6.0, -20.0, 0.5, 0.25, 1.0);
     let mut source = runtime(&original, 8_000);
     let mut priming = [[1.0, 0.0]; 4];
-    source.process_block(&mut priming);
+    source.process_block(&mut priming, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let old = source
         .as_any()
         .downcast_ref::<GateRuntime>()
@@ -234,17 +248,20 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
 
     let mut one_block = [[1.0, 0.0]; 37];
     let mut partitioned = one_block;
-    source.process_block(&mut one_block);
-    same.process_block(&mut partitioned[..3]);
-    same.process_block(&mut partitioned[3..19]);
-    same.process_block(&mut partitioned[19..]);
+    source.process_block(&mut one_block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    same.process_block(&mut partitioned[..3], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    same.process_block(
+        &mut partitioned[3..19],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    same.process_block(&mut partitioned[19..], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(one_block, partitioned);
 
     let mut closing_source = runtime(&state_with(0.0, -6.0, -20.0, 0.5, 0.0, 1.0), 8_000);
     let mut opened = [[1.0, 0.0]; 4];
-    closing_source.process_block(&mut opened);
+    closing_source.process_block(&mut opened, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut low = [[0.4, 0.0]];
-    closing_source.process_block(&mut low);
+    closing_source.process_block(&mut low, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let closed_history = closing_source
         .as_any()
         .downcast_ref::<GateRuntime>()
@@ -281,7 +298,7 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
     let opening_state = state_with(0.0, -6.0, -20.0, 1.0, 0.5, 1.0);
     let mut opening = runtime(&opening_state, 8_000);
     let mut partial_attack = [[1.0, 0.0]; 3];
-    opening.process_block(&mut partial_attack);
+    opening.process_block(&mut partial_attack, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let before_attack_edit = opening
         .as_any()
         .downcast_ref::<GateRuntime>()
@@ -302,7 +319,7 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
     let hold_state = state_with(0.0, -6.0, -20.0, 0.5, 0.25, 1.0);
     let mut holding = runtime(&hold_state, 8_000);
     let mut first_low = [[1.0, 0.0], [0.4, 0.0]];
-    holding.process_block(&mut first_low);
+    holding.process_block(&mut first_low, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let before_hold_edit = holding
         .as_any()
         .downcast_ref::<GateRuntime>()
@@ -345,16 +362,16 @@ fn bypass_advances_history_bitwise_and_invalid_frames_do_not_poison_it() {
     let mut bypassed = runtime(&state, 8_000);
     let mut active = runtime(&state, 8_000);
     let mut prime = [[1.0, 0.0]; 4];
-    bypassed.process_block(&mut prime);
+    bypassed.process_block(&mut prime, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut prime = [[1.0, 0.0]; 4];
-    active.process_block(&mut prime);
+    active.process_block(&mut prime, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut dry = [[f32::from_bits(0x3f123456), -0.25]];
     let original = dry;
-    bypassed.process_bypassed_block(&mut dry);
+    bypassed.process_bypassed_block(&mut dry, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(dry[0][0].to_bits(), original[0][0].to_bits());
     assert_eq!(dry[0][1].to_bits(), original[0][1].to_bits());
     let mut active_frame = dry;
-    active.process_block(&mut active_frame);
+    active.process_block(&mut active_frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(
         bypassed
             .as_any()
@@ -371,13 +388,13 @@ fn bypass_advances_history_bitwise_and_invalid_frames_do_not_poison_it() {
     let mut invalid_then_valid = runtime(&state, 8_000);
     let mut valid_only = runtime(&state, 8_000);
     let mut invalid = [[f32::NAN, f32::INFINITY]];
-    invalid_then_valid.process_block(&mut invalid);
+    invalid_then_valid.process_block(&mut invalid, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(invalid[0][0].is_nan());
     assert_eq!(invalid[0][1], f32::INFINITY);
     let mut a = [[0.4, -0.2]];
     let mut b = a;
-    invalid_then_valid.process_block(&mut a);
-    valid_only.process_block(&mut b);
+    invalid_then_valid.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    valid_only.process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(a, b);
 }
 
@@ -386,7 +403,7 @@ fn floor_edit_when_settled_closed_ramps_and_runtime_has_no_output_tail() {
     let original = state_with(0.0, -6.0, -20.0, 0.5, 0.0, 1.0);
     let mut closed = runtime(&original, 8_000);
     let mut low = [[0.4, 0.0]; 8];
-    closed.process_block(&mut low);
+    closed.process_block(&mut low, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let floor_changed = patch(&original, parameter::FLOOR, -40.0);
     let mut candidate = runtime(&floor_changed, 8_000);
     candidate.copy_history_from(closed.as_ref());
@@ -407,7 +424,7 @@ fn floor_edit_when_settled_closed_ramps_and_runtime_has_no_output_tail() {
         OutputTail::Finite { max_tail_frames: 0 }
     );
     let mut silence = [[0.0, -0.0]; 16];
-    candidate.process_block(&mut silence);
+    candidate.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(
         silence
             .iter()
@@ -417,11 +434,11 @@ fn floor_edit_when_settled_closed_ramps_and_runtime_has_no_output_tail() {
     let mut reset = runtime(&original, 8_000);
     let mut fresh = runtime(&original, 8_000);
     let mut signal = [[1.0, 0.0]; 3];
-    reset.process_block(&mut signal);
+    reset.process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     reset.reset();
     let mut after_reset = [[0.4, 0.0]];
     let mut after_fresh = after_reset;
-    reset.process_block(&mut after_reset);
-    fresh.process_block(&mut after_fresh);
+    reset.process_block(&mut after_reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    fresh.process_block(&mut after_fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(after_reset, after_fresh);
 }

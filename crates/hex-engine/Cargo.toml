@@ -12,6 +12,7 @@ instrument-test-support = []
 workspace = true
 
 [dependencies]
+sha2 = "=0.11.0"
 hex-warp = { path = "../hex-warp" }
 hex-project = { path = "../hex-project" }
 hex-devices = { path = "../hex-devices" }
@@ -27,4 +28,5 @@ name = "playback_stack"
 required-features = ["instrument-test-support"]
 
 [dev-dependencies]
+hex-tuning = { path = "../hex-tuning" }
 hex-lattice = { path = "../hex-lattice", features = ["conformance"] }

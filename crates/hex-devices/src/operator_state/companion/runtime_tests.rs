@@ -76,10 +76,19 @@ fn render(
     frames: usize,
     clock: Option<&dyn NativeInstrumentClock>,
 ) -> Vec<[f32; 2]> {
-    runtime.preflight_events(events, frames).unwrap();
-    runtime.preflight_clock(clock, frames).unwrap();
+    runtime
+        .preflight_events(events, frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    runtime
+        .preflight_clock(clock, frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
     let mut pcm = vec![[0.0; 2]; frames];
-    runtime.process_block_with_clock(events, &mut pcm, clock);
+    runtime.process_block_with_clock(
+        events,
+        &mut pcm,
+        clock,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     pcm
 }
 fn on(id: u64, offset: usize) -> NativeInstrumentEvent {
@@ -134,18 +143,32 @@ fn one_frame_sync_clock_and_unknown_transport_are_distinct_admission_cases() {
     settings.companion.words[0][5] = 3;
     let factory = factory(settings);
     let mut runtime = factory.create_runtime();
-    runtime.preflight_events(&[on(1, 0)], 1).unwrap();
-    assert!(runtime.preflight_clock(None, 1).is_err());
+    runtime
+        .preflight_events(&[on(1, 0)], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    assert!(
+        runtime
+            .preflight_clock(None, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_err()
+    );
     assert!(runtime.is_quiescent());
     let mut clock = Clock::at(0);
     clock.only_origin = true;
     clock.running = None;
-    assert!(runtime.preflight_clock(Some(&clock), 1).is_err());
+    assert!(
+        runtime
+            .preflight_clock(Some(&clock), 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_err()
+    );
     assert!(runtime.is_quiescent());
     clock.running = Some(false);
     let _ = render(runtime.as_mut(), &[on(1, 0)], 1, Some(&clock));
     assert!(!runtime.is_quiescent());
-    assert!(runtime.preflight_events(&[on(1, 0)], 1).is_err());
+    assert!(
+        runtime
+            .preflight_events(&[on(1, 0)], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_err()
+    );
 }
 #[test]
 fn free_run_uses_exact_host_origin_and_carries_explicit_local_origin_in_copies() {
@@ -207,7 +230,11 @@ fn trigger_keeps_silent_occurrences_until_their_noteoff_without_stealing_ids() {
     let pcm = render(runtime.as_mut(), &events, 64, None);
     assert_eq!(pcm[63], [0.0; 2]);
     assert!(!runtime.is_quiescent());
-    assert!(runtime.preflight_events(&[on(65, 0)], 1).is_err());
+    assert!(
+        runtime
+            .preflight_events(&[on(65, 0)], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_err()
+    );
     let events: Vec<_> = (1..=64).map(|id| off(id, 0)).collect();
     render(runtime.as_mut(), &events, 1, None);
     assert!(runtime.is_quiescent());
@@ -260,7 +287,11 @@ fn mixed_trigger_and_loop_release_admission_reuses_capacity_at_the_exact_finish_
         let mut events: Vec<_> = (1..=64).map(|id| off(id, 0)).collect();
         events.push(on(65, finish - gate - 1));
         assert_eq!(
-            runtime.preflight_events(&events, finish - gate + 1),
+            runtime.preflight_events(
+                &events,
+                finish - gate + 1,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            ),
             Err(hex_lattice::NativeInstrumentRuntimeError::EventCapacityExceeded),
             "a silent Trigger and a releasing loop must both retain their ids until completion"
         );
@@ -268,19 +299,31 @@ fn mixed_trigger_and_loop_release_admission_reuses_capacity_at_the_exact_finish_
         let mut duplicate = events.clone();
         duplicate.push(events[64]);
         assert_eq!(
-            runtime.preflight_events(&duplicate, finish - gate + 1),
+            runtime.preflight_events(
+                &duplicate,
+                finish - gate + 1,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            ),
             Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch)
         );
         // Both failed proofs and repeated successful proofs must leave all live
         // oscillator/filter/envelope history untouched.
         runtime
-            .preflight_events(&events, finish - gate + 1)
+            .preflight_events(
+                &events,
+                finish - gate + 1,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
             .unwrap();
         runtime
-            .preflight_events(&events, finish - gate + 1)
+            .preflight_events(
+                &events,
+                finish - gate + 1,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
             .unwrap();
         let mut expected = vec![[0.0; 2]; finish - gate + 1];
-        oracle.process_block(&events, &mut expected);
+        oracle.process_block(&events, &mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(
             render(runtime.as_mut(), &events, expected.len(), None),
             expected

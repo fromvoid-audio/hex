@@ -339,8 +339,9 @@ impl NativeDeviceDefinition for Eq8Definition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         let settings = decode(state)?;
         let prepared = PreparedEq8::new(settings, sample_rate)?;
         Ok(Some(Box::new(prepared)))
@@ -775,7 +776,11 @@ fn active_band_flags(
 }
 
 impl NativeProcessorRuntime for Eq8Runtime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         self.process(frames);
     }
     fn reset(&mut self) {

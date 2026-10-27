@@ -1,0 +1,142 @@
+{
+  "format": "hex-project",
+  "version": 20,
+  "sample_rate": 48000,
+  "next_id": 11,
+  "assets": [
+    {
+      "id": 3,
+      "path": "Media/Drum.WAV",
+      "source_sample_rate": 48000,
+      "source_frames": 200,
+      "playback_frames": 200,
+      "conversion_version": 0
+    }
+  ],
+  "tracks": [
+    {
+      "id": 1,
+      "name": "Case Preserved",
+      "gain": 0.375,
+      "balance": 0.0,
+      "muted": true,
+      "soloed": false,
+      "audio_clips": [
+        {
+          "gain_millidb": -1750,
+          "id": 4,
+          "asset": 3,
+          "start": 123,
+          "duration": 77,
+          "source_offset": 11,
+          "source_length": 99,
+          "looping": false,
+          "source_phase": 0,
+          "fade": {
+            "span": 77,
+            "offset": 0,
+            "fade_in": 0,
+            "fade_out": 0
+          }
+        },
+        {
+          "gain_millidb": 0,
+          "id": 5,
+          "asset": 3,
+          "start": 300,
+          "duration": 2,
+          "source_offset": 20,
+          "source_length": 3,
+          "looping": true,
+          "source_phase": 0,
+          "fade": {
+            "span": 9,
+            "offset": 0,
+            "fade_in": 0,
+            "fade_out": 0
+          }
+        },
+        {
+          "gain_millidb": 0,
+          "id": 6,
+          "asset": 3,
+          "start": 302,
+          "duration": 7,
+          "source_offset": 20,
+          "source_length": 3,
+          "looping": true,
+          "source_phase": 2,
+          "fade": {
+            "span": 9,
+            "offset": 2,
+            "fade_in": 0,
+            "fade_out": 0
+          }
+        }
+      ],
+      "midi_clips": [],
+      "devices": [],
+      "instrument": {
+        "id": 2,
+        "bypassed": false,
+        "type_id": "hex.instrument.sine",
+        "state_version": 1,
+        "payload": [],
+        "input_gain_millidb": 0,
+        "output_gain_millidb": 0
+      },
+      "instrument_position": 0,
+      "sends": []
+    }
+  ],
+  "return_tracks": [],
+  "loop_region": null,
+  "master_gain": 1.0,
+  "tempo_points": [
+    {
+      "beat_raw": 0,
+      "micro_bpm": 120000000
+    },
+    {
+      "beat_raw": 34359738368,
+      "micro_bpm": 93500000
+    }
+  ],
+  "meter_points": [
+    {
+      "beat_raw": 0,
+      "numerator": 4,
+      "denominator": 4
+    },
+    {
+      "beat_raw": 10737418240,
+      "numerator": 7,
+      "denominator": 8
+    }
+  ],
+  "session": {
+    "scenes": [
+      {
+        "id": 9,
+        "name": "Session Scene Case"
+      }
+    ],
+    "cells": [
+      {
+        "track": 1,
+        "scene": 9,
+        "content": {
+          "kind": "audio",
+          "clip": {
+            "gain_millidb": -9350,
+            "id": 10,
+            "name": "Session Audio Case",
+            "asset": 3,
+            "source_start": 17,
+            "source_end": 143
+          }
+        }
+      }
+    ]
+  }
+}

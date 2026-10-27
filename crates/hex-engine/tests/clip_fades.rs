@@ -6,7 +6,7 @@ use hex_project::{ClipFade, Command, Created, Editor, Project};
 use std::collections::BTreeMap;
 
 fn fixture(
-    split_at: Option<u64>,
+    cuts: &[u64],
     looping: bool,
     loop_region: (u64, u64),
 ) -> (hex_engine::Project, ClipFade) {
@@ -54,8 +54,25 @@ fn fixture(
         })
         .unwrap();
     let fade = editor.project().clip(clip).unwrap().fade();
-    if let Some(frame) = split_at {
-        editor.execute(Command::SplitClip { clip, frame }).unwrap();
+    match cuts {
+        [] => {}
+        [frame] => {
+            editor
+                .execute(Command::SplitClip {
+                    clip,
+                    frame: *frame,
+                })
+                .unwrap();
+        }
+        [start, end] => {
+            editor
+                .execute(Command::SplitTimeRange {
+                    range: hex_project::TimeRange::new(vec![track], *start, *end).unwrap(),
+                })
+                .unwrap();
+            assert_eq!(editor.project().track(track).unwrap().clips().len(), 3);
+        }
+        _ => panic!("unsupported fixture cuts"),
     }
     editor
         .execute(Command::SetLoopRegion {
@@ -88,12 +105,12 @@ fn whole_render(project: &hex_engine::Project) -> Vec<Frame> {
 
 #[test]
 fn compiled_split_keeps_source_fade_samples_and_neutral_legacy_constructors() {
-    let (whole, _) = fixture(None, false, (2, 9));
-    let (split, _) = fixture(Some(4), false, (2, 9));
+    let (whole, _) = fixture(&[], false, (2, 9));
+    let (split, _) = fixture(&[4], false, (2, 9));
     assert_eq!(whole_render(&whole), whole_render(&split));
 
-    let (whole_loop, _) = fixture(None, true, (2, 9));
-    let (split_loop, _) = fixture(Some(4), true, (2, 9));
+    let (whole_loop, _) = fixture(&[], true, (2, 9));
+    let (split_loop, _) = fixture(&[4], true, (2, 9));
     assert_eq!(whole_render(&whole_loop), whole_render(&split_loop));
 
     let audio = Audio::new(48_000, vec![[1.0, -1.0]; 4]).unwrap();
@@ -108,6 +125,15 @@ fn compiled_split_keeps_source_fade_samples_and_neutral_legacy_constructors() {
     let mut frames = [[0.0; 2]; 4];
     renderer.render(&mut frames).unwrap();
     assert_eq!(frames, [[1.0, -1.0]; 4]);
+}
+
+#[test]
+fn selected_range_edges_preserve_loop_phase_and_fade_pcm() {
+    for looping in [false, true] {
+        let (whole, _) = fixture(&[], looping, (2, 9));
+        let (split, _) = fixture(&[3, 8], looping, (2, 9));
+        assert_eq!(whole_render(&whole), whole_render(&split));
+    }
 }
 
 #[test]
@@ -175,8 +201,8 @@ fn resetting_phase_preserves_fade_and_restores_neutral_source_order() {
 
 #[test]
 fn split_source_phase_and_inherited_fade_survive_project_loop_seek_and_partitions() {
-    let (whole, _) = fixture(None, true, (2, 9));
-    let (split, _) = fixture(Some(4), true, (2, 9));
+    let (whole, _) = fixture(&[], true, (2, 9));
+    let (split, _) = fixture(&[4], true, (2, 9));
     for seek in [0, 3, 4, 8] {
         let mut expected = Playback::new(whole.clone());
         let mut actual = Playback::new(split.clone());
@@ -196,7 +222,7 @@ fn split_source_phase_and_inherited_fade_survive_project_loop_seek_and_partition
 
 #[test]
 fn fade_rendering_is_partition_invariant_with_global_loop_and_seek() {
-    let (project, fade) = fixture(None, true, (2, 9));
+    let (project, fade) = fixture(&[], true, (2, 9));
     let mut whole = Playback::new(project.clone());
     let mut chunked = Playback::new(project);
     whole.apply(PlaybackCommand::Play);
@@ -214,7 +240,7 @@ fn fade_rendering_is_partition_invariant_with_global_loop_and_seek() {
         assert_eq!(*frame, [sample; 2]);
     }
 
-    let (project, _) = fixture(None, true, (2, 9));
+    let (project, _) = fixture(&[], true, (2, 9));
     let mut seek = Playback::new(project);
     seek.apply(PlaybackCommand::Seek(4));
     seek.apply(PlaybackCommand::Play);
@@ -222,7 +248,7 @@ fn fade_rendering_is_partition_invariant_with_global_loop_and_seek() {
     seek.render(&mut frame).unwrap();
     assert_eq!(frame[0], [0.5 * fade.gain_at(4); 2]);
 
-    let (project, _) = fixture(None, true, (4, 5));
+    let (project, _) = fixture(&[], true, (4, 5));
     let mut one_frame_whole = Playback::new(project.clone());
     let mut one_frame_chunked = Playback::new(project);
     one_frame_whole.apply(PlaybackCommand::Play);
@@ -302,6 +328,8 @@ fn transformed_musical_shaped_fades_keep_pcm_through_splits_and_tempo_changes() 
     let fade = ClipFade::new(4800, 0, 1800, 1600)
         .unwrap()
         .with_shape(200, 300, 700, -800)
+        .unwrap()
+        .with_curve_positions(250, 750)
         .unwrap();
     editor
         .execute(Command::SetClipFadeEnvelope { clip, fade })
@@ -331,4 +359,130 @@ fn transformed_musical_shaped_fades_keep_pcm_through_splits_and_tempo_changes() 
     assert_eq!(actual, expected);
     assert!(actual[0..100].iter().all(|frame| *frame == [0.0; 2]));
     assert!(actual[2000][0] > 0.1);
+}
+
+#[test]
+fn resized_lower_handles_render_trimmed_source_and_fade_in_playback_across_blocks() {
+    use hex_project::TrimEdge;
+    for musical_loop in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "resize".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 14,
+            })
+            .unwrap()
+        else {
+            panic!("import");
+        };
+        editor
+            .execute(Command::TrimClip {
+                clip,
+                start: 0,
+                duration: 12,
+                source_offset: 1,
+                source_length: if musical_loop { 3 } else { 12 },
+            })
+            .unwrap();
+        if musical_loop {
+            editor
+                .execute(Command::SetClipLooping {
+                    clip,
+                    looping: true,
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true,
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 6,
+                fade_out: 5,
+            })
+            .unwrap();
+        for (edge, frame) in [(TrimEdge::Left, 2), (TrimEdge::Right, 10)] {
+            editor
+                .execute(Command::TrimClipFadeEdge { clip, edge, frame })
+                .unwrap();
+        }
+        let media = BTreeMap::from([(
+            asset,
+            Audio::new(48_000, (0..14).map(|n| [n as f32 / 16.0; 2]).collect()).unwrap(),
+        )]);
+        let compiled = compile::project(editor.project(), &media).unwrap();
+        let mut expected = [[0.0; 2]; 12];
+        for (index, gain) in [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 0.5, 0.0]
+            .into_iter()
+            .enumerate()
+        {
+            let timeline = index + 2;
+            let source = 1 + if musical_loop { timeline % 3 } else { timeline };
+            expected[timeline] = [source as f32 / 16.0 * gain; 2];
+        }
+        for block in [1, 5, 12] {
+            let mut playback = Playback::new(compiled.clone());
+            playback.apply(PlaybackCommand::Play);
+            let mut actual = [[0.0; 2]; 12];
+            for chunk in actual.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(
+                actual, expected,
+                "musical loop={musical_loop}, block={block}"
+            );
+            playback.apply(PlaybackCommand::Seek(3));
+            let mut sought = [[0.0; 2]; 5];
+            playback.render(&mut sought).unwrap();
+            assert_eq!(sought, expected[3..8]);
+        }
+    }
+}
+
+#[test]
+fn two_axis_fades_render_independent_anchor_gains_in_both_players() {
+    let fade = ClipFade::new(2002, 0, 1001, 1001)
+        .unwrap()
+        .with_shape(0, 0, 400, -300)
+        .unwrap()
+        .with_curve_positions(250, 750)
+        .unwrap();
+    let audio = Audio::new(48_000, vec![[0.5, -0.5]; 2002]).unwrap();
+    let clip = hex_engine::Clip::region_with_fade(audio, 0, 2002, 0, 2002, false, fade).unwrap();
+    let project = hex_engine::Project::new(
+        48_000,
+        vec![hex_engine::Track::new(vec![clip], 1.0, false).unwrap()],
+    )
+    .unwrap();
+    let mut renderer = Renderer::new(&project);
+    renderer.play();
+    let mut actual = vec![[0.0; 2]; 2002];
+    renderer.render(&mut actual).unwrap();
+    // Independent knot oracle: time mapping sends each authored position to 0.5;
+    // rational vertical gains there are (1001-curve)/2002, in opposite time directions.
+    for (frame, gain) in [
+        (0, 0.0),
+        (250, 601.0_f32 / 2002.0),
+        (1000, 1.0),
+        (1001, 1.0),
+        (1751, 1301.0 / 2002.0),
+        (2001, 0.0),
+    ] {
+        assert!((actual[frame][0] - 0.5 * gain).abs() < 1e-7);
+        assert!((actual[frame][1] + 0.5 * gain).abs() < 1e-7);
+    }
+    let mut playback = Playback::new(project);
+    playback.apply(PlaybackCommand::Play);
+    let mut chunked = vec![[0.0; 2]; 2002];
+    for block in chunked.chunks_mut(37) {
+        playback.render(block).unwrap();
+    }
+    assert_eq!(actual, chunked);
+    assert_ne!(actual[250][0], 0.125); // x has changed actual PCM from the linear ramp.
 }

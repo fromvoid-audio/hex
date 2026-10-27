@@ -8,6 +8,11 @@ pub(super) struct TrackSelection {
 }
 
 impl TrackSelection {
+    /// Replace with the authoritative ordered births from a committed snapshot.
+    pub(super) fn replace(&mut self, ids: &[TrackId]) {
+        self.ids = ids.iter().copied().collect();
+        self.anchor = ids.first().copied();
+    }
     pub(super) fn contains(&self, track: TrackId) -> bool {
         self.ids.contains(&track)
     }
@@ -69,6 +74,61 @@ impl TrackSelection {
 }
 
 impl super::EditorView {
+    /// Direct lane focus selects one track without changing the independently
+    /// owned cursor/time range or running header-navigation focus transitions.
+    pub(super) fn select_lane_track(&mut self, track: TrackId) {
+        // Time drags update on every frame; rebuild membership only on a change.
+        if self.selected_track == Some(track)
+            && self.track_selection.ids.len() == 1
+            && self.track_selection.contains(track)
+        {
+            return;
+        }
+        if let Some(state) = self.state.as_ref()
+            && self
+                .track_selection
+                .select(&state.project, track, false, false)
+        {
+            self.selected_track = Some(track);
+            self.arrangement_focus.observe_active_track(Some(track));
+            self.update_track_selection_status();
+        }
+    }
+
+    /// Painting an ordinary lane range explicitly selects its visible track span.
+    /// Time geometry remains separately owned; unchanged horizontal motion keeps
+    /// this membership allocation and the stable drag anchor intact.
+    pub(super) fn select_lane_span(&mut self, anchor: TrackId, end: TrackId) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let tracks = state.project.tracks();
+        let Some(first) = tracks.iter().position(|track| track.id() == anchor) else {
+            return;
+        };
+        let Some(last) = tracks.iter().position(|track| track.id() == end) else {
+            return;
+        };
+        let visible = tracks[first.min(last)..=first.max(last)]
+            .iter()
+            .filter(|track| self.arrangement_track_visible(track.id()));
+        if self.selected_track == Some(end)
+            && self.track_selection.anchor == Some(anchor)
+            && visible.clone().count() == self.track_selection.ids.len()
+            && visible
+                .clone()
+                .all(|track| self.track_selection.contains(track.id()))
+        {
+            return;
+        }
+        let ids = visible.map(|track| track.id()).collect();
+        self.track_selection.ids = ids;
+        self.track_selection.anchor = Some(anchor);
+        self.selected_track = Some(end);
+        self.arrangement_focus.observe_active_track(Some(end));
+        self.update_track_selection_status();
+    }
+
     pub(super) fn update_track_selection_status(&mut self) {
         self.status = match self.selected_track_ids().len() {
             0 => "no tracks selected".into(),
@@ -90,6 +150,19 @@ impl super::EditorView {
             .track_selection
             .select(&state.project, track, modifiers.shift, modifiers.platform)
         {
+            if modifiers.shift
+                && self.mode == super::EditorMode::Arrangement
+                && self.arrangement_focus.enabled
+            {
+                let ids = self
+                    .track_selection
+                    .ids
+                    .iter()
+                    .copied()
+                    .filter(|id| self.arrangement_track_visible(*id))
+                    .collect();
+                self.track_selection.ids = ids;
+            }
             self.focus_selected_track(track, window);
         }
     }
@@ -105,11 +178,17 @@ impl super::EditorView {
 
 /// Keep a valid selected clip attached to its canonical owner after edits,
 /// undo, redo or worker-side project changes.
+/// An explicitly empty clip selection stays empty across acknowledgements;
+/// only a stale non-empty selection falls back to another clip.
+/// Initial project population is handled separately by the view owner.
 pub(super) fn reconcile(
     project: &Project,
     current_track: Option<TrackId>,
     current_clip: Option<ClipId>,
 ) -> (Option<TrackId>, Option<ClipId>) {
+    if current_track.is_none() && current_clip.is_none() {
+        return (None, None);
+    }
     if let Some(clip_id) = current_clip
         && let Some(track) = project.tracks().iter().find(|track| {
             track.clips().iter().any(|clip| clip.id() == clip_id)
@@ -125,6 +204,9 @@ pub(super) fn reconcile(
     let track = current_track
         .filter(|id| project.track(*id).is_some())
         .or_else(|| project.tracks().first().map(|track| track.id()));
+    if current_clip.is_none() {
+        return (track, None);
+    }
     let clip = track.and_then(|id| {
         let track = project.track(id)?;
         track
@@ -254,6 +336,11 @@ mod tests {
             reconcile(editor.project(), Some(source), Some(clip)),
             (Some(source), Some(clip))
         );
+        assert_eq!(
+            reconcile(editor.project(), Some(source), None),
+            (Some(source), None)
+        );
+        assert_eq!(reconcile(editor.project(), None, None), (None, None));
         editor
             .execute(Command::MoveClip {
                 clip,

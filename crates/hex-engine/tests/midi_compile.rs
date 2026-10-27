@@ -10,7 +10,8 @@ use hex_engine::{
 use hex_lattice::NativeDeviceDefinition;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{
-    BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
+    BeatTime, Command, Created, Editor, MidiClipGain, MidiClipVolume, MidiClipVolumePoint,
+    MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -18,10 +19,98 @@ fn beat(num: u64, den: u64) -> BeatTime {
     BeatTime::from_ratio(num, den).unwrap()
 }
 fn setup() -> (Editor, hex_project::TrackId) {
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    setup_at_rate(48_000)
+}
+
+#[test]
+fn grouping_mixed_clip_activation_keeps_scheduled_notes_and_inactive_content() {
+    let (mut editor, track) = setup();
+    let active = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+    let inactive = add_clip(&mut editor, track, beat(4, 1), beat(2, 1));
+    for (clip, pitch) in [(active, 60), (inactive, 67)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: beat(1, 1),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    editor
+        .execute(Command::SetClipActive {
+            clip: inactive,
+            active: false,
+        })
+        .unwrap();
+    let notes = |project: &Project| {
+        midi_events(project)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.frame, e.kind, e.pitch, e.channel, e.velocity))
+            .collect::<Vec<_>>()
+    };
+    let before = notes(editor.project());
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(vec![active, inactive]))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    assert_eq!(notes(editor.project()), before);
+    let grouped = editor.project().midi_clip(group).unwrap();
+    assert!(grouped.active());
+    assert_eq!(
+        grouped
+            .notes()
+            .iter()
+            .map(|note| note.active())
+            .collect::<Vec<_>>(),
+        vec![true, false]
+    );
+    assert!(editor.undo());
+    assert_eq!(notes(editor.project()), before);
+    assert!(editor.redo());
+    assert_eq!(notes(editor.project()), before);
+}
+
+#[test]
+fn inactive_subframe_note_does_not_prevent_midi_preparation() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 1));
+    let Created::Note(note) = editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap()
+    else {
+        panic!("note")
+    };
+    editor
+        .execute(Command::SetMidiNotesActive {
+            clip,
+            notes: vec![note],
+            active: false,
+        })
+        .unwrap();
+    assert!(midi_events(editor.project()).unwrap().is_empty());
+    compile::project(editor.project(), &BTreeMap::new()).unwrap();
+}
+fn setup_at_rate(sample_rate: u32) -> (Editor, hex_project::TrackId) {
+    let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 16).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     {
@@ -47,6 +136,73 @@ fn add_clip(
         Created::Clip(id) => id,
         _ => panic!("clip"),
     }
+}
+
+fn rendered_excerpt(project: &Project, frame: u64) -> [hex_engine::Frame; 64] {
+    let compiled = compile::project(project, &BTreeMap::new()).unwrap();
+    let mut playback = Playback::new(compiled);
+    playback.apply(PlaybackCommand::Seek(frame));
+    playback.apply(PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 64];
+    playback.render(&mut output).unwrap();
+    output
+}
+
+#[test]
+fn alias_notes_keep_distinct_occurrences_and_make_unique_preserves_sound() {
+    let (mut editor, track) = setup_at_rate(8_000);
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(2, 1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let Created::Clips { first: alias, .. } = editor
+        .execute(Command::DuplicateAliasClips(vec![clip]))
+        .unwrap()
+    else {
+        panic!("alias")
+    };
+    let events = midi_events(editor.project()).unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0].clip, clip);
+    assert_eq!(events[2].clip, alias);
+    assert_eq!(events[0].note, events[2].note);
+    assert_eq!(events[1].frame, events[2].frame);
+    let render = |project: &Project, block: usize| {
+        let compiled = compile::project(project, &BTreeMap::new()).unwrap();
+        let mut renderer = Renderer::new(&compiled);
+        renderer.play();
+        let mut output = vec![[0.0; 2]; 20_000];
+        for chunk in output.chunks_mut(block) {
+            renderer.render(chunk).unwrap();
+        }
+        output
+    };
+    let expected = render(editor.project(), 127);
+    for start in [0, 8_000] {
+        assert!(
+            expected[start..start + 8_000]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 0.02)
+        );
+    }
+    editor
+        .execute(Command::MakeClipsUnique(vec![alias]))
+        .unwrap();
+    let unique_events = midi_events(editor.project()).unwrap();
+    assert_ne!(unique_events[0].note, unique_events[2].note);
+    for block in [1, 17, 257] {
+        assert_eq!(render(editor.project(), block), expected);
+    }
+    assert!(editor.undo());
+    assert_eq!(render(editor.project(), 257), expected);
 }
 
 #[test]
@@ -394,13 +550,50 @@ fn zero_frame_note_is_explicitly_refused() {
         compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
         Invalid("midi note duration quantizes to zero frames")
     );
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(1, 2),
+            duration: BeatTime::from_raw(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    // Force right-remainder materialization without clipping this second
+    // authored gate. Frame editing must not turn invalid source data into
+    // silently accepted playback by filtering every zero-frame note.
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range: hex_project::TimeRange::new(vec![track], 10_000, 10_720).unwrap(),
+            track,
+            frame: 0,
+        })
+        .unwrap();
+    let notes = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .flat_map(|clip| clip.notes())
+        .collect::<Vec<_>>();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].duration(), BeatTime::from_raw(1));
+    assert_eq!(
+        midi_events(editor.project()),
+        Err(Invalid("midi note duration quantizes to zero frames"))
+    );
 }
 
 fn arrangement_source_window_editor(high_note_start: BeatTime) -> Editor {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     {
@@ -446,8 +639,11 @@ fn arrangement_bank_ignores_notes_outside_the_emitted_source_window() {
 fn session_source_window_editor(high_note_start: BeatTime) -> Editor {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     {
@@ -1086,15 +1282,16 @@ fn render_chunks(
 }
 
 #[test]
-fn same_pitch_overlaps_remain_distinct_and_release_tails_count_toward_voice_cap() {
+fn adjacent_same_pitch_gates_keep_distinct_release_tails_and_count_toward_voice_cap() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
-    for _ in 0..64 {
+    let frame_beat = beat(1, 24_000).raw();
+    for index in 0..64 {
         editor
             .execute(Command::AddMidiNote {
                 clip,
-                start: BeatTime::ZERO,
-                duration: beat(1, 4),
+                start: BeatTime::from_raw(index * 32 * frame_beat),
+                duration: BeatTime::from_raw(32 * frame_beat),
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
@@ -1104,15 +1301,26 @@ fn same_pitch_overlaps_remain_distinct_and_release_tails_count_toward_voice_cap(
     let project = compile::project(editor.project(), &BTreeMap::new()).expect("64 voices accepted");
     let mut playback = Playback::new(project);
     playback.apply(PlaybackCommand::Play);
-    let mut output = [[0.0; 2]; 32];
+    let mut output = [[0.0; 2]; 4096];
     playback.render(&mut output).unwrap();
-    assert!(output[8..].iter().any(|frame| frame[0].abs() > 0.1));
+    assert!(output.iter().any(|frame| frame[0].abs() > 0.001));
+    // Authored gates touch but never overlap. Their 50 ms releases overlap as
+    // 64 independent occurrences; retriggering must not steal an older tail.
+    let table = SineTable::new();
+    let voice = table.prepare_voice(48_000, 60, 100).unwrap();
+    for (frame, actual) in output.iter().enumerate() {
+        let expected: f32 = (0..64)
+            .filter_map(|index| frame.checked_sub(index * 32))
+            .map(|age| table.sample(voice, age as u64, 32))
+            .sum();
+        assert!(actual.iter().all(|sample| (sample - expected).abs() < 1e-6));
+    }
 
     editor
         .execute(Command::AddMidiNote {
             clip,
-            start: BeatTime::ZERO,
-            duration: beat(1, 4),
+            start: BeatTime::from_raw(64 * 32 * frame_beat),
+            duration: BeatTime::from_raw(32 * frame_beat),
             pitch: 60,
             channel: 0,
             velocity: 100,
@@ -1139,8 +1347,11 @@ fn empty_midi_clip_has_no_edges_and_event_capacity_is_two_per_note() {
 fn compile_refuses_pitch_at_or_above_project_nyquist() {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     else {
@@ -1231,6 +1442,12 @@ fn absent_and_bypassed_instruments_keep_midi_extent_and_preview() {
             Created::Track(track) => track,
             _ => panic!("track"),
         };
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
         let clip = add_clip(&mut editor, track, beat(1, 4), beat(3, 4));
         editor
             .execute(Command::AddMidiNote {
@@ -1282,6 +1499,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
     let mut snapshot = editor.project().snapshot();
+    let first_note = snapshot.next_id;
     let hex_project::TrackSnapshot { content, .. } = &mut snapshot.tracks[0];
     let TrackContentSnapshot::Hybrid {
         midi_clips: clips, ..
@@ -1289,29 +1507,207 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     else {
         panic!("instrument snapshot")
     };
+    let frame_beat = beat(1, 24_000).raw();
     clips[0].notes = (0..hex_project::MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
-            id: 4 + index as u64,
-            start_raw: 0,
-            duration_raw: BeatTime::ONE.raw(),
+            active: true,
+            id: first_note + index as u64,
+            start_raw: index as u64 * frame_beat,
+            duration_raw: frame_beat,
             pitch: 60,
             channel: 0,
             velocity: 100,
         })
         .collect();
-    snapshot.next_id = 4 + hex_project::MAX_NOTES as u64;
+    snapshot.next_id = first_note + hex_project::MAX_NOTES as u64;
     let project = Project::from_snapshot(snapshot).expect("maximum valid note count");
     let events = midi_events(&project).expect("exact maximum event count");
     assert_eq!(events.len(), MAX_MIDI_EVENT_EDGES);
-    assert_eq!(events[0].kind, MidiEventKind::NoteOn);
-    assert_eq!(events[0].frame, 0);
-    assert_eq!(events[hex_project::MAX_NOTES].kind, MidiEventKind::NoteOff);
-    assert_eq!(events[hex_project::MAX_NOTES].frame, 24_000);
-    assert!(
-        events
-            .windows(2)
-            .take(hex_project::MAX_NOTES - 1)
-            .all(|w| w[0].note.value() < w[1].note.value())
-    );
+    for (index, pair) in events.chunks_exact(2).enumerate() {
+        assert_eq!(pair[0].kind, MidiEventKind::NoteOn);
+        assert_eq!(pair[0].frame, index as u64);
+        assert_eq!(pair[1].kind, MidiEventKind::NoteOff);
+        assert_eq!(pair[1].frame, index as u64 + 1);
+        assert_eq!(pair[0].note.value(), first_note + index as u64);
+        assert_eq!(pair[1].note, pair[0].note);
+    }
     assert_eq!(clip, project.tracks()[0].midi_clips()[0].id());
+}
+
+#[test]
+fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
+    for (rate, bpm, tail, leading_silence, reversed) in [
+        (48_000, 120_000_000, false, true, false),
+        (48_000, 120_000_000, true, true, false),
+        (48_000, 143_000_000, false, true, false),
+        (48_000, 143_000_000, false, true, true),
+        (48_000, 143_000_000, false, false, false),
+        (48_000, 143_000_000, true, true, false),
+        (44_100, 143_000_000, false, true, false),
+        (44_100, 143_000_000, true, true, false),
+    ] {
+        let (mut editor, track) = setup_at_rate(rate);
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(bpm).unwrap(),
+            })
+            .unwrap();
+        let one = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(BeatTime::ONE)
+            .unwrap();
+        let two = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(beat(2, 1))
+            .unwrap();
+        let (note_start, selection_end, destination, remaining) = if reversed {
+            let onset = editor
+                .project()
+                .tempo_map()
+                .beat_to_frame(beat(3, 2))
+                .unwrap();
+            (
+                beat(5, 2),
+                two,
+                two,
+                vec![onset, two, two + onset, two + two],
+            )
+        } else if tail {
+            (
+                BeatTime::ZERO,
+                one / 2,
+                two - one / 2,
+                vec![one, two - one / 2],
+            )
+        } else {
+            (BeatTime::ONE, two, two, vec![])
+        };
+        let selection_start = if leading_silence { 0 } else { one };
+        let clip = add_clip(&mut editor, track, BeatTime::ONE, beat(4, 1));
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: note_start,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        if reversed || (tail && rate == 44_100) {
+            editor
+                .execute(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![
+                            MidiClipVolumePoint::linear(
+                                BeatTime::ZERO,
+                                MidiClipGain::new(0.25).unwrap(),
+                            ),
+                            MidiClipVolumePoint::linear(
+                                beat(4, 1),
+                                MidiClipGain::new(0.75).unwrap(),
+                            ),
+                        ],
+                        beat(4, 1),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        if reversed {
+            editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        }
+        let mut before = editor.project().snapshot();
+        let source_notes = editor.project().midi_clip(clip).unwrap().notes().to_vec();
+        let source_volume = editor.project().midi_clip(clip).unwrap().volume().clone();
+        let excerpt = reversed.then(|| {
+            let frame = remaining[0] + 128;
+            let output = rendered_excerpt(editor.project(), frame);
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-5));
+            (frame, output)
+        });
+        assert_eq!(midi_events(editor.project()).unwrap().len(), 2);
+        editor
+            .execute(Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], selection_start, selection_end)
+                    .unwrap(),
+                track,
+                frame: destination,
+            })
+            .unwrap();
+        let events = midi_events(editor.project())
+            .expect("frame-aligned overwrite must not invent an unplayable note gate");
+        assert_eq!(
+            events.iter().map(|event| event.frame).collect::<Vec<_>>(),
+            remaining
+        );
+        compile::project(editor.project(), &BTreeMap::new()).unwrap();
+        assert_eq!(
+            editor.project().midi_clip(clip).unwrap().notes(),
+            source_notes
+        );
+        assert_eq!(
+            editor.project().midi_clip(clip).unwrap().volume(),
+            &source_volume
+        );
+        if let Some((frame, expected)) = excerpt {
+            let actual = rendered_excerpt(editor.project(), frame);
+            for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+                assert!(
+                    (actual - expected).abs() <= 1e-6,
+                    "a prefix crop must preserve audible phase and authored volume before its cut"
+                );
+            }
+        }
+        let after = editor.project().snapshot();
+        // Undo restores complete musical state while the identity allocator
+        // retains its documented high-water mark to prevent ID reuse.
+        assert!(after.next_id >= before.next_id);
+        before.next_id = after.next_id;
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        assert_eq!(midi_events(editor.project()).unwrap(), events);
+    }
+}
+
+#[test]
+fn frame_range_copy_keeps_a_touching_midi_source_exact() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(
+        &mut editor,
+        track,
+        BeatTime::ZERO,
+        BeatTime::from_raw(BeatTime::ONE.raw() + 1),
+    );
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let original = editor.project().midi_clip(clip).unwrap().clone();
+    let events = midi_events(editor.project()).unwrap();
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range: hex_project::TimeRange::new(vec![track], 48_000, 72_000).unwrap(),
+            track,
+            frame: 24_000,
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().midi_clip(clip).unwrap(),
+        &original,
+        "a clip ending in the cut's first frame has no frame overlap"
+    );
+    assert_eq!(midi_events(editor.project()).unwrap(), events);
 }

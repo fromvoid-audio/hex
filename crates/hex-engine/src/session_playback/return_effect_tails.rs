@@ -7,9 +7,18 @@ use std::fmt;
 
 pub(super) const RETURN_EFFECT_TAIL_CAPACITY: usize = 64;
 
+#[derive(Clone, Copy, Debug)]
+enum TailDestination {
+    Return(ReturnId),
+    Main {
+        suffix_start: usize,
+        input_arrival: u32,
+    },
+}
+
 pub(super) struct ReturnEffectTail {
     pub(super) chain: NativeRuntimeChain,
-    pub(super) return_id: ReturnId,
+    destination: TailDestination,
     matrix: Option<StereoMatrix>,
     gain: f32,
     muted: bool,
@@ -20,17 +29,31 @@ pub(super) struct ReturnEffectTail {
 impl fmt::Debug for ReturnEffectTail {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ReturnEffectTail")
-            .field("return_id", &self.return_id)
+            .field("destination", &self.destination)
             .field("output_active", &self.output_active)
             .finish_non_exhaustive()
     }
 }
 
 impl ReturnEffectTail {
-    pub(super) fn new(chain: NativeRuntimeChain, bus: &ReturnBus) -> Self {
+    fn active_start(&self) -> usize {
+        match self.destination {
+            TailDestination::Return(_) => 0,
+            TailDestination::Main { suffix_start, .. } => suffix_start,
+        }
+    }
+    pub(super) fn return_id(&self) -> Option<ReturnId> {
+        match self.destination {
+            TailDestination::Return(id) => Some(id),
+            TailDestination::Main { .. } => None,
+        }
+    }
+
+    pub(super) fn new(mut chain: NativeRuntimeChain, bus: &ReturnBus) -> Self {
+        chain.begin_output_tail();
         Self {
             chain,
-            return_id: bus.id,
+            destination: TailDestination::Return(bus.id),
             matrix: bus.matrix,
             gain: bus.gain,
             muted: bus.muted,
@@ -127,16 +150,29 @@ impl ReturnEffectTailBank {
         &mut self,
         output: &mut [Frame],
         frame_offset: usize,
-        capture: &mut Option<&mut super::OutputCapture<'_, '_>>,
+        capture: &mut Option<&mut dyn super::capture::CaptureSink>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let (slots, scratch) = (&mut self.slots, &mut self.scratch);
         for tail in slots.iter_mut().flatten() {
+            let TailDestination::Return(return_id) = tail.destination else {
+                continue;
+            };
             if !tail.output_scratch {
                 continue;
             }
             let frames = &mut scratch[..output.len()];
             frames.fill([0.0; 2]);
-            tail.chain.process_block(frames);
+            tail.chain
+                .process_range_with_foreign(
+                    0..tail.chain.len(),
+                    frames,
+                    frame_offset,
+                    None,
+                    None,
+                    foreign,
+                )
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             tail.output_scratch = !tail
                 .chain
                 .speculative_range_is_quiescent(0..tail.chain.len());
@@ -158,7 +194,7 @@ impl ReturnEffectTailBank {
                     };
                 }
                 capture.add(
-                    super::OutputCaptureId::Return(tail.return_id),
+                    super::OutputCaptureId::Return(return_id),
                     frame_offset,
                     frames,
                 )?;
@@ -167,14 +203,106 @@ impl ReturnEffectTailBank {
         Ok(())
     }
 
+    /// The same shared bank owns post-Main tails, but they never enter Return
+    /// captures or current Main. Its callers have already bounded chunk length.
+    pub(super) fn render_main_chunk(
+        &mut self,
+        output: &mut [Frame],
+        compensation: Option<&crate::signal_graph::SignalRuntime>,
+        clock: &dyn hex_lattice::NativeInstrumentClock,
+        frame_offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        let (slots, scratch) = (&mut self.slots, &mut self.scratch);
+        for tail in slots.iter_mut().flatten() {
+            let TailDestination::Main {
+                suffix_start,
+                input_arrival,
+            } = tail.destination
+            else {
+                continue;
+            };
+            if !tail.output_scratch {
+                continue;
+            }
+            let frames = &mut scratch[..output.len()];
+            frames.fill([0.0; 2]);
+            let mut arrival = input_arrival;
+            for entry in suffix_start..tail.chain.len() {
+                let output_arrival = arrival
+                    .checked_add(
+                        tail.chain
+                            .algorithmic_latency_frames_for_entry(entry)
+                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?
+                            .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                    )
+                    .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                if let Some(compensation) = compensation {
+                    if frames.len() != 1 {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    let origin = crate::signal_graph::OriginClock(
+                        compensation.delays.stamp_at_delay(arrival),
+                    );
+                    let output_origin = crate::signal_graph::OriginClock(
+                        compensation.delays.stamp_at_delay(output_arrival),
+                    );
+                    tail.chain.process_range_with_foreign(
+                        entry..entry + 1,
+                        frames,
+                        frame_offset,
+                        Some(&origin),
+                        Some(&output_origin),
+                        foreign,
+                    )
+                } else {
+                    if arrival != 0 {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    // Frozen tail controls do not consume automation clocks.
+                    // Without retained stamps only coincident output is known.
+                    let output_origin = (output_arrival == 0).then_some(clock);
+                    tail.chain.process_range_with_foreign(
+                        entry..entry + 1,
+                        frames,
+                        frame_offset,
+                        Some(clock),
+                        output_origin,
+                        foreign,
+                    )
+                }
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                arrival = output_arrival;
+            }
+            tail.output_scratch = !tail
+                .chain
+                .speculative_range_is_quiescent(suffix_start..tail.chain.len());
+            for (to, from) in output.iter_mut().zip(frames) {
+                to[0] += from[0];
+                to[1] += from[1];
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn accounted_storage_bytes(&self) -> Option<usize> {
+        let Self { slots, scratch: _ } = self;
         let mut bytes = std::mem::size_of::<Self>().checked_add(
-            self.slots
+            slots
                 .capacity()
                 .checked_mul(std::mem::size_of::<Option<ReturnEffectTail>>())?,
         )?;
-        for tail in self.slots.iter().flatten() {
-            bytes = bytes.checked_add(tail.chain.accounted_storage_bytes()?)?;
+        for tail in slots.iter().flatten() {
+            let ReturnEffectTail {
+                chain,
+                destination: _,
+                matrix: _,
+                gain: _,
+                muted: _,
+                output_active: _,
+                output_scratch: _,
+            } = tail;
+            bytes = bytes.checked_add(chain.accounted_storage_bytes()?)?;
         }
         Some(bytes)
     }
@@ -193,9 +321,93 @@ pub(super) struct ReturnEffectTailPlan {
     carry: [Option<(usize, usize)>; RETURN_EFFECT_TAIL_CAPACITY],
     capture: [Option<(usize, usize)>; MAX_RETURN_TRACKS],
     inherit_bus: [bool; MAX_RETURN_TRACKS],
+    main_capture: Option<(usize, usize, u32)>,
+    // A completed suffix needs no old DSP history and no retained tail owner.
+    main_quiet_suffix: Option<usize>,
 }
 
 impl ReturnEffectTailPlan {
+    /// Only live Main suffixes need the donor's extended content-origin clock.
+    /// Inactive chains stay with the returning donor rather than extending its
+    /// constructor's resource custody into another zero-latency revision.
+    pub(super) fn requires_main_clock(
+        &self,
+        old: &ReturnEffectTailBank,
+    ) -> Result<bool, SessionPlaybackError> {
+        if self.main_capture.is_some() {
+            return Ok(true);
+        }
+        for (source, _) in self.carry.iter().flatten() {
+            let tail = old
+                .slots
+                .get(*source)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            if matches!(tail.destination, TailDestination::Main { .. }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(super) fn plan_candidate_origins(
+        &self,
+        groups: &mut crate::audio_candidate::groups::Transfer<'_>,
+        old: &ReturnEffectTailBank,
+        returns: &[NativeRuntimeChain],
+        main: &NativeRuntimeChain,
+    ) -> Result<(), SessionPlaybackError> {
+        use crate::audio_candidate::groups::Location as L;
+        for (source, target) in self.carry.iter().flatten().copied() {
+            let tail = old
+                .slots
+                .get(source)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            groups.plan(L::ReturnTail(source), L::ReturnTail(target), &tail.chain)?;
+        }
+        for (source, target) in self.capture.iter().flatten().copied() {
+            let chain = returns
+                .get(source)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            groups.plan(L::ReturnChain(source), L::ReturnTail(target), chain)?;
+        }
+        if let Some((target, _, _)) = self.main_capture {
+            groups.plan(L::MainChain, L::ReturnTail(target), main)?;
+        }
+        Ok(())
+    }
+    /// Check only the ranges this plan will actually render. An inactive
+    /// retained prefix still owns backing, but must not reserve its endpoint
+    /// against the current chain. This is refusal-only, never source admission.
+    pub(super) fn validate_retained_foreign_sources(
+        &self,
+        old: &ReturnEffectTailBank,
+        returns: &[NativeRuntimeChain],
+        main: &NativeRuntimeChain,
+        mut validate: impl FnMut(&NativeRuntimeChain, usize) -> Result<(), SessionPlaybackError>,
+    ) -> Result<(), SessionPlaybackError> {
+        for (source, _) in self.carry.iter().flatten() {
+            let tail = old
+                .slots
+                .get(*source)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            validate(&tail.chain, tail.active_start())?;
+        }
+        for (source, _) in self.capture.iter().flatten() {
+            validate(
+                returns
+                    .get(*source)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                0,
+            )?;
+        }
+        if let Some((_, start, _)) = self.main_capture {
+            validate(main, start)?;
+        }
+        Ok(())
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn preflight(
         old_buses: &[ReturnBus],
@@ -219,6 +431,8 @@ impl ReturnEffectTailPlan {
             carry: [None; RETURN_EFFECT_TAIL_CAPACITY],
             capture: [None; MAX_RETURN_TRACKS],
             inherit_bus: [false; MAX_RETURN_TRACKS],
+            main_capture: None,
+            main_quiet_suffix: None,
         };
         let mut occupied = [false; RETURN_EFFECT_TAIL_CAPACITY];
 
@@ -237,6 +451,7 @@ impl ReturnEffectTailPlan {
             plan.carry[source_slot] = Some((source_slot, target_slot));
             reserve_chain(
                 &tail.chain,
+                tail.active_start(),
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -294,6 +509,7 @@ impl ReturnEffectTailPlan {
             *capture = Some((old_index, target_slot));
             reserve_chain(
                 old_chain,
+                0,
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -304,6 +520,154 @@ impl ReturnEffectTailPlan {
         Ok(plan)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn preflight_main(
+        &mut self,
+        old: &NativeRuntimeChain,
+        current: &NativeRuntimeChain,
+        pre_main_arrival: u32,
+        sample_rate: u32,
+        processor_count: &mut usize,
+        runtime_bytes: &mut usize,
+        entry_count: &mut usize,
+    ) -> Result<(), SessionPlaybackError> {
+        let mut start = 0;
+        let mut arrival = pre_main_arrival;
+        while start < old.len().min(current.len())
+            && (old.configuration_matches_range(current, start..start + 1)
+                || current.can_retarget_parameters_from_range(old, start..start + 1))
+        {
+            arrival = arrival
+                .checked_add(
+                    old.algorithmic_latency_frames_for_entry(start)
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                )
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            start += 1;
+        }
+        if start == old.len() {
+            return Ok(());
+        }
+        if !current.can_inherit_from_excluding_old_range(old, start..old.len()) {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        if old.committed_range_is_quiescent(start..old.len()) {
+            // The original runtime has observed actual completion. A changed
+            // endpoint may start fresh without copying that incompatible quiet
+            // suffix or reserving a tail that will never produce more output.
+            self.main_quiet_suffix = Some(start);
+            return Ok(());
+        }
+        let target = (0..RETURN_EFFECT_TAIL_CAPACITY)
+            .find(|slot| {
+                !self
+                    .carry
+                    .iter()
+                    .flatten()
+                    .any(|(_, target)| target == slot)
+                    && !self
+                        .capture
+                        .iter()
+                        .flatten()
+                        .any(|(_, target)| target == slot)
+            })
+            .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+        // Retain and charge the complete actual owner, including its inactive
+        // prefix backing, although only the detached suffix is processed.
+        reserve_chain(
+            old,
+            start,
+            sample_rate,
+            processor_count,
+            runtime_bytes,
+            entry_count,
+        )?;
+        self.main_capture = Some((target, start, arrival));
+        Ok(())
+    }
+    pub(super) fn main_excluded(&self, old_len: usize) -> std::ops::Range<usize> {
+        self.main_capture
+            .map(|(_, start, _)| start)
+            .or(self.main_quiet_suffix)
+            .map_or(0..0, |start| start..old_len)
+    }
+    pub(super) fn can_inherit_main(
+        &self,
+        current: &NativeRuntimeChain,
+        old: &NativeRuntimeChain,
+    ) -> bool {
+        if self.main_quiet_suffix.is_some() {
+            current.can_inherit_with_completed_foreign_range(old, self.main_excluded(old.len()))
+        } else {
+            current.can_inherit_from_excluding_old_range(old, self.main_excluded(old.len()))
+        }
+    }
+    pub(super) fn validate_main(
+        &self,
+        bank: &ReturnEffectTailBank,
+        old: &NativeRuntimeChain,
+    ) -> Result<(), SessionPlaybackError> {
+        if let Some((target, start, _)) = self.main_capture
+            && (start >= old.len() || !bank.slots.get(target).is_some_and(Option::is_none))
+        {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        Ok(())
+    }
+    pub(super) fn capture_main(
+        &self,
+        bank: &mut ReturnEffectTailBank,
+        current: &mut NativeRuntimeChain,
+        old: &mut NativeRuntimeChain,
+    ) -> Result<(), SessionPlaybackError> {
+        self.validate_main(bank, old)?;
+        if let Some((target, start, arrival)) = self.main_capture {
+            current
+                .transfer_history_excluding_old_range(old, start..old.len())
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            old.begin_output_tail();
+            let chain = std::mem::replace(old, NativeRuntimeChain::empty());
+            bank.slots[target] = Some(ReturnEffectTail {
+                chain,
+                destination: TailDestination::Main {
+                    suffix_start: start,
+                    input_arrival: arrival,
+                },
+                matrix: None,
+                gain: 1.0,
+                muted: false,
+                output_active: true,
+                output_scratch: true,
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn retained_storage_bytes(
+        &self,
+        old: &ReturnEffectTailBank,
+        returns: &[NativeRuntimeChain],
+        main: &NativeRuntimeChain,
+    ) -> Option<usize> {
+        let mut bytes = 0_usize;
+        for (source, _) in self.carry.iter().flatten() {
+            bytes = bytes.checked_add(
+                old.slots
+                    .get(*source)?
+                    .as_ref()?
+                    .chain
+                    .accounted_storage_bytes()?,
+            )?;
+        }
+        for (source, _) in self.capture.iter().flatten() {
+            bytes = bytes.checked_add(returns.get(*source)?.accounted_storage_bytes()?)?;
+        }
+        if self.main_capture.is_some() {
+            bytes = bytes.checked_add(main.accounted_storage_bytes()?)?;
+        }
+        Some(bytes)
+    }
     pub(super) fn captures_bus(&self) -> bool {
         self.capture.iter().any(Option::is_some)
     }
@@ -408,14 +772,19 @@ impl ReturnEffectTailPlan {
 
 fn reserve_chain(
     chain: &NativeRuntimeChain,
+    active_start: usize,
     sample_rate: u32,
     processor_count: &mut usize,
     runtime_bytes: &mut usize,
     entry_count: &mut usize,
 ) -> Result<(), SessionPlaybackError> {
+    let active = active_start..chain.len();
+    if chain.range_has_unbounded_foreign_tail(active.clone()) {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
     match chain
-        .zero_input_drain_for_range(0..chain.len())
-        // The full range is validated by this caller; `None` therefore means
+        .zero_input_drain_for_range(active)
+        // The active range is validated by this caller; `None` therefore means
         // its serial finite declarations overflowed their aggregate bound.
         .ok_or(SessionPlaybackError::ReleaseBankFull)?
     {

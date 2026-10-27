@@ -2,6 +2,30 @@
 use super::*;
 use hex_library::catalog::{SampleCatalog, scan_samples};
 
+/// The Samples listing model shared by row construction and its count label.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResultsMode {
+    Hierarchy,
+    Indexed,
+}
+
+impl ResultsMode {
+    pub(super) fn for_query(query: &str) -> Self {
+        if query.is_empty() {
+            Self::Hierarchy
+        } else {
+            Self::Indexed
+        }
+    }
+
+    fn count_noun(self) -> &'static str {
+        match self {
+            Self::Hierarchy => "items",
+            Self::Indexed => "samples",
+        }
+    }
+}
+
 struct VisibleCache {
     query: String,
     source: Option<PathBuf>,
@@ -9,20 +33,31 @@ struct VisibleCache {
     entries: Arc<Vec<LibraryEntry>>,
 }
 
+struct FolderCache {
+    query: String,
+    directory: Option<PathBuf>,
+    projects_only: bool,
+    entries: Arc<Vec<LibraryEntry>>,
+}
+
 #[derive(Default)]
 pub(super) struct SampleBrowser {
     pub(super) catalog: SampleCatalog,
-    pub(super) source: Option<PathBuf>,
     in_flight: bool,
     pending: bool,
     loaded: bool,
     pub(super) status: Option<String>,
     visible: RefCell<Option<VisibleCache>>,
+    folder_visible: RefCell<Option<FolderCache>>,
 }
 
 impl SampleBrowser {
+    pub(super) fn history_loading(&self) -> bool {
+        self.in_flight || self.pending
+    }
+
     pub(super) fn visible(&self, query: &str) -> Arc<Vec<LibraryEntry>> {
-        self.visible_with_listing(query, self.source.as_deref(), None)
+        self.visible_with_listing(query, None, None)
     }
 
     /// Global search passes no source filter and the current bounded listing.
@@ -43,7 +78,7 @@ impl SampleBrowser {
             return previous.entries.clone();
         }
         let entries = Arc::new(if listing.is_some() {
-            self.catalog.search_with_listing(query, listing)
+            self.catalog.search_with_listing_in(query, source, listing)
         } else {
             self.catalog.filtered(query, source)
         });
@@ -56,8 +91,42 @@ impl SampleBrowser {
         entries
     }
 
+    pub(super) fn folder(
+        &self,
+        query: &str,
+        listing: Option<&DirectoryListing>,
+        projects_only: bool,
+    ) -> Arc<Vec<LibraryEntry>> {
+        let directory = listing.map(|listing| &listing.directory);
+        let mut cache = self.folder_visible.borrow_mut();
+        if let Some(previous) = cache.as_ref()
+            && previous.query == query
+            && previous.directory.as_ref() == directory
+            && previous.projects_only == projects_only
+        {
+            return previous.entries.clone();
+        }
+        let entries = Arc::new(
+            listing
+                .into_iter()
+                .flat_map(|listing| listing.entries.iter())
+                .filter(|entry| !projects_only || entry.kind != EntryKind::WaveAudio)
+                .filter(|entry| query.is_empty() || entry.name.to_lowercase().contains(query))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        *cache = Some(FolderCache {
+            query: query.into(),
+            directory: directory.cloned(),
+            projects_only,
+            entries: entries.clone(),
+        });
+        entries
+    }
+
     /// Folder contents can change without changing the path or query.
     pub(super) fn invalidate_listing(&self) {
+        *self.folder_visible.borrow_mut() = None;
         let has_listing = self
             .visible
             .borrow()
@@ -81,7 +150,7 @@ impl SampleBrowser {
 }
 
 impl EditorView {
-    fn sample_roots(&self) -> Vec<PathBuf> {
+    pub(super) fn sample_roots(&self) -> Vec<PathBuf> {
         // Home remains a navigation shortcut; never recursively scan a user's
         // entire home merely because that shortcut exists by default.
         self.browser
@@ -130,13 +199,21 @@ impl EditorView {
             .browser
             .preferences_path
             .with_extension("samples-v1.db");
+        #[cfg(test)]
+        let test_environment = Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             if load {
                 let path = database.clone();
+                #[cfg(test)]
+                let load_environment = Arc::clone(&test_environment);
                 let cached = cx
                     .background_executor()
-                    .spawn(async move { SampleCatalog::load(&path) })
+                    .spawn(async move {
+                        #[cfg(test)]
+                        let _test_environment = load_environment;
+                        SampleCatalog::load(&path)
+                    })
                     .await;
                 if this
                     .update(cx, |view, cx| {
@@ -167,7 +244,13 @@ impl EditorView {
                 .background_executor()
                 .spawn(async move {
                     let scan = scan_samples(&scan_roots);
+                    #[cfg(test)]
+                    let gate = test_environment.before_catalog_save().await;
                     let saved = scan.catalog.save(&database);
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        gate.did_save(saved.is_ok(), test_environment.root().is_dir());
+                    }
                     (scan, saved)
                 })
                 .await;
@@ -204,18 +287,31 @@ impl EditorView {
     }
 
     pub(super) fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
-        let remap = matches!(
-            self.browser.section,
-            BrowserSection::All | BrowserSection::Samples
-        );
+        let remap = !self.browser_place_unavailable()
+            && matches!(
+                self.browser.section,
+                BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
+            );
         let selection = remap.then(|| self.browser_selected_item(cx)).flatten();
         if self.browser.samples.replace(catalog) && remap {
             self.restore_browser_selection(selection, cx);
         }
     }
 
-    pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
         let count = self.browser_visible_entries(cx).len();
+        let noun = ResultsMode::for_query(self.browser.search.read(cx).text()).count_noun();
+        format!(
+            "{count} {noun}{}",
+            if self.browser.samples.in_flight {
+                " · scanning…"
+            } else {
+                ""
+            }
+        )
+    }
+
+    pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {
         let mut content = div().flex().flex_col().flex_shrink_0().child(
             div()
                 .h(px(23.0))
@@ -228,19 +324,12 @@ impl EditorView {
                         .flex_1()
                         .text_xs()
                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                        .child(theme::text(format!(
-                            "{count} samples{}",
-                            if self.browser.samples.in_flight {
-                                " · scanning…"
-                            } else {
-                                ""
-                            }
-                        ))),
+                        .child(theme::text(self.sample_results_count_text(cx))),
                 )
                 .child(self.browser_icon(
                     "↻",
                     "rescan sample folders",
-                    |view, _, cx| view.refresh_sample_catalog(cx),
+                    |view, _, cx| view.refresh_browser_tree(cx),
                     cx,
                 ))
                 .child(self.browser_icon(
@@ -255,7 +344,10 @@ impl EditorView {
             .chain(self.sample_roots().into_iter().map(Some))
             .enumerate()
         {
-            let active = self.browser.samples.source == source;
+            let selected = source.as_ref().map_or(BrowserSection::Samples, |path| {
+                BrowserSection::Place(path.clone())
+            });
+            let active = self.browser.section == selected;
             let label = source.as_ref().map_or_else(
                 || "all folders".to_owned(),
                 |path| {
@@ -284,8 +376,7 @@ impl EditorView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
-                            view.browser.samples.source = source.clone();
-                            view.browser.reset_results();
+                            view.select_browser_source(selected.clone(), cx);
                             cx.notify();
                         }),
                     )
@@ -323,10 +414,7 @@ mod cache_tests {
             enumerated_entries: 1,
             truncated: false,
         };
-        let browser = SampleBrowser {
-            source: Some(PathBuf::from("/another-source")),
-            ..SampleBrowser::default()
-        };
+        let browser = SampleBrowser::default();
         let first = browser.visible_with_listing("utility", None, Some(&listing));
         assert_eq!(first.len(), 1);
         assert!(Arc::ptr_eq(

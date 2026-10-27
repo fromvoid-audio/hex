@@ -1,4 +1,13 @@
-//! Owned controlled discovery/offline records; no Rust plugin loading or engine API.
+//! # Purpose
+//! Own bounded controlled CLAP discovery/offline records and validation.
+//!
+//! # Dependencies
+//! Uses serde/serde_json for records and sha2 for exact artifact identity; native execution is
+//! confined to the separate controlled helper boundary.
+//!
+//! # Does not own
+//! Does not expose a Rust plugin loader, persistent plugin instance or engine audio-host API.
+//! Discovery evidence does not qualify foreign code for realtime processing.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -58,8 +67,19 @@ pub struct Receipt {
     pub build_closure: BTreeMap<String, String>,
     pub licenses: BTreeMap<String, License>,
 }
+// SHA output arrays no longer implement LowerHex; keep durable 64-byte text.
+fn digest_hex(digest: [u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+    output
+}
+
 pub fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    digest_hex(Sha256::digest(bytes).into())
 }
 pub fn source_hash() -> String {
     let mut h = Sha256::new();
@@ -86,7 +106,7 @@ pub fn source_hash() -> String {
         h.update(bytes);
         h.update([0]);
     }
-    format!("{h:x}", h = h.finalize())
+    digest_hex(h.finalize().into())
 }
 pub fn file_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     if !fs::symlink_metadata(path)
@@ -423,3 +443,30 @@ impl Catalog {
 
 /// Controlled original-fixture offline protocol; no engine integration.
 pub mod offline_protocol;
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+    #[test]
+    fn hash_text_retains_lowercase_padding_and_sha256_vectors() {
+        for (input, expected) in [
+            (
+                b"".as_slice(),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                b"abc".as_slice(),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            (
+                b"\x03".as_slice(),
+                "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+            ),
+        ] {
+            assert_eq!(hash(input), expected);
+        }
+        for byte in 0..=u8::MAX {
+            assert_eq!(digest_hex([byte; 32]), format!("{byte:02x}").repeat(32));
+        }
+    }
+}

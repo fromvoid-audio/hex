@@ -40,9 +40,20 @@ impl Daw {
         let peak = self
             .audio
             .as_ref()
-            .map_or(0.0, |audio| audio.telemetry.peak(track))
-            .clamp(0.0, 1.0);
-        let meter_height = 42.0 * peak;
+            .map_or(0.0, |audio| audio.telemetry.peak(track));
+        let colors = theme::meter_colors();
+        let control = hex_widgets::level_meter(
+            format!("demo-track-meter-{track}").into(),
+            peak,
+            peak.is_finite() && peak > 1.0,
+            hex_widgets::LevelMeterStyle {
+                background: theme::color(theme::PaletteRole::WaveBackground),
+                fill: colors.color(hex_widgets::MeterLevel::from_amplitude(peak, false)),
+                above: colors.clipping,
+            },
+        )
+        .h(px(42.0))
+        .w(px(6.0));
         div()
             .id(("mixer-strip", track))
             .w(px(94.0))
@@ -84,19 +95,7 @@ impl Daw {
                         this.selected = track;
                         cx.notify();
                     }))
-                    .child(
-                        div()
-                            .h(px(42.0))
-                            .w(px(6.0))
-                            .flex()
-                            .flex_col_reverse()
-                            .bg(rgb(theme::color(theme::PaletteRole::WaveBackground)))
-                            .child(div().h(px(meter_height)).w_full().bg(rgb(if peak > 0.82 {
-                                theme::color(theme::PaletteRole::Primary)
-                            } else {
-                                0x77a58e
-                            }))),
-                    )
+                    .child(control)
                     .child(
                         div()
                             .flex_1()
@@ -149,7 +148,7 @@ impl Daw {
             )
             .child(
                 Self::with_tooltip(
-                    Self::button("m", self.muted[track]).id(("mute", track)),
+                    Self::toggle_button("m", self.muted[track]).id(("mute", track)),
                     "toggle track mute",
                 )
                 .h(px(22.0))

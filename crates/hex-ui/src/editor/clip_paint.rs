@@ -21,7 +21,9 @@ pub(super) struct ClipPaintGesture {
 impl EditorView {
     fn clip_paint_available(&self) -> bool {
         self.mode == EditorMode::Arrangement
+            && !self.automation_view.enabled
             && self.clip_name_edit.is_none()
+            && !self.track_name.is_editing()
             && !self.edit_pending()
             && self.context_menu.is_none()
             && !self.opening_project
@@ -74,7 +76,7 @@ impl EditorView {
             return false;
         }
         // A double click without travel creates one grid cell (one beat when free).
-        let minimum_end = if grid == SnapGrid::Off {
+        let minimum_end = if grid.is_off() {
             start
                 .raw()
                 .checked_add(BeatTime::ONE.raw())
@@ -153,7 +155,7 @@ impl EditorView {
         {
             return true;
         }
-        self.enqueue(Request::Edit(Command::PlaceMidiClip {
+        self.enqueue(Request::Edit(Command::PlaceMidiClipWithOverwrite {
             track: gesture.track,
             start: gesture.start,
             length: BeatTime::from_raw(gesture.end.raw() - gesture.start.raw()),

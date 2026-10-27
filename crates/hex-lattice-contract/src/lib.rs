@@ -1,6 +1,34 @@
-//! Bounded metadata and authored state shared across native device boundaries.
+//! # Purpose
+//! Own neutral bounded native-device metadata, identifiers and authored state envelopes.
+//! Also owns shared foreign-processing bindings and copied parameter data;
+//! neither grants native custody.
+//!
+//! # Dependencies
+//! Uses only the standard library; no DSP or other workspace dependency.
+//!
+//! # Does not own
+//! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
+//! Opaque payloads and asset references require provider and host validation before processing.
+mod automation_target;
+mod device_assets;
+pub use automation_target::DeviceAutomationTarget;
+mod host_gain;
+pub use host_gain::HostGain;
+mod foreign_binding;
+mod foreign_parameter;
+pub use foreign_binding::ForeignProcessorBinding;
+pub use foreign_parameter::ForeignParameterPoint;
+#[cfg(test)]
+mod device_assets_tests;
+pub use device_assets::{
+    DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, MAX_DEVICE_ASSET_REFERENCES,
+};
+mod parameter_semantics;
+#[cfg(test)]
+mod parameter_semantics_tests;
 #[cfg(test)]
 mod snapshot_tests;
+pub use parameter_semantics::*;
 use std::{fmt, sync::Arc};
 
 pub const MAX_NATIVE_DEVICE_STATE_BYTES: usize = 4_096;
@@ -277,6 +305,7 @@ pub struct NativeDeviceState {
     payload: Arc<[u8]>,
     input_gain_millidb: i32,
     output_gain_millidb: i32,
+    asset_references: Option<Arc<[DeviceAssetReference]>>,
 }
 impl NativeDeviceState {
     pub fn new(
@@ -297,6 +326,7 @@ impl NativeDeviceState {
             payload: Arc::from(payload),
             input_gain_millidb: 0,
             output_gain_millidb: 0,
+            asset_references: None,
         })
     }
     pub const fn type_id(&self) -> DeviceTypeId {
@@ -305,45 +335,80 @@ impl NativeDeviceState {
     pub const fn state_version(&self) -> u32 {
         self.state_version
     }
+    /// Canonical slot order; empty states have no reference-list allocation.
+    pub fn asset_references(&self) -> &[DeviceAssetReference] {
+        self.asset_references.as_deref().unwrap_or(&[])
+    }
+    /// Bind host-owned project identities without changing the DSP payload.
+    /// Resolution and file/resource preparation remain separate host operations.
+    pub fn with_asset_references(
+        mut self,
+        mut references: Vec<DeviceAssetReference>,
+    ) -> Result<Self, DeviceContractError> {
+        if references.len() > MAX_DEVICE_ASSET_REFERENCES {
+            return Err(DeviceContractError::StateTooLarge);
+        }
+        references.sort_unstable_by_key(|reference| reference.slot);
+        if references
+            .windows(2)
+            .any(|pair| pair[0].slot == pair[1].slot)
+        {
+            return Err(DeviceContractError::MalformedState);
+        }
+        self.asset_references = if references.is_empty() {
+            None
+        } else {
+            Some(Arc::from(references))
+        };
+        Ok(self)
+    }
+    /// Restore host metadata after a provider reconstructs its opaque state.
+    /// Explicit host binding edits use `with_asset_references` instead.
+    pub fn with_host_metadata_from(mut self, source: &Self) -> Result<Self, DeviceContractError> {
+        if self.type_id != source.type_id {
+            return Err(DeviceContractError::WrongDeviceType);
+        }
+        self.input_gain_millidb = source.input_gain_millidb;
+        self.output_gain_millidb = source.output_gain_millidb;
+        self.asset_references.clone_from(&source.asset_references);
+        Ok(self)
+    }
+    /// Supported runtime admission remains asset-free until resource leases exist.
+    /// Check the supplied state before a codec can reconstruct it without bindings.
+    pub fn require_asset_free_processing(&self) -> Result<(), DeviceContractError> {
+        if self.asset_references.is_some() {
+            Err(DeviceContractError::AssetResourcesUnavailable)
+        } else {
+            Ok(())
+        }
+    }
     /// Host-owned input trim, independent of the device's opaque DSP payload.
     pub const fn input_gain_millidb(&self) -> i32 {
         self.input_gain_millidb
     }
     pub fn input_gain_db(&self) -> f32 {
-        self.input_gain_millidb as f32 / 1000.0
+        HostGain(self.input_gain_millidb).db()
     }
     pub fn with_input_gain_millidb(mut self, gain: i32) -> Result<Self, DeviceContractError> {
-        if !(-60_000..=24_000).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.input_gain_millidb = gain;
+        self.input_gain_millidb = HostGain::from_millidb(gain)?.millidb();
         Ok(self)
     }
     pub fn with_input_gain_db(self, gain: f32) -> Result<Self, DeviceContractError> {
-        if !gain.is_finite() || !(-60.0..=24.0).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.with_input_gain_millidb((gain * 1000.0).round() as i32)
+        self.with_input_gain_millidb(HostGain::from_db(gain)?.millidb())
     }
     /// Host-owned output trim, independent of the device's opaque DSP payload.
     pub const fn output_gain_millidb(&self) -> i32 {
         self.output_gain_millidb
     }
     pub fn output_gain_db(&self) -> f32 {
-        self.output_gain_millidb as f32 / 1000.0
+        HostGain(self.output_gain_millidb).db()
     }
     pub fn with_output_gain_millidb(mut self, gain: i32) -> Result<Self, DeviceContractError> {
-        if !(-60_000..=24_000).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.output_gain_millidb = gain;
+        self.output_gain_millidb = HostGain::from_millidb(gain)?.millidb();
         Ok(self)
     }
     pub fn with_output_gain_db(self, gain: f32) -> Result<Self, DeviceContractError> {
-        if !gain.is_finite() || !(-60.0..=24.0).contains(&gain) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.with_output_gain_millidb((gain * 1000.0).round() as i32)
+        self.with_output_gain_millidb(HostGain::from_db(gain)?.millidb())
     }
     pub fn without_host_gains(mut self) -> Self {
         self.input_gain_millidb = 0;
@@ -355,12 +420,13 @@ impl NativeDeviceState {
         self.type_id == other.type_id
             && self.state_version == other.state_version
             && self.payload == other.payload
+            && self.asset_references == other.asset_references
     }
     pub fn input_gain_linear(&self) -> f32 {
-        10.0_f32.powf(self.input_gain_db() / 20.0)
+        HostGain(self.input_gain_millidb).linear()
     }
     pub fn output_gain_linear(&self) -> f32 {
-        10.0_f32.powf(self.output_gain_db() / 20.0)
+        HostGain(self.output_gain_millidb).linear()
     }
     /// Physical observations of this state's immutable payload handle. These
     /// counts/bytes establish neither constructor provenance nor lifetime
@@ -372,6 +438,7 @@ impl NativeDeviceState {
             payload,
             input_gain_millidb: _,
             output_gain_millidb: _,
+            asset_references: _,
         } = self;
         (
             payload.len(),
@@ -385,6 +452,31 @@ impl NativeDeviceState {
     }
     pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+    /// Conservative shared payload/reference backing retained by this control-side state.
+    /// The inline state is charged by its enclosing owner. Arc headers/alignment are included;
+    /// reference entries contain only inline identities. Shared clones may be charged repeatedly,
+    /// so this is neither allocation identity nor an exclusive/closed-ownership proof.
+    pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
+        let header = 2usize.checked_mul(std::mem::size_of::<usize>())?;
+        let payload = self.payload.len().checked_add(header)?.checked_add(
+            std::mem::align_of::<usize>()
+                .max(std::mem::align_of::<u8>())
+                .checked_sub(1)?,
+        )?;
+        let references = match self.asset_references.as_ref() {
+            Some(references) => references
+                .len()
+                .checked_mul(std::mem::size_of::<DeviceAssetReference>())?
+                .checked_add(header)?
+                .checked_add(
+                    std::mem::align_of::<usize>()
+                        .max(std::mem::align_of::<DeviceAssetReference>())
+                        .checked_sub(1)?,
+                )?,
+            None => 0,
+        };
+        payload.checked_add(references)
     }
 }
 
@@ -403,6 +495,9 @@ pub enum DeviceContractError {
     RuntimeBudgetExceeded,
     RuntimeAllocation,
     UnsupportedProcessingClass,
+    AssetResourcesUnavailable,
+    ForeignProcessingUnavailable,
+    ForeignProcessingFailed,
 }
 impl fmt::Display for DeviceContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -425,6 +520,10 @@ impl fmt::Display for DeviceContractError {
                 Self::RuntimeAllocation => "native processor runtime allocation failed",
                 Self::UnsupportedProcessingClass =>
                     "native device processing class is not admitted",
+                Self::ForeignProcessingUnavailable =>
+                    "foreign processing resources are unavailable for this graph",
+                Self::ForeignProcessingFailed => "foreign processor exchange failed",
+                Self::AssetResourcesUnavailable => "native device asset resources are not prepared",
             }
         )
     }
@@ -492,6 +591,17 @@ pub trait NativeDeviceMetadata: Sync {
     ) -> Result<Vec<ParameterDescriptor>, DeviceContractError> {
         Ok(self.descriptors().to_vec())
     }
+    /// Optional current-state semantics. None is undeclared, not an inferred
+    /// capability. Consumers use validated_parameter_semantics/state_parameters.
+    /// A declaring provider must reject writes to read-only parameters in its
+    /// patch methods; registries also enforce this before calling overrides.
+    fn parameter_semantics_for_state(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: ParameterId,
+    ) -> Result<Option<ParameterSemantics>, DeviceContractError> {
+        Ok(None)
+    }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError>;
     fn migrate_state(
         &self,
@@ -512,7 +622,7 @@ pub trait NativeDeviceMetadata: Sync {
         state: &NativeDeviceState,
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
-        let migrated = self.migrate_state(state)?;
+        let migrated = self.migrate_state(state)?.with_host_metadata_from(state)?;
         let descriptors = validated_state_descriptors(self, &migrated)?;
         let descriptor = descriptors
             .iter()
@@ -536,10 +646,13 @@ pub trait NativeDeviceMetadata: Sync {
         state: &NativeDeviceState,
         snapshot: &DeviceParameterSnapshot,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let mut candidate = self.migrate_state(state)?;
-        snapshot.validate(&validated_state_descriptors(self, &candidate)?)?;
+        let mut candidate = self.migrate_state(state)?.with_host_metadata_from(state)?;
+        validate_parameter_snapshot_for_write(self, &candidate, snapshot)?;
         for &(parameter, value) in snapshot.entries() {
-            candidate = self.patch_parameter(&candidate, parameter, value)?;
+            validate_parameter_write(self, &candidate, parameter, value)?;
+            candidate = self
+                .patch_parameter(&candidate, parameter, value)?
+                .with_host_metadata_from(state)?;
         }
         Ok(candidate)
     }
@@ -724,6 +837,31 @@ mod tests {
             descriptor.validate(value)?;
             self.migrate_state(state)
         }
+    }
+
+    #[test]
+    fn state_metadata_quote_retains_shared_odd_payload_and_reference_backing() {
+        let state = NativeDeviceState::new(AVAILABILITY_TYPE, 1, vec![7; 3]).unwrap();
+        let clone = state.clone();
+        assert_eq!(
+            state.retained_control_metadata_bytes(),
+            clone.retained_control_metadata_bytes()
+        );
+        let alignment = std::mem::align_of::<usize>();
+        let minimum = (3 + 2 * std::mem::size_of::<usize>()).next_multiple_of(alignment);
+        assert!(state.retained_control_metadata_bytes().unwrap() >= minimum);
+        let bound = state
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(2).unwrap(),
+            }])
+            .unwrap();
+        assert!(
+            bound.retained_control_metadata_bytes().unwrap()
+                >= clone.retained_control_metadata_bytes().unwrap()
+                    + std::mem::size_of::<DeviceAssetReference>()
+                    + 2 * std::mem::size_of::<usize>()
+        );
     }
 
     #[test]

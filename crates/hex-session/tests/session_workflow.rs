@@ -153,8 +153,11 @@ fn session_midi_history_save_reopen_and_mixed_playback_workflow() {
     let (track_event, result) = created(
         edit(
             &service,
-            Command::AddMidiTrack {
+            Command::InsertTrackWithDevice {
                 name: "session instrument".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             },
         ),
         "track",
@@ -167,8 +170,11 @@ fn session_midi_history_save_reopen_and_mixed_playback_workflow() {
 
     let arrangement_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "arrangement instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let arrangement_track = match arrangement_event.created.expect("Arrangement track") {

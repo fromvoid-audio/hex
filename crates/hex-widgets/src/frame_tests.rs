@@ -18,10 +18,14 @@ const STYLE: ControlStyle = ControlStyle {
     text: 0xeeeeee,
     muted: 0xaaaaaa,
     accent: 0x00ffff,
+    accent_text: 0x202020,
+    numeric_fill: 0x31515a,
+    hover_text: 0xe0e0e0,
     focus_marker: 0xaaaaaa,
     dial_rail: 0,
     hover: 0x555555,
     font_size: 9.0,
+    text_case: crate::TextCase::Preserve,
 };
 
 type Masks = Rc<RefCell<Vec<(&'static str, Bounds<Pixels>)>>>;
@@ -60,6 +64,7 @@ impl Render for FrameFixture {
         device_frame(
             "long title that must remain bounded",
             STYLE,
+            div(),
             div()
                 .w(px(120.0))
                 .h(px(60.0))
@@ -187,8 +192,8 @@ fn rendered_shell_and_rounded_sections_clip_oversized_artwork_and_hits(cx: &mut 
 }
 
 fn assert_painted_styles(window: &mut Window, cx: &mut gpui::App) {
-    let mut frame = device_frame("title", STYLE, div(), div());
-    let mut header = device_header("title", STYLE, div());
+    let mut frame = device_frame("title", STYLE, div(), div(), div());
+    let mut header = device_header("title", STYLE, div(), div());
     let mut section = device_display(STYLE);
     let mut row = device_grouped_row(STYLE, false);
     let frame = frame.interactivity().compute_style(None, None, window, cx);
@@ -295,6 +300,7 @@ impl Render for SelectionFixture {
             "device",
             STYLE.with_device_selection(self.selected),
             div(),
+            div(),
             device_body(STYLE)
                 .id("selection-body")
                 .debug_selector(|| "selection-body".into())
@@ -311,7 +317,7 @@ impl Render for SelectionFixture {
         .size_full();
         // Filled paint is checked from the completed scene below. Resolve border
         // style during rendering too; this does not claim GPU pixel readback.
-        let mut idle = device_frame("device", STYLE, div(), div());
+        let mut idle = device_frame("device", STYLE, div(), div(), div());
         let idle = idle.interactivity().compute_style(None, None, window, cx);
         let current = frame.interactivity().compute_style(None, None, window, cx);
         assert_eq!(current.border_color, idle.border_color);
@@ -435,11 +441,11 @@ impl Render for CompactSectionFixture {
             .child(
                 device_action(
                     "×".into(),
-                    DeviceActionStyle {
+                    ActionStyle {
                         background: 0x123456,
                         text: 0xffffff,
                         hover_background: 0xabcdef,
-                        hover_text: 0x000000,
+                        hover_text: Some(0x000000),
                     },
                 )
                 .id("shared-action")
@@ -528,4 +534,216 @@ fn vertical_and_dense_sections_preserve_control_widths_heights_and_action_hover(
         visual.rendered_background("shared-action"),
         Some(gpui::Background::from(rgb(0xabcdef)))
     );
+}
+
+struct SharedActionFixture {
+    clicks: Rc<Cell<usize>>,
+}
+impl Render for SharedActionFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let style = ActionStyle {
+            background: 0x123456,
+            text: 0xffffff,
+            hover_background: 0xabcdef,
+            hover_text: Some(0),
+        };
+        let clicks = self.clicks.clone();
+        div()
+            .flex()
+            .gap(px(4.0))
+            .child(
+                device_action("×".into(), style)
+                    .id("device-action")
+                    .debug_selector(|| "device-action".into()),
+            )
+            .child(
+                action("play".into(), style)
+                    .id("workspace-action")
+                    .debug_selector(|| "workspace-action".into())
+                    .w(px(25.0))
+                    .h(px(22.0))
+                    .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+            )
+            .child(
+                toggle_action("solo".into(), style.with_state_colors(0x123456, 0xffffff))
+                    .id("state-action")
+                    .debug_selector(|| "state-action".into())
+                    .size(px(18.0)),
+            )
+    }
+}
+
+#[gpui::test]
+fn shared_actions_preserve_owner_sizes_clicks_and_common_hover(cx: &mut TestAppContext) {
+    let clicks = Rc::new(Cell::new(0));
+    let handle = cx.add_window(|_, _| SharedActionFixture {
+        clicks: clicks.clone(),
+    });
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    // The simulated pointer starts at the origin, inside the first control.
+    visual.simulate_mouse_move(point(px(200.0), px(200.0)), None, Modifiers::default());
+    visual.run_until_parked();
+    let scale = visual.update(|window, _| window.scale_factor());
+    for (name, width, height) in [
+        (
+            "device-action",
+            DEVICE_HEADER_ACTION_SIZE,
+            DEVICE_HEADER_ACTION_SIZE,
+        ),
+        ("workspace-action", 25.0, 22.0),
+        ("state-action", 18.0, 18.0),
+    ] {
+        let bounds = visual.debug_bounds(name).unwrap();
+        assert_eq!(bounds.size, size(px(width), px(height)));
+        assert_eq!(
+            visual.rendered_surface_geometry(name).unwrap().0.top_left,
+            px(if name == "state-action" {
+                crate::TOGGLE_CORNER_RADIUS
+            } else {
+                width.min(height) / 2.0
+            })
+            .scale(scale)
+        );
+        assert_eq!(
+            visual.rendered_background(name),
+            Some(gpui::Background::from(rgb(0x123456)))
+        );
+        visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_ne!(
+            visual.rendered_background(name),
+            Some(gpui::Background::from(rgb(0x123456))),
+            "{name} has visible hover feedback"
+        );
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.simulate_mouse_move(point(px(200.0), px(200.0)), None, Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert_eq!(
+        clicks.get(),
+        1,
+        "only the workspace owner installed a click handler"
+    );
+}
+
+struct HousingFixture {
+    reverse: bool,
+    actions: usize,
+}
+impl Render for HousingFixture {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let order = if self.reverse { ["b", "a"] } else { ["a", "b"] };
+        div().flex().children(order.map(|id| {
+            device_frame(
+                "device",
+                STYLE,
+                div(),
+                crate::device_action(
+                    "+".into(),
+                    crate::ActionStyle {
+                        background: STYLE.raised,
+                        text: STYLE.text,
+                        hover_background: STYLE.hover,
+                        hover_text: Some(STYLE.hover_text),
+                    },
+                )
+                .id("caller-action")
+                .debug_selector(move || format!("action-{id}"))
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.actions += 1;
+                    cx.notify();
+                })),
+                device_body(STYLE).h(px(120.0)).child("device controls"),
+            )
+            .id(id)
+            .debug_selector(move || id.into())
+            .w(px(142.0))
+            .h(px(150.0))
+            .flex_shrink_0()
+        }))
+    }
+}
+#[gpui::test]
+fn shared_housing_panels_toggle_independently_and_follow_device_identity(cx: &mut TestAppContext) {
+    let handle = cx.add_window(|_, _| HousingFixture {
+        reverse: false,
+        actions: 0,
+    });
+    let view = handle.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.simulate_resize(size(px(400.0), px(200.0)));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-macro-panel").is_none());
+    assert!(visual.debug_bounds("device-modulator-panel").is_none());
+    let a = visual.debug_bounds("a").unwrap();
+    let b = visual.debug_bounds("b").unwrap();
+    let macro_b = visual.debug_bounds("device-macro-toggle").unwrap();
+    let mod_b = visual.debug_bounds("device-modulator-toggle").unwrap();
+    let macro_a = macro_b.center() + point(a.left() - b.left(), px(0.0));
+    visual.simulate_click(macro_a, Modifiers::default());
+    visual.run_until_parked();
+    let panel = visual
+        .debug_bounds("device-macro-panel")
+        .expect("first housing opened");
+    assert!(a.contains(&panel.center()));
+    assert!(visual.debug_bounds("device-modulator-panel").is_none());
+    visual.simulate_keystrokes("tab enter");
+    visual.run_until_parked();
+    assert!(
+        a.contains(
+            &visual
+                .debug_bounds("device-modulator-panel")
+                .unwrap()
+                .center()
+        )
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-modulator-panel").is_none());
+    visual.simulate_click(mod_b.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        b.contains(
+            &visual
+                .debug_bounds("device-modulator-panel")
+                .unwrap()
+                .center()
+        )
+    );
+    assert!(a.contains(&visual.debug_bounds("device-macro-panel").unwrap().center()));
+    // The second housing can show both panels without changing the first.
+    visual.simulate_click(macro_b.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(b.contains(&visual.debug_bounds("device-macro-panel").unwrap().center()));
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert!(a.contains(&visual.debug_bounds("device-macro-panel").unwrap().center()));
+    let caller = visual.debug_bounds("action-b").unwrap();
+    visual.simulate_click(caller.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(cx, |view, _| assert_eq!(view.actions, 1));
+    view.update(cx, |view, cx| {
+        view.reverse = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let a = visual.debug_bounds("a").unwrap();
+    let b = visual.debug_bounds("b").unwrap();
+    assert!(a.contains(&visual.debug_bounds("device-macro-panel").unwrap().center()));
+    assert!(
+        b.contains(
+            &visual
+                .debug_bounds("device-modulator-panel")
+                .unwrap()
+                .center()
+        )
+    );
+    // Close and reopen the same panel after reordering.
+    let macro_a = visual.debug_bounds("device-macro-toggle").unwrap();
+    visual.simulate_click(macro_a.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-macro-panel").is_none());
+    visual.simulate_click(macro_a.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(a.contains(&visual.debug_bounds("device-macro-panel").unwrap().center()));
 }

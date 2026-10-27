@@ -24,14 +24,21 @@ fn patch(
 
 fn runtime(state: &NativeDeviceState) -> Box<dyn NativeProcessorRuntime> {
     SATURATOR_DEFINITION
-        .prepare_processor(state, 48_000)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("valid preparation")
         .expect("nonlinear processor")
         .create_runtime()
 }
 
 fn render(state: &NativeDeviceState, frames: &mut [StereoFrame]) {
-    runtime(state).process_block(frames);
+    runtime(state).process_block(frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
 }
 
 #[test]
@@ -235,10 +242,24 @@ fn linear_utility_and_saturator_observe_the_declared_device_order() {
         .expect("digital clip");
     let catalog = crate::native_registry().expect("built-in catalog");
     let utility = catalog
-        .prepare_device(&utility_state, 48_000)
+        .prepare_device(
+            &utility_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("prepared linear utility");
     let saturator = catalog
-        .prepare_device(&saturator_state, 48_000)
+        .prepare_device(
+            &saturator_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("prepared nonlinear saturator");
     let saturator_processor: std::sync::Arc<dyn PreparedNativeProcessor> =
         std::sync::Arc::from(saturator.processor.expect("nonlinear runtime"));
@@ -277,7 +298,7 @@ fn linear_utility_and_saturator_observe_the_declared_device_order() {
         let mut chain = NativeRuntimeChain::new(instances).expect("runtime chain");
         let mut signal = [[1.0, -1.0]];
         chain.begin_block();
-        chain.process_block(&mut signal);
+        chain.process_block(&mut signal).unwrap();
         chain.commit_block();
         signal[0]
     };
@@ -301,7 +322,14 @@ fn nonlinear_processor_refuses_matrix_compilation_and_reports_no_delay_or_tail()
         StereoMatrix::identity()
     );
     let prepared = SATURATOR_DEFINITION
-        .prepare_processor(&state, 48_000)
+        .prepare_processor(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("processor prepared")
         .expect("stateful contract processor");
     assert_eq!(prepared.algorithmic_latency_frames(), Some(0));
@@ -315,7 +343,14 @@ fn nonlinear_processor_refuses_matrix_compilation_and_reports_no_delay_or_tail()
     assert!(runtime.is_quiescent());
     assert!(
         SATURATOR_DEFINITION
-            .prepare_processor(&state, 7_999)
+            .prepare_processor(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 7_999,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                }
+            )
             .is_err()
     );
 }
@@ -365,4 +400,84 @@ fn transfer_preview_matches_runtime_and_exposes_output_axis_without_clipping() {
         transfer_curve(&malformed),
         Err(DeviceContractError::MalformedState)
     );
+}
+
+#[test]
+fn shared_binding_retarget_and_subset_restore_base_with_unchanged_drive() {
+    struct Values(Vec<(ParameterId, ParameterValue)>, Vec<ParameterId>);
+    impl Values {
+        fn new(items: Vec<(ParameterId, ParameterValue)>) -> Self {
+            Self(items.clone(), items.iter().map(|v| v.0).collect())
+        }
+    }
+    impl hex_lattice::NativeParameterAutomation for Values {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &self.1
+        }
+        fn value_at(&self, id: ParameterId, _: usize) -> Option<ParameterValue> {
+            self.0.iter().find(|v| v.0 == id).map(|v| v.1)
+        }
+    }
+    let base = SATURATOR_DEFINITION.default_state().unwrap();
+    let parameters = [parameter::DRIVE, parameter::OUTPUT];
+    let both = Values::new(vec![
+        (parameter::DRIVE, ParameterValue::Float(12.0)),
+        (parameter::OUTPUT, ParameterValue::Float(-6.0)),
+    ]);
+    let drive = Values::new(vec![(parameter::DRIVE, ParameterValue::Float(12.0))]);
+    let mut previous = SaturatorDefinition::prepare_owned(&base, 48_000, &parameters)
+        .unwrap()
+        .create_runtime();
+    let mut discard = [[0.25, -0.5]; 4];
+    previous
+        .process_block_with_automation(
+            &mut discard,
+            None,
+            &both,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    for output in [0.0, 3.0] {
+        let new_base = patch(&base, parameter::OUTPUT, ParameterValue::Float(output));
+        let mut candidate = SaturatorDefinition::prepare_owned(&new_base, 48_000, &parameters)
+            .unwrap()
+            .create_runtime();
+        candidate.copy_history_from(previous.as_ref());
+        let expected_state = patch(&new_base, parameter::DRIVE, ParameterValue::Float(12.0));
+        let mut actual = [[0.25, -0.5]; 4];
+        candidate
+            .process_block_with_automation(
+                &mut actual,
+                None,
+                &drive,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        let mut expected = [[0.25, -0.5]; 4];
+        runtime(&expected_state).process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(actual, expected);
+        let invalid = Values::new(vec![(parameter::DRIVE, ParameterValue::Float(f32::NAN))]);
+        let mut untouched = [[0.25, -0.5]; 4];
+        assert!(
+            candidate
+                .process_block_with_automation(
+                    &mut untouched,
+                    None,
+                    &invalid,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES
+                )
+                .is_err()
+        );
+        assert_eq!(untouched, [[0.25, -0.5]; 4]);
+        let mut retry = [[0.25, -0.5]; 4];
+        candidate
+            .process_block_with_automation(
+                &mut retry,
+                None,
+                &drive,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(retry, expected);
+    }
 }

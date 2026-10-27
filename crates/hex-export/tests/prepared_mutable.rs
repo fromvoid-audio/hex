@@ -51,18 +51,33 @@ impl Drop for TestDir {
 }
 
 struct FixtureDefinition;
-struct FixturePrepared;
-struct FixtureFactory;
+struct FixturePrepared {
+    noise_floor: bool,
+    echo_frame: Option<u64>,
+    stuck: bool,
+    release_frames: u32,
+}
+struct FixtureFactory {
+    noise_floor: bool,
+    echo_frame: Option<u64>,
+    stuck: bool,
+    release_frames: u32,
+}
 
 #[derive(Clone, Copy, Default)]
 struct Voice {
     id: u64,
     active: bool,
     gated: bool,
-    release_left: u8,
+    release_left: u32,
 }
 
 struct Runtime {
+    rendered_frames: u64,
+    noise_floor: bool,
+    echo_frame: Option<u64>,
+    stuck: bool,
+    release_frames: u32,
     voices: [Voice; 64],
 }
 
@@ -86,7 +101,10 @@ impl NativeDeviceMetadata for FixtureDefinition {
         &self,
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        if state.type_id() == FIXTURE_TYPE && state.state_version() == 1 && state.payload() == [1] {
+        if state.type_id() == FIXTURE_TYPE
+            && state.state_version() == 1
+            && matches!(state.payload(), [1] | [2] | [3] | [4] | [5])
+        {
             Ok(state.clone())
         } else {
             Err(DeviceContractError::MalformedState)
@@ -113,12 +131,25 @@ impl NativeInstrumentDefinition for FixtureDefinition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if !(8_000..=192_000).contains(&sample_rate) || self.migrate_state(state).is_err() {
             return Err(DeviceContractError::MalformedState);
         }
-        Ok(Box::new(FixturePrepared))
+        Ok(Box::new(FixturePrepared {
+            noise_floor: matches!(state.payload(), [4] | [5]),
+            echo_frame: (state.payload() == [5]).then_some(u64::from(sample_rate) * 12),
+            stuck: state.payload() == [2],
+            release_frames: if state.payload() == [3] {
+                sample_rate * 12
+            } else {
+                3
+            },
+        }))
     }
 }
 
@@ -132,7 +163,12 @@ impl PreparedNativeInstrument for FixturePrepared {
     fn prepare_mutable_runtime(
         &self,
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
-        Ok(Some(Box::new(FixtureFactory)))
+        Ok(Some(Box::new(FixtureFactory {
+            noise_floor: self.noise_floor,
+            echo_frame: self.echo_frame,
+            stuck: self.stuck,
+            release_frames: self.release_frames,
+        })))
     }
 }
 
@@ -153,10 +189,15 @@ impl PreparedMutableInstrumentRuntime for FixtureFactory {
         64
     }
     fn max_release_tail_frames(&self) -> u64 {
-        3
+        u64::from(self.release_frames)
     }
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
         Box::new(Runtime {
+            rendered_frames: 0,
+            noise_floor: self.noise_floor,
+            echo_frame: self.echo_frame,
+            stuck: self.stuck,
+            release_frames: self.release_frames,
             voices: [Voice::default(); 64],
         })
     }
@@ -170,6 +211,7 @@ impl MutableInstrumentRuntime for Runtime {
         &self,
         events: &[NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         if events.len() > 256 {
             return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
@@ -188,7 +230,12 @@ impl MutableInstrumentRuntime for Runtime {
         Ok(())
     }
 
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let mut event_index = 0;
         for (frame_offset, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.get(event_index).copied() {
@@ -216,7 +263,7 @@ impl MutableInstrumentRuntime for Runtime {
                             .find(|voice| voice.active && voice.id == occurrence_id)
                         {
                             voice.gated = false;
-                            voice.release_left = 3;
+                            voice.release_left = self.release_frames;
                         }
                     }
                 }
@@ -229,25 +276,39 @@ impl MutableInstrumentRuntime for Runtime {
                 let level = if voice.gated {
                     LEVEL
                 } else if voice.release_left > 0 {
-                    LEVEL * (f32::from(voice.release_left) / 4.0)
+                    LEVEL * (voice.release_left as f32 / (self.release_frames + 1) as f32)
                 } else {
                     voice.active = false;
                     return sum;
                 };
-                if !voice.gated {
+                if !voice.gated && !self.stuck {
                     voice.release_left -= 1;
                 }
                 sum + level
             });
-            frame[0] += signal;
-            frame[1] += signal;
+            let noise = if self.noise_floor {
+                if self.rendered_frames % 2 == 0 {
+                    1e-5
+                } else {
+                    -1e-5
+                }
+            } else {
+                0.0
+            };
+            frame[0] += signal + noise;
+            frame[1] += signal - noise;
+            if self.echo_frame == Some(self.rendered_frames) {
+                frame[1] += 0.00022;
+            }
+            self.rendered_frames += 1;
         }
     }
     fn reset(&mut self) {
+        self.rendered_frames = 0;
         self.voices.fill(Voice::default());
     }
     fn is_quiescent(&self) -> bool {
-        self.voices.iter().all(|voice| !voice.active)
+        !self.noise_floor && self.voices.iter().all(|voice| !voice.active)
     }
     fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
         previous
@@ -258,6 +319,7 @@ impl MutableInstrumentRuntime for Runtime {
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
             self.voices = previous.voices;
+            self.rendered_frames = previous.rendered_frames;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
@@ -295,10 +357,38 @@ fn prepared_hybrid(
     session_loop: bool,
     arrangement_loop: bool,
 ) -> (Arc<PreparedRevision>, AssetId) {
+    prepared_hybrid_using(transport_loop, session_loop, arrangement_loop, false)
+}
+fn prepared_hybrid_using(
+    transport_loop: bool,
+    session_loop: bool,
+    arrangement_loop: bool,
+    stuck: bool,
+) -> (Arc<PreparedRevision>, AssetId) {
+    prepared_hybrid_with_state(
+        transport_loop,
+        session_loop,
+        arrangement_loop,
+        if stuck {
+            NativeDeviceState::new(FIXTURE_TYPE, 1, vec![2]).unwrap()
+        } else {
+            mutable_state()
+        },
+    )
+}
+fn prepared_hybrid_with_state(
+    transport_loop: bool,
+    session_loop: bool,
+    arrangement_loop: bool,
+    state: NativeDeviceState,
+) -> (Arc<PreparedRevision>, AssetId) {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "hybrid".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {
@@ -314,12 +404,28 @@ fn prepared_hybrid(
     editor
         .execute(Command::ReplaceDeviceState {
             device: instrument,
-            state: mutable_state(),
+            state,
         })
         .expect("mutable instrument");
+    // Keep the authored MIDI on a silent input track. The hybrid owner retains
+    // its audio prefix, mutable instrument gap and suffix without stacked clips.
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack {
+            name: "silent midi source".into(),
+        })
+        .expect("midi source")
+    else {
+        panic!("source track")
+    };
+    editor
+        .execute(Command::SetMidiSource {
+            destination: track,
+            source: Some(source),
+        })
+        .expect("route authored midi to hybrid owner");
     let clip = match editor
         .execute(Command::PlaceMidiClip {
-            track,
+            track: source,
             start: BeatTime::ZERO,
             length: BeatTime::ONE,
         })
@@ -415,7 +521,7 @@ fn prepared_hybrid(
         };
         let session_clip = match editor
             .execute(Command::CreateSessionMidiClip {
-                track,
+                track: source,
                 scene,
                 name: "unused loop".into(),
                 source_length: BeatTime::ONE,
@@ -581,8 +687,11 @@ fn nonmutable_prepared_export_keeps_nonzero_range_support() {
     let range_path = dir.0.join("range.wav");
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "analytic".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {
@@ -622,6 +731,10 @@ fn nonmutable_prepared_export_keeps_nonzero_range_support() {
         .expect("nonmutable range remains supported");
     assert_eq!(report.frames, 16);
     let full = fs::read(full_path).expect("read full wav");
+    assert!(
+        full[44..].iter().any(|sample_byte| *sample_byte != 0),
+        "analytic range control must retain its audible instrument workload"
+    );
     let range = fs::read(range_path).expect("read range wav");
     assert_eq!(range.len(), 44 + 16 * 4);
     assert_eq!(&range[44..], &full[44 + 10 * 4..44 + 26 * 4]);
@@ -660,4 +773,188 @@ fn linear_export_owner_rejects_session_routes_and_state_inheritance_both_ways() 
     ));
     assert_eq!(interactive.performance_frame(), interactive_frame);
     assert_eq!(fresh_export.performance_frame(), export_frame);
+}
+
+#[test]
+fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations() {
+    let dir = TestDir::new();
+    let path = dir.0.join("capped-tail.wav");
+    let (revision, _) = prepared_hybrid_using(false, false, false, true);
+    let report = hex_export::render_arrangement_bounce_new(
+        &path,
+        revision,
+        None,
+        0,
+        320,
+        true,
+        &hex_export::ExportControl::default(),
+    )
+    .expect("unfinished tail is a successful capped bounce");
+    assert_eq!(report.frames, 320 + u64::from(RATE) * 30);
+    assert_eq!(report.data_bytes, report.frames as u32 * 8);
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(bytes.len(), 44 + report.frames as usize * 8);
+    assert_eq!(
+        u16::from_le_bytes(bytes[20..22].try_into().unwrap()),
+        3,
+        "float WAV"
+    );
+    assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), RATE);
+    assert!(
+        bytes[bytes.len() - 8..]
+            .chunks_exact(4)
+            .all(|sample| f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.0),
+        "the tail is still sounding at the exact cap"
+    );
+    let original = bytes;
+    let (revision, _) = prepared_hybrid(false, false, false);
+    assert!(
+        hex_export::render_arrangement_bounce_new(
+            &path,
+            revision,
+            None,
+            0,
+            320,
+            false,
+            &hex_export::ExportControl::default(),
+        )
+        .is_err()
+    );
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        original,
+        "create-new preserves existing media"
+    );
+    assert_eq!(
+        fs::read_dir(&dir.0).unwrap().count(),
+        1,
+        "no temporary output remains"
+    );
+}
+
+#[test]
+fn arrangement_bounce_keeps_a_naturally_ending_tail_beyond_ten_seconds() {
+    let dir = TestDir::new();
+    let path = dir.0.join("natural-tail.wav");
+    let (revision, _) = prepared_hybrid_with_state(
+        false,
+        false,
+        false,
+        NativeDeviceState::new(FIXTURE_TYPE, 1, vec![3]).unwrap(),
+    );
+    let report = hex_export::render_arrangement_bounce_new(
+        &path,
+        revision,
+        None,
+        0,
+        320,
+        true,
+        &hex_export::ExportControl::default(),
+    )
+    .expect("a twelve-second release finishes naturally");
+    assert!(report.frames > u64::from(RATE) * 12);
+    assert!(report.frames < u64::from(RATE) * 13);
+    let bytes = fs::read(&path).unwrap();
+    let late = 44 + RATE as usize * 11 * 8;
+    assert!(
+        bytes[late..late + 8]
+            .chunks_exact(4)
+            .any(|sample| f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.0)
+    );
+    assert_eq!(
+        &bytes[bytes.len() - 8..],
+        &[0; 8],
+        "natural release reaches silence before publication"
+    );
+}
+
+#[test]
+fn arrangement_bounce_ignores_quiet_noise_without_trimming_selected_content() {
+    let dir = TestDir::new();
+    let (revision, _) = prepared_hybrid_with_state(
+        false,
+        false,
+        false,
+        NativeDeviceState::new(FIXTURE_TYPE, 1, vec![4]).unwrap(),
+    );
+    let path = dir.0.join("quiet-tail.wav");
+    let report = hex_export::render_arrangement_bounce_new(
+        &path,
+        Arc::clone(&revision),
+        None,
+        0,
+        1024,
+        true,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        report.frames, 1024,
+        "quiet background must not extend the selected span"
+    );
+    let exact_path = dir.0.join("exact.wav");
+    let exact = hex_export::render_arrangement_bounce_new(
+        &exact_path,
+        revision,
+        None,
+        0,
+        1024,
+        false,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+    assert_eq!(exact.frames, 1024);
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(
+        &bytes[44..],
+        &fs::read(exact_path).unwrap()[44..],
+        "retained PCM is unchanged"
+    );
+    assert!(
+        bytes[bytes.len() - 8..]
+            .chunks_exact(4)
+            .all(|v| f32::from_le_bytes(v.try_into().unwrap()).abs() > 0.0),
+        "the retained source noise is not zeroed or gated"
+    );
+}
+
+#[test]
+fn arrangement_bounce_keeps_a_late_one_channel_echo_across_quiet_noise() {
+    let dir = TestDir::new();
+    let (revision, _) = prepared_hybrid_with_state(
+        false,
+        false,
+        false,
+        NativeDeviceState::new(FIXTURE_TYPE, 1, vec![5]).unwrap(),
+    );
+    let path = dir.0.join("late-echo.wav");
+    let report = hex_export::render_arrangement_bounce_new(
+        &path,
+        revision,
+        None,
+        0,
+        1024,
+        true,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+    let echo_frame = u64::from(RATE) * 12;
+    assert_eq!(
+        report.frames,
+        echo_frame + 1 + u64::from(RATE) / 20,
+        "retain fifty milliseconds after the late echo"
+    );
+    let bytes = fs::read(path).unwrap();
+    let sample_offset = 44 + echo_frame as usize * 8;
+    let left = f32::from_le_bytes(bytes[sample_offset..sample_offset + 4].try_into().unwrap());
+    let right = f32::from_le_bytes(
+        bytes[sample_offset + 4..sample_offset + 8]
+            .try_into()
+            .unwrap(),
+    );
+    assert!(left.abs() < 0.0001);
+    assert!(
+        right.abs() > 0.0001,
+        "late right-channel echo survives the long quiet gap"
+    );
 }

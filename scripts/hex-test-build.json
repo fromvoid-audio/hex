@@ -1,3 +1,7 @@
 {
-  "app_path": "artifacts/hex.app"
+  "app_path": "artifacts/hex.app",
+  "signing": {
+    "certificate_sha1": "4EDF56A7ADD0B4786C2EEE23A50D61620BCE7E4E",
+    "team_identifier": "DKTKQ8U5T8"
+  }
 }

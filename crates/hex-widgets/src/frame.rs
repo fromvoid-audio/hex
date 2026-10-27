@@ -187,12 +187,18 @@ pub fn device_display(style: ControlStyle) -> Div {
         .gap(px(DEVICE_SECTION_RADIUS))
 }
 
-/// Canonical device frame. Title/actions retain caller input handlers. The idle
+/// Canonical housing for all production and sandbox devices; bodies supply slots
+/// instead of recreating the housing. Title/actions retain caller input handlers. The idle
 /// header and surround use the same surface, without an intervening border.
+/// `leading_control` precedes the flexible title; trailing actions follow it.
+/// The caller owns device commands and supplies a stable parent element identity.
+/// Shared housing toggles own only transient macro/modulator placeholder visibility;
+/// they never alter device state. Open panels share a scroll region with the body.
 /// Use `device_body` for rounded lower-surface/content containment.
 pub fn device_frame(
     title: impl IntoElement,
     style: impl Into<DeviceFrameStyle>,
+    leading_control: impl IntoElement,
     header_actions: impl IntoElement,
     body: impl IntoElement,
 ) -> Div {
@@ -208,8 +214,13 @@ pub fn device_frame(
         .bg(rgb(style.controls.surface))
         .rounded(px(radius))
         .overflow_hidden()
-        .child(device_header(title, style, header_actions))
-        .child(body)
+        .child(crate::device_housing::Housing {
+            body: body.into_any_element(),
+            title: title.into_any_element(),
+            leading: leading_control.into_any_element(),
+            actions: header_actions.into_any_element(),
+            style,
+        })
 }
 
 /// Canonical header composition, also available to custom surrounds. Insets clip
@@ -217,6 +228,7 @@ pub fn device_frame(
 pub fn device_header(
     title: impl IntoElement,
     style: impl Into<DeviceFrameStyle>,
+    leading_control: impl IntoElement,
     header_actions: impl IntoElement,
 ) -> Div {
     let style = style.into();
@@ -234,13 +246,7 @@ pub fn device_header(
         .bg(rgb(style.header_background))
         .rounded_tl(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
         .rounded_tr(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
-        .child(
-            div()
-                .size(px(7.0))
-                .flex_shrink_0()
-                .rounded_full()
-                .bg(rgb(style.controls.accent)),
-        )
+        .child(div().flex_shrink_0().child(leading_control))
         .child(
             div()
                 .flex_1()
@@ -253,5 +259,5 @@ pub fn device_header(
                 .text_size(px(style.controls.font_size))
                 .child(title),
         )
-        .child(header_actions)
+        .child(div().flex_shrink_0().child(header_actions))
 }

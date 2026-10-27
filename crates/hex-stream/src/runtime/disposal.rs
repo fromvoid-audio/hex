@@ -1,4 +1,10 @@
-//! Pre-reserved, exact-pair control disposal. No native quiescence/admission.
+//! Pre-reserved exact-pair disposal on control, separate from native quiescence.
+//!
+//! The actual control/pages pair enters persistent storage only after preflight. External catalog
+//! leases yield Busy before destructive progress. The real worker handle leaves its mutex before
+//! join, and every fixed page must be recovered in owned worker/endpoint storage before physical
+//! completion. Pending, first panic and remaining endpoints persist on failure; mismatches never
+//! manufacture a successful pool report or release a host's independent native output lease.
 use super::*;
 use std::{
     any::Any,
@@ -224,9 +230,16 @@ impl PreparedStreamDisposal {
             return Err(StreamDisposalError::Incomplete);
         }
         let bytes = self
-            .expected_pages
-            .checked_mul(hex_engine::STREAM_PAGE_FRAMES)
-            .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
+            .control
+            .as_ref()
+            .map(|control| &control.owner.transport_data)
+            .and_then(|data| {
+                crate::footprint::sum([
+                    data.pcm_boxes,
+                    data.scalar_boxes,
+                    data.scalar_coverage_boxes,
+                ])
+            })
             .ok_or(StreamDisposalError::Capacity)?;
         self.phase = StreamDisposalPhase::Destroying;
         let result = catch_unwind(AssertUnwindSafe(|| {

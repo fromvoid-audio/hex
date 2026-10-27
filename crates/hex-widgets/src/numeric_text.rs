@@ -46,6 +46,7 @@ impl EntityInputHandler for NumericControl {
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.marked = None;
+        self.invalidate_text_pointer_selection();
     }
 
     fn replace_text_in_range(
@@ -55,6 +56,7 @@ impl EntityInputHandler for NumericControl {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.invalidate_text_pointer_selection();
         let new_text = new_text.replace(['\n', '\r'], "");
         let range = range
             .map(|range| range_utf16_to_bytes(&self.text, range))
@@ -92,6 +94,7 @@ impl EntityInputHandler for NumericControl {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.invalidate_text_pointer_selection();
         let new_text = new_text.replace(['\n', '\r'], "");
         let range = range
             .map(|range| range_utf16_to_bytes(&self.text, range))
@@ -134,8 +137,17 @@ impl EntityInputHandler for NumericControl {
         let range = range_utf16_to_bytes(&self.text, range);
         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
         Some(Bounds::from_corners(
-            point(origin_x + line.x_for_index(range.start), bounds.top()),
-            point(origin_x + line.x_for_index(range.end), bounds.bottom()),
+            point(
+                origin_x
+                    + line
+                        .x_for_index(self.style.text_case.display_offset(&self.text, range.start)),
+                bounds.top(),
+            ),
+            point(
+                origin_x
+                    + line.x_for_index(self.style.text_case.display_offset(&self.text, range.end)),
+                bounds.bottom(),
+            ),
         ))
     }
 
@@ -148,6 +160,7 @@ impl EntityInputHandler for NumericControl {
         let bounds = self.last_bounds?;
         let origin_x = self.last_origin_x.unwrap_or(bounds.left());
         let index = self.last_layout.as_ref()?.index_for_x(point.x - origin_x)?;
+        let index = self.style.text_case.source_offset(&self.text, index);
         Some(byte_offset_to_utf16(&self.text, index))
     }
 }
@@ -209,7 +222,18 @@ impl Element for NumericTextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked) = input.marked.as_ref() {
+        let marked = input.marked.as_ref().map(|range| {
+            input
+                .style
+                .text_case
+                .display_offset(&input.text, range.start)
+                ..input.style.text_case.display_offset(&input.text, range.end)
+        });
+        let caret_run = TextRun {
+            len: 1,
+            ..run.clone()
+        };
+        let runs = if let Some(marked) = marked {
             vec![
                 TextRun {
                     len: marked.start,
@@ -241,8 +265,23 @@ impl Element for NumericTextElement {
             &runs,
             None,
         );
-        let cursor_x = line.x_for_index(input.cursor());
-        let max_x = bounds.size.width - px(2.0);
+        let cell_width = window
+            .text_system()
+            .shape_line(
+                "m".into(),
+                style.font_size.to_pixels(window.rem_size()),
+                &[caret_run],
+                None,
+            )
+            .width
+            .max(px(1.0));
+        let cursor_x = line.x_for_index(
+            input
+                .style
+                .text_case
+                .display_offset(&input.text, input.cursor()),
+        );
+        let max_x = (bounds.size.width - cell_width).max(px(0.0));
         let shift = if cursor_x > max_x {
             cursor_x - max_x
         } else if cursor_x < px(0.0) {
@@ -255,11 +294,23 @@ impl Element for NumericTextElement {
             fill(
                 Bounds::from_corners(
                     point(
-                        origin_x + line.x_for_index(input.selected.start),
+                        origin_x
+                            + line.x_for_index(
+                                input
+                                    .style
+                                    .text_case
+                                    .display_offset(&input.text, input.selected.start),
+                            ),
                         bounds.top(),
                     ),
                     point(
-                        origin_x + line.x_for_index(input.selected.end),
+                        origin_x
+                            + line.x_for_index(
+                                input
+                                    .style
+                                    .text_case
+                                    .display_offset(&input.text, input.selected.end),
+                            ),
                         bounds.bottom(),
                     ),
                 ),
@@ -270,7 +321,10 @@ impl Element for NumericTextElement {
             fill(
                 Bounds::new(
                     point(origin_x + cursor_x, bounds.top()),
-                    size(px(1.0), bounds.bottom() - bounds.top()),
+                    size(
+                        cell_width.min(bounds.size.width),
+                        bounds.bottom() - bounds.top(),
+                    ),
                 ),
                 rgb(input.style.accent),
             )
@@ -313,17 +367,17 @@ impl Element for NumericTextElement {
         if let Some(selection) = state.selection {
             window.paint_quad(selection);
         }
+        if focus.is_focused(window)
+            && let Some(cursor) = state.cursor
+        {
+            crate::text_caret::paint(cursor, self.input.entity_id(), window, cx);
+        }
         let _ = state.line.paint(
             point(state.origin_x, bounds.top()),
             window.line_height(),
             window,
             cx,
         );
-        if focus.is_focused(window)
-            && let Some(cursor) = state.cursor
-        {
-            window.paint_quad(cursor);
-        }
         self.input.update(cx, |input, _| {
             input.last_layout = Some(state.line);
             input.last_bounds = Some(bounds);
@@ -385,10 +439,14 @@ mod tests {
             text: 0xe0e0e0,
             muted: 0xaaaaaa,
             accent,
+            accent_text: 0x202020,
+            numeric_fill: 0x31515a,
+            hover_text: 0xe0e0e0,
             focus_marker: 0xaaaaaa,
             dial_rail: 0x000000,
             hover: 0x404040,
             font_size: 10.0,
+            text_case: crate::TextCase::Preserve,
         }
     }
 

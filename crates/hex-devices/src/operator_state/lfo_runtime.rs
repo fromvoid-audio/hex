@@ -246,6 +246,12 @@ impl PreparedMutableInstrumentRuntime for OperatorLfoFactory {
     fn max_events_per_block(&self) -> usize {
         256
     }
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
     fn max_active_occurrences(&self) -> usize {
         if self.large() { 64 } else { VOICES }
     }
@@ -427,6 +433,26 @@ impl<const N: usize> Runtime<N> {
 }
 
 impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
+    fn active_occurrence_ids(
+        &self,
+        output: &mut [u64],
+    ) -> Result<usize, hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::active_ids(self.voices.iter().map(|v| v.id), output)
+    }
+    fn preflight_occurrence_gains(
+        &self,
+        events: &[NativeInstrumentEvent],
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::preflight(self.voices.iter().map(|v| v.id), events, gains)
+    }
+
     fn can_import_analytic(&self, notes: &[hex_lattice::NativeInstrumentAnalyticSeed]) -> bool {
         self.factory.large()
             && self.filter.is_some()
@@ -478,6 +504,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         &self,
         events: &[NativeInstrumentEvent],
         frames: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), Error> {
         if events.len() > 256 {
             return Err(Error::EventCapacityExceeded);
@@ -509,6 +536,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         &self,
         clock: Option<&dyn NativeInstrumentClock>,
         frames: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), Error> {
         if !self.factory.lfo.active() || !self.factory.lfo.sync() {
             return Ok(());
@@ -526,14 +554,30 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         }
         Ok(())
     }
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]) {
-        self.process_block_with_clock(events, frames, None);
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        self.process_block_with_clock(events, frames, None, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     }
     fn process_block_with_clock(
         &mut self,
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        self.process_block_with_clock_and_occurrence_gains(events, frames, clock, &[], _resources);
+    }
+    fn process_block_with_clock_and_occurrence_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let law = self.factory.lfo;
         let mut event = 0;
@@ -618,6 +662,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                         voice.previous,
                     )
                 };
+                let sample = super::occurrence_gain::sample(sample, voice.id, offset, gains);
                 frame[0] += sample;
                 frame[1] += sample;
                 voice.previous = previous;
@@ -884,6 +929,7 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
     }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        tuning: None,
         rate: runtime.factory.rate,
         companion: super::companion::Settings::default(),
         local_frame: 0,
@@ -974,7 +1020,7 @@ mod tests {
     fn render(partition: usize, sync: bool, waveform: u32, retrigger: bool) -> Vec<StereoFrame> {
         let factory = factory(sync, waveform, retrigger);
         assert!(
-            factory.declared_twin_bytes() * 2 <= 8192,
+            factory.declared_twin_bytes() * 2 <= 10240,
             "pair {}",
             factory.declared_twin_bytes() * 2
         );
@@ -1030,9 +1076,22 @@ mod tests {
                 }
             }
             let clock = Clock(start);
-            runtime.preflight_events(&events, end - start).unwrap();
-            runtime.preflight_clock(Some(&clock), end - start).unwrap();
-            runtime.process_block_with_clock(&events, &mut output[start..end], Some(&clock));
+            runtime
+                .preflight_events(&events, end - start, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            runtime
+                .preflight_clock(
+                    Some(&clock),
+                    end - start,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                )
+                .unwrap();
+            runtime.process_block_with_clock(
+                &events,
+                &mut output[start..end],
+                Some(&clock),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
         }
         assert!(runtime.is_quiescent());
         output
@@ -1120,8 +1179,18 @@ mod tests {
                         velocity: 127,
                     }];
                     let mut frames = [[0.0; 2]; 997];
-                    runtime.preflight_events(&events, frames.len()).unwrap();
-                    runtime.process_block(&events, &mut frames);
+                    runtime
+                        .preflight_events(
+                            &events,
+                            frames.len(),
+                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        )
+                        .unwrap();
+                    runtime.process_block(
+                        &events,
+                        &mut frames,
+                        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    );
                     let mut phase = 0.0;
                     for (at, frame) in frames.iter().enumerate() {
                         let expected = (std::f64::consts::TAU * phase).sin();
@@ -1155,17 +1224,32 @@ mod tests {
             pitch: 69,
             velocity: 100,
         }];
-        source.preflight_events(&on, 91).unwrap();
+        source
+            .preflight_events(&on, 91, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
         let mut scratch = [[0.0; 2]; 91];
-        source.process_block_with_clock(&on, &mut scratch, Some(&Clock(0)));
-        assert!(source.preflight_clock(None, 1).is_err());
+        source.process_block_with_clock(
+            &on,
+            &mut scratch,
+            Some(&Clock(0)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        assert!(
+            source
+                .preflight_clock(None, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .is_err()
+        );
         struct Backwards;
         impl NativeInstrumentClock for Backwards {
             fn beat_at_offset(&self, offset: usize) -> Option<u64> {
                 Some(10 - offset as u64)
             }
         }
-        assert!(source.preflight_clock(Some(&Backwards), 2).is_err());
+        assert!(
+            source
+                .preflight_clock(Some(&Backwards), 2, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .is_err()
+        );
         let capacity: Vec<_> = (10..27)
             .map(|id| NativeInstrumentEvent::NoteOn {
                 frame_offset: 0,
@@ -1175,14 +1259,22 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            factory.create_runtime().preflight_events(&capacity, 1),
+            factory.create_runtime().preflight_events(
+                &capacity,
+                1,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            ),
             Err(Error::EventCapacityExceeded)
         );
         let at_end = [NativeInstrumentEvent::NoteOff {
             frame_offset: 91,
             occurrence_id: 4,
         }];
-        assert!(source.preflight_events(&at_end, 91).is_err());
+        assert!(
+            source
+                .preflight_events(&at_end, 91, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .is_err()
+        );
 
         let duplicate = [NativeInstrumentEvent::NoteOn {
             frame_offset: 0,
@@ -1190,14 +1282,28 @@ mod tests {
             pitch: 69,
             velocity: 100,
         }];
-        assert!(source.preflight_events(&duplicate, 1).is_err());
+        assert!(
+            source
+                .preflight_events(&duplicate, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .is_err()
+        );
         let mut copied = factory.create_runtime();
         assert!(copied.can_copy_history_from(source.as_ref()));
         copied.copy_history_from(source.as_ref());
         let mut a = [[0.0; 2]; 113];
         let mut b = a;
-        source.process_block_with_clock(&[], &mut a, Some(&Clock(91)));
-        copied.process_block_with_clock(&[], &mut b, Some(&Clock(91)));
+        source.process_block_with_clock(
+            &[],
+            &mut a,
+            Some(&Clock(91)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        copied.process_block_with_clock(
+            &[],
+            &mut b,
+            Some(&Clock(91)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         assert_eq!(a, b);
         let mut target = factory.clone();
         target.lfo.0[3] = 7.0_f32.to_bits();
@@ -1212,8 +1318,18 @@ mod tests {
         edited.retarget_history_from(source.as_ref(), proof.as_ref());
         let mut first = [[0.0; 2]; 1];
         let mut old = first;
-        source.process_block_with_clock(&[], &mut old, Some(&Clock(204)));
-        edited.process_block_with_clock(&[], &mut first, Some(&Clock(204)));
+        source.process_block_with_clock(
+            &[],
+            &mut old,
+            Some(&Clock(204)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        edited.process_block_with_clock(
+            &[],
+            &mut first,
+            Some(&Clock(204)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         assert_eq!(first, old, "edit preserves first oscillator phase");
         let mut different = target.clone();
         different.base[0] ^= 1;
@@ -1230,6 +1346,10 @@ mod tests {
             pitch: 127,
             velocity: 100,
         }];
-        assert!(edited.preflight_events(&high, 1).is_err());
+        assert!(
+            edited
+                .preflight_events(&high, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .is_err()
+        );
     }
 }

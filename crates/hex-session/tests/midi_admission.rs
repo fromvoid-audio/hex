@@ -25,12 +25,29 @@ fn edit(service: &Service, command: Command) -> Event {
     event(service)
 }
 
+// Keep 129 real onsets inside the admission window without authoring illegal
+// same-pitch overlap or pitches above the 8 kHz fixture's Nyquist limit.
+fn dense_note(index: usize, base: BeatTime) -> MidiNoteInsert {
+    let duration = BeatTime::from_ratio(1, 1024).unwrap();
+    MidiNoteInsert {
+        active: true,
+        start: BeatTime::from_raw(base.raw() + (index / 32) as u64 * duration.raw()),
+        duration,
+        pitch: 48 + (index % 32) as u8,
+        channel: 0,
+        velocity: 100,
+    }
+}
+
 fn populated(service: &Service) -> (hex_project::ClipId, Event) {
     use hex_project::{BeatTime, Created};
     let track_event = edit(
         service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {
@@ -149,8 +166,11 @@ fn open_playable_instrument_and_reject_invalid_candidate_atomically() {
         std::env::temp_dir().join(format!("hex-session-midi-open-{}.hex", std::process::id()));
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -304,8 +324,11 @@ fn batch_onset_budget_rejection_keeps_dirty_revision_redo_and_project() {
     ));
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -337,11 +360,12 @@ fn batch_onset_budget_rejection_keeps_dirty_revision_redo_and_project() {
         else {
             panic!("note expected")
         };
+        let dense = dense_note(index, BeatTime::ZERO);
         updates.push(MidiNoteUpdate {
             note,
-            start: BeatTime::ZERO,
-            duration: BeatTime::from_ratio(1, 1024).unwrap(),
-            pitch: 48,
+            start: dense.start,
+            duration: dense.duration,
+            pitch: dense.pitch,
             channel: 0,
             velocity: 100,
         });
@@ -416,8 +440,11 @@ fn batch_note_admission_commits_once_and_rejects_density_without_publication() {
     assert!(event(&service).playback.is_some());
     let track_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "batch instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {
@@ -436,6 +463,7 @@ fn batch_note_admission_commits_once_and_rejects_density_without_publication() {
     };
     let valid_notes = (0..3)
         .map(|index| MidiNoteInsert {
+            active: true,
             start: BeatTime::from_quarters(index).unwrap(),
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 60 + index as u8,
@@ -507,16 +535,9 @@ fn batch_note_admission_commits_once_and_rejects_density_without_publication() {
         &service,
         Command::AddMidiNotes {
             clip,
-            notes: vec![
-                MidiNoteInsert {
-                    start: BeatTime::ZERO,
-                    duration: BeatTime::from_ratio(1, 1024).unwrap(),
-                    pitch: 80,
-                    channel: 0,
-                    velocity: 100,
-                };
-                hex_engine::midi_compile::MAX_ONSETS_PER_WINDOW + 1
-            ],
+            notes: (0..=hex_engine::midi_compile::MAX_ONSETS_PER_WINDOW)
+                .map(|index| dense_note(index, BeatTime::ZERO))
+                .collect(),
         },
     );
     assert!(
@@ -559,13 +580,115 @@ fn batch_note_admission_commits_once_and_rejects_density_without_publication() {
 }
 
 #[test]
+fn inactive_notes_do_not_consume_playback_density_and_failed_reactivation_is_atomic() {
+    let service = Service::new(8_000, 16, 32).unwrap();
+    assert!(event(&service).playback.is_some());
+    let track = match edit(
+        &service,
+        Command::InsertTrackWithDevice {
+            name: "notes".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        },
+    )
+    .created
+    {
+        Some(Created::Track(id)) => id,
+        other => panic!("track: {other:?}"),
+    };
+    let clip = match edit(
+        &service,
+        Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(16).unwrap(),
+        },
+    )
+    .created
+    {
+        Some(Created::Clip(id)) => id,
+        other => panic!("clip: {other:?}"),
+    };
+    let inserted = edit(
+        &service,
+        Command::AddMidiNotes {
+            clip,
+            notes: (0..=hex_engine::midi_compile::MAX_ONSETS_PER_WINDOW)
+                .map(|index| {
+                    let mut note = dense_note(index, BeatTime::ZERO);
+                    note.active = false;
+                    note
+                })
+                .collect(),
+        },
+    );
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let ids: Vec<_> = inserted
+        .state
+        .project
+        .midi_clip(clip)
+        .unwrap()
+        .notes()
+        .iter()
+        .map(|note| note.id())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        hex_engine::midi_compile::MAX_ONSETS_PER_WINDOW + 1
+    );
+    let rejected = edit(
+        &service,
+        Command::SetMidiNotesActive {
+            clip,
+            notes: ids.clone(),
+            active: true,
+        },
+    );
+    assert!(
+        rejected
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("onset density")
+    );
+    assert_eq!(rejected.state.project, inserted.state.project);
+    assert_eq!(rejected.state.revision, inserted.state.revision);
+    assert!(rejected.playback.is_none());
+    let accepted = edit(
+        &service,
+        Command::SetMidiNotesActive {
+            clip,
+            notes: vec![ids[0]],
+            active: true,
+        },
+    );
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    assert_eq!(
+        accepted
+            .state
+            .project
+            .midi_clip(clip)
+            .unwrap()
+            .notes()
+            .iter()
+            .filter(|note| note.active())
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() {
     let service = Service::new(8_000, 16, 32).unwrap();
     assert!(event(&service).playback.is_some());
     let track_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "mixed instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {
@@ -615,6 +738,7 @@ fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() 
             remove: vec![first],
             insert: vec![
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_ratio(1, 3).unwrap(),
                     duration: BeatTime::from_ratio(1, 16).unwrap(),
                     pitch: 49,
@@ -622,6 +746,7 @@ fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() 
                     velocity: 65,
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_ratio(4, 3).unwrap(),
                     duration: BeatTime::from_ratio(1, 16).unwrap(),
                     pitch: 53,
@@ -685,16 +810,9 @@ fn mixed_note_edit_admission_preserves_original_revision_on_compile_rejection() 
         Command::EditMidiNotes {
             clip,
             remove: vec![remove],
-            insert: vec![
-                MidiNoteInsert {
-                    start: BeatTime::from_quarters(8).unwrap(),
-                    duration: BeatTime::from_ratio(1, 1024).unwrap(),
-                    pitch: 80,
-                    channel: 0,
-                    velocity: 100,
-                };
-                hex_engine::midi_compile::MAX_ONSETS_PER_WINDOW + 1
-            ],
+            insert: (0..=hex_engine::midi_compile::MAX_ONSETS_PER_WINDOW)
+                .map(|index| dense_note(index, BeatTime::from_quarters(8).unwrap()))
+                .collect(),
         },
     );
     assert!(

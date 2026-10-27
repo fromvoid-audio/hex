@@ -34,8 +34,11 @@ fn fixture_with_session_note_duration(
 ) -> Fixture {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 32).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("instrument track")
     {
@@ -168,8 +171,11 @@ fn session_audio_and_midi_routes_use_the_prepared_track_device_matrix() {
         other => panic!("unexpected audio track: {other:?}"),
     };
     let midi_track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("midi track")
     {
@@ -293,8 +299,11 @@ fn audible(output: &[[f32; 2]]) -> bool {
 fn one_hybrid_track_switches_audio_midi_audio_and_releases_the_midi_tail() {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 16).expect("editor");
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "hybrid".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("hybrid track")
     {
@@ -529,12 +538,32 @@ fn pause_empty_render_stop_all_and_seek_have_distinct_transport_effects() {
     playback.render(&mut output).expect("initial render");
     assert_eq!(playback.performance_frame(), 31);
 
+    let mut released = SessionPlayback::new(Arc::clone(&fixture.revision)).expect("release oracle");
+    released
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: fixture.session_clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    released.apply(SessionPlaybackCommand::Play).unwrap();
+    released.render(&mut [[0.0; 2]; 31]).unwrap();
+    released
+        .apply(SessionPlaybackCommand::StopTrack {
+            track: fixture.track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
     playback
         .apply(SessionPlaybackCommand::Pause)
         .expect("pause");
     output.fill([7.0; 2]);
     playback.render(&mut output).expect("paused render");
-    assert_eq!(output, [[0.0; 2]; 31]);
+    let mut expected_release = [[0.0; 2]; 31];
+    released.render(&mut expected_release).unwrap();
+    assert_eq!(
+        output, expected_release,
+        "pause releases notes through the existing source instead of freezing its audio"
+    );
     let frame = playback.performance_frame();
     playback.render(&mut []).expect("empty render");
     assert_eq!(playback.performance_frame(), frame);
@@ -711,6 +740,62 @@ fn four_quarter_launch_replaces_pending_action_per_track_and_exact_boundary_is_i
 }
 
 #[test]
+fn compensated_pending_launch_crosses_its_boundary_at_the_same_sample_for_each_partition() {
+    let fixture = fixture(None, None);
+    let mut editor = Editor::new(fixture.project, 16).expect("editor");
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .expect("limiter state");
+    editor
+        .execute(Command::InsertDevice {
+            track: fixture.track,
+            before: None,
+            state: limiter,
+        })
+        .expect("track limiter");
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .expect("prepared revision"),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).expect("kernel");
+        playback
+            .apply(SessionPlaybackCommand::Seek(95_990))
+            .expect("seek");
+        playback.apply(SessionPlaybackCommand::Play).expect("play");
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: fixture.session_clip,
+                quantization: LaunchQuantization::FourQuarter,
+            })
+            .expect("queue launch");
+        let mut output = [[0.0; 2]; 512];
+        for block in output.chunks_mut(partition) {
+            playback.render(block).expect("render");
+        }
+        assert_eq!(
+            playback.owner(fixture.track),
+            Some(SessionPlaybackOwner::Session {
+                clip: fixture.session_clip
+            })
+        );
+        output
+    };
+    let expected = render(1);
+    assert!(audible(&expected));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected);
+    }
+}
+
+#[test]
 fn release_capacity_reports_the_shared_preallocated_bank() {
     let fixture = fixture(None, None);
     let playback = SessionPlayback::new(fixture.revision).expect("kernel");
@@ -729,8 +814,11 @@ fn inherited_tail_occupancy_does_not_block_another_tracks_pending_transition() {
     let fixture = fixture(None, None);
     let mut editor = Editor::new(fixture.project, 32).expect("editor from prepared fixture");
     let other_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "other keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("second instrument track")
     {
@@ -1079,8 +1167,11 @@ fn a_late_chunk_failure_rolls_back_a_due_pending_route_and_zeros_earlier_audio()
     let fixture = fixture_with_session_note_duration(None, None, duration);
     let mut editor = Editor::new(fixture.project, 32).expect("editor");
     let other_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "second keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("second instrument track")
     {
@@ -1268,8 +1359,11 @@ fn mixed_audio_session_midi_and_explicit_silence_match_independent_source_compos
         })
         .expect("audio balance");
     let session_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "session midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("Session instrument track")
     {
@@ -1277,8 +1371,11 @@ fn mixed_audio_session_midi_and_explicit_silence_match_independent_source_compos
         _ => panic!("expected instrument track"),
     };
     let stopped_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "stopped midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("silenced instrument track")
     {
@@ -1506,7 +1603,7 @@ fn legacy_promotion_does_not_fence_an_already_disabled_instrument() {
         .as_mut()
         .expect("MIDI track has an instrument slot")
         .bypassed = true;
-    let muted_project = Project::from_snapshot(snapshot).expect("valid disabled instrument");
+    let muted_project = Project::from_legacy_snapshot(snapshot).expect("valid disabled instrument");
     let muted_revision = Arc::new(
         PreparedRevision::prepare(
             &muted_project,
@@ -1612,11 +1709,20 @@ fn legacy_promotion_validates_session_time_before_render_or_launch() {
 #[test]
 fn exhausted_legacy_clock_keeps_finite_playback_but_refuses_session_promotion() {
     let fixture = fixture(Some((0, 48_000)), None);
-    let project = Arc::clone(fixture.revision.arrangement());
+    // Exhaust the performance clock by rendering a tiny real loop near the
+    // numeric limit. An absolute post-loop seek no longer normalizes backwards.
+    let project = Arc::new(
+        hex_engine::Project::with_loop_region(
+            48_000,
+            fixture.revision.arrangement().tracks().to_vec(),
+            Some(hex_project::LoopRegion::new(u64::MAX - 8, u64::MAX - 4, true).unwrap()),
+        )
+        .unwrap(),
+    );
     let mut legacy = Playback::from_shared(project);
-    legacy.apply(PlaybackCommand::Seek(u64::MAX));
+    legacy.apply(PlaybackCommand::Seek(u64::MAX - 7));
     legacy.apply(PlaybackCommand::Play);
-    let mut output = [[0.0; 2]; 1];
+    let mut output = [[0.0; 2]; 8];
     legacy.render(&mut output).expect("legacy finite render");
     assert_eq!(legacy.performance_frame(), u64::MAX);
     assert!(legacy.performance_clock_exhausted());

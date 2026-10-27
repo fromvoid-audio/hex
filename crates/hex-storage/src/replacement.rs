@@ -1,9 +1,9 @@
 //! Optimistic existing-project replacement with one validated recovery generation.
-use crate::{FileToken, MAX_DOCUMENT_BYTES, StorageError, decode, encode, files::read_document};
+use crate::{FileToken, StorageError, decode, encode, files::read_document};
 use hex_project::Project;
 use std::{
     fs::{self, File, OpenOptions, Permissions},
-    io::{self, Read, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
@@ -14,7 +14,6 @@ const RECOVERY_VERSION: u32 = 1;
 const RECOVERY_HEADER_BYTES: usize = 24;
 const MAX_COMPONENT_BYTES: usize = 255;
 const RECOVERY_SUFFIX: &str = ".hex-recovery";
-const MAX_RECOVERY_BYTES: usize = RECOVERY_HEADER_BYTES + MAX_COMPONENT_BYTES + MAX_DOCUMENT_BYTES;
 const MAX_TEMP_ATTEMPTS: usize = 32;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -149,7 +148,7 @@ fn replace_with_hooks(
     })?;
     project_temp.disarm();
 
-    let token = FileToken(Arc::from(new_bytes));
+    let token = FileToken::from_validated_bytes(Arc::from(new_bytes));
     let warning = sync_project_directory(&parent)
         .err()
         .map(|source| ReplaceWarning {
@@ -249,7 +248,7 @@ fn inspect_recovery(path: &Path, basename: &str) -> Result<Option<Vec<u8>>, Stor
                     "recovery sidecar is not a regular file; refusing replacement",
                 ));
             }
-            let bytes = read_bounded(path, MAX_RECOVERY_BYTES)?;
+            let bytes = read_document(path)?;
             let _ = decode_envelope(&bytes, basename)?;
             Ok(Some(bytes))
         }
@@ -263,26 +262,10 @@ fn read_recovery_file(path: &Path) -> Result<Vec<u8>, StorageError> {
             "recovery sidecar must be a regular non-symbolic file",
         ));
     }
-    read_bounded(path, MAX_RECOVERY_BYTES)
-}
-
-fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, StorageError> {
-    let mut bytes = Vec::new();
-    File::open(path)?
-        .take(maximum as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > maximum {
-        return Err(StorageError::Invalid("recovery sidecar exceeds byte limit"));
-    }
-    Ok(bytes)
+    read_document(path)
 }
 
 pub(crate) fn encode_envelope(basename: &str, payload: &[u8]) -> Result<Vec<u8>, StorageError> {
-    if payload.len() > MAX_DOCUMENT_BYTES {
-        return Err(StorageError::Invalid(
-            "recovery project exceeds document byte limit",
-        ));
-    }
     let basename_bytes = basename.as_bytes();
     if basename_bytes.len() > MAX_COMPONENT_BYTES {
         return Err(StorageError::Invalid(
@@ -293,11 +276,6 @@ pub(crate) fn encode_envelope(basename: &str, payload: &[u8]) -> Result<Vec<u8>,
         .checked_add(basename_bytes.len())
         .and_then(|size| size.checked_add(payload.len()))
         .ok_or(StorageError::Invalid("recovery envelope size overflow"))?;
-    if capacity > MAX_RECOVERY_BYTES {
-        return Err(StorageError::Invalid(
-            "recovery envelope exceeds byte limit",
-        ));
-    }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(capacity)
@@ -315,7 +293,7 @@ pub(crate) fn decode_envelope(
     bytes: &[u8],
     expected_basename: &str,
 ) -> Result<(Project, FileToken), StorageError> {
-    if bytes.len() < RECOVERY_HEADER_BYTES || bytes.len() > MAX_RECOVERY_BYTES {
+    if bytes.len() < RECOVERY_HEADER_BYTES {
         return Err(StorageError::Invalid("invalid recovery envelope length"));
     }
     if &bytes[..8] != RECOVERY_MAGIC {
@@ -345,9 +323,7 @@ pub(crate) fn decode_envelope(
         return Err(StorageError::Invalid("invalid recovery target name length"));
     }
     let payload_length = usize::try_from(payload_length)
-        .ok()
-        .filter(|length| *length <= MAX_DOCUMENT_BYTES)
-        .ok_or(StorageError::Invalid("recovery payload exceeds byte limit"))?;
+        .map_err(|_| StorageError::Invalid("recovery payload length overflow"))?;
     let expected_length = RECOVERY_HEADER_BYTES
         .checked_add(basename_length)
         .and_then(|length| length.checked_add(payload_length))
@@ -367,7 +343,7 @@ pub(crate) fn decode_envelope(
     }
     let payload = &bytes[basename_end..];
     let project = decode(payload)?;
-    Ok((project, FileToken(Arc::from(payload))))
+    Ok((project, FileToken::from_validated_bytes(Arc::from(payload))))
 }
 
 pub(crate) struct Temporary {
@@ -590,11 +566,16 @@ mod tests {
         let (_, token) = load_with_token(&target).expect("token");
         for bytes in [
             b"unrelated contents".to_vec(),
-            vec![0_u8; MAX_RECOVERY_BYTES + 1],
+            vec![0_u8; RECOVERY_HEADER_BYTES],
             {
                 let mut future = encode_envelope("owned.hex", &token.0).expect("envelope");
                 future[8..12].copy_from_slice(&2_u32.to_le_bytes());
                 future
+            },
+            {
+                let mut overflow = encode_envelope("owned.hex", &token.0).expect("envelope");
+                overflow[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+                overflow
             },
             {
                 let mut truncated = encode_envelope("owned.hex", &token.0).expect("envelope");
@@ -613,10 +594,11 @@ mod tests {
         assert!(sidecar.is_dir());
         assert_eq!(fs::read(&target).expect("old target"), token.0.as_ref());
         fs::remove_dir(&sidecar).expect("remove own directory fixture");
-        fs::write(&target, vec![b' '; MAX_DOCUMENT_BYTES + 1]).expect("oversized current file");
+        fs::write(&target, vec![b' '; crate::LEGACY_READER_DOCUMENT_BYTES + 1])
+            .expect("oversized current file");
         assert!(matches!(
             replace_existing(&target, &token, &project(44_100)),
-            Err(StorageError::Invalid("project document exceeds byte limit"))
+            Err(StorageError::Conflict { .. })
         ));
         assert!(!sidecar.exists());
     }

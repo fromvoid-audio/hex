@@ -1,7 +1,7 @@
 //! Recursive, bounded sample discovery. All calls belong on control workers.
 use crate::{
-    DirectoryListing, EntryKind, LibraryEntry, MAX_RETAINED_ENTRIES, compare_entries, is_hidden,
-    is_wav,
+    DirectoryListing, EntryKind, LibraryEntry, MAX_RETAINED_ENTRIES, is_hidden, is_wav,
+    sort_entries,
 };
 use std::{
     collections::BTreeSet,
@@ -49,9 +49,21 @@ impl SampleCatalog {
         query: &str,
         listing: Option<&DirectoryListing>,
     ) -> Vec<LibraryEntry> {
-        let mut entries = self.filtered(query, None);
+        self.search_with_listing_in(query, None, listing)
+    }
+
+    /// The same indexed/current-folder composition scoped to one active Place.
+    pub fn search_with_listing_in(
+        &self,
+        query: &str,
+        source: Option<&Path>,
+        listing: Option<&DirectoryListing>,
+    ) -> Vec<LibraryEntry> {
+        let mut entries = self.filtered(query, source);
+        let mut folded = String::new();
         if let Some(listing) = listing {
             let query = query.to_lowercase();
+            let terms: Vec<_> = query.split_whitespace().collect();
             let extra = {
                 let mut seen = entries
                     .iter()
@@ -61,16 +73,21 @@ impl SampleCatalog {
                     .entries
                     .iter()
                     .take(MAX_RETAINED_ENTRIES)
-                    .filter(|entry| entry.name.to_lowercase().contains(&query))
+                    .filter(|entry| source.is_none_or(|root| entry.path.starts_with(root)))
+                    .filter(|entry| {
+                        if source.is_some() {
+                            matches_path_terms(&entry.path, &terms, &mut folded)
+                        } else {
+                            lowercase_into(&entry.name, &mut folded).contains(&query)
+                        }
+                    })
                     .filter(|entry| seen.insert(entry.path.as_path()))
                     .cloned()
                     .collect::<Vec<_>>()
             };
             entries.extend(extra);
         }
-        entries.sort_by(|left, right| {
-            compare_entries(left, right).then_with(|| left.path.cmp(&right.path))
-        });
+        sort_entries(&mut entries, true);
         entries
     }
 
@@ -84,21 +101,40 @@ impl SampleCatalog {
     pub fn filtered(&self, query: &str, source: Option<&Path>) -> Vec<LibraryEntry> {
         let query = query.to_lowercase();
         let terms: Vec<_> = query.split_whitespace().collect();
+        let mut folded = String::new();
         self.entries
             .iter()
             .filter(|entry| {
                 if !source.is_none_or(|source| entry.path.starts_with(source)) {
                     return false;
                 }
-                if terms.is_empty() {
-                    return true;
-                }
-                let path = entry.path.to_string_lossy().to_lowercase();
-                terms.iter().all(|term| path.contains(term))
+                matches_path_terms(&entry.path, &terms, &mut folded)
             })
             .cloned()
             .collect()
     }
+}
+
+fn matches_path_terms(path: &Path, terms: &[&str], folded: &mut String) -> bool {
+    if terms.is_empty() {
+        return true;
+    }
+    let path = path.to_string_lossy();
+    let path = lowercase_into(&path, folded);
+    terms.iter().all(|term| path.contains(term))
+}
+
+/// Reuse query-local ASCII capacity. Full Unicode lowering stays with `str` so
+/// contextual mappings (such as final Greek sigma) retain existing search semantics.
+fn lowercase_into<'a>(value: &str, folded: &'a mut String) -> &'a str {
+    if value.is_ascii() {
+        folded.clear();
+        folded.push_str(value);
+        folded.make_ascii_lowercase();
+    } else {
+        *folded = value.to_lowercase();
+    }
+    folded.as_str()
 }
 
 /// Scan Music and explicitly added places, skipping hidden entries and directory
@@ -131,9 +167,7 @@ pub fn scan_samples(roots: &[PathBuf]) -> CatalogScan {
             &mut result,
         );
     }
-    result.catalog.entries.sort_by(|left, right| {
-        compare_entries(left, right).then_with(|| left.path.cmp(&right.path))
-    });
+    sort_entries(&mut result.catalog.entries, true);
     result
 }
 
@@ -231,3 +265,6 @@ fn visit(
         }
     }
 }
+
+#[cfg(test)]
+mod profile_test;

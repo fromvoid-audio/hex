@@ -1,5 +1,5 @@
 //! Control-worker preset I/O and exact dialog ownership. Project mutation always
-//! uses the existing prepared ReplaceDeviceState transaction in the service.
+//! uses the existing prepared device-comparison replacement transaction in the service.
 use crate::Session;
 use hex_engine::NativeDeviceClass;
 use hex_lattice_contract::DeviceTypeId;
@@ -23,7 +23,7 @@ fn storage_class(class: NativeDeviceClass) -> DeviceClass {
     }
 }
 
-fn validate_owner(
+pub(super) fn validate_owner(
     session: &Session,
     generation: u64,
     revision: u64,
@@ -31,13 +31,13 @@ fn validate_owner(
 ) -> Result<(), String> {
     if generation != owner.project_generation || revision != owner.revision {
         return Err(
-            "device preset canceled · project changed; open the preset dialog again".into(),
+            "device action canceled · project changed; retry from the current device".into(),
         );
     }
     let entry = session
         .project()
         .device(owner.device)
-        .ok_or("device preset target no longer exists")?;
+        .ok_or("device target no longer exists")?;
     if session
         .native_device_class(owner.device)
         .map_err(|error| error.to_string())?
@@ -45,7 +45,7 @@ fn validate_owner(
         || entry.state().type_id() != owner.type_id
     {
         return Err(
-            "device preset canceled · target device changed; open the preset dialog again".into(),
+            "device action canceled · target device changed; retry from the current device".into(),
         );
     }
     Ok(())
@@ -62,19 +62,20 @@ pub(super) fn save(
         return Err("device preset path exceeds the 4096-byte limit".into());
     }
     validate_owner(session, generation, revision, owner)?;
-    let state = session
+    let device = session
         .project()
         .device(owner.device)
-        .ok_or("device is missing")?
-        .state()
-        .clone();
-    hex_engine::native_device_view_for_class(owner.class, &state)
+        .ok_or("device is missing")?;
+    let state = device.state().clone();
+    let comparison = device.comparison().cloned();
+    crate::device_comparison::validate_states(owner.class, &state, comparison.as_ref())
         .map_err(|error| format!("device preset refused · {error}"))?;
     hex_storage::preset::save_new(
         path,
         &Preset {
             class: storage_class(owner.class),
             state,
+            comparison,
         },
     )
     .map_err(|error| error.to_string())
@@ -97,10 +98,14 @@ pub(super) fn load_command(
             "incompatible device preset · choose a preset for this device type and class".into(),
         );
     }
-    // The native provider rejects unknown/newer/malformed states. Its supported
-    // legacy migrations remain authoritative; retain the original opaque bytes.
-    hex_engine::native_device_view_for_class(owner.class, &preset.state)
-        .map_err(|error| format!("device preset refused · {error}"))?;
+    // Both opaque variants must be valid for this actual device class before
+    // any prepared candidate or publication; retain original authored bytes.
+    crate::device_comparison::validate_states(
+        owner.class,
+        &preset.state,
+        preset.comparison.as_ref(),
+    )
+    .map_err(|error| format!("device preset refused · {error}"))?;
     // Host input/output gains belong to the target, outside the opaque preset.
     let target = session
         .project()
@@ -112,9 +117,15 @@ pub(super) fn load_command(
         .with_input_gain_millidb(target.input_gain_millidb())
         .and_then(|state| state.with_output_gain_millidb(target.output_gain_millidb()))
         .map_err(|error| format!("device preset refused · {error}"))?;
-    Ok(Command::ReplaceDeviceState {
+    let comparison = preset
+        .comparison
+        .map(|comparison| comparison.with_global_trims_from(&state))
+        .transpose()
+        .map_err(|error| format!("device preset refused · {error}"))?;
+    Ok(Command::ReplaceDeviceComparison {
         device: owner.device,
         state,
+        comparison,
     })
 }
 

@@ -7,7 +7,7 @@ pub(super) fn render_chain(
     view: &mut EditorView,
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
-    owner: hex_project::ReturnId,
+    owner: EffectBusOwner,
     devices: &[hex_project::Device],
 ) -> Stateful<Div> {
     let visible_bounds = Rc::new(RefCell::new(None));
@@ -24,6 +24,21 @@ pub(super) fn render_chain(
         .collect();
     super::navigation::sync_rail_scroll(view);
     view.device_panel.chain_window.prepare(&geometry);
+    let spectrum_identities: Vec<_> = devices
+        .iter()
+        .filter(|device| {
+            eq_panel::is_spectrum_eq(device.state().type_id())
+                && chain_window::must_mount(view, device.id(), window, cx)
+        })
+        .map(|device| {
+            hex_engine::PostNodeIdentity::new(
+                owner.processor(),
+                device.id().value(),
+                device.state().type_id(),
+            )
+        })
+        .collect();
+    eq_panel::sync_visible_spectra(view, &spectrum_identities);
     let mut chain = chain_window::rail(view, cx)
         .id("device-chain-scroll")
         .track_scroll(&view.device_panel.chain_window.scroll)
@@ -49,10 +64,18 @@ pub(super) fn render_chain(
     for (index, device) in devices.iter().enumerate() {
         if chain_window::must_mount(view, device.id(), window, cx) {
             let focus = view.device_panel.chain_window.focus(device.id(), cx);
-            let rendered = super::return_view::render_return_effect(
-                view, window, cx, owner, devices, index, device,
-            )
-            .track_focus(&focus);
+            let rendered =
+                super::return_view::render_return_effect(view, window, cx, owner, device)
+                    .track_focus(&focus);
+            let rendered = keyboard::card(view, cx, device.id(), focus.clone(), rendered);
+            let rendered = super::super::device_comparison::card(
+                view,
+                cx,
+                device.id(),
+                NativeDeviceClass::Effect,
+                focus,
+                rendered,
+            );
             chain = chain.child(render_return_drop_target(
                 view,
                 cx,
@@ -89,7 +112,7 @@ pub(super) fn render_chain(
 fn render_return_drop_target(
     view: &EditorView,
     cx: &mut Context<EditorView>,
-    owner: hex_project::ReturnId,
+    owner: EffectBusOwner,
     before: Option<DeviceId>,
     after: Option<DeviceId>,
     visible_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
@@ -105,8 +128,8 @@ fn render_return_drop_target(
         .as_ref()
         .and_then(|drag| drag.return_destination.get());
     let selector = before.map_or_else(
-        || format!("return-device-drop-end-{}", owner.value()),
-        |device| format!("return-device-drop-card-{}", device.value()),
+        || owner.end_selector(),
+        |device| format!("{}-device-drop-card-{}", owner.prefix(), device.value()),
     );
     let entity = cx.entity();
     let mut target = div()
@@ -117,6 +140,19 @@ fn render_return_drop_target(
         .flex_shrink_0()
         .when(before.is_some(), |style| style.pr(px(DEVICE_CHAIN_PADDING)))
         .when(before.is_none(), |style| style.flex_1().min_w(px(40.0)))
+        .when(before.is_none(), |style| {
+            style.on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    view.device_panel.select_only(None);
+                    view.device_panel
+                        .chain_window
+                        .selection_focus(cx)
+                        .focus(window);
+                    cx.notify();
+                }),
+            )
+        })
         .on_drag_move::<NativeDeviceDrag>(move |event, _, cx| {
             let Some(payload) = event.dragged_item().downcast_ref::<NativeDeviceDrag>() else {
                 return;
@@ -145,7 +181,7 @@ fn render_return_drop_target(
                 }) else {
                     return;
                 };
-                view.drop_native_device_to_return(payload, owner, target.before, window, cx);
+                view.drop_native_device_to_effect_bus(payload, owner, target.before, window, cx);
             }),
         )
         .child(rendered);

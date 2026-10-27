@@ -6,6 +6,11 @@ use std::path::PathBuf;
 
 fn valid_snapshot() -> Snapshot {
     Snapshot {
+        aliases: Default::default(),
+        native_sources: Vec::new(),
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
@@ -13,6 +18,7 @@ fn valid_snapshot() -> Snapshot {
         sample_rate: 48_000,
         next_id: 100,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 10,
             path: PathBuf::from("Media/Source.WAV"),
             source_sample_rate: 48_000,
@@ -31,6 +37,8 @@ fn valid_snapshot() -> Snapshot {
             hex_project::Meter::COMMON_TIME,
         )],
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -47,13 +55,14 @@ fn valid_snapshot() -> Snapshot {
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: vec![
                     ClipSnapshot {
+                        active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: 40,
                         asset: 10,
-                        start: 128,
+                        start: 1_024,
                         duration: 80,
                         source_offset: 64,
                         source_length: 32,
@@ -62,6 +71,7 @@ fn valid_snapshot() -> Snapshot {
                         fade: hex_project::ClipFade::neutral(80).unwrap(),
                     },
                     ClipSnapshot {
+                        active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
                         edit: None,
@@ -130,6 +140,8 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut missing_position = valid_snapshot();
     missing_position.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
+        comparison: None,
         id: 50,
         bypassed: false,
         state: hex_project::default_instrument_state().unwrap(),
@@ -138,6 +150,8 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut out_of_range = valid_snapshot();
     out_of_range.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
+        comparison: None,
         id: 50,
         bypassed: false,
         state: hex_project::default_instrument_state().unwrap(),
@@ -147,11 +161,22 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut valid = valid_snapshot();
     valid.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
+        comparison: None,
         id: 50,
         bypassed: false,
         state: hex_project::default_instrument_state().unwrap(),
     });
     valid.tracks[0].instrument_position = Some(0);
+    valid
+        .native_sources
+        .push(hex_project::NativeSourceSnapshot {
+            id: 51,
+            name: "source".into(),
+            devices: vec![valid.tracks[0].instrument.clone().unwrap()],
+            instrument_index: 0,
+            receiver: Some(valid.tracks[0].id),
+        });
     assert_eq!(
         Project::from_snapshot(valid).unwrap().tracks()[0].instrument_position(),
         Some(0)
@@ -179,6 +204,8 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut tracks = valid_snapshot();
     tracks.tracks = (0..=MAX_TRACKS)
         .map(|index| TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -202,6 +229,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut assets = valid_snapshot();
     assets.assets = (0..=MAX_ASSETS)
         .map(|index| AssetSnapshot {
+            original_source: None,
             id: 1_000 + index as u64,
             path: PathBuf::from(format!("Samples/{index}.wav")),
             source_sample_rate: 48_000,
@@ -218,6 +246,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let track = &mut clips.tracks[0];
     *track.audio_clips_mut().unwrap() = (0..=MAX_CLIPS)
         .map(|index| ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,

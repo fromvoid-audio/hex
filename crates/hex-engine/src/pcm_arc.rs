@@ -34,6 +34,11 @@ impl PcmArcReceipt {
             buffer_bytes: buffer.size(),
         })
     }
+    pub(crate) fn declared_bytes(self) -> Option<usize> {
+        self.arc_payload_bytes
+            .checked_add(self.arc_overhead_bytes)?
+            .checked_add(self.buffer_bytes)
+    }
     pub(crate) fn checked_allocations(self, audio: &crate::Audio) -> Option<[(usize, usize); 2]> {
         (self.len == audio.frames.values.len()
             && self.capacity == audio.frames.values.capacity()
@@ -59,6 +64,9 @@ pub(crate) fn native_layout_known() -> bool {
         && option_env!("HEX_PCM_ARC_CONSTRUCTOR_FAMILY") == Some("arc-audiodata-retained-vec-v1")
 }
 
+#[cfg(test)]
+#[path = "../build_support/pcm_clippy.rs"]
+mod build_clippy_tests;
 #[cfg(test)]
 #[path = "../build_support/pcm_gate.rs"]
 mod build_gate_tests;

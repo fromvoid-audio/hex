@@ -1,4 +1,11 @@
-//! Device adapter for the canonical compiled playback handoff.
+//! Native adapter for canonical compiled playback and host sample conversion.
+//!
+//! A complete bounded stereo chunk is validated through its final channel/sample conversion before
+//! host copying, gain-delivery confirmation or spectrum capture. Failure silences/stops the failed
+//! chunk and latches its cause; already committed prefix output remains intact. Float output
+//! preserves finite range, integer output uses the native conversion law, and extra channels
+//! receive silence. Stream setup, reopen and final teardown stay on the lifecycle/control lane,
+//! not the callback.
 use crate::spectrum_worker::{
     SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
 };
@@ -33,9 +40,37 @@ impl PreparedOutput {
         expected_sample_rate: Option<u32>,
         lease: lifecycle::Lease,
     ) -> Result<Self, String> {
-        open_prepared(expected_sample_rate, lease, false)?.into_legacy()
+        open_prepared(expected_sample_rate, lease, PreparedOutputKind::Legacy)?.into_legacy()
     }
 }
+/// Explicit output construction policy. Ordinary outputs preserve the device
+/// default; only a plugin-capable open requests the bridge's finite buffer
+/// profile. This is an off-callback request, never proof of actual delivery.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkerOutputProfile {
+    #[default]
+    DeviceDefault,
+    PluginBridge,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreparedOutputKind {
+    Legacy,
+    Worker(WorkerOutputProfile),
+}
+impl PreparedOutputKind {
+    fn physical_callback_request(
+        self,
+        supported: cpal::SupportedBufferSize,
+    ) -> Result<Option<u16>, String> {
+        match self {
+            Self::Worker(WorkerOutputProfile::PluginBridge) => {
+                bridge_callback_request(supported).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
 /// Worker-owned native output. Only take_client() may deliver its UI endpoint;
 /// configure the virgin publication Root before that one-way boundary.
 pub struct WorkerPreparedOutput {
@@ -49,13 +84,17 @@ pub struct WorkerPreparedOutput {
 impl WorkerPreparedOutput {
     /// Blocking device setup, intended only for the existing lifecycle worker.
     pub fn open() -> Result<Self, String> {
-        Self::open_with_lease(None, lifecycle::Lease::acquire()?)
+        Self::open_with_profile(WorkerOutputProfile::DeviceDefault)
     }
-    pub(crate) fn open_with_lease(
-        expected_sample_rate: Option<u32>,
-        lease: lifecycle::Lease,
-    ) -> Result<Self, String> {
-        open_prepared(expected_sample_rate, lease, true)?.into_worker()
+    /// Select before opening/exposing the actual backend. Never call this as a
+    /// hidden device reconfiguration during insertion or Play.
+    pub fn open_with_profile(profile: WorkerOutputProfile) -> Result<Self, String> {
+        open_prepared(
+            None,
+            lifecycle::Lease::acquire()?,
+            PreparedOutputKind::Worker(profile),
+        )?
+        .into_worker()
     }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
@@ -100,13 +139,14 @@ impl Opened {
 pub(crate) fn open_prepared(
     expected_sample_rate: Option<u32>,
     lease: lifecycle::Lease,
-    worker: bool,
+    kind: PreparedOutputKind,
 ) -> Result<Opened, String> {
+    let worker = matches!(kind, PreparedOutputKind::Worker(_));
     let device = cpal::default_host()
         .default_output_device()
         .ok_or("no default audio output device")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
-    let config = supported.config();
+    let mut config = supported.config();
     validate_expected_rate(expected_sample_rate, config.sample_rate)?;
     if config.channels == 0 {
         return Err("output device has no channels".into());
@@ -117,6 +157,14 @@ pub(crate) fn open_prepared(
         cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
     ) {
         return Err(format!("unsupported output format: {sample_format:?}"));
+    }
+
+    // CPAL's CoreAudio fixed request changes a device-wide property. Make it
+    // explicit on the existing lifecycle open lane; ordinary native outputs
+    // retain Default, including devices reporting Unknown buffer ranges.
+    let physical_callback_request = kind.physical_callback_request(*supported.buffer_size())?;
+    if let Some(frames) = physical_callback_request {
+        config.buffer_size = cpal::BufferSize::Fixed(u32::from(frames));
     }
 
     let (capture, mut spectrum, spectrum_reaper, spectrum_error) =
@@ -151,7 +199,7 @@ pub(crate) fn open_prepared(
         Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
         None => prepared::channel(config.sample_rate),
     };
-    let (control, callback) = match channel_result {
+    let (mut control, mut callback) = match channel_result {
         Ok(channel) => channel,
         Err(error) => {
             // Even pre-channel failure transfers the actual worker/lease to
@@ -163,6 +211,15 @@ pub(crate) fn open_prepared(
             return Err(error.to_string());
         }
     };
+    if let Some(frames) = physical_callback_request {
+        if let Err(error) = control.configure_physical_callback_request(&mut callback, frames) {
+            drop(lifecycle::StreamOwner::failed_preparation_custody(
+                lease,
+                spectrum_reaper,
+            ));
+            return Err(error.to_string());
+        }
+    }
     let root = control.native_candidate_root();
     let (data_guard, error_guard, terminals, mut legacy_control, mut worker_control, client) =
         if worker {
@@ -225,6 +282,22 @@ pub(crate) fn open_prepared(
     })
 }
 
+/// Select within the device's reported finite range and the existing bridge
+/// cap. Unknown/invalid ranges refuse rather than infer a bound from scratch
+/// chunks. A backend can still refuse the fixed request during stream creation.
+fn bridge_callback_request(supported: cpal::SupportedBufferSize) -> Result<u16, String> {
+    let cpal::SupportedBufferSize::Range { min, max } = supported else {
+        return Err(
+            "output device does not report a bounded buffer range for plugin processing".into(),
+        );
+    };
+    let frames = max.min(hex_plugin_host::transport::MAX_FRAMES as u32);
+    if min == 0 || min > max || min > frames {
+        return Err("output device cannot provide a supported plugin callback size".into());
+    }
+    u16::try_from(frames).map_err(|_| "plugin callback size exceeds its supported range".into())
+}
+
 fn validate_expected_rate(expected: Option<u32>, actual: u32) -> Result<(), String> {
     if let Some(expected) = expected {
         if expected != actual {
@@ -265,6 +338,24 @@ where
                 let mut peaks = [0.0_f32; 2];
                 let complete = data.len() / channels * channels;
                 data[complete..].fill(T::from_sample(0.0));
+                if !valid_transport_buffer(callback, data.len(), channels) {
+                    // Render chunks are not physical callback bounds. Never
+                    // turn a large callback into hidden same-callback 2Q waits.
+                    callback.revoke_output_transport();
+                    data.fill(T::from_sample(0.0));
+                    callback.report_render_fault(
+                        Some(&hex_engine::Invalid(
+                            "plugin physical callback extent exceeds its fixed quantum",
+                        )),
+                        status.position.load(Relaxed),
+                    );
+                    return;
+                }
+                if let Err(error) = callback.begin_native_effect_callback(complete / channels) {
+                    data.fill(T::from_sample(0.0));
+                    callback.report_render_fault(Some(&error), status.position.load(Relaxed));
+                    return;
+                }
                 for chunk in data[..complete].chunks_mut(channels * block.len()) {
                     let frames = chunk.len() / channels;
                     let block_start_frame = status.position.load(Relaxed);
@@ -292,6 +383,7 @@ where
                 if elapsed > deadline {
                     status.deadline_misses.fetch_add(1, Relaxed);
                 }
+                callback.trace_callback_timing(elapsed, deadline, data.len() / channels);
             });
         },
         move |_| {
@@ -303,7 +395,22 @@ where
     )
 }
 
-fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
+pub(crate) fn valid_transport_buffer(
+    callback: &prepared::Callback,
+    samples: usize,
+    channels: usize,
+) -> bool {
+    callback
+        .output_transport_quantum()
+        .into_iter()
+        .chain(callback.native_effect_quantum())
+        .min()
+        .is_none_or(|quantum| {
+            channels != 0 && samples % channels == 0 && samples / channels <= quantum
+        })
+}
+
+pub(crate) fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
     callback: &mut prepared::Callback,
     output: &mut [T],
     source: &mut [Frame],
@@ -315,16 +422,76 @@ fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
 where
     f32: FromSample<T>,
 {
-    let valid = rendered.is_ok() && copy_host_chunk(output, source, channels);
+    let valid = if callback.output_transport_quantum().is_some() {
+        let staged = rendered.is_ok() && callback.stage_output_transport(source);
+        let converted = staged && copy_host_chunk(output, source, channels);
+        let delivery = callback.finish_output_transport(converted);
+        finish_transport_copy(
+            delivery,
+            converted,
+            rendered.is_ok(),
+            output,
+            source,
+            channels,
+        )
+    } else {
+        // Keep ordinary output on its existing direct conversion path.
+        rendered.is_ok() && copy_host_chunk(output, source, channels)
+    };
+    let delivery = callback.finish_native_effect_callback(valid);
+    let valid = finish_transport_copy(delivery, valid, rendered.is_ok(), output, source, channels);
     let _ = callback.finish_spectrum_block(capture_start, valid);
+    callback.finish_midi_recording_quantum(valid);
     if !valid {
         output.fill(T::from_sample(0.0));
         source.fill([0.0; 2]);
-        callback.report_render_fault(rendered.as_ref().err(), block_start_frame);
+        let transport_error = callback.output_transport_error();
+        callback.report_render_fault(
+            rendered.as_ref().err().or(transport_error.as_ref()),
+            block_start_frame,
+        );
     }
     callback.finish_gain_recording_quantum(valid);
+    callback.finish_native_parameter_quantum(valid);
     valid
 }
+
+/// Final host ownership boundary: a clean terminal cancellation after copying
+/// still replaces that output with silence. It never accepts worker input.
+fn finish_transport_copy<T: SizedSample + FromSample<f32>>(
+    delivery: prepared::OutputTransportDelivery,
+    converted: bool,
+    rendered: bool,
+    output: &mut [T],
+    source: &mut [Frame],
+    channels: usize,
+) -> bool
+where
+    f32: FromSample<T>,
+{
+    let valid = match delivery {
+        prepared::OutputTransportDelivery::Accepted => converted,
+        prepared::OutputTransportDelivery::Refused => false,
+        prepared::OutputTransportDelivery::Cancelled => {
+            source.fill([0.0; 2]);
+            rendered && copy_host_chunk(output, source, channels)
+        }
+    };
+    if !valid {
+        output.fill(T::from_sample(0.0));
+        source.fill([0.0; 2]);
+    }
+    valid
+}
+
+#[cfg(test)]
+mod plugin_transport_tests;
+
+#[cfg(test)]
+mod physical_callback_tests;
+
+#[cfg(test)]
+mod handoff_profile;
 
 // Preserve the existing rounding (including subnormals) when the sum fits.
 // A same-sign overflowing sum still has a representable mean: halving each
@@ -397,7 +564,13 @@ pub(crate) fn headless_worker_output(
     rate: u32,
 ) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
     let lease = lifecycle::Lease::acquire()?;
-    let (control, callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    let (mut control, mut callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    control
+        .configure_physical_callback_request(
+            &mut callback,
+            hex_plugin_host::transport::MAX_FRAMES as u16,
+        )
+        .map_err(|error| error.to_string())?;
     let root = control.native_candidate_root();
     let (data, errors, terminals, client, mut publication) =
         crate::native_callback_owner::reserve_native_worker(control, callback, None);
@@ -502,8 +675,11 @@ mod tests {
                     };
                     let sample = index * channels + channel;
                     assert_eq!(floats[sample].to_bits(), expected.to_bits());
-                    assert_eq!(signed[sample], cpal::Sample::from_sample(expected));
-                    assert_eq!(unsigned[sample], cpal::Sample::from_sample(expected));
+                    assert_eq!(signed[sample], <i16 as cpal::Sample>::from_sample(expected));
+                    assert_eq!(
+                        unsigned[sample],
+                        <u16 as cpal::Sample>::from_sample(expected)
+                    );
                 }
             }
         }
@@ -573,6 +749,12 @@ mod tests {
     }
 
     fn recording_callback() -> (prepared::Control, prepared::Callback, Target) {
+        recording_callback_with_main_limiter(false)
+    }
+
+    fn recording_callback_with_main_limiter(
+        main_limiter: bool,
+    ) -> (prepared::Control, prepared::Callback, Target) {
         use hex_project::{Command, Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Imported { track, asset, .. } = editor
@@ -588,6 +770,23 @@ mod tests {
         else {
             panic!("expected imported track");
         };
+        if main_limiter {
+            use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+            let definition = &hex_devices::limiter::DEFINITION;
+            let state = definition
+                .patch_parameter(
+                    &definition.default_state().unwrap(),
+                    hex_devices::limiter::parameter::LOOKAHEAD,
+                    ParameterValue::Choice(2),
+                )
+                .unwrap();
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
         let revision = Arc::new(
             PreparedRevision::prepare_for_gain_recording(
                 editor.project(),
@@ -598,6 +797,9 @@ mod tests {
             )
             .unwrap(),
         );
+        if main_limiter {
+            assert_eq!(revision.arrangement().main_latency_frames(), 288);
+        }
         let playback = Playback::try_from_prepared_with_session(revision).unwrap();
         let (mut control, mut callback) = prepared::channel(48_000).unwrap();
         let revision = control.publish(playback).unwrap();
@@ -678,6 +880,127 @@ mod tests {
                 capture_start,
             )
         }
+    }
+
+    // Rendering and final conversion are independently instrumented. Construction,
+    // assertions, receipt collection and reclamation remain outside both scopes.
+    fn checked_recording_render(
+        callback: &mut prepared::Callback,
+        source: &mut [hex_engine::Frame],
+    ) -> Result<(), hex_engine::Invalid> {
+        #[cfg(feature = "allocation-probe")]
+        {
+            let mut result = Ok(());
+            let info = allocation_counter::measure(|| {
+                callback.begin_block();
+                result = callback.render(source);
+            });
+            assert_eq!(
+                (
+                    info.count_total,
+                    info.bytes_total,
+                    info.count_current,
+                    info.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            result
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            callback.begin_block();
+            callback.render(source)
+        }
+    }
+
+    #[test]
+    fn gain_recording_receipt_waits_for_serial_main_limiter_sample_to_be_written() {
+        const DELAY: usize = 288;
+        const TOUCH: usize = 16;
+        const FIRST_WRITTEN: usize = TOUCH + DELAY;
+        let (mut control, mut callback, target) = recording_callback_with_main_limiter(true);
+        // The fixture has actually written sixteen initial zero frames. The
+        // Limiter is transparent for this signal, with precisely 288 delay frames.
+        control.gain_recording.begin(target, 0.8).unwrap();
+        let mut source = [[0.0; 2]; 128];
+        let mut output = [0.0_f32; 256];
+        let mut frame = TOUCH;
+        for length in [16, 7, 63, 1, 31, 128].into_iter().cycle() {
+            if frame == FIRST_WRITTEN {
+                break;
+            }
+            let length = length.min(FIRST_WRITTEN - frame);
+            let rendered = checked_recording_render(&mut callback, &mut source[..length]);
+            assert!(rendered.is_ok());
+            assert!(
+                control.gain_recording.try_receipt().is_none(),
+                "rendering alone is not sink delivery"
+            );
+            assert!(checked_host_finish(
+                &mut callback,
+                &mut output[..length * 2],
+                &mut source[..length],
+                2,
+                &rendered,
+                frame as u64,
+                Instant::now()
+            ));
+            // Independent PCM oracle: Main retains every dry source frame for
+            // 288 frames. None of the touched content is in this delivered prefix.
+            for (offset, actual) in output[..length * 2].chunks_exact(2).enumerate() {
+                let expected = if frame + offset < DELAY {
+                    [0.0, 0.0]
+                } else {
+                    [0.25, -0.5]
+                };
+                assert_eq!(actual, expected);
+            }
+            assert!(
+                control.gain_recording.try_receipt().is_none(),
+                "gain must not be acknowledged before output frame 304 is written"
+            );
+            frame += length;
+        }
+        // The half-open delivered prefix ends at 304. Only this next successful
+        // native write contains source frame 16 with the new fader gain.
+        let rendered = checked_recording_render(&mut callback, &mut source[..1]);
+        assert!(rendered.is_ok());
+        assert!(control.gain_recording.try_receipt().is_none());
+        assert!(checked_host_finish(
+            &mut callback,
+            &mut output[..2],
+            &mut source[..1],
+            2,
+            &rendered,
+            FIRST_WRITTEN as u64,
+            Instant::now()
+        ));
+        assert_eq!(output[..2], [0.2, -0.4]);
+        assert_eq!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Applied {
+                target,
+                sequence: 1,
+                gain: 0.8,
+                performance_frame: TOUCH as u64,
+                content_frame: TOUCH as u64,
+                loop_pass: 0,
+            })
+        );
+        assert!(control.gain_recording.try_receipt().is_none());
+        control.request_shutdown();
+        let rendered = checked_recording_render(&mut callback, &mut source[..1]);
+        assert!(rendered.is_ok());
+        assert!(checked_host_finish(
+            &mut callback,
+            &mut output[..2],
+            &mut source[..1],
+            2,
+            &rendered,
+            (FIRST_WRITTEN + 1) as u64,
+            Instant::now()
+        ));
+        control.reclaim();
     }
 
     fn host_copy_receipt_regression<T: SizedSample + FromSample<f32> + std::fmt::Debug>()
@@ -824,3 +1147,11 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "device_midi_recording_tests.rs"]
+mod midi_recording_tests;
+
+#[cfg(test)]
+#[path = "device_native_parameter_input_tests.rs"]
+pub(crate) mod native_parameter_input_tests;

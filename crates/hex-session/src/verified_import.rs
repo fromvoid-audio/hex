@@ -24,9 +24,29 @@ impl Session {
         mode: DocumentAudioMode,
         reservation: Option<SourcePlanReservation>,
     ) -> Result<Self, SessionError> {
-        let mut session = Self::new(rate, history, max_resident_frames)?;
+        Self::new_with_audio_mode_in_overview_domain(
+            rate,
+            history,
+            max_resident_frames,
+            mode,
+            reservation,
+            crate::source_overview::OverviewBudget::standard()?,
+        )
+    }
+    pub(crate) fn new_with_audio_mode_in_overview_domain(
+        rate: u32,
+        history: usize,
+        max_resident_frames: u64,
+        mode: DocumentAudioMode,
+        reservation: Option<SourcePlanReservation>,
+        overview_budget: crate::source_overview::OverviewBudget,
+    ) -> Result<Self, SessionError> {
+        let mut session =
+            Self::new_with_overview_budget(rate, history, max_resident_frames, overview_budget)?;
         session.source_reservation = match mode {
-            DocumentAudioMode::Resident => None,
+            DocumentAudioMode::Resident => reservation
+                .map(SourcePlanReservation::validate)
+                .transpose()?,
             DocumentAudioMode::VerifiedStreaming => Some(
                 reservation
                     .ok_or(SessionError::Invalid(
@@ -36,7 +56,7 @@ impl Session {
             ),
         };
         session.audio_mode = mode;
-        if mode == DocumentAudioMode::VerifiedStreaming {
+        if session.source_reservation.is_some() {
             session.semantic_source_epoch = fresh_source_epoch()?;
         }
         Ok(session)
@@ -69,11 +89,6 @@ impl Session {
         path_bytes: usize,
         pending: &[VerifiedAudioFile],
     ) -> Result<hex_media::VerifiedWavReaderLimits, SessionError> {
-        if self.audio_mode != DocumentAudioMode::VerifiedStreaming {
-            return Err(SessionError::Invalid(
-                "document does not use verified streaming",
-            ));
-        }
         let reservation = self.source_reservation.ok_or(SessionError::Invalid(
             "verified source reservation is unavailable",
         ))?;
@@ -116,6 +131,60 @@ impl Session {
         limits.max_manifest_bytes = limits.max_manifest_bytes.min(remaining);
         Ok(limits)
     }
+    /// Choose file backing before a whole-source allocation exceeds the working set.
+    /// Verification still owns no native reader/page endpoint or publication authority.
+    pub(crate) fn plan_file_import(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<Option<VerifiedAudioFile>, SessionError> {
+        self.plan_file_import_with_allowance(
+            path,
+            self.max_resident_frames
+                .saturating_sub(self.resident_frames),
+        )
+    }
+    pub(crate) fn plan_file_import_with_allowance(
+        &self,
+        path: &std::path::Path,
+        remaining: u64,
+    ) -> Result<Option<VerifiedAudioFile>, SessionError> {
+        let Some(reservation) = self.source_reservation else {
+            return Ok(None);
+        };
+        if self.shutdown.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(SessionError::Invalid("file source import cancelled"));
+        }
+        if self.audio_mode == DocumentAudioMode::VerifiedStreaming || remaining == 0 {
+            return self.verify_import(path.to_path_buf()).map(Some);
+        }
+        let required = {
+            // The resident decoder supports additional encodings. Preserve that path when
+            // this fixed-frame header reader cannot inspect a source that may still fit.
+            let Ok(reader) = hex_media::WavFrameReader::open(path, reservation.reader.reader)
+            else {
+                return Ok(None);
+            };
+            let output = hex_project::converted_frame_count(
+                reader.source_frames(),
+                reader.sample_rate(),
+                self.project().sample_rate(),
+            )?;
+            if reader.sample_rate() == self.project().sample_rate() {
+                reader.source_frames()
+            } else {
+                reader
+                    .source_frames()
+                    .checked_add(output)
+                    .ok_or(SessionError::Invalid("import pcm frame count overflow"))?
+            }
+        };
+        if required > remaining {
+            self.verify_import(path.to_path_buf()).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn verify_import(&self, path: PathBuf) -> Result<VerifiedAudioFile, SessionError> {
         self.verify_import_with_pending(path, &[], || false)
     }
@@ -126,9 +195,16 @@ impl Session {
         mut canceled: impl FnMut() -> bool,
     ) -> Result<VerifiedAudioFile, SessionError> {
         let limits = self.remaining_source_reservation(path.capacity(), pending)?;
-        VerifiedAudioFile::inspect(path, self.project().sample_rate(), limits, || {
-            self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
-        })
+        let mut source =
+            VerifiedAudioFile::inspect(path, self.project().sample_rate(), limits, || {
+                self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
+            })?;
+        if self.audio_mode() == DocumentAudioMode::Resident {
+            source.prepare_waveform_on_control(|| {
+                self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
+            })?;
+        }
+        Ok(source)
     }
     pub(crate) fn import_verified_revision(
         &mut self,
@@ -145,30 +221,40 @@ impl Session {
                 "verified import differs from document reservation",
             ));
         }
+        let console_cell = match &destination {
+            VerifiedImportDestination::Session { track, scene } => {
+                Some(crate::import_batch::ResolvedCell {
+                    track: *track,
+                    scene: *scene,
+                })
+            }
+            _ => None,
+        };
         let command = verified_import_command(&source, destination);
-        let commands = verified_audio_only_commands(self.project(), vec![command])?;
+        let commands = vec![command];
         let mut bank = self.media_bank();
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
         let (_, (created, id, prepared)) =
             self.editor
-                .execute_many_prepared(commands, |candidate, results| {
-                    let created = results
-                        .iter()
-                        .find(|created| matches!(created, Created::Imported { .. }))
-                        .cloned()
-                        .ok_or(SessionError::Invalid("verified import result missing"))?;
-                    let mut added = candidate
-                        .assets()
-                        .filter(|asset| !bank.contains_key(&asset.id()));
-                    let id = added
-                        .next()
-                        .map(|a| a.id())
-                        .ok_or(SessionError::Invalid("import candidate has no new source"))?;
-                    if added.next().is_some() {
+                .execute_audio_imports_prepared(commands, |candidate, results| {
+                    let created = crate::import_batch::normalize_imports(
+                        candidate,
+                        results,
+                        console_cell,
+                        1,
+                    )?
+                    .into_iter()
+                    .next()
+                    .ok_or(SessionError::Invalid("verified import result missing"))?;
+                    let Created::Imported { asset: id, .. } = &created else {
+                        return Err(SessionError::Invalid("verified import has no typed asset"));
+                    };
+                    let id = *id;
+                    if bank.contains_key(&id) || candidate.asset(id).is_none() {
                         return Err(SessionError::Invalid(
-                            "import candidate has multiple new sources",
+                            "verified import asset differs from candidate",
                         ));
                     }
                     bank.verified.insert(id, source.clone());
@@ -189,13 +275,19 @@ impl Session {
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)] // Same prepared batch transaction plus explicit overwrite semantics.
     pub(crate) fn import_verified_batch_revision(
         &mut self,
         sources: Vec<VerifiedAudioFile>,
         destination: crate::import_batch::AudioBatchDestination,
         expected: &Project,
         previous: Option<&hex_engine::PreparedRevision>,
+        overwrite: bool,
         mut admit: impl FnMut() -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            crate::import_batch::Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), SessionError> {
         use crate::import_batch::AudioBatchDestination;
         admit()?;
@@ -217,20 +309,39 @@ impl Session {
                 ));
             }
         }
-        let mut commands = Vec::new();
+        let track_name = sources
+            .first()
+            .and_then(|source| source.path().file_stem())
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "imported audio".into());
+        let (mut commands, console_cell) = crate::import_batch::console::prefix(
+            self.project(),
+            destination,
+            sources.len(),
+            &track_name,
+        )?;
         commands
             .try_reserve_exact(sources.len())
             .map_err(|_| SessionError::Allocation)?;
         let mut cursor = match destination {
+            AudioBatchDestination::Console(_) => 0,
             AudioBatchDestination::Track { start, .. }
             | AudioBatchDestination::NewTracks { start, .. } => start,
         };
         for source in &sources {
             let target = match destination {
+                AudioBatchDestination::Console(_) => {
+                    let cell = console_cell
+                        .ok_or(SessionError::Invalid("console import target missing"))?;
+                    VerifiedImportDestination::Session {
+                        track: cell.track,
+                        scene: cell.scene,
+                    }
+                }
                 AudioBatchDestination::Track { track, .. } => VerifiedImportDestination::Track {
                     track,
                     start: cursor,
-                    overwrite: true,
+                    overwrite,
                 },
                 AudioBatchDestination::NewTracks { before_track, .. } => {
                     VerifiedImportDestination::NewTrack {
@@ -246,19 +357,31 @@ impl Session {
                     .ok_or(SessionError::Invalid("timeline end overflow"))?;
             }
         }
-        let commands = verified_audio_only_commands(self.project(), commands)?;
         let mut bank = self.media_bank();
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
-        let (created, prepared) =
+        let candidate_waveforms = std::cell::RefCell::new(self.audio_clip_waveforms()?);
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|resident| [&resident.source_audio, &resident.audio])
+            .collect::<Vec<_>>();
+        let native = &self.native_assets;
+        let transforms = &self.audio_transforms;
+        let limits = self.native_reservation;
+        let max_frames = self.max_resident_frames;
+        let shutdown = &self.shutdown;
+        let (_, (created, prepared)) =
             self.editor
-                .execute_many_prepared(commands, |candidate, results| {
-                    for (created, source) in results
-                        .iter()
-                        .filter(|created| matches!(created, Created::Imported { .. }))
-                        .zip(&sources)
-                    {
+                .execute_audio_imports_prepared(commands, |candidate, results| {
+                    let created = crate::import_batch::normalize_imports(
+                        candidate,
+                        results,
+                        console_cell,
+                        sources.len(),
+                    )?;
+                    for (created, source) in created.iter().zip(&sources) {
                         let Created::Imported { asset, .. } = created else {
                             return Err(SessionError::Invalid("verified batch has no asset"));
                         };
@@ -267,67 +390,35 @@ impl Session {
                         }
                         bank.verified.insert(*asset, source.clone());
                     }
-                    let prepared = Arc::new(prepare_with_waveforms(
-                        candidate,
-                        &bank,
-                        Arc::clone(&table),
-                        previous.map(|p| p.session().as_ref()),
-                        &self.audio_transforms,
-                        &self.audio_clip_waveforms,
-                    )?);
-                    admit()?;
-                    Ok::<_, SessionError>(prepared)
+                    let prepared = prepare(
+                        crate::import_batch::Preparation {
+                            project: candidate,
+                            media: &bank,
+                            native,
+                            table: Arc::clone(&table),
+                            transforms,
+                            waveforms: &candidate_waveforms,
+                            legacy: &legacy,
+                            limits,
+                            max_frames,
+                            shutdown,
+                            previous,
+                        },
+                        &mut admit,
+                    )?;
+                    Ok::<_, SessionError>((created, prepared))
                 })?;
-        let mut created = created;
-        created.retain(|created| matches!(created, Created::Imported { .. }));
-        for (created, source) in created.iter().zip(sources) {
-            if let Created::Imported { asset, .. } = created {
-                self.verified_sources.insert(*asset, source);
-            }
-        }
+        // Preparation/admission finished before canonical commit. Publish only owned moves;
+        // a refused callback leaves both canonical source and display maps untouched.
+        self.verified_sources = bank.verified;
+        *self.audio_clip_waveforms.get_mut() = candidate_waveforms.into_inner();
         self.semantic_source_epoch = epoch;
         Ok((created, prepared))
     }
 }
 
-// Only newly created Verified audio tracks shed the generated default
-// instrument. Project/history observes one transaction, and existing tracks or
-// Resident imports never pass through this helper.
-fn verified_audio_only_commands(
-    project: &Project,
-    commands: Vec<Command>,
-) -> Result<Vec<Command>, SessionError> {
-    let mut projected = Editor::new(project.clone(), 1)?;
-    let mut expanded = Vec::new();
-    expanded
-        .try_reserve_exact(
-            commands
-                .len()
-                .checked_mul(2)
-                .ok_or(SessionError::Invalid("verified command count overflow"))?,
-        )
-        .map_err(|_| SessionError::Allocation)?;
-    for command in commands {
-        let creates_track = matches!(command, Command::ImportPreparedAudioTrackAt { .. });
-        let created = projected.execute(command.clone())?;
-        expanded.push(command);
-        if creates_track && let Created::Imported { track, .. } = created {
-            let instrument = projected
-                .project()
-                .track(track)
-                .and_then(|track| track.instrument());
-            if instrument.is_some_and(|instrument| {
-                instrument.state().type_id() == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
-            }) {
-                let remove = Command::RemoveInstrument { track };
-                projected.execute(remove.clone())?;
-                expanded.push(remove);
-            }
-        }
-    }
-    Ok(expanded)
-}
-
+// File-backed sources use the same typed prepared-import commands and destination
+// laws as decoded sources. IDs/default track behavior remain owned by the project.
 fn verified_import_command(
     source: &VerifiedAudioFile,
     destination: VerifiedImportDestination,

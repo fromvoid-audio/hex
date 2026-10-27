@@ -1,78 +1,26 @@
+//! Control-side projection of validated canonical warp/tempo boundaries into a
+//! bounded integer-frame map. Collapsed tempo/crop fragments share a sample;
+//! collapsed authored intervals retain continuous stretch validation before
+//! quantization. Root endpoints and surviving markers remain exact. No callback work.
 use super::*;
-use hex_project::{AudioDomainClock, BeatsPreserve, WarpMarker, audio_projection_frame};
+use hex_project::{AudioDomainClock, BeatsPreserve, audio_projection_frame};
 const Q32: i128 = 1_i128 << 32;
-fn push(points: &mut Vec<u64>, point: u64) -> Result<(), Invalid> {
+fn push(points: &mut Vec<(u64, bool)>, point: u64, marker: bool) -> Result<(), Invalid> {
     if points.len() >= hex_warp::MAX_MAP_SEGMENTS {
         return Err(Invalid("warp projection exceeds 8192 bounded segments"));
     }
     points
         .try_reserve(1)
         .map_err(|_| Invalid("warp projection allocation failed"))?;
-    points.push(point);
+    points.push((point, marker));
     Ok(())
-}
-fn beat_for_source(markers: &[WarpMarker], source: u64) -> Result<u64, Invalid> {
-    let index = markers
-        .partition_point(|m| m.source_frame <= source)
-        .saturating_sub(1)
-        .min(markers.len() - 2);
-    let a = markers[index];
-    let b = markers[index + 1];
-    let value = u128::from(source - a.source_frame) * u128::from(b.beat.raw() - a.beat.raw())
-        / u128::from(b.source_frame - a.source_frame)
-        + u128::from(a.beat.raw());
-    u64::try_from(value).map_err(|_| Invalid("source beat projection overflow"))
-}
-fn source_for_beat(domain: &AudioClipDomain, beat: u128) -> Result<i128, Invalid> {
-    let warp = domain
-        .warp
-        .as_ref()
-        .ok_or(Invalid("warp settings missing"))?;
-    let unit = warp
-        .markers
-        .last()
-        .ok_or(Invalid("warp endpoint missing"))?
-        .beat
-        .raw();
-    if unit == 0 {
-        return Err(Invalid("warp beat span must be positive"));
-    }
-    let (cycle, local) = if domain.looping {
-        (beat / u128::from(unit), (beat % u128::from(unit)) as u64)
-    } else {
-        (
-            0,
-            u64::try_from(beat).map_err(|_| Invalid("warp beat position overflow"))?,
-        )
-    };
-    let index = warp
-        .markers
-        .partition_point(|m| m.beat.raw() <= local)
-        .saturating_sub(1)
-        .min(warp.markers.len() - 2);
-    let a = warp.markers[index];
-    let b = warp.markers[index + 1];
-    let base = cycle
-        .checked_mul(u128::from(domain.source_length))
-        .and_then(|n| n.checked_add(u128::from(a.source_frame - domain.source_offset)))
-        .and_then(|n| n.checked_mul(1_u128 << 32))
-        .ok_or(Invalid("warp source cycle overflow"))?;
-    let delta = u128::from(local - a.beat.raw())
-        .checked_mul(u128::from(b.source_frame - a.source_frame))
-        .and_then(|n| n.checked_mul(1_u128 << 32))
-        .ok_or(Invalid("warp source projection overflow"))?
-        / u128::from(b.beat.raw() - a.beat.raw());
-    i128::try_from(
-        base.checked_add(delta)
-            .ok_or(Invalid("warp source position overflow"))?,
-    )
-    .map_err(|_| Invalid("warp source position overflow"))
 }
 pub(super) fn prepare_map(
     edit: &AudioClipEdit,
     tempo: &hex_project::TempoMap,
     cancel: &AtomicBool,
 ) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
+    let tempo = edit.processing_tempo(tempo);
     let (first, length, _, _) = edit.projected_domain(tempo)?;
     let length_usize = usize::try_from(length)
         .map_err(|_| Invalid("audio domain length exceeds addressable range"))?;
@@ -108,13 +56,7 @@ pub(super) fn prepare_map(
     if unit == 0 || warp.markers.len() < 2 {
         return Err(Invalid("invalid warp marker endpoints"));
     }
-    let phase_beat = beat_for_source(
-        &warp.markers,
-        domain
-            .source_offset
-            .checked_add(domain.source_phase)
-            .ok_or(Invalid("warp phase overflow"))?,
-    )?;
+    let phase_beat = domain.warp_phase_beat()?;
     let total = u128::from(span.raw()) + u128::from(phase_beat);
     let cycles = if domain.looping {
         total / u128::from(unit) + 1
@@ -125,58 +67,106 @@ pub(super) fn prepare_map(
         return Err(Invalid("warp loop density exceeds bounded projection"));
     }
     let mut boundaries = Vec::new();
-    push(&mut boundaries, 0)?;
-    push(&mut boundaries, span.raw())?;
+    push(&mut boundaries, 0, false)?;
+    push(&mut boundaries, span.raw(), false)?;
     for cycle in 0..cycles {
         if cancel.load(Ordering::Acquire) {
             return Err(Invalid("audio preparation cancelled"));
         }
         for marker in &warp.markers {
             let position = cycle * u128::from(unit) + u128::from(marker.beat.raw());
-            if position > u128::from(phase_beat) {
+            if position >= u128::from(phase_beat) {
                 let local = position - u128::from(phase_beat);
-                if local < u128::from(span.raw()) {
-                    push(&mut boundaries, local as u64)?;
+                if local == 0 {
+                    boundaries[0].1 = true;
+                } else if local == u128::from(span.raw()) {
+                    boundaries[1].1 = true;
+                } else if local < u128::from(span.raw()) {
+                    push(&mut boundaries, local as u64, true)?;
                 }
             }
         }
     }
-    let origin = edit.projection_origin()?;
+    let origin = edit.processing_origin()?;
     for point in tempo.points() {
         let local = i128::from(point.beat().raw()) - origin;
         if local > 0 && local < i128::from(span.raw()) {
-            push(&mut boundaries, local as u64)?;
+            push(&mut boundaries, local as u64, false)?;
         }
     }
     boundaries.sort_unstable();
-    boundaries.dedup();
+    boundaries.dedup_by(|later, earlier| {
+        if later.0 == earlier.0 {
+            earlier.1 |= later.1;
+            true
+        } else {
+            false
+        }
+    });
+    // Tempo crossings and partial root intervals can be arbitrarily close to
+    // a marker or crop endpoint. They do not own separate output samples. Keep
+    // exact root endpoints, then authored markers, then the latest tempo point
+    // at each rounded frame. Validate collapsed intervals against their original
+    // continuous timing law so rounding cannot hide unsupported source speeds.
+    let mut projected: Vec<(u64, u64)> = Vec::new();
+    projected
+        .try_reserve_exact(boundaries.len())
+        .map_err(|_| Invalid("warp projection allocation failed"))?;
+    let source = |local: u64| {
+        if local == 0 {
+            Ok(i128::from(domain.source_phase) * Q32)
+        } else {
+            domain.warp_source_position_q32(u128::from(local) + u128::from(phase_beat))
+        }
+    };
+    let mut previous_boundary = None;
+    let mut retained_marker = false;
+    for (local, marker) in boundaries {
+        let frame =
+            u64::try_from(audio_projection_frame(tempo, origin + i128::from(local))? - first)
+                .map_err(|_| Invalid("warp output projection overflow"))?;
+        if let Some((previous_local, previous_frame)) = previous_boundary {
+            if frame == previous_frame {
+                // Every tempo point is a boundary, so this open interval has
+                // one tempo. Signed invisible context uses tempo at zero.
+                let beat = (origin + i128::from(previous_local)).max(0);
+                let beat = hex_project::BeatTime::from_raw(
+                    u64::try_from(beat).map_err(|_| Invalid("warp beat projection overflow"))?,
+                );
+                let delta = source(local)? - source(previous_local)?;
+                let ratio =
+                    (local - previous_local) as f64 * f64::from(tempo.sample_rate()) * 60_000_000.0
+                        / f64::from(tempo.tempo_at(beat).micro_bpm())
+                        / delta as f64;
+                hex_warp::validate_stretch_ratio(ratio, render_mode(domain)?, domain.pitch_cents)
+                    .map_err(warp_error)?;
+            }
+        }
+        previous_boundary = Some((local, frame));
+        if let Some((previous_local, previous_frame)) = projected.last_mut()
+            && *previous_frame == frame
+        {
+            if local == span.raw() || (*previous_local != 0 && (marker || !retained_marker)) {
+                *previous_local = local;
+                retained_marker = marker;
+            }
+        } else {
+            projected.push((local, frame));
+            retained_marker = marker;
+        }
+    }
     let mut segments = Vec::new();
     segments
-        .try_reserve_exact(boundaries.len().saturating_sub(1))
+        .try_reserve_exact(projected.len().saturating_sub(1))
         .map_err(|_| Invalid("warp segment allocation failed"))?;
-    for pair in boundaries.windows(2) {
-        let output = |local: u64| {
-            u64::try_from(audio_projection_frame(tempo, origin + i128::from(local))? - first)
-                .map_err(|_| Invalid("warp output projection overflow"))
-        };
-        let output_start = output(pair[0])?;
-        let output_end = output(pair[1])?;
-        if output_start == output_end {
-            return Err(Invalid(
-                "warp markers or tempo changes are closer than one prepared output frame",
-            ));
-        }
-        let source =
-            |local: u64| source_for_beat(domain, u128::from(local) + u128::from(phase_beat));
+    for pair in projected.windows(2) {
+        let (local_start, output_start) = pair[0];
+        let (local_end, output_end) = pair[1];
         segments.push(hex_warp::MapSegment {
             output_start,
             output_end,
-            source_start_q32: if pair[0] == 0 {
-                i128::from(domain.source_phase) * Q32
-            } else {
-                source(pair[0])?
-            },
-            source_end_q32: source(pair[1])?,
+            source_start_q32: source(local_start)?,
+            source_end_q32: source(local_end)?,
         });
     }
     let mut attacks = Vec::new();
@@ -197,7 +187,7 @@ pub(super) fn prepare_map(
             .map_err(|_| Invalid("beat attack allocation failed"))?;
         let mut beat = 0_u64;
         while beat < unit {
-            let frame = u64::try_from(source_for_beat(domain, u128::from(beat))? / Q32)
+            let frame = u64::try_from(domain.warp_source_position_q32(u128::from(beat))? / Q32)
                 .map_err(|_| Invalid("beat attack source position overflow"))?;
             if frame < domain.source_length && attacks.last() != Some(&frame) {
                 attacks.push(frame);

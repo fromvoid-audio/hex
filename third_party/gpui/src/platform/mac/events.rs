@@ -219,6 +219,7 @@ impl PlatformInput {
                             TouchPhase::Started
                         }
                         NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
+                        NSEventPhase::NSEventPhaseCancelled => TouchPhase::Cancelled,
                         _ => TouchPhase::Moved,
                     };
 
@@ -237,6 +238,8 @@ impl PlatformInput {
                         msg_send![native_event, isDirectionInvertedFromDevice];
                     Self::ScrollWheel(ScrollWheelEvent {
                         direction_inverted_from_device: direction_inverted == YES,
+                        is_momentum: native_event.momentumPhase() != NSEventPhase::NSEventPhaseNone,
+                        wheel_ticks: None,
                         position: point(
                             px(native_event.locationInWindow().x as f32),
                             window_height - px(native_event.locationInWindow().y as f32),

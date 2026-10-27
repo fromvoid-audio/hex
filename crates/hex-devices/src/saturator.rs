@@ -9,6 +9,7 @@ use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
 };
 use std::any::Any;
+mod automation;
 
 pub const SATURATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.saturator");
 pub const SATURATOR_STATE_VERSION: u32 = 1;
@@ -25,50 +26,82 @@ pub mod parameter {
     pub const CURVE: ParameterId = ParameterId::from_static(4);
 }
 
-const DESCRIPTORS: &[ParameterDescriptor] = &[
-    ParameterDescriptor {
-        id: parameter::DRIVE,
-        label: "drive",
-        kind: ParameterKind::Float {
-            min: -36.0,
-            max: 36.0,
-            unit: Some("db"),
+const BINDINGS: [crate::parameter_binding::Binding<SaturatorSettings>; 4] = [
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::DRIVE,
+            label: "drive",
+            kind: ParameterKind::Float {
+                min: -36.0,
+                max: 36.0,
+                unit: Some("db"),
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Float(0.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::OUTPUT,
-        label: "output",
-        kind: ParameterKind::Float {
-            min: -36.0,
-            max: 6.0,
-            unit: Some("db"),
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.drive_db,
+        |c, v| c.drive_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::OUTPUT,
+            label: "output",
+            kind: ParameterKind::Float {
+                min: -36.0,
+                max: 6.0,
+                unit: Some("db"),
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Float(0.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::DRY_WET,
-        label: "dry/wet",
-        kind: ParameterKind::Float {
-            min: 0.0,
-            max: 1.0,
-            unit: None,
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.output_db,
+        |c, v| c.output_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        ParameterDescriptor {
+            id: parameter::DRY_WET,
+            label: "dry/wet",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(1.0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Float(1.0),
-        presentation: ParameterPresentation::Linear,
-    },
-    ParameterDescriptor {
-        id: parameter::CURVE,
-        label: "curve",
-        kind: ParameterKind::Choice {
-            labels: CURVE_LABELS,
+        crate::parameter_binding::SCALAR_ENVELOPE,
+        |c| c.dry_wet,
+        |c, v| c.dry_wet = v,
+    ),
+    crate::parameter_binding::Binding::choice(
+        ParameterDescriptor {
+            id: parameter::CURVE,
+            label: "curve",
+            kind: ParameterKind::Choice {
+                labels: CURVE_LABELS,
+            },
+            default: ParameterValue::Choice(0),
+            presentation: ParameterPresentation::Linear,
         },
-        default: ParameterValue::Choice(0),
-        presentation: ParameterPresentation::Linear,
-    },
+        crate::parameter_binding::CHOICE_ENVELOPE,
+        |c| match c.curve {
+            SaturationCurve::SoftClip => 0,
+            SaturationCurve::DigitalClip => 1,
+        },
+        |c, v| {
+            c.curve = match v {
+                0 => SaturationCurve::SoftClip,
+                1 => SaturationCurve::DigitalClip,
+                _ => return Err(DeviceContractError::InvalidParameterValue),
+            };
+            Ok(())
+        },
+    ),
 ];
+const DESCRIPTORS: &[ParameterDescriptor] =
+    &crate::parameter_binding::descriptors(&BINDINGS, BINDINGS[0].descriptor);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SaturatorSettings {
@@ -129,16 +162,8 @@ fn decode(state: &NativeDeviceState) -> Result<SaturatorSettings, DeviceContract
 }
 
 fn validate_settings(settings: SaturatorSettings) -> Result<(), DeviceContractError> {
-    for (id, value) in [
-        (parameter::DRIVE, settings.drive_db),
-        (parameter::OUTPUT, settings.output_db),
-        (parameter::DRY_WET, settings.dry_wet),
-    ] {
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(ParameterValue::Float(value))?;
+    for binding in &BINDINGS {
+        binding.descriptor.validate(binding.read(&settings))?;
     }
     Ok(())
 }
@@ -194,17 +219,18 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
-        let settings = decode(state)?;
-        match id {
-            parameter::DRIVE => Ok(ParameterValue::Float(settings.drive_db)),
-            parameter::OUTPUT => Ok(ParameterValue::Float(settings.output_db)),
-            parameter::DRY_WET => Ok(ParameterValue::Float(settings.dry_wet)),
-            parameter::CURVE => Ok(ParameterValue::Choice(match settings.curve {
-                SaturationCurve::SoftClip => 0,
-                SaturationCurve::DigitalClip => 1,
-            })),
-            _ => Err(DeviceContractError::UnknownParameter),
-        }
+        Ok(crate::parameter_binding::binding(&BINDINGS, id)?.read(&decode(state)?))
+    }
+
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        decode(state)?;
+        Ok(Some(
+            crate::parameter_binding::binding(&BINDINGS, id)?.semantics,
+        ))
     }
 
     fn patch_parameter(
@@ -214,28 +240,59 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        match (id, value) {
-            (parameter::DRIVE, ParameterValue::Float(value)) => settings.drive_db = value,
-            (parameter::OUTPUT, ParameterValue::Float(value)) => settings.output_db = value,
-            (parameter::DRY_WET, ParameterValue::Float(value)) => settings.dry_wet = value,
-            (parameter::CURVE, ParameterValue::Choice(0)) => {
-                settings.curve = SaturationCurve::SoftClip
-            }
-            (parameter::CURVE, ParameterValue::Choice(1)) => {
-                settings.curve = SaturationCurve::DigitalClip
-            }
-            _ => return Err(DeviceContractError::InvalidParameterValue),
-        }
+        crate::parameter_binding::binding(&BINDINGS, id)?.write(&mut settings, value)?;
         encode(settings)
     }
 }
 
+// The current concrete direct-control path implements only these fixed
+// IDs, with value-only/no-smoothing updates. Other families may explicitly
+// implement structural/smoothed delivery without changing Binding metadata.
+fn runtime_parameter_automation_supported(parameter: ParameterId) -> bool {
+    let implemented = parameter
+        .value()
+        .checked_sub(1)
+        .is_some_and(|index| index < 4);
+    let Ok(binding) = crate::parameter_binding::binding(&BINDINGS, parameter) else {
+        return false;
+    };
+    implemented
+        && binding.declares_arrangement_automation()
+        && binding.semantics.normalization
+            != hex_lattice_contract::ParameterNormalization::Unspecified
+        && binding.semantics.stepping != hex_lattice_contract::ParameterStepping::Unspecified
+        && binding.semantics.change_impact == hex_lattice_contract::ParameterChangeImpact::ValueOnly
+        && binding.semantics.smoothing == hex_lattice_contract::ParameterSmoothing::None
+}
+
 impl NativeDeviceDefinition for SaturatorDefinition {
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        decode(state)?;
+        let Ok(binding) = crate::parameter_binding::binding(&BINDINGS, parameter) else {
+            return Ok(false);
+        };
+        binding.semantics.validate(binding.descriptor)?;
+        Ok(runtime_parameter_automation_supported(parameter))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: hex_lattice::ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                std::sync::Arc::new(Self::prepare_owned(state, context.sample_rate, parameters)?),
+            )),
+        })
+    }
+
     fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
@@ -255,25 +312,14 @@ impl NativeDeviceDefinition for SaturatorDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        if !(8_000..=192_000).contains(&sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        Ok(Some(Box::new(PreparedSaturator {
-            settings: decode(state)?,
-            sample_rate,
-            drive_gain: gain_from_db(state, parameter::DRIVE)?,
-            output_gain: gain_from_db(state, parameter::OUTPUT)?,
-        })))
+        Ok(Some(Box::new(Self::prepare_owned(
+            state,
+            context.sample_rate,
+            &[],
+        )?)))
     }
-}
-
-fn gain_from_db(state: &NativeDeviceState, id: ParameterId) -> Result<f64, DeviceContractError> {
-    let ParameterValue::Float(db) = SATURATOR_DEFINITION.read_parameter(state, id)? else {
-        return Err(DeviceContractError::InvalidParameterValue);
-    };
-    amplitude_from_db(db)
 }
 
 fn amplitude_from_db(db: f32) -> Result<f64, DeviceContractError> {
@@ -283,7 +329,11 @@ fn amplitude_from_db(db: f32) -> Result<f64, DeviceContractError> {
         .map_err(|_| DeviceContractError::InvalidParameterValue)
 }
 
-struct PreparedSaturator {
+/// Closed control-prepared Saturator factory. All fields are fixed inline;
+/// canonical envelope backing stays in the host's existing program owner.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedSaturator {
+    automation_mask: u8,
     settings: SaturatorSettings,
     sample_rate: u32,
     drive_gain: f64,
@@ -291,6 +341,18 @@ struct PreparedSaturator {
 }
 
 impl PreparedNativeProcessor for PreparedSaturator {
+    fn parameter_automation_descriptor(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<ParameterDescriptor> {
+        self.supports(parameter)
+            .then(|| DESCRIPTORS.iter().find(|d| d.id == parameter).copied())
+            .flatten()
+    }
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.supports(parameter)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -300,12 +362,20 @@ impl PreparedNativeProcessor for PreparedSaturator {
     }
 
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(SaturatorRuntime {
+        self.check_inline_ownership();
+        let runtime = SaturatorRuntime {
+            base: *self,
+            controls: crate::parameter_binding::Controls::new(
+                self.settings,
+                std::array::from_fn(|index| self.automation_mask & (1u8 << index) != 0),
+            ),
             settings: self.settings,
             sample_rate: self.sample_rate,
             drive_gain: self.drive_gain,
             output_gain: self.output_gain,
-        })
+        };
+        runtime.check_inline_ownership();
+        Box::new(runtime)
     }
 
     fn algorithmic_latency_frames(&self) -> Option<u32> {
@@ -317,7 +387,12 @@ impl PreparedNativeProcessor for PreparedSaturator {
     }
 }
 
-struct SaturatorRuntime {
+/// Closed fixed-inline DSP owner, including the last effective controls used by
+/// transactional history copying. It owns no program, asset or external handle.
+#[derive(Clone, Copy, Debug)]
+pub struct SaturatorRuntime {
+    base: PreparedSaturator,
+    controls: crate::parameter_binding::Controls<SaturatorSettings, 4>,
     settings: SaturatorSettings,
     sample_rate: u32,
     drive_gain: f64,
@@ -325,7 +400,42 @@ struct SaturatorRuntime {
 }
 
 impl NativeProcessorRuntime for SaturatorRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.base.supports(parameter)
+    }
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        let mut resolved = self.controls.resolve(&BINDINGS, values)?;
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            self.apply_automation(values, &mut resolved, offset)?;
+            self.process_block(std::slice::from_mut(frame), resources);
+        }
+        Ok(())
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        let mut resolved = self.controls.resolve(&BINDINGS, values)?;
+        if let Some(offset) = frames.len().checked_sub(1) {
+            self.apply_automation(values, &mut resolved, offset)?;
+        }
+        Ok(())
+    }
+
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let settings = self.settings;
         let drive = self.drive_gain;
         let output = self.output_gain;
@@ -339,9 +449,19 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         }
     }
 
-    fn process_bypassed_block(&mut self, _frames: &mut [StereoFrame]) {}
+    fn process_bypassed_block(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+    }
 
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        self.controls.reset();
+        self.settings = self.base.settings;
+        self.drive_gain = self.base.drive_gain;
+        self.output_gain = self.base.output_gain;
+    }
 
     fn is_quiescent(&self) -> bool {
         true
@@ -354,7 +474,18 @@ impl NativeProcessorRuntime for SaturatorRuntime {
             .is_some_and(|previous| self.sample_rate == previous.sample_rate)
     }
 
-    fn copy_history_from(&mut self, _previous: &dyn NativeProcessorRuntime) {}
+    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+        if self.base.automation_mask != 0
+            && let Some(previous) = previous.as_any().downcast_ref::<Self>()
+            && previous.base.automation_mask != 0
+            && self.sample_rate == previous.sample_rate
+        {
+            self.controls.inherit(&previous.controls);
+            self.settings = previous.settings;
+            self.drive_gain = previous.drive_gain;
+            self.output_gain = previous.output_gain;
+        }
+    }
 
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
