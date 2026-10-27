@@ -1060,7 +1060,14 @@ class ReleaseCargoTests(unittest.TestCase):
             (root / "app/Cargo.toml").write_text(manifest)
             (root / "app/src/main.rs").write_text('fn main() { println!("{}", fixture_api::value() + external_helper::suffix()); }\n')
             def command(argv, cwd=root, env=None):
-                result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+                # Only the newly built, disposable fixture executable is bounded
+                # here. A stall is a failure, never a retry or a passing result.
+                executable = len(argv) == 1 and Path(argv[0]).is_absolute()
+                try:
+                    result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True,
+                                            timeout=120 if executable else None)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"fixture executable did not finish within 120 seconds: {argv[0]}")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return result.stdout.strip()
             command(["git", "init", "-q"])
