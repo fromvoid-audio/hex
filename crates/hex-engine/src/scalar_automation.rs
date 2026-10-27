@@ -1,7 +1,7 @@
 //! Preparation declarations and bounded materialization for recorded native
 //! parameters. Source/catalog custody remains with the stream owner. Admission
 //! is one exact native effect; delayed stages use the compensation owner.
-use crate::{Invalid, MediaPages, ScalarSourceMetadata};
+use crate::{Invalid, MediaPages, ScalarSourceMetadata, ScalarSourceTarget};
 use hex_lattice::{
     ExternalParameterAutomation, NativeExternalAutomation, NormalizedAutomationValue,
 };
@@ -21,6 +21,14 @@ pub(crate) fn validate_source(
     binding: &ScalarAutomationBinding,
 ) -> Result<(), Invalid> {
     let source = &binding.source;
+    if source.target()
+        != (ScalarSourceTarget::Device {
+            device: binding.device,
+            target: binding.target,
+        })
+    {
+        return Err(Invalid("scalar take target does not match its binding"));
+    }
     if source.project_rate() != project.sample_rate()
         || !projection_matches(source, project.tempo_map())
     {

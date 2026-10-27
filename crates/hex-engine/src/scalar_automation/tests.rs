@@ -41,12 +41,17 @@ impl MediaPages for Pages {
         self.requests += 1;
     }
 }
-fn source(map: &hex_project::TempoMap) -> ScalarSourceMetadata {
+fn source(
+    map: &hex_project::TempoMap,
+    device: hex_project::DeviceId,
+    target: DeviceAutomationTarget,
+) -> ScalarSourceMetadata {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hex_project::visit_automation_projection_identity(map, &mut |bytes| hash.update(bytes));
     ScalarSourceMetadata::new(
         ScalarSourceKey::new(7, 1, 1).unwrap(),
+        crate::ScalarSourceTarget::Device { device, target },
         48000,
         4094,
         4098,
@@ -85,7 +90,7 @@ fn fixture(
     else {
         panic!("device")
     };
-    let source = source(f.editor.project().tempo_map());
+    let source = source(f.editor.project().tempo_map(), device, target);
     let key = source.key();
     let revision = Arc::new(
         PreparedRevision::prepare_with_scalar_automation(
@@ -161,7 +166,7 @@ fn recorded_provider_uses_delayed_stage_origin_for_demand_and_audio() {
     let binding = ScalarAutomationBinding {
         device,
         target,
-        source: source(f.editor.project().tempo_map()),
+        source: source(f.editor.project().tempo_map(), device, target),
     };
     let revision = Arc::new(
         PreparedRevision::prepare_with_scalar_automation(
@@ -238,7 +243,7 @@ fn delayed_host_input_and_output_match_stage_demand_seek_and_handoff() {
         let binding = ScalarAutomationBinding {
             device: limiter,
             target,
-            source: source(f.editor.project().tempo_map()),
+            source: source(f.editor.project().tempo_map(), limiter, target),
         };
         let revision = Arc::new(
             PreparedRevision::prepare_with_scalar_automation(
@@ -395,7 +400,7 @@ fn delayed_scalar_values_follow_loop_origins_across_irregular_blocks() {
             ScalarAutomationBinding {
                 device,
                 target,
-                source: source(f.editor.project().tempo_map()),
+                source: source(f.editor.project().tempo_map(), device, target),
             },
         )
         .unwrap(),
@@ -451,7 +456,7 @@ fn delayed_scalar_prewarm_projects_future_loop_origin_and_matches_due_render() {
             ScalarAutomationBinding {
                 device,
                 target,
-                source: source(f.editor.project().tempo_map()),
+                source: source(f.editor.project().tempo_map(), device, target),
             },
         )
         .unwrap(),
@@ -544,7 +549,7 @@ fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
         let binding = ScalarAutomationBinding {
             device,
             target,
-            source: source(f.editor.project().tempo_map()),
+            source: source(f.editor.project().tempo_map(), device, target),
         };
         let result = PreparedRevision::prepare_with_scalar_automation(
             f.editor.project(),
@@ -586,10 +591,12 @@ fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
 #[test]
 #[ignore = "optimized scalar render profile; run explicitly with --release --ignored --nocapture"]
 fn optimized_scalar_render_cost() {
-    let (f, device, _, mut pages) = fixture(DeviceAutomationTarget::Parameter(parameter::GAIN));
-    let original = source(f.editor.project().tempo_map());
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (f, device, _, mut pages) = fixture(target);
+    let original = source(f.editor.project().tempo_map(), device, target);
     let source = ScalarSourceMetadata::new(
         original.key(),
+        original.target(),
         original.project_rate(),
         0,
         8192,
@@ -655,9 +662,10 @@ fn optimized_delayed_scalar_render_cost() {
             .unwrap(),
         })
         .unwrap();
-    let original = source(f.editor.project().tempo_map());
+    let original = source(f.editor.project().tempo_map(), device, target);
     let source = ScalarSourceMetadata::new(
         original.key(),
+        original.target(),
         original.project_rate(),
         0,
         8192,
@@ -812,7 +820,7 @@ fn scalar_host_stages_use_shared_host_mapping_and_stale_projection_refuses() {
         let binding = ScalarAutomationBinding {
             device,
             target,
-            source: source(f.editor.project().tempo_map()),
+            source: source(f.editor.project().tempo_map(), device, target),
         };
         // Refuse stale projection before introducing any incompatible processor.
         f.editor
@@ -835,7 +843,7 @@ fn scalar_host_stages_use_shared_host_mapping_and_stale_projection_refuses() {
         let current = ScalarAutomationBinding {
             device,
             target,
-            source: source(f.editor.project().tempo_map()),
+            source: source(f.editor.project().tempo_map(), device, target),
         };
         f.editor
             .execute(Command::InsertDevice {

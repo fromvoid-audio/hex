@@ -370,6 +370,41 @@ fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
         (0, 0, 0, 0)
     );
     assert!(control.audio_candidate_domain_endpoint_is_installed(domain));
+    if target == DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN) {
+        let forged_target =
+            DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::MUTE);
+        let forged = hex_engine::ScalarSourceMetadata::new(
+            metadata.key(),
+            hex_engine::ScalarSourceTarget::Device {
+                device,
+                target: forged_target,
+            },
+            metadata.project_rate(),
+            metadata.start_frame(),
+            metadata.end_frame(),
+            metadata.projection_identity(),
+            metadata.file_identity(),
+        )
+        .unwrap();
+        let refused = control.publish_with_admission_and_source_on_control(
+            compile(
+                project,
+                device,
+                forged_target,
+                forged,
+                audio_metadata.as_ref(),
+            ),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        );
+        assert!(
+            refused.is_err(),
+            "the actual catalog must reject forged target facts"
+        );
+        assert_eq!(control.submitted_revision(), 0);
+        assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    }
     let revision = control
         .publish_with_admission_and_source_on_control(
             compile(project, device, target, metadata, audio_metadata.as_ref()),
