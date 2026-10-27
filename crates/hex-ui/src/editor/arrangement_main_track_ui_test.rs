@@ -897,6 +897,12 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                 .debug_bounds("arrangement-section-0")
                 .unwrap()
                 .right();
+            let scale = visual.update(|window, _| window.scale_factor());
+            let section_edge = visual
+                .debug_bounds("arrangement-section-trailing-0")
+                .unwrap();
+            assert_eq!(section_edge.left(), endpoint);
+            assert_eq!(f64::from(section_edge.scale(scale).size.width), 1.0);
             // GPUI's test window is 2x. Off-grid times may round to the nearest
             // physical pixel, but every consumer must choose the same pixel.
             assert!(
@@ -905,6 +911,13 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
             );
             if offset == 0 {
                 assert_eq!(endpoint, grid.left());
+                assert_eq!(section_edge.left(), grid.left());
+            }
+            for (prefix, id) in [("clip-trailing", audio), ("midi-clip-trailing", midi)] {
+                let name = Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str());
+                let edge = visual.debug_bounds(name).unwrap();
+                assert_eq!(edge.left(), endpoint);
+                assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
             }
             for selector in [audio_selector, midi_selector, "arrangement-section-0"] {
                 let bounds = visual.debug_bounds(selector).unwrap();

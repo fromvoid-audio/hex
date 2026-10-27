@@ -47,6 +47,7 @@ fn open(
                     notes: [0.5, 1.0]
                         .into_iter()
                         .map(|start| MidiNoteInsert {
+                            active: true,
                             start: beat(start),
                             duration: beat(0.5),
                             pitch: 60,
@@ -183,7 +184,6 @@ fn draw_input_loss_never_submits_a_partial_or_stale_stroke_or_leaks_release(
                 }),
                 "source" => editor.update(&mut visual, |v, cx| {
                     v.selected_clip = None;
-                    v.retained_clip_detail = None;
                     cx.notify();
                 }),
                 "generation" => editor.update(&mut visual, |v, cx| {

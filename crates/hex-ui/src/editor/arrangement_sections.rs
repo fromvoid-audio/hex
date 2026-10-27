@@ -448,7 +448,6 @@ impl EditorView {
         self.duplicate_intent.cancel_chain();
         self.sections.selected = id;
         self.sections.selection = id.into_iter().collect();
-        self.retain_clip_detail_for_time_selection();
         self.selected_track = None;
         self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
@@ -1681,6 +1680,7 @@ impl EditorView {
     pub(super) fn section_elements(
         &self,
         viewport: Viewport,
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(state) = self.state.as_ref() else {
@@ -1716,6 +1716,7 @@ impl EditorView {
             return Vec::new();
         }
         let mut elements = Vec::new();
+        let mut selected_edges = Vec::new();
         for (index, m) in display.markers.iter().enumerate() {
             let (Ok(start), Ok(end)) = (
                 display.tempo.beat_to_frame(m.start),
@@ -1757,6 +1758,8 @@ impl EditorView {
             let pixel_width = self.main_track_lane_bounds.map_or(0.0, |lane| {
                 lane.width * ((end - start) as f32 / viewport.length as f32)
             });
+            let stroke = 1.0 / scale.max(1.0);
+            let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
             let mut element = hex_widgets::rectangle_surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
                 (end - start) as f32 / viewport.length as f32, pixel_width,
@@ -1765,6 +1768,10 @@ impl EditorView {
                 .debug_selector(move || format!("arrangement-section-{index}"))
                 .top_0()
                 .bottom_0()
+                .left_0()
+                .w_full()
+                .border_l(px(if has_border { stroke } else { 0.0 }))
+                .border_r(px(0.0))
                 .cursor(gpui::CursorStyle::Arrow)
                 .border_color(rgb(border))
                 .bg(section_fill(colors.0))
@@ -1827,8 +1834,40 @@ impl EditorView {
                 element =
                     element.children([hex_widgets::rectangle_edge(part, INNER_EDGE_WIDTH, 0.0)]);
             }
-            elements.push(element.into_any_element());
+            elements.push(
+                super::tracks::clip_boundary_shell(
+                    element,
+                    (start - viewport.start) as f32 / viewport.length as f32,
+                    (end - start) as f32 / viewport.length as f32,
+                    stroke,
+                    border,
+                    hover.2,
+                    true,
+                    has_border,
+                    0.0,
+                    move || format!("arrangement-section-trailing-{index}"),
+                )
+                .into_any_element(),
+            );
+            if selected {
+                selected_edges.push(
+                    div()
+                        .debug_selector(move || {
+                            format!("arrangement-section-selected-trailing-{index}")
+                        })
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(
+                            (end - viewport.start) as f32 / viewport.length as f32,
+                        ))
+                        .w(px(stroke))
+                        .bg(rgb(border))
+                        .into_any_element(),
+                );
+            }
         }
+        elements.extend(selected_edges);
         for pair in display.markers.windows(2) {
             if pair[0].end != pair[1].start {
                 continue;
@@ -2847,13 +2886,26 @@ mod tests {
                 "dragging equal-meter sections must not create meter boundaries"
             );
         });
-        assert_eq!(
-            visual.rendered_background("arrangement-grid-line-192000"),
-            Some(gpui::Background::from(rgb(theme::color(
-                theme::PaletteRole::Border
-            )))),
-            "the moved section seam remains an ordinary grid line, not a red meter marker"
+        assert!(
+            visual
+                .debug_bounds("arrangement-grid-line-192000")
+                .is_some()
         );
+        editor.read_with(cx, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let viewport = v.visible_viewport(state.timeline_frames);
+            let width = v.main_track_lane_bounds.unwrap().width;
+            let line = super::super::musical_time::grid_lines(
+                &state.project,
+                viewport,
+                width,
+                v.snap_grid,
+            )
+            .into_iter()
+            .find(|line| line.frame == 192_000)
+            .unwrap();
+            assert!(!line.meter_marker, "the moved seam is not a meter marker");
+        });
     }
     #[gpui::test]
     fn selected_sections_l_uses_outer_bounds_and_one_history_edit(cx: &mut TestAppContext) {

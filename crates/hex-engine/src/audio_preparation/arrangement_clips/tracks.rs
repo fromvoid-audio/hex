@@ -343,6 +343,7 @@ impl TrackAssembly {
             &OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
         )>,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
@@ -467,11 +468,12 @@ impl TrackAssembly {
                 .fill(t.gain_envelope(), project.tempo_map())
                 .map_err(gain_error)?;
             r.meter = Some(OwnedShared::new_owned(hex_lattice::DeviceMeter::default()));
-            r.chain = Some(r.effects.prepare_with_effects(
+            r.chain = Some(r.effects.prepare_with_effects_and_input(
                 t.devices(),
                 hex_lattice::ProcessorChainOwner::Track(t.id().value()),
                 project.sample_rate(),
                 effects,
+                native_input,
             )?);
             self.growth = self
                 .growth

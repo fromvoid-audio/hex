@@ -21,6 +21,8 @@ mod arrangement_sections;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
+pub mod automation_draft;
+pub mod automation_take;
 mod canonical_audio_source;
 mod comparison_audio;
 #[cfg(test)]
@@ -46,6 +48,8 @@ pub use audio_sink::{
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
 pub use sampler_parameter::SamplerEdit;
+mod device_automation_control;
+pub use device_automation_control::DeviceAutomationControlEdit;
 mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
@@ -600,6 +604,12 @@ pub enum Request {
         device: hex_project::DeviceId,
         target: hex_lattice_contract::DeviceAutomationTarget,
         points: Vec<hex_project::AutomationPoint>,
+    },
+    /// The same bounded source-stamped Edit seam for manual values/read selection.
+    DeviceAutomationControl {
+        project_generation: u64,
+        revision: u64,
+        edit: DeviceAutomationControlEdit,
     },
     DeviceGesture(GestureRequest),
     TuningGesture(TuningGestureRequest),
@@ -2205,37 +2215,58 @@ fn run_worker(
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
         let mut cut_clipboard = None;
-        let resolved_edit = match &request {
+        let automation_source_error = match &request {
             Request::DeviceAutomation {
                 project_generation: generation,
                 revision: source_revision,
+                ..
+            }
+            | Request::DeviceAutomationControl {
+                project_generation: generation,
+                revision: source_revision,
+                ..
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(
+                        "automation edit refused · project changed · retry from the current parameter",
+                    )
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active parameter gesture before editing automation")
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let resolved_edit = match &request {
+            Request::DeviceAutomation {
+                project_generation: _,
+                revision: _,
                 device,
                 target,
                 points,
-            } => {
-                Some(
-                    if *generation != project_generation || *source_revision != revision {
-                        Err("automation edit refused · project changed".into())
-                    } else if !hex_engine::project_device_automation_target_supported(
-                        session.project(),
-                        *device,
-                        *target,
-                    ) {
-                        Err("automation edit refused · target no longer available".into())
-                    } else if pending_sampler_parameter.is_some()
-                        || device_gesture.snapshot().is_some()
-                        || tuning_gesture.snapshot().is_some()
-                    {
-                        Err("finish or cancel the active parameter gesture before editing automation".into())
-                    } else {
-                        Ok(Command::ReplaceDeviceAutomationTarget {
-                            device: *device,
-                            target: *target,
-                            points: points.clone(),
-                        })
-                    },
-                )
-            }
+            } => Some(if let Some(reason) = automation_source_error {
+                Err(reason.into())
+            } else if !hex_engine::project_device_automation_target_supported(
+                session.project(),
+                *device,
+                *target,
+            ) {
+                Err("automation edit refused · target no longer available".into())
+            } else {
+                Ok(Command::ReplaceDeviceAutomationTarget {
+                    device: *device,
+                    target: *target,
+                    points: points.clone(),
+                })
+            }),
+            Request::DeviceAutomationControl { edit, .. } => Some(match automation_source_error {
+                Some(reason) => Err(reason.into()),
+                None => device_automation_control::command(&session, edit),
+            }),
             Request::TrackClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -2549,20 +2580,7 @@ fn run_worker(
             _ => None,
         };
         let (request, resolution_failure) = match resolved_edit {
-            Some(Ok(command)) => match session.project().audio_group_render_target(&command) {
-                Ok(Some(target)) => (
-                    Request::BounceArrangement {
-                        project_generation,
-                        revision,
-                        target,
-                        in_place: true,
-                        control: hex_export::ExportControl::default(),
-                    },
-                    None,
-                ),
-                Ok(None) => (Request::Edit(command), None),
-                Err(reason) => (request, Some(reason.to_string())),
-            },
+            Some(Ok(command)) => (Request::Edit(command), None),
             Some(Err(reason)) => (request, Some(reason)),
             None => (request, None),
         };
@@ -3423,7 +3441,7 @@ fn run_worker(
                 Request::GroupClips { .. } | Request::GroupTimeRange { .. } => {
                     error = Some("clip grouping target was not resolved".into());
                 }
-                Request::DeviceAutomation { .. } => {
+                Request::DeviceAutomation { .. } | Request::DeviceAutomationControl { .. } => {
                     error = Some("automation target was not resolved".into());
                 }
                 Request::GroupAudioEvents { .. } => {
@@ -4947,9 +4965,16 @@ fn run_worker(
                     match patched {
                         Ok(state) => {
                             let before_project = session.project().clone();
+                            let command = crate::device_gesture::manual_device_edit(
+                                &session,
+                                device,
+                                state,
+                                [parameter],
+                                true,
+                            );
                             match resident_audio::execute_command(
                                 &mut session,
-                                Command::ReplaceDeviceState { device, state },
+                                command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 hex_engine::AudioSourceContext {
                                     project_generation,
@@ -9114,6 +9139,7 @@ mod service_tests {
 
         service
             .submit(Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 2,
                 value: ParameterValue::Float(3.5),
@@ -9368,6 +9394,7 @@ mod service_tests {
 
         service
             .submit(Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 2,
                 value: ParameterValue::Float(0.6),
@@ -11392,6 +11419,7 @@ mod service_tests {
         };
         let notes = (0..64_u8)
             .map(|pitch| hex_project::MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::ZERO,
                 duration: hex_project::BeatTime::from_quarters(1).expect("gate"),
                 pitch,

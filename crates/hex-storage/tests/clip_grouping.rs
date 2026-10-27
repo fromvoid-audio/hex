@@ -74,6 +74,103 @@ fn strip_flat_hierarchy(value: &mut Value) {
         Some(json!(expected))
     );
 }
+
+#[test]
+fn nested_repeated_group_roundtrips_and_rejects_missing_or_invalid_sources() {
+    let (mut editor, ids) = fixture();
+    editor
+        .execute(Command::SetClipActive {
+            clip: ids[1],
+            active: false,
+        })
+        .unwrap();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 700 },
+        })
+        .unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().clip(group).unwrap().asset();
+    let Created::Clip(third) = editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 900,
+            duration: 100,
+            source_offset: 0,
+            source_length: 100,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("third")
+    };
+    let Created::Clip(outer) = editor
+        .execute(Command::GroupClips(vec![group, third]))
+        .unwrap()
+    else {
+        panic!("regroup")
+    };
+    let encoded = encode(editor.project()).unwrap();
+    let mut value: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decode(&encoded).unwrap(), *editor.project());
+    let nested = decode(&encoded)
+        .unwrap()
+        .clip(outer)
+        .unwrap()
+        .audio_events()
+        .sources;
+    assert!(nested.iter().any(|root| {
+        root.clip
+            .audio_events()
+            .events
+            .iter()
+            .any(|event| !event.active)
+    }));
+    let rows = value["nested_audio"].as_array_mut().unwrap();
+    let row = rows.iter().position(|row| !row["state"].is_null()).unwrap();
+    let original = rows[row].clone();
+    rows.remove(row);
+    assert!(decode(&bytes(&value)).is_err());
+    value["nested_audio"]
+        .as_array_mut()
+        .unwrap()
+        .push(original.clone());
+    value["nested_audio"].as_array_mut().unwrap().push(original);
+    assert!(decode(&bytes(&value)).is_err());
+    value["nested_audio"].as_array_mut().unwrap().pop();
+    let row = value["nested_audio"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| !row["state"].is_null())
+        .unwrap();
+    row["state"]["sources"][0]["document"]["version"] = 56.into();
+    assert!(decode(&bytes(&value)).is_err());
+}
+
+#[test]
+fn previous_event_activation_schema_migrates_without_nested_sources() {
+    let (mut editor, ids) = fixture();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: ids[0],
+            operation: AudioEventEdit::SetActive {
+                events: vec![1],
+                active: false,
+            },
+        })
+        .unwrap();
+    editor.execute(Command::GroupClips(ids)).unwrap();
+    let mut value: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("nested_audio");
+    value["version"] = 57.into();
+    assert_eq!(decode(&bytes(&value)).unwrap(), *editor.project());
+}
 #[test]
 fn grouped_sources_roundtrip_complete_original_state_and_missing_media_paths() {
     let (mut e, ids) = fixture();

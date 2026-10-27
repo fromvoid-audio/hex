@@ -43,6 +43,7 @@ impl SessionPlayback {
         match command {
             SessionPlaybackCommand::Play => self.playing = true,
             SessionPlaybackCommand::Pause => {
+                self.invalidate_native_parameter_input();
                 if self.playing {
                     self.pause_analytic_sources()?;
                     // A removed receiver may already own a detached release.
@@ -69,6 +70,7 @@ impl SessionPlayback {
             }
             SessionPlaybackCommand::Stop => {
                 self.clear_gain_recording_override();
+                self.invalidate_native_parameter_input();
                 if self.stop_transport() {
                     self.advance_route_state_generation();
                 }
@@ -76,6 +78,7 @@ impl SessionPlayback {
             SessionPlaybackCommand::Seek(frame) => {
                 self.seek(frame)?;
                 self.clear_gain_recording_override();
+                self.invalidate_native_parameter_input();
             }
             SessionPlaybackCommand::CancelPending { track } => {
                 let mut changed = false;
@@ -237,6 +240,7 @@ impl SessionPlayback {
         }
         self.interactive_start_frame = Some(frame);
         self.clear_gain_recording_override();
+        self.invalidate_native_parameter_input();
         self.candidate_admission_open = false;
         self.playing = true;
         Ok(())

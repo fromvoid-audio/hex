@@ -678,3 +678,446 @@ fn mixed_cached_host_and_provider_rows_keep_bulk_provider_only_and_quote_all_sta
         )
     );
 }
+
+#[test]
+fn transient_provider_union_preserves_curves_bulk_clear_and_physical_backing() {
+    let mut prepared = host_program();
+    let desc = descriptor();
+    assert_eq!(
+        prepared.provider_input_growth_overlap_bytes(desc.id),
+        Some(2 * std::mem::size_of::<PreparedParameterAutomationLane>())
+    );
+    prepared.arm_provider_input(desc, semantics()).unwrap();
+    assert_eq!(
+        prepared.input_target(),
+        Some(DeviceAutomationTarget::Parameter(desc.id))
+    );
+    assert_eq!(prepared.parameter_ids(), &[desc.id]);
+    assert_eq!(
+        prepared.provider_input_growth_overlap_bytes(desc.id),
+        Some(0)
+    );
+    let (_, lanes, points) = prepared.storage_vectors();
+    assert_eq!(lanes.len(), 3);
+    assert_eq!(points.len(), 3, "arming adds no authored points");
+    assert_eq!(
+        prepared.storage_bytes(),
+        PreparedParameterAutomation::quoted_storage_bytes_with_host(1, 2, 3)
+    );
+    let input = NativeTransientValue::Parameter {
+        id: desc.id,
+        value: ParameterValue::Float(7.0),
+    };
+    let block = prepared.block_with_input(None, 32, Some(input)).unwrap();
+    let mut bulk = [None];
+    block.values_at(15, &mut bulk).unwrap();
+    assert_eq!(bulk, [Some(ParameterValue::Float(7.0))]);
+    assert_eq!(block.value_at(desc.id, 15), bulk[0]);
+    assert!(block.values_at(32, &mut bulk).is_err());
+    assert!(block.values_at(0, &mut []).is_err());
+    let cleared = prepared.block_with_input(Some(&Clock), 32, None).unwrap();
+    cleared.values_at(15, &mut bulk).unwrap();
+    assert_eq!(
+        bulk,
+        [None],
+        "clear keeps the armed ID and requests immutable base"
+    );
+    assert_eq!(
+        cleared.host_gain_at(DeviceAutomationTarget::HostInputGain, 15),
+        Some(HostGain::from_db(-18.0).unwrap().linear()),
+        "inserting a provider fallback preserves host indices"
+    );
+    assert_eq!(
+        cleared.host_gain_at(DeviceAutomationTarget::HostOutputGain, 15),
+        Some(HostGain::from_db(-18.0).unwrap().linear())
+    );
+    let previous = prepared.clone();
+    assert!(
+        prepared
+            .arm_host_gain_input(DeviceAutomationTarget::HostOutputGain)
+            .is_err()
+    );
+    assert_eq!(prepared, previous);
+    for value in [
+        ParameterValue::Float(f32::NAN),
+        ParameterValue::Float(99.0),
+        ParameterValue::Bool(true),
+    ] {
+        assert!(
+            prepared
+                .block_with_input(
+                    None,
+                    1,
+                    Some(NativeTransientValue::Parameter { id: desc.id, value })
+                )
+                .is_err()
+        );
+    }
+    let mut readonly = PreparedParameterAutomation::default();
+    assert!(
+        readonly
+            .arm_provider_input(
+                desc,
+                ParameterSemantics {
+                    access: ParameterAccess::ReadOnly,
+                    ..semantics()
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(readonly, PreparedParameterAutomation::default());
+}
+
+#[test]
+fn transient_boolean_choice_and_other_provider_lanes_restore_the_current_curve() {
+    for (kind, default, value, stepping) in [
+        (
+            ParameterKind::Bool,
+            ParameterValue::Bool(false),
+            ParameterValue::Bool(true),
+            ParameterStepping::Boolean,
+        ),
+        (
+            ParameterKind::Choice {
+                labels: &["one", "two", "three"],
+            },
+            ParameterValue::Choice(0),
+            ParameterValue::Choice(1),
+            ParameterStepping::Choice,
+        ),
+    ] {
+        let desc = ParameterDescriptor {
+            id: ParameterId::from_static(2),
+            kind,
+            default,
+            ..descriptor()
+        };
+        let discrete = ParameterSemantics {
+            normalization: ParameterNormalization::Discrete,
+            stepping,
+            ..semantics()
+        };
+        let mut prepared = PreparedParameterAutomation::new(
+            vec![
+                ParameterAutomationLane {
+                    descriptor: descriptor(),
+                    semantics: semantics(),
+                    points: 0..2,
+                },
+                ParameterAutomationLane {
+                    descriptor: desc,
+                    semantics: discrete,
+                    points: 2..4,
+                },
+            ],
+            vec![
+                ParameterAutomationPoint {
+                    beat_raw: 10,
+                    normalized: 0.0,
+                    step: false,
+                },
+                ParameterAutomationPoint {
+                    beat_raw: 20,
+                    normalized: 1.0,
+                    step: true,
+                },
+                ParameterAutomationPoint {
+                    beat_raw: 10,
+                    normalized: 0.0,
+                    step: false,
+                },
+                ParameterAutomationPoint {
+                    beat_raw: 20,
+                    normalized: 1.0,
+                    step: true,
+                },
+            ],
+        )
+        .unwrap();
+        prepared.arm_provider_input(desc, discrete).unwrap();
+        assert_eq!(prepared.storage_vectors().2.len(), 4);
+        let block = prepared
+            .block_with_input(
+                Some(&Clock),
+                32,
+                Some(NativeTransientValue::Parameter { id: desc.id, value }),
+            )
+            .unwrap();
+        let shifted = crate::OffsetAutomation {
+            values: &block,
+            offset: 7,
+        };
+        let mut values = [None; 2];
+        shifted.values_at(8, &mut values).unwrap();
+        assert_eq!(values, [Some(ParameterValue::Float(5.0)), Some(value)]);
+        for (index, &id) in shifted.parameter_ids().iter().enumerate() {
+            assert_eq!(shifted.value_at(id, 8), values[index]);
+        }
+        let cleared = prepared.block_with_input(Some(&Clock), 32, None).unwrap();
+        cleared.values_at(15, &mut values).unwrap();
+        assert_eq!(values, [Some(ParameterValue::Float(5.0)), Some(default)]);
+        assert_eq!(
+            prepared
+                .block_with_input(Some(&Clock), 32, None)
+                .unwrap()
+                .value_at(desc.id, 20),
+            Some(match kind {
+                ParameterKind::Bool => ParameterValue::Bool(true),
+                _ => ParameterValue::Choice(2),
+            })
+        );
+    }
+}
+
+fn process_transient_host(
+    chain: &mut crate::NativeRuntimeChain,
+    frames: &mut [crate::StereoFrame],
+    transient: Option<&mut crate::NativeTransientProcessing>,
+    offset: usize,
+) -> Result<(), Error> {
+    chain.process_range_tapped_with_foreign_and_input(
+        0..1,
+        frames,
+        offset,
+        None,
+        None,
+        &mut crate::RefuseForeign,
+        transient,
+        &mut |_, _, _, _, _, _| {},
+    )
+}
+#[test]
+fn transient_host_stages_only_successful_current_processing_and_clear_restores_base() {
+    use crate::{
+        NativeTransientInput, NativeTransientProcessing, ProcessorChainOwner,
+        ProcessorInstanceIdentity,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(1), 1).unwrap();
+    let value = NativeTransientValue::HostOutputGain(HostGain::ZERO);
+    let mut context = NativeTransientProcessing::new(NativeTransientInput {
+        identity,
+        operation: NativeTransientOperation::Set(value),
+    });
+    let mut chain = host_chain(false);
+    chain.entries[0]
+        .automation
+        .arm_host_gain_input(value.target())
+        .unwrap();
+    chain.begin_block();
+    let mut frame = [[1.0, 0.5]];
+    process_transient_host(&mut chain, &mut frame, Some(&mut context), 9).unwrap();
+    let input = HostGain::from_db(-6.0).unwrap().linear();
+    assert_eq!(frame, [[2.0 * input, input]]);
+    assert_eq!(
+        context.applied,
+        Some(crate::NativeTransientApplication {
+            identity,
+            operation: NativeTransientOperation::Set(value),
+            offset: 9
+        })
+    );
+    chain.commit_block();
+    chain.begin_block();
+    let mut cleared = [[1.0, 0.5]];
+    context = NativeTransientProcessing::new(NativeTransientInput {
+        identity,
+        operation: NativeTransientOperation::Clear(value.target()),
+    });
+    process_transient_host(&mut chain, &mut cleared, Some(&mut context), 0).unwrap();
+    assert_eq!(
+        context.applied,
+        Some(crate::NativeTransientApplication {
+            identity,
+            operation: NativeTransientOperation::Clear(value.target()),
+            offset: 0
+        })
+    );
+    let base = input * HostGain::from_db(3.0).unwrap().linear();
+    assert_eq!(cleared, [[2.0 * base, base]]);
+    chain.rollback_block();
+    chain.begin_output_tail();
+    context.applied = None;
+    let mut tail = [[1.0, 0.5]];
+    process_transient_host(&mut chain, &mut tail, Some(&mut context), 0).unwrap();
+    assert_eq!(tail, frame, "retained tail uses committed effective trims");
+    assert_eq!(context.applied, None);
+    let mut bypass = host_chain(true);
+    bypass.entries[0]
+        .automation
+        .arm_host_gain_input(value.target())
+        .unwrap();
+    bypass.begin_block();
+    let mut dry = [[1.0, 0.5]];
+    process_transient_host(&mut bypass, &mut dry, Some(&mut context), 0).unwrap();
+    assert_eq!(dry, [[1.0, 0.5]]);
+    assert_eq!(context.applied, None);
+    let mut empty = [];
+    process_transient_host(&mut bypass, &mut empty, Some(&mut context), 0).unwrap();
+    assert_eq!(context.applied, None);
+    let bad = NativeTransientValue::HostInputGain(HostGain::ZERO);
+    context.input.operation = NativeTransientOperation::Set(bad);
+    let before = dry;
+    assert!(process_transient_host(&mut bypass, &mut dry, Some(&mut context), 0).is_err());
+    assert_eq!(dry, before);
+    assert_eq!(context.applied, None);
+}
+
+#[test]
+fn armed_provider_clear_is_processed_and_late_refusal_discards_observation() {
+    use crate::*;
+    use std::sync::Arc;
+    struct Factory(bool);
+    #[derive(Clone, Copy)]
+    struct Runtime {
+        effective: f32,
+        fail_loud: bool,
+    }
+    impl PreparedNativeProcessor for Factory {
+        fn parameter_automation_descriptor(&self, id: ParameterId) -> Option<ParameterDescriptor> {
+            (id == descriptor().id).then_some(descriptor())
+        }
+        fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+            id == descriptor().id
+        }
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<Runtime>()
+        }
+        fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+            Box::new(Runtime {
+                effective: 2.0,
+                fail_loud: self.0,
+            })
+        }
+    }
+    impl NativeProcessorRuntime for Runtime {
+        fn supports_parameter_automation(&self, id: ParameterId) -> bool {
+            id == descriptor().id
+        }
+        fn process_block_with_automation(
+            &mut self,
+            frames: &mut [StereoFrame],
+            _: Option<&dyn NativeInstrumentClock>,
+            values: &dyn NativeParameterAutomation,
+            resources: &dyn DeviceResources,
+        ) -> Result<(), DeviceContractError> {
+            for (offset, frame) in frames.iter_mut().enumerate() {
+                let mut sampled = [None];
+                values.values_at(offset, &mut sampled)?;
+                self.effective = match sampled[0] {
+                    Some(ParameterValue::Float(value)) => value,
+                    None => 2.0,
+                    _ => return Err(DeviceContractError::InvalidParameterValue),
+                };
+                if self.fail_loud && frame[0] > 10.0 {
+                    return Err(DeviceContractError::InvalidParameterValue);
+                }
+                self.process_block(std::slice::from_mut(frame), resources);
+            }
+            Ok(())
+        }
+        fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn DeviceResources) {
+            for frame in frames {
+                for sample in frame {
+                    *sample *= self.effective;
+                }
+            }
+        }
+        fn reset(&mut self) {
+            self.effective = 2.0;
+        }
+        fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+        fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+            *self = *previous.as_any().downcast_ref::<Self>().unwrap();
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    let mut armed = PreparedParameterAutomation::default();
+    armed.arm_provider_input(descriptor(), semantics()).unwrap();
+    let make = |device_id, automation, fail_loud| PreparedRuntimeInstance {
+        automation,
+        meter: Default::default(),
+        owner: ProcessorChainOwner::Main,
+        device_id,
+        device_type: DeviceTypeId::from_static("test.transient"),
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: None,
+        definition: Some(PreparedProcessorFactory::Legacy(Arc::new(Factory(
+            fail_loud,
+        )))),
+    };
+    let mut chain = NativeRuntimeChain::new_prepared(vec![
+        make(1, armed, false),
+        make(2, program(descriptor(), semantics()), true),
+    ])
+    .unwrap();
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 1).unwrap();
+    let mut context = NativeTransientProcessing::new(NativeTransientInput {
+        identity,
+        operation: NativeTransientOperation::Set(NativeTransientValue::Parameter {
+            id: descriptor().id,
+            value: ParameterValue::Float(5.0),
+        }),
+    });
+    let process = |chain: &mut NativeRuntimeChain,
+                   frames: &mut [StereoFrame],
+                   context: Option<&mut NativeTransientProcessing>| {
+        chain.process_range_tapped_with_foreign_and_input(
+            0..2,
+            frames,
+            4,
+            None,
+            None,
+            &mut RefuseForeign,
+            context,
+            &mut |_, _, _, _, _, _| {},
+        )
+    };
+    chain.begin_block();
+    let mut loud = [[5.0; 2]];
+    assert!(process(&mut chain, &mut loud, Some(&mut context)).is_err());
+    assert_eq!(
+        context.applied, None,
+        "later entry refusal discards earlier speculative application"
+    );
+    chain.rollback_block();
+    chain.begin_block();
+    let mut frame = [[1.0; 2]];
+    process(&mut chain, &mut frame, Some(&mut context)).unwrap();
+    assert_eq!(frame, [[10.0; 2]]);
+    assert_eq!(context.applied.unwrap().offset, 4);
+    chain.commit_block();
+    chain.begin_block();
+    let clear = NativeTransientOperation::Clear(DeviceAutomationTarget::Parameter(descriptor().id));
+    context = NativeTransientProcessing::new(NativeTransientInput {
+        identity,
+        operation: clear,
+    });
+    let mut restored = [[1.0; 2]];
+    process(&mut chain, &mut restored, Some(&mut context)).unwrap();
+    assert_eq!(restored, [[4.0; 2]]);
+    assert_eq!(
+        context.applied,
+        Some(NativeTransientApplication {
+            identity,
+            operation: clear,
+            offset: 4
+        })
+    );
+    chain.commit_block();
+    chain.begin_block();
+    let mut unmonitored = [[1.0; 2]];
+    process(&mut chain, &mut unmonitored, None).unwrap();
+    assert_eq!(
+        unmonitored, restored,
+        "fallback remains delivered after the terminal monitor leaves"
+    );
+}

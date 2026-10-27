@@ -458,6 +458,7 @@ impl Command {
             | Self::ReplaceMidiClipVolume { clip, .. }
             | Self::AddMidiNote { clip, .. }
             | Self::AddMidiNotes { clip, .. }
+            | Self::SetMidiNotesActive { clip, .. }
             | Self::EditMidiNotes { clip, .. }
             | Self::EditMidiNotesWithSourceExtent { clip, .. }
             | Self::DuplicateMidiSourceRange { clip, .. }
@@ -566,6 +567,9 @@ impl Command {
             | Self::MoveTrackDevice { .. }
             | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }
+            | Self::ManualDeviceEdit { .. }
+            | Self::SetDeviceAutomationReadSelection { .. }
+            | Self::ReenableDeviceAutomation
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }

@@ -31,6 +31,9 @@ mod clip_clipboard_ui_test;
 mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
+mod clip_gain;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_gain_ui_tests;
 mod clip_name;
 mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -48,6 +51,7 @@ mod project_recovery_ui_test;
 mod section_launch;
 mod track_header;
 mod track_header_device_drop;
+mod track_meters;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
@@ -64,9 +68,6 @@ mod test_environment;
 mod activation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod activation_ui_test;
-mod arrange_clip_range;
-#[cfg(all(test, feature = "ui-test-support"))]
-mod arrange_clip_range_ui_tests;
 mod arranger_navigation;
 mod audio_import_settings;
 pub(crate) mod changelog;
@@ -184,6 +185,9 @@ mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
 mod time_selection_tool;
+mod timeline_strip;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod timeline_strip_ui_tests;
 mod track_clipboard;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_clipboard_ui_test;
@@ -803,6 +807,7 @@ pub(super) struct EditorView {
     zoom_fit: zoom_fit::State,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    track_meters: track_meters::State,
     // One existing read-only view per transient protocol, never a prepared graph/resource set.
     resident_device_preview: Option<hex_session::service::DevicePreview>,
     resident_tuning_preview: Option<hex_session::service::TuningPreview>,
@@ -830,11 +835,11 @@ pub(super) struct EditorView {
     track_clipboard_context: Option<(u64, u64)>,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
+    group_selection_history: group_selection::SelectionHistory,
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
-    rendered_group_selection: group_selection::SelectionHistory,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
@@ -874,8 +879,6 @@ pub(super) struct EditorView {
     device_panel_active: bool,
     clip_detail_body_height: f32,
     clip_detail_resize: clip_detail_resize::State,
-    arrange_clip_range: arrange_clip_range::State,
-    retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
     loop_rail_cursor: gpui::CursorStyle,
@@ -906,6 +909,7 @@ pub(super) struct EditorView {
     time_selection_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     pending_fade: Option<fade_handles::PendingFade>,
+    clip_gain: clip_gain::State,
     hovered_fade_clip: Option<(u64, ClipId)>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
@@ -1265,6 +1269,7 @@ impl EditorView {
             view.clear_time_selection_key_on_blur(window, cx);
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
+                view.cancel_clip_gain(cx);
                 view.cancel_project_spectrum_resize(cx);
                 view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
@@ -1316,6 +1321,7 @@ impl EditorView {
                 let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
+                view.cancel_clip_gain(cx);
                 view.cancel_project_spectrum_resize(cx);
                 view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
@@ -1351,6 +1357,7 @@ impl EditorView {
         let window_bounds = cx.observe_window_bounds(window, |view, window, cx| {
             device_panel::cancel_sampler_boundary(view);
             view.cancel_fade_gesture(cx);
+            view.cancel_clip_gain(cx);
             view.cancel_project_spectrum_resize(cx);
             view.cancel_clip_detail_resize(cx);
             if view.cancel_trim_gesture(cx) {
@@ -1486,6 +1493,7 @@ impl EditorView {
             zoom_fit: zoom_fit::State::default(),
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            track_meters: Default::default(),
             resident_device_preview: None,
             resident_tuning_preview: None,
             audio_admission: AudioAdmissionStatus::default(),
@@ -1510,11 +1518,11 @@ impl EditorView {
             track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,
+            group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
             bounce_control: None,
-            rendered_group_selection: group_selection::SelectionHistory::default(),
             pending_plugin_effect: None,
             export_control: None,
             export_window: None,
@@ -1554,8 +1562,6 @@ impl EditorView {
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
             clip_detail_resize: clip_detail_resize::State::default(),
-            arrange_clip_range: arrange_clip_range::State::default(),
-            retained_clip_detail: None,
             loop_rail_gesture: None,
             pending_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
@@ -1589,6 +1595,7 @@ impl EditorView {
             time_selection_key_held: false,
             active_fade_drag: None,
             pending_fade: None,
+            clip_gain: clip_gain::State::default(),
             hovered_fade_clip: None,
             active_midi_trim_drag: None,
             pointer_down: None,
@@ -1924,7 +1931,6 @@ impl EditorView {
         if !self.focus_clip_details(window, cx) {
             return false;
         }
-        self.retained_clip_detail = None;
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {

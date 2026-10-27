@@ -87,6 +87,7 @@ impl ClipAliases {
                                 .iter()
                                 .map(|note| MidiNoteSnapshot {
                                     id: note.id.value(),
+                                    active: note.active,
                                     start_raw: note.start.raw(),
                                     duration_raw: note.duration.raw(),
                                     pitch: note.pitch,
@@ -161,6 +162,7 @@ impl ClipAliases {
                         )?;
                         compiled.push(MidiNote {
                             id: NoteId(note.id),
+                            active: note.active,
                             start,
                             duration,
                             pitch: note.pitch,

@@ -35,6 +35,7 @@ impl EditorView {
             .items_center()
             .flex_shrink_0()
             .child(field)
+            .child(super::gain_recording::retained_controls(self, cx))
             .child(self.control_icon(
                 "♯",
                 "project tuning · cmd+alt+t",
@@ -231,6 +232,17 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .debug_selector(|| "automation-view-toggle".into()),
             )
+            .children(self.has_overridden_device_automation().then(|| {
+                self.control_icon(
+                    "↻",
+                    "re-enable all device automation",
+                    |view, _, cx| {
+                        view.reenable_device_automation(None, cx);
+                    },
+                    cx,
+                )
+                .debug_selector(|| "reenable-device-automation".into())
+            }))
             .children([self.snap_control(cx)])
             .children([self.section_focus_toggle(cx)])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))

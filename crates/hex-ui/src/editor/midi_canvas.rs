@@ -103,7 +103,7 @@ fn pitch_at_y(y: f32, height: f32, low: u8, rows: u8) -> Option<u8> {
 impl EditorView {
     pub(super) fn midi_editor(
         &mut self,
-        window: &gpui::Window,
+        _window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         let selected = self.detail_clip_id()?;
@@ -116,7 +116,6 @@ impl EditorView {
             .raw();
         let owner = (self.project_generation, selected);
         if self.piano_view_clip != Some(owner) {
-            self.retire_arrange_range_owner();
             self.zoom_fit.clear_clip();
             self.cancel_midi_note_gesture();
             self.clear_midi_time_selection();
@@ -136,7 +135,6 @@ impl EditorView {
         if self.midi_volume.enabled {
             return self.midi_volume_editor(cx);
         }
-        self.reflect_arrange_clip_range(window, cx);
         let state = std::sync::Arc::clone(self.state.as_ref()?);
         let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
@@ -303,13 +301,7 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
-            .debug_selector(|| "midi-note-roll".into())
-            .children(self.arrange_midi_highlights(
-                self.piano_beat_start.raw(),
-                self.piano_beat_span.raw(),
-                0.0,
-                "arrange-reflected-range",
-            ));
+            .debug_selector(|| "midi-note-roll".into());
         let entity = cx.entity();
         let canvas_scene_events = std::sync::Arc::clone(&scene);
         roll = roll.children([canvas(
@@ -530,7 +522,11 @@ impl EditorView {
                         y + 1.0,
                         w,
                         (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                        theme::color(theme::PaletteRole::Secondary),
+                        theme::color(if note.active {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Muted
+                        }),
                     );
                     let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
                     let border = theme::color(theme::PaletteRole::Background);
@@ -577,7 +573,11 @@ impl EditorView {
                         y + 1.0,
                         w,
                         (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                        theme::color(theme::PaletteRole::Primary),
+                        theme::color(if note.active {
+                            theme::PaletteRole::Primary
+                        } else {
+                            theme::PaletteRole::Muted
+                        }),
                     );
                     if draw_primary == Some(id) {
                         let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
@@ -655,7 +655,11 @@ impl EditorView {
                                 note.y * height + 1.0,
                                 right - x,
                                 (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                                theme::color(theme::PaletteRole::Primary),
+                                theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
+                                    theme::PaletteRole::Muted
+                                } else {
+                                    theme::PaletteRole::Primary
+                                }),
                             );
                         }
                     }
@@ -691,7 +695,11 @@ impl EditorView {
                                 note.y * height + 1.0,
                                 right - x,
                                 (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                                theme::color(theme::PaletteRole::Primary),
+                                theme::color(if original.active {
+                                    theme::PaletteRole::Primary
+                                } else {
+                                    theme::PaletteRole::Muted
+                                }),
                             );
                         }
                     }
@@ -1043,6 +1051,7 @@ impl EditorView {
                                     }
                                     originals.push(super::midi_group_drag::GroupNote {
                                         id: selected_note.id(),
+                                        active: selected_note.active(),
                                         start: selected_note.start().raw(),
                                         duration: selected_note.duration().raw(),
                                         pitch: selected_note.pitch(),
@@ -1098,6 +1107,7 @@ impl EditorView {
                                 revision,
                                 clip: clip_id,
                                 note: note.id,
+                                active: note.active,
                                 original: NotePreview {
                                     start: note.start,
                                     duration: note.duration,
@@ -1216,6 +1226,7 @@ impl EditorView {
                             rendered_context,
                             f32::from(event.position.x),
                             hex_project::MidiNoteInsert {
+                                active: true,
                                 start: local_beat,
                                 duration: BeatTime::from_raw(duration),
                                 pitch,

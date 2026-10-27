@@ -449,6 +449,7 @@ impl Render for EditorView {
         self.reconcile_clip_selection();
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
+        self.reconcile_clip_gain();
         if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
@@ -705,6 +706,7 @@ impl Render for EditorView {
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
                 if !view.time_selection_key_down(event, window, cx)
                     && !view.tuning_audition_down(event, window, cx)
+                    && !view.clip_gain_key_down(event, cx)
                     && !view.fade_key_down(event, window, cx)
                 {
                     view.computer_keyboard_down(event, window, cx);
@@ -1510,8 +1512,8 @@ impl Render for EditorView {
             .child(workspace)
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
-            .children(self.floating_browser_audio_drag_ghost())
-            .children(self.floating_clip_drag_ghost())
+            .children(self.floating_browser_audio_drag_ghost(window.scale_factor()))
+            .children(self.floating_clip_drag_ghost(window.scale_factor()))
             .children(self.context_menu_overlay(window, cx))
             .children(self.controller_input_overlay(cx))
             .children(super::theme_settings::overlay(self, cx))

@@ -1,5 +1,5 @@
 //! Arrangement audio Clip View with canonical source and timeline controls.
-use super::EditorView;
+use super::{EditorView, viewport::Viewport};
 use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, relative, rgb};
 use hex_project::{AssetId, AudioViewMode, ClipId, Command, TrackId};
@@ -15,6 +15,7 @@ enum Field {
     PlayStart,
     Looping,
     Gain,
+    Pitch,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,7 @@ struct ClipWindow {
     source_looping: bool,
     placement_mode: Option<AudioViewMode>,
     gain: hex_project::ClipGain,
+    pitch_cents: i16,
     asset_frames: u64,
     sample_rate: u32,
     revision: u64,
@@ -87,6 +89,7 @@ pub(super) fn view(
             .and_then(|edit| edit.placement)
             .map(|p| p.mode),
         gain: clip.gain(),
+        pitch_cents: clip.audio_edit().map_or(0, |e| e.domain.pitch_cents),
         asset_frames: asset.playback_frames(),
         sample_rate: state.project.sample_rate(),
         revision: state.revision,
@@ -138,6 +141,16 @@ pub(super) fn view(
         controls = controls.child(super::musical_audio_controls::warp_header(
             view, clip_id, cx,
         ));
+        let pitch = controls::number(view, window, Field::Pitch, "pitch", cx);
+        let gain = controls::number(view, window, Field::Gain, "gain", cx);
+        controls = controls.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .flex_shrink_0()
+                .children([pitch, gain.flex_1().min_w_0()]),
+        );
     }
     for (field, label) in [
         (Field::Position, "pos"),
@@ -147,6 +160,9 @@ pub(super) fn view(
         (Field::SourceEnd, "src end"),
         (Field::Gain, "gain"),
     ] {
+        if field == Field::Gain && !grouped_audio {
+            continue; // Already beside the pitch dial; grouped sources retain their gain row.
+        }
         if !grouped_audio || matches!(field, Field::Position | Field::Length | Field::Gain) {
             controls = controls.child(controls::number(view, window, field, label, cx));
         }
@@ -167,6 +183,7 @@ pub(super) fn view(
         .p(px(4.0))
         .gap(px(2.0))
         .debug_selector(|| "arrangement-audio-waveform-panel".into());
+    view.sync_audio_navigation();
     if grouped_audio && view.audio_event_editor.source_view {
         view.audio_event_editor.source_view = false;
     }
@@ -218,7 +235,8 @@ pub(super) fn view(
                         cx.notify();
                     })),
             )
-            .child(control),
+            .child(control)
+            .children(source_view.then(|| source_navigation(view, cx))),
     );
     if !source_view {
         waveform_panel =
@@ -239,9 +257,16 @@ pub(super) fn view(
             "audible output · source and warp markers below",
         )));
     }
-    waveform_panel = waveform_panel.child(time_ruler(window));
+    let viewport = view.audio_source_viewport();
+    waveform_panel = waveform_panel.child(time_ruler(window, viewport));
     let mut canvas_region = div()
         .id("arrangement-audio-waveform")
+        .on_scroll_wheel(cx.listener(|view, event, window, cx| {
+            if view.audio_navigation_wheel(event, true, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+            }
+        }))
         .relative()
         .flex_1()
         .min_h_0()
@@ -252,20 +277,75 @@ pub(super) fn view(
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .debug_selector(|| "arrangement-audio-waveform".into())
         .track_focus(&view.audio_event_focus)
+        .on_action(cx.listener(|view, _: &super::ZoomIn, _, cx| {
+            view.event_zoom(true);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|view, _: &super::ZoomOut, _, cx| {
+            view.event_zoom(false);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|view, _: &super::PanTimelineLeft, _, cx| {
+            view.event_pan(false);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|view, _: &super::PanTimelineRight, _, cx| {
+            view.event_pan(true);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .on_action(cx.listener(|view, _: &super::FitTimeline, _, cx| {
+            view.audio_fit_all();
+            cx.stop_propagation();
+            cx.notify();
+        }))
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(|view, _, window, _| view.audio_event_focus.focus(window)),
         );
+    let measure = cx.entity().clone();
+    canvas_region = canvas_region.children([gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, _, cx| {
+            measure.update(cx, |view, _| {
+                view.audio_event_editor.source_bounds = Some(bounds)
+            });
+        },
+    )
+    .absolute()
+    .inset_0()]);
     if let Some(waveform) = waveform {
-        canvas_region =
-            canvas_region.child(super::waveform::waveform_source_segment_gain_view_cached(
+        let end = viewport
+            .end()
+            .unwrap_or(viewport.start)
+            .min(window.asset_frames);
+        if end > viewport.start && viewport.length > 0 {
+            let visible = super::waveform::waveform_source_segment_gain_view_cached(
                 waveform,
                 0,
-                0,
-                window.asset_frames,
+                viewport.start,
+                end,
                 window.gain,
+                false,
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
-            ));
+            );
+            canvas_region = canvas_region.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(relative(
+                        (end - viewport.start) as f32 / viewport.length as f32,
+                    ))
+                    .overflow_hidden()
+                    .debug_selector(|| "audio-source-visible-waveform".into())
+                    .children([visible]),
+            );
+        }
     } else {
         canvas_region = canvas_region.child(
             div()
@@ -281,21 +361,21 @@ pub(super) fn view(
     }
     if window.asset_frames > 0 {
         canvas_region = canvas_region
-            .child(source_marker(
+            .children(source_marker(
                 window.source_start,
-                window.asset_frames,
+                viewport,
                 "source-start-marker",
                 theme::color(theme::PaletteRole::Primary),
             ))
-            .child(source_marker(
+            .children(source_marker(
                 window.source_end,
-                window.asset_frames,
+                viewport,
                 "source-end-marker",
                 theme::color(theme::PaletteRole::Primary),
             ))
-            .child(source_marker(
+            .children(source_marker(
                 window.source_start.saturating_add(window.source_phase),
-                window.asset_frames,
+                viewport,
                 "play-start-marker",
                 theme::color(theme::PaletteRole::Secondary),
             ));
@@ -303,18 +383,18 @@ pub(super) fn view(
     if let Some(edit) = clip.audio_edit() {
         if let Some(warp) = edit.domain.warp.as_ref() {
             for marker in &warp.markers {
-                canvas_region = canvas_region.child(source_marker(
+                canvas_region = canvas_region.children(source_marker(
                     marker.source_frame,
-                    window.asset_frames,
+                    viewport,
                     "warp-source-marker",
                     theme::color(theme::PaletteRole::Secondary),
                 ));
             }
         }
         for point in &edit.domain.source_gain {
-            canvas_region = canvas_region.child(source_marker(
+            canvas_region = canvas_region.children(source_marker(
                 point.frame,
-                window.asset_frames,
+                viewport,
                 "source-gain-point",
                 theme::color(theme::PaletteRole::Primary),
             ));
@@ -324,9 +404,9 @@ pub(super) fn view(
         .audio_playhead_media_frame()
         .filter(|frame| *frame < window.asset_frames)
     {
-        canvas_region = canvas_region.child(source_marker(
+        canvas_region = canvas_region.children(source_marker(
             position,
-            window.asset_frames,
+            viewport,
             "audio-source-playback-position",
             theme::color(theme::PaletteRole::Text),
         ));
@@ -511,6 +591,7 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
                 millidb,
             })
         }
+        Field::Pitch => None, // Signed pitch uses its musical-command owner.
         Field::Looping => Some(Command::SetClipLooping {
             clip: window.clip,
             looping: !window.looping(),
@@ -536,6 +617,7 @@ fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
                     && clip.source_offset() == captured.source_start
                     && clip.source_length() == captured.source_length
                     && clip.gain() == captured.gain
+                    && clip.audio_edit().map_or(0, |e| e.domain.pitch_cents) == captured.pitch_cents
                     && clip.looping() == captured.source_looping
                     && clip
                         .audio_edit()
@@ -551,48 +633,64 @@ fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
     })
 }
 
-fn time_ruler(window: ClipWindow) -> Div {
-    let mut ruler = div()
-        .relative()
-        .h(px(18.0))
-        .flex_shrink_0()
+fn time_ruler(window: ClipWindow, viewport: Viewport) -> Div {
+    let mut ruler = super::timeline_strip::ruler_surface()
         .w_full()
-        .overflow_hidden()
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-        .text_xs()
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .debug_selector(|| "arrangement-audio-time-ruler".into());
-    if window.asset_frames == 0 {
+    if viewport.length == 0 {
         return ruler;
     }
     for index in 0..=4_u64 {
-        let frame = window.asset_frames.saturating_mul(index) / 4;
-        let x = frame as f32 / window.asset_frames as f32;
-        let ruler_label = div().absolute();
-        let ruler_label = if index == 4 {
-            ruler_label.right_0()
-        } else {
-            ruler_label.left(relative(x))
-        };
-        let ruler_label = ruler_label
-            .top_0()
-            .bottom_0()
-            .flex()
-            .items_center()
-            .child(theme::text(format_frame_time(frame, window.sample_rate)));
-        ruler = ruler.child(ruler_label);
+        let frame = viewport
+            .start
+            .saturating_add((u128::from(viewport.length) * u128::from(index) / 4) as u64);
+        let x = index as f32 / 4.0;
+        ruler = ruler.children(super::timeline_strip::ruler_tick(
+            x,
+            format_frame_time(frame, window.sample_rate),
+            index == 0,
+            false,
+            false,
+        ));
     }
     ruler
 }
 
-fn source_marker(frame: u64, total: u64, id: &'static str, color: u32) -> Div {
+fn source_marker(frame: u64, viewport: Viewport, id: &'static str, color: u32) -> Option<Div> {
+    let fraction = viewport.fraction(frame)?;
     let marker = div().debug_selector(move || id.into()).absolute();
-    let marker = if frame >= total {
+    let marker = if fraction == 1.0 {
         marker.right_0()
     } else {
-        marker.left(relative((frame as f32 / total as f32).clamp(0.0, 1.0)))
+        marker.left(relative(fraction))
     };
-    marker.top_0().bottom_0().w(px(1.0)).bg(rgb(color))
+    Some(marker.top_0().bottom_0().w(px(1.0)).bg(rgb(color)))
+}
+
+fn source_navigation(view: &EditorView, cx: &mut Context<EditorView>) -> Div {
+    let mut toolbar = div()
+        .h(px(20.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(4.0));
+    for (label, id, inward) in [
+        ("+", "audio-source-zoom-in", true),
+        ("−", "audio-source-zoom-out", false),
+    ] {
+        toolbar = toolbar.child(
+            super::waveform::button(label, "zoom original audio source", (id, 0)).on_click(
+                cx.listener(move |view, _, window, cx| {
+                    view.audio_event_focus.focus(window);
+                    view.event_zoom(inward);
+                    cx.notify();
+                }),
+            ),
+        );
+    }
+    toolbar
+        .child(view.zoom_fit_button(super::zoom_fit::Target::Audio, false, cx))
+        .child(view.zoom_fit_button(super::zoom_fit::Target::Audio, true, cx))
 }
 
 #[cfg(test)]
@@ -787,6 +885,7 @@ mod tests {
                     .and_then(|edit| edit.placement)
                     .map(|p| p.mode),
                 gain: clip.gain(),
+                pitch_cents: clip.audio_edit().map_or(0, |e| e.domain.pitch_cents),
                 asset_frames: state.project.asset(clip.asset()).unwrap().playback_frames(),
                 sample_rate: state.project.sample_rate(),
                 revision: state.revision,
@@ -962,6 +1061,7 @@ mod tests {
             source_looping: true,
             placement_mode: None,
             gain: hex_project::ClipGain::UNITY,
+            pitch_cents: 0,
             asset_frames: 1_000,
             sample_rate: 48_000,
             revision: 7,

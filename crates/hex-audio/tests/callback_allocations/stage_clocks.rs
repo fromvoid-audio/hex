@@ -3,7 +3,9 @@
 //! or envelope clock. Setup, oracle construction and reclamation are off callback.
 use super::*;
 use hex_lattice_contract::{DeviceAutomationTarget, HostGain};
-use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
+use hex_project::{
+    AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+};
 
 #[test]
 fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
@@ -91,24 +93,65 @@ fn limiter_output_gain_uses_delayed_content_clock_without_callback_allocations()
         .command(PlaybackCommand::Play)
         .map_err(|_| "stage clock Play admission failed")?;
     let mut output = [[0.0; 2]; 511];
-    for replay in [false, true] {
-        if replay {
+    for (phase, selection) in [
+        AutomationReadSelection::Authored,
+        AutomationReadSelection::Base,
+        AutomationReadSelection::Authored,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if phase != 0 {
             control
-                .command(PlaybackCommand::Seek(0))
-                .map_err(|_| "stage clock Seek admission failed")?;
+                .command(PlaybackCommand::Stop)
+                .map_err(|_| "override Stop admission failed")?;
+            measured_block(&mut callback, &mut output[..37]);
+            control.reclaim();
+            editor.execute(Command::SetDeviceAutomationReadSelection {
+                device,
+                target: DeviceAutomationTarget::HostOutputGain,
+                selection,
+            })?;
+            let replacement = Arc::new(PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::new(SineTable::new()),
+                None,
+            )?);
             control
-                .command(PlaybackCommand::Play)
-                .map_err(|_| "stage clock replay admission failed")?;
+                .publish(Playback::try_from_prepared_with_session(replacement)?)
+                .map_err(|_| "override publication failed")?;
         }
-        let mut from = 0;
-        for length in [1, 63, 257, 17, 511].into_iter().cycle() {
-            if from == OUTPUT_FRAMES {
-                break;
+        for replay in [false, true] {
+            if replay || phase != 0 {
+                control
+                    .command(PlaybackCommand::Seek(0))
+                    .map_err(|_| "stage clock Seek admission failed")?;
+                control
+                    .command(PlaybackCommand::Play)
+                    .map_err(|_| "stage clock replay admission failed")?;
             }
-            let length = length.min(OUTPUT_FRAMES - from);
-            measured_block(&mut callback, &mut output[..length]);
-            compare_output(&output[..length], &expected[from..from + length]);
-            from += length;
+            let mut from = 0;
+            for length in [1, 63, 257, 17, 511].into_iter().cycle() {
+                if from == OUTPUT_FRAMES {
+                    break;
+                }
+                let length = length.min(OUTPUT_FRAMES - from);
+                measured_block(&mut callback, &mut output[..length]);
+                if selection == AutomationReadSelection::Base {
+                    for (offset, frame) in output[..length].iter().enumerate() {
+                        let oracle = if from + offset < LATENCY {
+                            [0.0; 2]
+                        } else {
+                            SOURCE
+                        };
+                        compare_output(std::slice::from_ref(frame), std::slice::from_ref(&oracle));
+                    }
+                } else {
+                    compare_output(&output[..length], &expected[from..from + length]);
+                }
+                from += length;
+            }
         }
     }
     control

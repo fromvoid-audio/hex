@@ -4,6 +4,168 @@ use super::*;
 const Q: u64 = 1_u64 << 32;
 
 #[test]
+fn paused_audio_loop_change_with_limiter_preserves_samples_and_clock() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut snapshot = audio_project(0, 32, 4).snapshot();
+    for asset in &mut snapshot.assets {
+        asset.source_frames = 8192;
+        asset.playback_frames = 8192;
+    }
+    snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        active: true,
+        name: "clip".into(),
+        flavor: hex_project::ClipFlavor::default(),
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
+        id: 6,
+        asset: 4,
+        start: 0,
+        duration: 8192,
+        source_offset: 0,
+        source_length: 8192,
+        looping: false,
+        source_phase: 0,
+        fade: ClipFade::neutral(8192).unwrap(),
+    }]);
+    snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
+        comparison: None,
+        id: 7,
+        bypassed: false,
+        state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+    });
+    snapshot.next_id = 8;
+    let linear = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+    snapshot.loop_region = Some(LoopRegion::new(400, 2400, true).unwrap());
+    let looped = legacy_project_from_snapshot(snapshot).unwrap();
+    let source = crate::Audio::new(
+        48_000,
+        (0..8192)
+            .map(|i| {
+                let value = ((i as f32) * 0.017).sin() * 0.2;
+                [value, -value * 0.7]
+            })
+            .collect(),
+    )
+    .unwrap();
+    let media = audio_media(&linear, &source, &source);
+    let prepare = |project: &Project| {
+        Arc::new(
+            PreparedRevision::prepare(
+                project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let loop_revision = prepare(&looped);
+    let mut live = SessionPlayback::new(prepare(&linear)).unwrap();
+    live.apply(SessionPlaybackCommand::Play).unwrap();
+    live.render(&mut [[0.0; 2]; 600]).unwrap();
+    let mut live_candidate = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+    assert!(matches!(
+        live_candidate.try_inherit_state_from(&mut live),
+        Err(SessionPlaybackError::Arrangement(
+            "compensated timing changed · stop transport before applying this revision"
+        ))
+    ));
+    let mut tempo_snapshot = linear.snapshot();
+    tempo_snapshot.tempo_points = vec![TempoPoint::new(
+        BeatTime::ZERO,
+        Tempo::new(90_000_000).unwrap(),
+    )];
+    let tempo_changed = legacy_project_from_snapshot(tempo_snapshot).unwrap();
+    let mut paused = SessionPlayback::new(prepare(&linear)).unwrap();
+    paused.apply(SessionPlaybackCommand::Play).unwrap();
+    paused.render(&mut [[0.0; 2]; 600]).unwrap();
+    paused.apply(SessionPlaybackCommand::Pause).unwrap();
+    let mut tempo_candidate = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+    assert!(matches!(
+        tempo_candidate.try_inherit_state_from(&mut paused),
+        Err(SessionPlaybackError::Arrangement(
+            "compensated timing changed · stop transport before applying this revision"
+        ))
+    ));
+    let mut donor = SessionPlayback::new(prepare(&linear)).unwrap();
+    let mut oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 600]).unwrap();
+        runtime.apply(SessionPlaybackCommand::Pause).unwrap();
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+    }
+    let mut candidate = SessionPlayback::new(loop_revision).unwrap();
+    candidate.try_inherit_state_from(&mut donor).unwrap();
+    for runtime in [&mut candidate, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut actual = vec![[0.0; 2]; 6000];
+    let mut expected = actual.clone();
+    for chunk in actual.chunks_mut(127) {
+        candidate.render(chunk).unwrap();
+    }
+    for chunk in expected.chunks_mut(127) {
+        oracle.render(chunk).unwrap();
+    }
+    assert_eq!(candidate.arrangement_frame(), oracle.arrangement_frame());
+    assert_eq!(candidate.performance_frame(), oracle.performance_frame());
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|value| value.abs() > 0.001));
+}
+
+#[test]
+fn paused_loop_change_with_limiter_refuses_active_instrument_tail_without_corrupting_donor() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut snapshot = project(1.0, 0, Q).snapshot();
+    let id = snapshot.next_id;
+    snapshot.next_id += 1;
+    snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
+        comparison: None,
+        id,
+        bypassed: false,
+        state: hex_devices::limiter::DEFINITION.default_state().unwrap(),
+    });
+    let linear = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+    snapshot.loop_region = Some(LoopRegion::new(400, 2400, true).unwrap());
+    let looped = legacy_project_from_snapshot(snapshot).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let loop_revision = revision(&looped, Arc::clone(&table));
+    let mut donor = SessionPlayback::new(revision(&linear, Arc::clone(&table))).unwrap();
+    let mut oracle = SessionPlayback::new(revision(&linear, Arc::clone(&table))).unwrap();
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 600]).unwrap();
+        runtime.apply(SessionPlaybackCommand::Pause).unwrap();
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+    }
+    let mut candidate = SessionPlayback::new(loop_revision).unwrap();
+    assert!(matches!(
+        candidate.try_inherit_state_from(&mut donor),
+        Err(SessionPlaybackError::Arrangement(
+            "compensated processor tails require stopping transport before changing the chain"
+        ))
+    ));
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut actual = vec![[0.0; 2]; 6000];
+    let mut expected = actual.clone();
+    for chunk in actual.chunks_mut(127) {
+        donor.render(chunk).unwrap();
+    }
+    for chunk in expected.chunks_mut(127) {
+        oracle.render(chunk).unwrap();
+    }
+    assert_eq!(donor.arrangement_frame(), oracle.arrangement_frame());
+    assert_eq!(donor.performance_frame(), oracle.performance_frame());
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|value| value.abs() > 0.001));
+}
+
+#[test]
 fn post_loop_session_launch_admits_the_faster_canonical_tempo() {
     let mut snapshot = session_only_project(&project(1.0, 0, Q)).snapshot();
     snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
@@ -136,6 +298,7 @@ fn transport_loop_project(expanded: bool) -> Project {
             .into_iter()
             .enumerate()
             .map(|(index, (start_raw, duration_raw))| MidiNoteSnapshot {
+                active: true,
                 id: note_id + index as u64,
                 start_raw,
                 duration_raw,
@@ -147,6 +310,7 @@ fn transport_loop_project(expanded: bool) -> Project {
         snapshot.next_id += 4;
     } else {
         clip.notes = vec![MidiNoteSnapshot {
+            active: true,
             id: note_id,
             start_raw: Q,
             duration_raw: 2 * Q,
@@ -175,6 +339,7 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
             let clip = midi_clips.first_mut().expect("receiver clip");
             clip.notes = (0..note_count)
                 .map(|index| MidiNoteSnapshot {
+                    active: true,
                     id: first_note_id + index,
                     start_raw: 2 * Q,
                     duration_raw: Q,
@@ -195,6 +360,7 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
             clip.id = second_clip_id;
             clip.notes = (0..note_count)
                 .map(|index| MidiNoteSnapshot {
+                    active: true,
                     id: second_note_id + index,
                     start_raw: 2 * Q,
                     duration_raw: Q,
@@ -322,6 +488,7 @@ fn combined_loop_expanded_oracle_project() -> Project {
     .into_iter()
     .enumerate()
     .map(|(index, (onset, end))| MidiNoteSnapshot {
+        active: true,
         id: first_note_id + index as u64,
         start_raw: onset * Q / 4,
         duration_raw: (end - onset) * Q / 4,
@@ -508,6 +675,8 @@ fn finite_bounce_preserves_mutable_source_phase_and_ignores_transport_wrapping()
             }
         }
         assert_eq!(bounce.arrangement_loop_pass, 0);
+        let playback = crate::playback::Playback::from_arrangement_preroll(bounce).unwrap();
+        assert_eq!(playback.automation_capture_loop(), None);
         for frames in [0, MAX_FINITE_BOUNCE_FRAMES + 1, u64::MAX] {
             assert!(
                 SessionPlayback::new_finite_arrangement_bounce(
@@ -631,6 +800,7 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
     let clip = &mut midi_clips[0];
     clip.notes = (0..63)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: 100 + index,
             start_raw: 0,
             duration_raw: 2 * Q,
@@ -639,6 +809,7 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
             velocity: 100,
         })
         .chain(std::iter::once(MidiNoteSnapshot {
+            active: true,
             id: 200,
             start_raw: 2 * Q,
             duration_raw: Q,
@@ -723,6 +894,7 @@ fn finite_arrangement_admission_bounds_aggregate_edges_across_clips() {
     midi_clips[0].loop_end_raw = long_length;
     midi_clips[0].notes = (0..48)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: 100 + index,
             start_raw: 0,
             duration_raw: long_length,
@@ -746,6 +918,7 @@ fn finite_arrangement_admission_bounds_aggregate_edges_across_clips() {
         clip.loop_end_raw = short_length;
         clip.looping = false;
         clip.notes = vec![MidiNoteSnapshot {
+            active: true,
             id: 2_000 + index,
             start_raw: 0,
             duration_raw: note_length,
@@ -794,6 +967,7 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
     clip.looping = false;
     clip.notes = (0..128_u64)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: first_note_id + index,
             start_raw: beat_raw_for_frames(17 + index),
             duration_raw: beat_raw_for_frames(1),
@@ -802,6 +976,7 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
             velocity: 100,
         })
         .chain((0..64_u64).map(|index| MidiNoteSnapshot {
+            active: true,
             id: first_note_id + 128 + index,
             start_raw: beat_raw_for_frames(450),
             duration_raw: beat_raw_for_frames(550),
@@ -842,6 +1017,7 @@ fn mutable_transport_handoff_ignores_pre_loop_release_only_candidate() {
         panic!("fixture Arrangement MIDI clip")
     };
     midi_clips[0].notes = vec![MidiNoteSnapshot {
+        active: true,
         id: 42,
         start_raw: beat_raw_for_frames(47_996),
         duration_raw: beat_raw_for_frames(1),
