@@ -467,8 +467,9 @@ to show its fade controls. release **f** to hide default
 controls; edited fades remain visible. the computer midi keyboard must be off.
 
 for a grouped event, **src** selects an event inside its retained source. use
-the adjacent arrows to choose another source event, and **c** or **0** to change
-its activation. choose **src** again to return to the grouped event.
+the adjacent left and right arrows to choose another source event, and **c** or
+**0** to change its activation. use the up and down arrows to move through nested
+sources. choose **src** again to return to the grouped event.
 
 drag an upper square to change a fade length. drag a diamond horizontally and
 vertically to shape its curve. lower squares trim the event; they move freely by

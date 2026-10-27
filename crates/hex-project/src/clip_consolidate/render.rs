@@ -8,9 +8,9 @@ use crate::{
 use std::collections::BTreeSet;
 
 impl Project {
-    /// Resolve only grouping commands which need rendered source custody.
-    /// Ordinary leaves (including ordinary looped clips) and neutral groups keep
-    /// the existing non-destructive event path. A pure query never changes IDs.
+    /// Resolve the legacy explicit rendered-group intent. Interactive grouping
+    /// uses the canonical non-destructive edit path so its sources remain editable.
+    /// This pure query never changes IDs.
     pub fn audio_group_render_target(
         &self,
         command: &Command,
@@ -86,8 +86,7 @@ pub(crate) fn plan(
             .clip(*id)
             .ok_or(Invalid("selected audio clip no longer exists"))?;
         let events = clip.audio_events();
-        if !clip.active()
-            || events.events.iter().any(|event| !event.active)
+        if events.events.iter().any(|event| !event.active)
             || events.sources.iter().any(|source| {
                 source
                     .clip

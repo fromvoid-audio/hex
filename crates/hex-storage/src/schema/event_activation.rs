@@ -81,6 +81,19 @@ pub(crate) fn require_all_active(project: &Project) -> Result<(), StorageError> 
 }
 
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
+    if project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .any(|clip| {
+            clip.retained_audio_roots()
+                .any(|root| root.clip.has_retained_audio_roots())
+        })
+    {
+        return Err(StorageError::Invalid(
+            "older schema cannot save nested retained audio",
+        ));
+    }
     let mut snapshot = project.snapshot();
     let mut inactive = Vec::new();
     visit_project(project, &mut snapshot, |key, event| {

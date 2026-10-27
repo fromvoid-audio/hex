@@ -99,7 +99,7 @@ fn items<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>, const MAX: usize
     }
     d.deserialize_seq(Rows::<T, MAX>(std::marker::PhantomData))
 }
-fn isolated_root(
+pub(super) fn isolated_root(
     project: &Project,
     clip: ClipSnapshot,
     tempo: &hex_project::TempoMap,

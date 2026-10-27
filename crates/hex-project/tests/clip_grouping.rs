@@ -717,7 +717,7 @@ fn midi_group_preserves_volume_seams_and_refuses_unbounded_loop_expansion() {
 }
 
 #[test]
-fn regrouping_directed_composites_refuses_without_losing_content_or_history() {
+fn regrouping_directed_composites_retains_content_and_history() {
     let (mut e, _, clips) = audio_fixture();
     let Created::Clip(group) = e.execute(Command::GroupClips(clips[..2].to_vec())).unwrap() else {
         panic!("group");
@@ -725,18 +725,35 @@ fn regrouping_directed_composites_refuses_without_losing_content_or_history() {
     let forward = e.project().clip(group).unwrap().retained_snapshot();
     e.execute(Command::ReverseClips(vec![group])).unwrap();
     let before = e.project().snapshot();
+    let directed = e.project().clip(group).unwrap().retained_snapshot();
+    let Created::Clip(outer) = e
+        .execute(Command::GroupClips(vec![group, clips[2]]))
+        .unwrap()
+    else {
+        panic!("regroup")
+    };
     assert!(
-        e.execute(Command::GroupClips(vec![group, clips[2]]))
-            .is_err()
+        e.project()
+            .clip(outer)
+            .unwrap()
+            .audio_events()
+            .sources
+            .iter()
+            .any(|source| source.clip.retained_snapshot() == directed)
     );
-    assert_eq!(e.project().snapshot(), before);
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
     assert!(e.undo());
     assert_eq!(
         e.project().clip(group).unwrap().retained_snapshot(),
         forward
     );
     assert!(e.redo());
-    assert_eq!(e.project().snapshot(), before);
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
 }
 
 #[test]
@@ -1186,6 +1203,182 @@ fn time_group_exact_single_clip_is_unchanged_and_oversized_margins_refuse_atomic
 }
 
 #[test]
+fn processed_repeated_group_keeps_inactive_source_editable_when_regrouped() {
+    let (mut editor, track, ids) = audio_fixture();
+    editor
+        .execute(Command::MoveClip {
+            clip: ids[2],
+            track,
+            start: 900,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipActive {
+            clip: ids[1],
+            active: false,
+        })
+        .unwrap();
+    let Created::Clip(first) = editor
+        .execute(Command::GroupClips(ids[..2].to_vec()))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: first,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 650 },
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let Created::Clip(grouped) = editor
+        .execute(Command::GroupClips(vec![first, ids[2]]))
+        .unwrap()
+    else {
+        panic!("nested group")
+    };
+    let output = editor.project().clip(grouped).unwrap();
+    assert!(output.active());
+    let roots = output.audio_events();
+    let nested = roots
+        .sources
+        .iter()
+        .find(|root| root.clip.has_retained_audio_roots())
+        .expect("retained processed group");
+    assert!(
+        nested
+            .clip
+            .audio_events()
+            .events
+            .iter()
+            .any(|event| !event.active)
+    );
+    let source = nested.id;
+    let inner_id = nested
+        .clip
+        .audio_events()
+        .events
+        .iter()
+        .find(|event| !event.active)
+        .unwrap()
+        .id;
+    assert!(editor.undo());
+    let mut restored = editor.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(editor.redo());
+    let Created::Clip(copy) = editor.execute(Command::DuplicateClip(grouped)).unwrap() else {
+        panic!("copy")
+    };
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: copy,
+            operation: hex_project::AudioEventEdit::SetRetainedPathActive {
+                sources: vec![source],
+                events: vec![inner_id],
+                active: true,
+            },
+        })
+        .unwrap();
+    let original = editor.project().clip(grouped).unwrap().audio_events();
+    assert!(
+        !original
+            .sources
+            .iter()
+            .find(|root| root.id == source)
+            .unwrap()
+            .clip
+            .audio_events()
+            .events
+            .iter()
+            .find(|event| event.id == inner_id)
+            .unwrap()
+            .active
+    );
+    assert!(editor.undo());
+    let copied = editor.project().clip(copy).unwrap().audio_events();
+    assert!(
+        !copied
+            .sources
+            .iter()
+            .find(|root| root.id == source)
+            .unwrap()
+            .clip
+            .audio_events()
+            .events
+            .iter()
+            .find(|event| event.id == inner_id)
+            .unwrap()
+            .active
+    );
+}
+
+#[test]
+fn partial_time_group_retains_processed_source_and_outside_fragments() {
+    let (mut editor, track, ids) = audio_fixture();
+    editor
+        .execute(Command::MoveClip {
+            clip: ids[2],
+            track,
+            start: 900,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipActive {
+            clip: ids[1],
+            active: false,
+        })
+        .unwrap();
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(ids[..2].to_vec()))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 650 },
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let Created::Clip(result) = editor
+        .execute(Command::GroupTimeRange(
+            hex_project::TimeRange::new(vec![track], 50, 950).unwrap(),
+        ))
+        .unwrap()
+    else {
+        panic!("time group")
+    };
+    let row = editor.project().track(track).unwrap();
+    assert_eq!(row.clips().len(), 3);
+    assert!(
+        row.clips()
+            .iter()
+            .any(|clip| clip.start() == 0 && clip.duration() == 50)
+    );
+    assert!(
+        row.clips()
+            .iter()
+            .any(|clip| clip.start() == 950 && clip.duration() == 50)
+    );
+    assert!(
+        row.clips()
+            .iter()
+            .find(|clip| clip.id() == result)
+            .unwrap()
+            .audio_events()
+            .sources
+            .iter()
+            .any(|root| root.clip.has_retained_audio_roots())
+    );
+    assert!(editor.undo());
+    let mut restored = editor.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+}
+
+#[test]
 fn rendered_group_refuses_to_flatten_recoverable_inactive_events() {
     let (mut editor, track, ids) = audio_fixture();
     editor
@@ -1248,13 +1441,23 @@ fn processed_repeated_audio_group_has_a_bounded_prepared_adoption_and_one_histor
     })
     .unwrap();
     let before = e.project().snapshot();
-    // This is the native report's original canonical refusal. It cannot be
-    // made safe by nesting the root or dropping its processing.
+    // Canonical grouping retains the processed source without a render.
+    let mut retained = Editor::new(e.project().clone(), 8).unwrap();
+    let Created::Clip(result) = retained
+        .execute(Command::GroupClips(vec![group, ids[2]]))
+        .unwrap()
+    else {
+        panic!("group")
+    };
     assert!(
-        e.execute(Command::GroupClips(vec![group, ids[2]]))
-            .unwrap_err()
-            .to_string()
-            .contains("outer processing or repeats")
+        retained
+            .project()
+            .clip(result)
+            .unwrap()
+            .audio_events()
+            .sources
+            .iter()
+            .any(|root| root.clip.has_retained_audio_roots())
     );
     assert_eq!(e.project().snapshot(), before);
     let mut oversized = Editor::new(e.project().clone(), 8).unwrap();
