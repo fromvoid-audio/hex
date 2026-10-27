@@ -369,13 +369,25 @@ impl ConstructorStreamDomain {
     /// Coverage is always evaluated against the actual retained lease. A host
     /// token must additionally name this exact private cell/incarnation.
     pub fn covers_scalar_source(&self, source: &hex_engine::ScalarSourceMetadata) -> bool {
-        self.lease
-            .as_ref()
-            .is_some_and(|lease| lease.covers_scalar_source(source))
+        self.phase == Phase::Prepared
+            && self
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.covers_scalar_source(source))
     }
     pub fn covers_source(&self, source: &hex_engine::StreamedSourceMetadata) -> bool {
         self.phase == Phase::Prepared
-            && self.lease.as_ref().is_some_and(|l| l.covers_source(source))
+            && self
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.covers_source(source))
+    }
+    pub fn covers_resource_key(&self, key: hex_engine::StreamResourceKey) -> bool {
+        self.phase == Phase::Prepared
+            && self
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.covers_resource_key(key))
     }
     /// Reserved backing stays charged through a loan and report consumption.
     /// The host additionally charges the loan's actual inline destination.

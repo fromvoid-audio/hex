@@ -7,7 +7,7 @@ use super::*;
 use view::Correlation;
 
 fn covers_resource(
-    owner: &hex_stream::CatalogLease,
+    owner: &hex_stream::ConstructorStreamDomain,
     source: &hex_engine::StreamResourceMetadata,
 ) -> bool {
     match source {
