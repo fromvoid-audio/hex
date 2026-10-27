@@ -51,6 +51,7 @@ pub(crate) fn require_all_active(project: &Project) -> Result<(), StorageError> 
 }
 
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
+    super::event_activation::require_all_active(project)?;
     let mut snapshot = project.snapshot();
     let mut inactive = Vec::new();
     visit_notes(&mut snapshot, |note| {

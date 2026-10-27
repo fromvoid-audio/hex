@@ -114,12 +114,14 @@ pub fn remove_empty_aliases(value: &mut Value) {
 
 /// Historical comparisons may omit only an actually empty schema53 host inventory.
 pub fn remove_empty_host_automation(value: &mut Value) {
-    if let Some(notes) = value.as_object_mut().unwrap().remove("inactive_midi_notes") {
-        assert_eq!(
-            notes,
-            json!([]),
-            "historical comparison cannot discard inactive notes"
-        );
+    for field in ["inactive_midi_notes", "inactive_audio_events"] {
+        if let Some(rows) = value.as_object_mut().unwrap().remove(field) {
+            assert_eq!(
+                rows,
+                json!([]),
+                "historical comparison cannot discard activation"
+            );
+        }
     }
     // A historical projection may erase only the actually equivalent authored
     // selection. Base would change playback and must never be discarded.

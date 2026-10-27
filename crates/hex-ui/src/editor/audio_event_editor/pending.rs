@@ -70,9 +70,11 @@ impl EditorView {
             self.audio_event_editor.range = Some((start, end));
             self.audio_event_editor.cursor = start;
             self.audio_event_editor.selected = None;
+            self.audio_event_editor.retained_selection = None;
         } else if let AudioEventEdit::Delete { start, .. } = &operation {
             self.audio_event_editor.range = None;
             self.audio_event_editor.selected = None;
+            self.audio_event_editor.retained_selection = None;
             self.audio_event_editor.cursor = *start;
         }
         self.audio_event_editor.gesture = None;

@@ -91,6 +91,7 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         "alias_members",
         "host_automation",
         "inactive_midi_notes",
+        "inactive_audio_events",
     ] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),
