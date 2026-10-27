@@ -200,6 +200,7 @@ pub use timebase::{
     MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout, MeterPoint, MeterPosition,
     MusicalGridSegment, ResolvedInputGrid, Tempo, TempoMap, TempoMapCopyCustody, TempoMapCopyError,
     TempoMapCopyPhase, TempoMapOwnedAllocationLayout, TempoPoint, query_beat_pulses,
+    visit_automation_projection_identity,
 };
 
 pub const MAX_TRACKS: usize = 256;

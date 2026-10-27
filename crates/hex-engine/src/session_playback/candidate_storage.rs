@@ -99,6 +99,15 @@ impl SessionPlayback {
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        // Ordinary scalar preparation has not acquired this closed constructor's
+        // source obligations. It must use ordinary publication with exact catalogs.
+        if native_parameter_state
+            .as_deref()
+            .is_some_and(|state| state.scalar.is_some())
+            || revision.scalar_automation.is_some()
+        {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
         if native_parameter_state.is_some() != revision.native_parameter_input_target().is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -116,6 +125,11 @@ impl SessionPlayback {
             revision,
             Owner::exclusive(revision),
             Location("session-revision", 0),
+        )?;
+        l.bytes(
+            Owner::exclusive(spans.as_ref()),
+            Location("session-midi-span-buffer", 0),
+            std::mem::size_of::<MidiSpanBuffer>(),
         )?;
         l.vec(routes)?;
         l.vec(route_scratch)?;

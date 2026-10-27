@@ -6,7 +6,8 @@
 //! source/output/transport admission and eventual canonical adoption. These APIs
 //! perform control-side I/O; they grant no callback read or native resource lease.
 pub use hex_storage::automation_draft::{
-    CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES, MAX_SPANS_PER_STEP,
+    AutomationSharedData, CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES,
+    MAX_SPANS_PER_STEP, PreparedAutomationTake, PreparedAutomationTakeDataLayout,
     ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState,
 };
 

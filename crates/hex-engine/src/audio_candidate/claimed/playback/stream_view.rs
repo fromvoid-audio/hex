@@ -6,7 +6,7 @@
 use super::*;
 use crate::{
     AudioSourceContext, Invalid, PlaybackAction, PlaybackActionError, PlaybackHandoffError,
-    PreparedStreamAction, StreamChunkWindow, StreamPageExtent,
+    PreparedStreamAction, StreamChunkWindow, StreamResourceExtent,
 };
 
 enum Runtime<'a> {
@@ -122,7 +122,7 @@ impl StreamPlayback<'_> {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &mut self.runtime {
             Runtime::Constructor(r) => {
@@ -140,7 +140,7 @@ impl StreamPlayback<'_> {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.visit_pending_stream_chunk(due, maximum_frames, visit),
@@ -153,7 +153,7 @@ impl StreamPlayback<'_> {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         match &self.runtime {
             Runtime::Constructor(r) => r.visit_next_stream_chunk(maximum_frames, playing, visit),
@@ -167,7 +167,7 @@ impl StreamPlayback<'_> {
         previous: &mut StreamPlayback<'_>,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, PlaybackHandoffError> {
         // Constructor/constructor retains its exact existing identity and class
         // preflight. Mixed ownership can only borrow closed Current runtimes;

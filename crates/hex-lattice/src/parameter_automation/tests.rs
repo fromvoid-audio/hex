@@ -1121,3 +1121,137 @@ fn armed_provider_clear_is_processed_and_late_refusal_discards_observation() {
         "fallback remains delivered after the terminal monitor leaves"
     );
 }
+
+struct External<'a> {
+    targets: &'a [DeviceAutomationTarget],
+    values: &'a [Option<NormalizedAutomationValue>],
+}
+impl ExternalParameterAutomation for External<'_> {
+    fn frames(&self) -> usize {
+        self.values.len()
+    }
+    fn targets(&self) -> &[DeviceAutomationTarget] {
+        self.targets
+    }
+    fn value_at(
+        &self,
+        target: DeviceAutomationTarget,
+        offset: usize,
+    ) -> Option<NormalizedAutomationValue> {
+        if self.targets.contains(&target) {
+            self.values.get(offset).copied().flatten()
+        } else {
+            None
+        }
+    }
+}
+#[test]
+fn external_samples_share_mapping_and_live_authored_base_precedence() {
+    let id = descriptor().id;
+    let target = DeviceAutomationTarget::Parameter(id);
+    let values = [Some(NormalizedAutomationValue::new(0.5).unwrap()), None];
+    let external = External {
+        targets: &[target],
+        values: &values,
+    };
+    let mut prepared = program(
+        descriptor(),
+        ParameterSemantics {
+            normalization: ParameterNormalization::PositiveLogarithmic,
+            ..semantics()
+        },
+    );
+    let block = prepared
+        .block_with_external(Some(&Clock), 2, None, &external)
+        .unwrap();
+    assert_eq!(block.value_at(id, 0), Some(ParameterValue::Float(3.0)));
+    assert_eq!(block.value_at(id, 1), Some(ParameterValue::Float(1.0)));
+    let mut bulk = [None];
+    block.values_at(0, &mut bulk).unwrap();
+    assert_eq!(bulk[0], block.value_at(id, 0));
+    prepared
+        .arm_provider_input(
+            descriptor(),
+            ParameterSemantics {
+                normalization: ParameterNormalization::PositiveLogarithmic,
+                ..semantics()
+            },
+        )
+        .unwrap();
+    let live = NativeTransientValue::Parameter {
+        id,
+        value: ParameterValue::Float(7.0),
+    };
+    assert_eq!(
+        prepared
+            .block_with_external(None, 2, Some(live), &external)
+            .unwrap()
+            .value_at(id, 0),
+        Some(ParameterValue::Float(7.0))
+    );
+    let clear = prepared
+        .block_with_external(None, 2, None, &external)
+        .unwrap();
+    assert_eq!(clear.value_at(id, 0), Some(ParameterValue::Float(3.0)));
+    assert_eq!(clear.value_at(id, 1), None);
+    assert!(NormalizedAutomationValue::new(f32::NAN).is_err());
+    assert!(NormalizedAutomationValue::new(f32::INFINITY).is_err());
+    assert!(NormalizedAutomationValue::new(-0.01).is_err());
+    assert!(NormalizedAutomationValue::new(1.01).is_err());
+    assert!(
+        prepared
+            .block_with_external(None, 3, None, &external)
+            .is_err()
+    );
+}
+#[test]
+fn external_only_provider_and_host_slots_do_not_arm_live_input() {
+    let mut prepared = PreparedParameterAutomation::new(Vec::new(), Vec::new()).unwrap();
+    prepared
+        .prepare_external_host(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    prepared
+        .prepare_external_provider(descriptor(), semantics())
+        .unwrap();
+    prepared
+        .prepare_external_host(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert_eq!(prepared.input_target(), None);
+    let targets = [
+        DeviceAutomationTarget::Parameter(descriptor().id),
+        DeviceAutomationTarget::HostInputGain,
+        DeviceAutomationTarget::HostOutputGain,
+    ];
+    // Target declaration follows the actual enum's stable order.
+    let mut targets = targets;
+    targets.sort_unstable();
+    let values = [Some(NormalizedAutomationValue::new(0.0).unwrap()), None];
+    let external = External {
+        targets: &targets,
+        values: &values,
+    };
+    let block = prepared
+        .block_with_external(None, 2, None, &external)
+        .unwrap();
+    assert_eq!(
+        block.value_at(descriptor().id, 0),
+        Some(ParameterValue::Float(1.0))
+    );
+    assert_eq!(
+        block.host_gain_at(DeviceAutomationTarget::HostInputGain, 0),
+        Some(HostGain::from_db(-60.0).unwrap().linear())
+    );
+    assert_eq!(
+        block.host_gain_at(DeviceAutomationTarget::HostOutputGain, 0),
+        Some(HostGain::from_db(-60.0).unwrap().linear())
+    );
+    assert_eq!(
+        block.host_gain_at(DeviceAutomationTarget::HostInputGain, 1),
+        None
+    );
+    let bad = External {
+        targets: &[targets[0], targets[0]],
+        values: &values,
+    };
+    assert!(prepared.block_with_external(None, 2, None, &bad).is_err());
+}
