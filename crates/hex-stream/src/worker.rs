@@ -1,8 +1,8 @@
 use crate::{
     endpoint::{PageBuffer, PageRequest},
     types::{
-        CatalogFootprint, PageKey, ResourcePageKey, ScalarSourceDefinition, SourceDefinition,
-        StreamConfig, StreamFailure, StreamFailureKind, VerifiedCatalog,
+        CatalogFootprint, PageKey, ScalarSourceDefinition, SourceDefinition, StreamConfig,
+        StreamFailure, StreamFailureKind, VerifiedCatalog,
     },
 };
 use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
@@ -121,8 +121,8 @@ pub(crate) fn preparation_data_bound_with_scalar_sources(
     let mut extra = scalar_capacity
         .checked_mul(std::mem::size_of::<ScalarSourceDefinition>())?
         .checked_add(scalar_definitions.len().checked_mul(
-            (std::mem::size_of::<hex_engine::ScalarSourceMetadata>()
-                + std::mem::size_of::<crate::ScalarSharedData>()),
+            std::mem::size_of::<hex_engine::ScalarSourceMetadata>()
+                + std::mem::size_of::<crate::ScalarSharedData>(),
         )?)?;
     if !scalar_definitions.is_empty() {
         extra = extra.checked_add(std::mem::size_of::<Option<ScalarJob>>())?;

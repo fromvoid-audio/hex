@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    BorrowedMediaPage, BorrowedScalarPage, Frame, PreparedRevision, ScalarFileIdentity,
+    BorrowedMediaPage, BorrowedScalarPage, PreparedRevision, ScalarFileIdentity,
     ScalarProjectionIdentity, ScalarSourceKey, SessionPlayback, SessionPlaybackCommand, SineTable,
 };
 use hex_devices::utility::{UTILITY_DEFINITION, parameter};

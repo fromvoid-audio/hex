@@ -814,7 +814,9 @@ mod tests {
     #[test]
     fn cache_open_addressing_preserves_colliding_pages() {
         let mut test = endpoint(4, 4, 4);
-        let source = test.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let keys = colliding_pages(source, test.endpoint.cache.len() - 1, 3);
         for key in &keys {
             assert!(test.endpoint.insert_ready(page(*key)));
@@ -835,7 +837,9 @@ mod tests {
     #[test]
     fn backward_shift_preserves_pending_coalescing_and_full_request_queue_can_retry() {
         let mut test = endpoint(4, 4, 4);
-        let source = test.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let keys = colliding_pages(source, test.endpoint.pending_mask, 3);
         for key in &keys {
             test.endpoint.request_page(key.source, key.page_index);
@@ -844,14 +848,17 @@ mod tests {
         test.endpoint
             .request_page(keys[2].source, keys[2].page_index);
         assert_eq!(test.endpoint.stats().coalesced_requests, 1);
-        assert_eq!(test.requests.pop().expect("first request").0, keys[0]);
+        assert_eq!(
+            test.requests.pop().expect("first request").0,
+            keys[0].into()
+        );
         assert_eq!(
             test.requests.pop().expect("middle original request").0,
-            keys[1]
+            keys[1].into()
         );
         assert_eq!(
             test.requests.pop().expect("third original request").0,
-            keys[2]
+            keys[2].into()
         );
         assert!(test.requests.pop().is_err());
 
@@ -859,7 +866,9 @@ mod tests {
         // the table. Repeated middle deletion must keep the later key
         // discoverable without leaving tombstones behind.
         let mut turnover = endpoint(3, 8, 2);
-        let source = turnover.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(source) = turnover.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let mask = turnover.endpoint.pending_mask;
         let keys = colliding_at_home(source, mask, mask, 3);
         for _ in 0..512 {
@@ -873,7 +882,10 @@ mod tests {
                 .request_page(keys[2].source, keys[2].page_index);
             assert_eq!(turnover.endpoint.stats().coalesced_requests, before + 1);
             for key in &keys {
-                assert_eq!(turnover.requests.pop().expect("queued request").0, *key);
+                assert_eq!(
+                    turnover.requests.pop().expect("queued request").0,
+                    (*key).into()
+                );
             }
             turnover.endpoint.pending_remove(keys[0]);
             turnover.endpoint.pending_remove(keys[2]);
@@ -894,10 +906,15 @@ mod tests {
             .endpoint
             .request_page(fresh.source, fresh.page_index);
         assert_eq!(turnover.endpoint.pending_probe_count.get(), 1);
-        assert_eq!(turnover.requests.pop().expect("fresh request").0, fresh);
+        assert_eq!(
+            turnover.requests.pop().expect("fresh request").0,
+            fresh.into()
+        );
 
         let mut full = endpoint(3, 1, 2);
-        let full_source = full.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(full_source) = full.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let first = PageKey {
             source: full_source,
             page_index: 0,
@@ -910,16 +927,24 @@ mod tests {
         full.endpoint.request_page(second.source, second.page_index);
         assert_eq!(full.endpoint.stats().queued_requests, 1);
         assert_eq!(full.endpoint.stats().rejected_requests, 1);
-        assert_eq!(full.requests.pop().expect("drain bounded request").0, first);
+        assert_eq!(
+            full.requests.pop().expect("drain bounded request").0,
+            first.into()
+        );
         full.endpoint.request_page(second.source, second.page_index);
         assert_eq!(full.endpoint.stats().queued_requests, 2);
-        assert_eq!(full.requests.pop().expect("retry after drain").0, second);
+        assert_eq!(
+            full.requests.pop().expect("retry after drain").0,
+            second.into()
+        );
     }
 
     #[test]
     fn cache_backward_shift_survives_wraparound_turnover_without_dead_entries() {
         let mut test = endpoint(5, 4, 8);
-        let source = test.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let mask = test.endpoint.cache.len() - 1;
         let keys = colliding_at_home(source, mask, mask, 517);
         let mut live = keys[..4].to_vec();
@@ -959,7 +984,9 @@ mod tests {
     #[test]
     fn exact_extent_and_role_checks_refuse_short_wrong_pages_without_replacing_protected_pcm() {
         let mut test = endpoint(3, 4, 4);
-        let source = test.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let key = PageKey {
             source,
             page_index: 0,
@@ -1011,7 +1038,9 @@ mod tests {
     #[test]
     fn pinned_pages_refuse_replacement_and_full_return_ring_uses_held_slot() {
         let mut test = endpoint(2, 2, 1);
-        let source = test.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let first = PageKey {
             source,
             page_index: 1,
@@ -1028,7 +1057,7 @@ mod tests {
         assert!(test.endpoint.cache_lookup(second).is_none());
         assert_eq!(
             test.returns.pop().expect("refused page returned").key,
-            Some(second)
+            Some(second.into())
         );
 
         assert!(test.ready.push(page(second)).is_ok());
@@ -1051,7 +1080,7 @@ mod tests {
         assert_eq!(test.endpoint.held_returns.len(), 0);
         assert_eq!(
             test.returns.pop().expect("held return flushed").key,
-            Some(second)
+            Some(second.into())
         );
     }
 
@@ -1069,7 +1098,9 @@ mod tests {
         use allocation_counter::measure;
 
         let mut pending = endpoint(4, 4, 4);
-        let source = pending.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(source) = pending.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let keys = colliding_at_home(
             source,
             pending.endpoint.pending_mask,
@@ -1081,7 +1112,10 @@ mod tests {
             assert_zero_probe(info);
         }
         for key in &keys {
-            assert_eq!(pending.requests.pop().expect("queued page").0, *key);
+            assert_eq!(
+                pending.requests.pop().expect("queued page").0,
+                (*key).into()
+            );
         }
         let failure = StreamFailure {
             key: source.into(),
@@ -1114,10 +1148,15 @@ mod tests {
                 .request_page(keys[1].source, keys[1].page_index)
         });
         assert_zero_probe(info);
-        assert_eq!(pending.requests.pop().expect("retried failure").0, keys[1]);
+        assert_eq!(
+            pending.requests.pop().expect("retried failure").0,
+            keys[1].into()
+        );
 
         let mut ready = endpoint(4, 4, 4);
-        let source = ready.endpoint.source_keys[0];
+        let StreamResourceKey::Audio(source) = ready.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
         let initial = [
             PageKey {
                 source,

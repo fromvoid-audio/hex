@@ -277,7 +277,7 @@ impl PreparedReadiness {
         }
         true
     }
-    pub(super) fn submit(
+    fn submit(
         &mut self,
         pages: &StreamCallbackPages,
         role: ProtectionRole,
@@ -360,7 +360,7 @@ impl PreparedReadiness {
         slot.unread = true;
         Ok(ReadinessProgress::InstalledProtected)
     }
-    pub(super) fn acknowledge(
+    fn acknowledge(
         &mut self,
         role: ProtectionRole,
         stamp: ReadinessStamp,
@@ -373,7 +373,7 @@ impl PreparedReadiness {
         slot.unread = false;
         true
     }
-    pub(super) fn installed(
+    fn installed(
         &self,
         pages: &StreamCallbackPages,
         role: ProtectionRole,
