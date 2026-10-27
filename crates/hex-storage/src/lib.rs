@@ -29,9 +29,9 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-/// Schema60 permits shared audio event projections that schema58 readers refused.
+/// Schema61 adds independent event gain; schema60 migrates events at unity.
 /// Schema59 is a reserved incompatible development layout and remains unsupported.
-pub const CURRENT_SCHEMA_VERSION: u32 = 60;
+pub const CURRENT_SCHEMA_VERSION: u32 = 61;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -157,12 +157,13 @@ impl From<serde_json::Error> for StorageError {
 /// typed host gain envelopes (schema53), per-lane read selection (schema55),
 /// independent MIDI note activation (schema56), and independent audio event
 /// activation, including retained roots (schema57), and bounded nested audio
-/// sources (schema58), and consistent shared audio event projections (schema60).
+/// sources (schema58), consistent shared audio event projections (schema60),
+/// and independent audio event gain (schema61).
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::alias_projection_v60::encode(project)?)
+    encode_document(&schema::event_gain::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -178,6 +179,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::event_gain::require_unity(project)?;
     schema::event_activation::require_all_active(project)?;
     schema::note_activation::require_all_active(project)?;
     schema::clip_aliases::require_legacy_compatible(project)?;
@@ -324,7 +326,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::alias_projection_v60::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::event_gain::decode(bytes),
+        60 => schema::alias_projection_v60::decode(bytes),
         59 => Err(StorageError::Invalid(
             "schema59 is reserved for an unsupported development layout; open a copy with the matching hex build and retain the original for recovery",
         )),

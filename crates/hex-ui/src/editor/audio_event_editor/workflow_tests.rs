@@ -154,6 +154,56 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         );
         assert!(v.error.is_some());
     });
+    // The same oversized source refuses event gain during preparation. Its
+    // released value remains displayed until the real terminal arrives.
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.range = None;
+        v.error = None;
+        cx.notify();
+    });
+    repaint(&mut visual, &editor);
+    let grip = visual.debug_bounds("audio-event-gain-1").unwrap().center();
+    let moved = point(grip.x, grip.y + px(20.0));
+    visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
+            if event.request_complete {
+                break event;
+            }
+            editor.update(&mut visual, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real event gain terminal"
+        );
+        std::thread::yield_now();
+    };
+    assert!(terminal.error.is_some());
+    for _ in 0..3 {
+        repaint(&mut visual, &editor);
+        assert!(visual.debug_bounds("audio-event-gain-value-1").is_some());
+        editor.read_with(&visual, |v, _| {
+            assert!(v.audio_event_editor.pending.is_some());
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        cx.notify();
+    });
+    repaint(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_none());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(!v.state.as_ref().unwrap().can_undo);
+        assert!(v.error.is_some());
+    });
     assert_eq!(std::fs::read(original_path).unwrap(), original_bytes);
 }
 
