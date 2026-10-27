@@ -76,6 +76,7 @@ fn inventory_shape(
         }
         for effect in 0..effect_count {
             track.devices.push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: next,
                 state: if eq && effect + 1 == effect_count {
@@ -107,6 +108,7 @@ fn inventory_shape(
                     loop_end_raw: 8 << 32,
                     looping: false,
                     notes: vec![hex_project::MidiNoteSnapshot {
+                        active: true,
                         id: next + 1,
                         start_raw: 0,
                         duration_raw: 8 << 32,
@@ -126,6 +128,7 @@ fn inventory_shape(
         let mut devices = Vec::new();
         for _ in 0..hex_project::MAX_DEVICES_PER_TRACK {
             devices.push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: next,
                 state: utility.clone(),

@@ -9,7 +9,7 @@ use super::{
     PendingPlaybackAction, PendingResidentPublication, Playback, PlaybackCandidate,
     UI_EVENT_BUDGET, UI_REQUEST_CAPACITY,
 };
-use gpui::Context;
+use gpui::{App, Context};
 use hex_audio::prepared::PublicationPolicy;
 use hex_engine::playback::{PlaybackAction, PlaybackCommand};
 use hex_session::device_gesture::GestureKey;
@@ -319,13 +319,9 @@ impl EditorView {
         }
     }
 
-    fn retire_audio_for_future_generation(&mut self) {
+    pub(super) fn retire_audio_for_future_generation(&mut self) {
         self.invalidate_prepared_seek();
-        if let Some(audio) = self.audio.as_mut() {
-            audio.control.close();
-        }
-        self.audio = None;
-        self.gain_recorder.discard();
+        self.retire_audio_preserving_gain_take();
         self.prepared_seek = None;
         self.latched_seek_intent = None;
         self.pending_recovery_generation = None;
@@ -680,7 +676,7 @@ impl EditorView {
         }
     }
 
-    fn poll_editor_audio_events(&mut self) -> bool {
+    fn poll_editor_audio_events(&mut self, cx: &mut App) -> bool {
         let mut changed = false;
         for _ in 0..UI_EVENT_BUDGET {
             let event = match self.audio_events.try_recv() {
@@ -688,6 +684,7 @@ impl EditorView {
                 Err(std::sync::mpsc::TryRecvError::Empty)
                 | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
             };
+            crate::diagnostics::record_audio_backend_event(cx, &event);
             match event {
                 crate::EditorAudioEvent::RelinquishClient {
                     old_output_identity,
@@ -704,9 +701,7 @@ impl EditorView {
                     ) {
                         continue;
                     }
-                    if let Some(mut audio) = self.audio.take() {
-                        audio.control.close();
-                    }
+                    self.retire_audio_preserving_gain_take();
                     self.status = "preparing sampler audio".into();
                     changed = true;
                 }
@@ -762,9 +757,7 @@ impl EditorView {
                         // observation already correlated to this newly opened endpoint.
                         self.reset_output_publication_tracking(new_identity);
                     }
-                    if let Some(current) = self.audio.as_mut() {
-                        current.control.close();
-                    }
+                    self.retire_audio_preserving_gain_take();
                     self.document_audio_mode = audio.mode;
                     self.audio = Some(audio);
                     let mut recovery_status = None;
@@ -835,10 +828,7 @@ impl EditorView {
                             previous.close();
                         }
                     }
-                    if let Some(audio) = self.audio.as_mut() {
-                        audio.control.close();
-                    }
-                    self.audio = None;
+                    self.retire_audio_preserving_gain_take();
                     if self
                         .pending_publication_observation
                         .as_ref()
@@ -985,6 +975,26 @@ impl EditorView {
     }
 
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        if crate::diagnostics::actions_enabled(cx) {
+            let query_bytes = self.browser.search.read(cx).text().len();
+            crate::diagnostics::record_view(
+                cx,
+                format!(
+                    " generation={} revision={:?} track={:?} clip={:?} scene={:?} mode={:?} viewport={:?} browser_open={} browser_query_bytes={} forced_time_selection={}",
+                    self.project_generation,
+                    self.state.as_ref().map(|s| s.revision),
+                    self.selected_track.map(|id| id.value()),
+                    self.selected_clip.map(|id| id.value()),
+                    self.selected_scene.map(|id| id.value()),
+                    self.mode,
+                    self.viewport,
+                    self.browser.open,
+                    query_bytes,
+                    self.time_selection_key_held
+                ),
+            );
+        }
+        crate::diagnostics::record_audio(cx, self.audio.as_mut());
         let logging_failure =
             crate::diagnostics::record_state(cx, &self.status, self.error.as_deref());
         let logging_changed = if let Some(failure) = logging_failure {
@@ -1039,6 +1049,7 @@ impl EditorView {
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.midi_service_disconnected();
+                    self.gain_take_service_disconnected();
                     if self.cancel_new_preparation() {
                         visible_change |= replace_error(
                             &mut self.error,
@@ -1060,7 +1071,9 @@ impl EditorView {
                     visible_change |= self.retire_pending_track_reorder();
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
+                    visible_change |= self.retire_clip_gain();
                     visible_change |= self.retire_pending_gain();
+                    visible_change |= self.retire_pending_device_automation();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
                     break;
@@ -1071,7 +1084,7 @@ impl EditorView {
         if !self.edit_pending() {
             self.midi_step.cancel_pending();
         }
-        visible_change |= self.poll_editor_audio_events();
+        visible_change |= self.poll_editor_audio_events(cx);
         visible_change |= self.poll_export(cx);
         visible_change |= self.pump_tuning_gesture();
         if !self.tuning.client.has_pending_requests() && !self.tuning.client.is_recovery_pending() {
@@ -1079,6 +1092,7 @@ impl EditorView {
                 let resize_request = self.pending_trim_matches(&request);
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
+                let group_selection_request = self.pending_group_selection_matches(&request);
                 let clip_detail_request = self.audio_clip_controls.matches(&request);
                 let audio_events_request = self.pending_audio_events_matches(&request);
                 let clip_loop_request = self.pending_clip_loop_matches(&request);
@@ -1089,7 +1103,10 @@ impl EditorView {
                 let track_clipboard_request = self.pending_track_clipboard_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
+                let clip_gain_request = self.clip_gain_matches(&request);
                 let gain_request = self.pending_gain_matches(&request);
+                let gain_take_request = self.pending_gain_take_matches(&request);
+                let device_automation_request = self.pending_device_automation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
@@ -1106,6 +1123,9 @@ impl EditorView {
                         }
                         if group_copy_request {
                             self.group_copy_submitted();
+                        }
+                        if group_selection_request {
+                            self.group_selection_submitted();
                         }
                         if clip_detail_request {
                             self.audio_clip_controls
@@ -1138,8 +1158,17 @@ impl EditorView {
                         if fade_request {
                             self.fade_submitted();
                         }
+                        if clip_gain_request {
+                            self.clip_gain_submitted();
+                        }
                         if gain_request {
                             self.gain_submitted();
+                        }
+                        if gain_take_request {
+                            self.gain_take_submitted();
+                        }
+                        if device_automation_request {
+                            self.device_automation_submitted();
                         }
                     }
                     Err(SubmitError::Full(request)) => {
@@ -1148,6 +1177,7 @@ impl EditorView {
                     }
                     Err(SubmitError::Busy(request)) => {
                         self.midi_take_not_submitted(&request);
+                        self.gain_take_not_submitted(&request);
                         if resize_request {
                             self.retire_pending_trim();
                         }
@@ -1160,6 +1190,9 @@ impl EditorView {
                         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
                         if group_copy_request {
                             self.pending_group_copy = None;
+                        }
+                        if group_selection_request {
+                            self.retire_group_selection();
                         }
                         if audio_events_request {
                             visible_change |= self.retire_pending_audio_events();
@@ -1188,8 +1221,14 @@ impl EditorView {
                         if fade_request {
                             self.retire_pending_fade();
                         }
+                        if clip_gain_request {
+                            self.retire_clip_gain();
+                        }
                         if gain_request {
                             self.retire_pending_gain();
+                        }
+                        if device_automation_request {
+                            self.retire_pending_device_automation();
                         }
                         if time_copy_request {
                             self.pending_created_note_selection = None;
@@ -1199,6 +1238,7 @@ impl EditorView {
                     }
                     Err(SubmitError::Closed(request)) => {
                         self.midi_take_not_submitted(&request);
+                        self.gain_take_not_submitted(&request);
                         self.cancel_new_preparation();
                         if time_copy_request {
                             self.pending_created_note_selection = None;
@@ -1235,6 +1275,9 @@ impl EditorView {
                         if group_copy_request {
                             self.pending_group_copy = None;
                         }
+                        if group_selection_request {
+                            self.retire_group_selection();
+                        }
                         if audio_events_request {
                             visible_change |= self.retire_pending_audio_events();
                         }
@@ -1262,8 +1305,14 @@ impl EditorView {
                         if fade_request {
                             self.retire_pending_fade();
                         }
+                        if clip_gain_request {
+                            self.retire_clip_gain();
+                        }
                         if gain_request {
                             self.retire_pending_gain();
+                        }
+                        if device_automation_request {
+                            self.retire_pending_device_automation();
                         }
                         break;
                     }
@@ -1278,6 +1327,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
+        visible_change |= self.retire_abandoned_clip_gain();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -1349,6 +1399,7 @@ impl EditorView {
                 .worker_requests_pending
                 .saturating_add(self.pending_requests.len());
             visible_change |= pending_before != pending_after;
+            visible_change |= self.tick_track_meters(Instant::now());
             return self.observe_audio_frame(None, visible_change, Instant::now());
         };
         let seek_publication_inflight = self.prepared_seek.as_ref().is_some_and(|seek| {
@@ -1697,7 +1748,11 @@ impl EditorView {
                 );
                 continue;
             }
-            match audio.control.action_with_ticket(pending.action) {
+            match if let Some(trace) = &self.transport_trace {
+                trace.attempt(audio, pending.action)
+            } else {
+                audio.control.action_with_ticket(pending.action)
+            } {
                 Ok(ticket) => {
                     if matches!(pending.action, PlaybackAction::SetMetronome(_)) {
                         self.pending_metronome_ticket = Some(ticket);
@@ -1841,6 +1896,7 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         visible_change |= pending_before != pending_after;
         visible_change |= self.finish_audio_recovery_tick();
+        visible_change |= self.tick_track_meters(Instant::now());
         self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 
@@ -2025,7 +2081,10 @@ impl EditorView {
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
         self.fade_request_complete(&event);
+        self.clip_gain_complete(&event);
         self.gain_request_complete(&event);
+        self.gain_take_request_complete(&event);
+        self.device_automation_complete(&event);
         self.eq_creation_request_complete(&event);
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
@@ -2035,15 +2094,13 @@ impl EditorView {
         let duplicate_completion = self.take_duplicate_completion(&mut event);
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
+            self.time_selection_key_held = false;
             self.pending_plugin_effect.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
-            if let Some(audio) = self.audio.as_mut() {
-                audio.control.close();
-            }
-            self.audio = None;
+            self.retire_audio_preserving_gain_take();
             let next_generation = self.project_generation.saturating_add(1);
             if self
                 .pending_audio_result
@@ -2102,7 +2159,7 @@ impl EditorView {
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
-        self.reconcile_rendered_group_selection(&event);
+        self.reconcile_group_selection(&event);
         if event.bounce_complete.as_ref().is_some_and(|completed| {
             self.bounce_control
                 .as_ref()
@@ -2309,6 +2366,8 @@ impl EditorView {
             .retain(|track, _| event.state.project.track(*track).is_some());
         self.drag_lane_epochs
             .retain(|track, _| event.state.project.track(*track).is_some());
+        self.track_drop_lanes
+            .retain(|track, _| event.state.project.track(*track).is_some());
         self.gain_lane.reconcile(
             self.project_generation,
             revision,
@@ -2325,6 +2384,8 @@ impl EditorView {
         let save_confirmation_required =
             event.save_confirmation_required && !event.project_replaced;
         self.state = Some(event.state);
+        self.gain_take_state_installed();
+        self.device_automation_state_installed(event.project_replaced);
         if save_confirmation_required {
             self.queue_save_confirmation();
         }
@@ -2416,6 +2477,7 @@ impl EditorView {
             self.pending_resident_publication = None;
             self.clear_route_telemetry();
             self.drag_lanes.clear();
+            self.track_drop_lanes.clear();
             self.drag_lane_epochs.clear();
             self.arrangement_bounds = None;
             self.arrangement_bounds_epoch = 0;
@@ -2431,7 +2493,6 @@ impl EditorView {
             self.device_panel.main_selected = None;
             self.track_selection = super::selection::TrackSelection::default();
             self.selected_clip = None;
-            self.retained_clip_detail = None;
             self.selected_scene = None;
             self.selected_cell = None;
             self.session_copy_source = None;
@@ -2454,20 +2515,14 @@ impl EditorView {
                 self.device_panel.main_selected = None;
             }
             if self.device_panel.main_selected != Some(self.project_generation) {
-                // A completed time range deliberately has no primary clip. The
-                // generic stale-clip fallback must not reselect its first original
-                // after a range copy (or on a later unrelated worker response).
-                // Retained inspector context also keeps that selection empty
-                // during a range gesture and after its cancellation.
-                let time_range_owns_selection = self.selected_clip.is_none()
-                    && ((self.mode == super::EditorMode::Arrangement
-                        && self.retained_clip_detail.is_some())
-                        || (self.time_selection_gesture.is_none()
-                            && self.time_range_move_gesture.is_none()
-                            && self.edit_cursor.is_some_and(|cursor| {
-                                cursor.generation == self.project_generation
-                            })
-                            && self.normalized_time_selection().is_some()));
+                // Worker updates must not replace an active range with a clip.
+                let range_owns_selection = self.selected_clip.is_none()
+                    && self
+                        .edit_cursor
+                        .is_some_and(|cursor| cursor.generation == self.project_generation)
+                    && (self.time_selection_gesture.is_some()
+                        || self.time_range_move_gesture.is_some()
+                        || self.normalized_time_selection().is_some());
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, self.selected_clip);
                 if initialize_clip_selection
@@ -2477,7 +2532,7 @@ impl EditorView {
                     self.selected_track = Some(track);
                     self.selected_clip = clip;
                 }
-                if time_range_owns_selection {
+                if range_owns_selection {
                     self.selected_clip = None;
                 }
             }
@@ -2598,7 +2653,6 @@ impl EditorView {
             self.midi_note_gesture = None;
             self.midi_group_gesture = None;
             self.selected_track = Some(track);
-            self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
             self.reconcile_arrangement_focus();
@@ -2619,7 +2673,6 @@ impl EditorView {
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
                 self.selected_track = Some(track);
-                self.retained_clip_detail = None;
                 self.selected_clip = Some(clip);
                 self.clip_selection.only(track, clip);
                 self.piano_beat_start = hex_project::BeatTime::ZERO;
@@ -2981,9 +3034,13 @@ impl EditorView {
             );
             return false;
         }
-        if self.gain_recorder.blocks_edits() {
-            self.error =
-                Some("finish or cancel gain recording before another project action".into());
+        if self.gain_recorder.blocks_edits() && !self.pending_gain_take_matches(&request) {
+            self.error = Some(if self.gain_recorder.has_retained_take() {
+                "retry or explicitly discard the retained gain take before another project action"
+                    .into()
+            } else {
+                "finish or cancel gain recording before another project action".into()
+            });
             return false;
         }
         #[cfg(test)]
@@ -3158,6 +3215,8 @@ impl EditorView {
                 | Request::NewWithAudioMode { .. }
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
+                | Request::DeviceAutomation { .. }
+                | Request::DeviceAutomationControl { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::TrackClipboard {
                     action: hex_session::service::TrackClipboardAction::Cut(_)
@@ -3168,6 +3227,8 @@ impl EditorView {
                 | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. }
                 | Request::GroupClips { .. }
                 | Request::GroupTimeRange { .. }
                 | Request::GroupAudioEvents { .. }
@@ -3232,6 +3293,7 @@ impl EditorView {
         let resize_request = self.pending_trim_matches(&request);
         let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
+        let group_selection_request = self.pending_group_selection_matches(&request);
         let clip_detail_request = self.audio_clip_controls.matches(&request);
         let audio_events_request = self.pending_audio_events_matches(&request);
         let clip_loop_request = self.pending_clip_loop_matches(&request);
@@ -3242,7 +3304,10 @@ impl EditorView {
         let track_clipboard_request = self.pending_track_clipboard_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
+        let clip_gain_request = self.clip_gain_matches(&request);
         let gain_request = self.pending_gain_matches(&request);
+        let gain_take_request = self.pending_gain_take_matches(&request);
+        let device_automation_request = self.pending_device_automation_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
@@ -3254,6 +3319,9 @@ impl EditorView {
                 }
                 if group_copy_request {
                     self.group_copy_submitted();
+                }
+                if group_selection_request {
+                    self.group_selection_submitted();
                 }
                 if clip_detail_request {
                     self.audio_clip_controls
@@ -3286,8 +3354,17 @@ impl EditorView {
                 if fade_request {
                     self.fade_submitted();
                 }
+                if clip_gain_request {
+                    self.clip_gain_submitted();
+                }
                 if gain_request {
                     self.gain_submitted();
+                }
+                if gain_take_request {
+                    self.gain_take_submitted();
+                }
+                if device_automation_request {
+                    self.device_automation_submitted();
                 }
                 true
             }
@@ -3365,7 +3442,11 @@ impl EditorView {
 
         let command = PlaybackAction::Transport(PlaybackCommand::Seek(frame));
         if self.pending_audio_commands.is_empty() {
-            match audio.control.action_with_ticket(command) {
+            match if let Some(trace) = &self.transport_trace {
+                trace.attempt(audio, command)
+            } else {
+                audio.control.action_with_ticket(command)
+            } {
                 Ok(ticket) => self.pending_seek_ticket = Some(ticket),
                 Err(rejected) if self.pending_audio_commands.len() < UI_REQUEST_CAPACITY => {
                     self.pending_audio_commands
@@ -3684,10 +3765,13 @@ impl EditorView {
             intent_token,
         };
         if self.pending_audio_commands.is_empty() {
-            let result = self
-                .audio
-                .as_mut()
-                .map(|audio| audio.control.action_with_ticket(action));
+            let result = self.audio.as_mut().map(|audio| {
+                if let Some(trace) = &self.transport_trace {
+                    trace.attempt(audio, action)
+                } else {
+                    audio.control.action_with_ticket(action)
+                }
+            });
             match result {
                 Some(Ok(ticket)) => {
                     if matches!(action, PlaybackAction::SetMetronome(_)) {
@@ -3820,6 +3904,9 @@ impl EditorView {
         self.finish_midi_recording();
         // Publish the MIDI finish intent before any input prefix is revoked.
         if let Some(audio) = &self.audio {
+            if let Some(trace) = &self.transport_trace {
+                trace.stop(audio);
+            }
             audio.control.stop();
         }
         self.cancel_tuning_audition();

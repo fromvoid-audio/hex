@@ -958,6 +958,7 @@ fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_p
                 .checked_add(1)
                 .ok_or(hex_project::Invalid("fixture id capacity"))?;
             track.instrument = Some(DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id,
                 bypassed: false,
@@ -975,6 +976,7 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
@@ -1110,6 +1112,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
             loop_end_raw: 4 << 32,
             looping: false,
             notes: vec![MidiNoteSnapshot {
+                active: true,
                 id: 9,
                 start_raw: 0,
                 duration_raw: 1 << 32,
@@ -1167,6 +1170,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         panic!("Session MIDI fixture expected")
     };
     clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: 11,
         start_raw: 0,
         duration_raw: 1 << 32,
@@ -1214,6 +1218,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
@@ -1258,6 +1263,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                 loop_end_raw: 32 << 32,
                 looping: false,
                 notes: vec![MidiNoteSnapshot {
+                    active: true,
                     id: 3,
                     start_raw: note_start,
                     duration_raw: note_duration,
@@ -1291,6 +1297,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                         loop_end_raw: 32 << 32,
                         looping: false,
                         notes: vec![MidiNoteSnapshot {
+                            active: true,
                             id: 6,
                             start_raw: note_start,
                             duration_raw: note_duration,
@@ -1324,6 +1331,7 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
         )
         .unwrap();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 7,
             bypassed: false,
@@ -1443,6 +1451,7 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
             gain: 1.0,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 80,
                 bypassed,
@@ -1570,6 +1579,7 @@ fn removed_track_release_retains_its_original_device_matrix() {
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 10,
         bypassed: false,
@@ -1618,6 +1628,7 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         )
         .unwrap();
     old_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 10,
         bypassed: false,
@@ -1679,12 +1690,14 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 10,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 11,
             bypassed: false,
@@ -1747,12 +1760,14 @@ fn same_revision_session_release_enters_at_the_instrument_gap() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 10,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 11,
             bypassed: false,
@@ -1807,12 +1822,14 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
@@ -1875,12 +1892,14 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: neutral,
         },
         DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
@@ -2088,6 +2107,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
             state = crate::patch_native_device_parameter(&state, parameter, value).unwrap();
         }
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 7,
             bypassed: false,
@@ -2256,6 +2276,7 @@ fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail
                 .unwrap();
         }
         let device = DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
@@ -2366,12 +2387,14 @@ fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
         )
         .unwrap();
     snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: instrument_id,
         bypassed: false,
         state: instrument_state,
     });
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: device_id,
         bypassed: false,
@@ -2457,12 +2480,14 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: state.clone(),
         },
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
@@ -2727,6 +2752,7 @@ fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_cl
         let id = snapshot.next_id;
         snapshot.next_id += 1;
         devices.push(hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id,
             bypassed: false,
@@ -2859,6 +2885,7 @@ fn with_second_session_note(project: &Project) -> Project {
         panic!("fixture has a Session MIDI clip")
     };
     clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: note_id,
         start_raw: 1 << 32,
         duration_raw: 1 << 32,
@@ -2881,6 +2908,7 @@ fn with_second_arrangement_note(project: &Project) -> Project {
         TrackContentSnapshot::Audio(_) => panic!("fixture has Arrangement MIDI content"),
     };
     clips[0].notes.push(MidiNoteSnapshot {
+        active: true,
         id: note_id,
         start_raw: 1 << 32,
         duration_raw: 1 << 32,
@@ -2904,6 +2932,7 @@ fn with_session_note_at(project: &Project, start_raw: u64) -> Project {
         panic!("fixture has a Session MIDI clip")
     };
     clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: note_id,
         start_raw,
         duration_raw: 1 << 32,
@@ -3542,6 +3571,7 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
         let mut devices = Vec::new();
         for _ in 0..devices_in_chain {
             devices.push(DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: next_id,
                 bypassed: false,
@@ -4180,6 +4210,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         )
         .unwrap();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: effect,
         bypassed: false,
@@ -4920,6 +4951,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     let eq8_id = source_snapshot.next_id;
     source_snapshot.next_id += 1;
     source_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: eq8_id,
         bypassed: false,
@@ -5221,6 +5253,7 @@ fn profile_mutable_occurrence_suppression_handoff() {
     let notes = &mut clips[0].notes;
     for index in 1..64_u64 {
         notes.push(MidiNoteSnapshot {
+            active: true,
             id: first_new_id + index - 1,
             start_raw: 0,
             duration_raw: 8 << 32,
@@ -5327,12 +5360,14 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let first_id = source.next_id;
     source.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: first_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: first_id + 1,
             bypassed: false,
@@ -5538,12 +5573,14 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     let first_id = old_snapshot.next_id;
     old_snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: first_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: first_id + 1,
             bypassed: false,
@@ -5895,6 +5932,142 @@ fn activation_mute_cuts_held_mutable_gate_with_instrument_still_enabled() {
         );
         assert!(candidate.revision.arrangement().tracks()[0].instrument_slot_enabled());
     }
+}
+
+#[test]
+fn note_activation_cuts_the_held_mutable_gate() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    for session in [false, true] {
+        let base = with_test_instrument(&project(0.5, 0, 1 << 28), id, 0);
+        let old_revision = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+        let clip = if session {
+            old_revision.session().midi_clips()[0].id
+        } else {
+            base.tracks()[0].midi_clips()[0].id()
+        };
+        let note = base.midi_source(clip).unwrap().notes()[0].id();
+        let mut old = SessionPlayback::new(old_revision).unwrap();
+        if session {
+            old.apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        }
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 16]).unwrap();
+        let mut editor = Editor::new(base, 8).unwrap();
+        editor
+            .execute(Command::SetMidiNotesActive {
+                clip,
+                notes: vec![note],
+                active: false,
+            })
+            .unwrap();
+        let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+            editor.project(),
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        let source = candidate.mutable_instruments[0].as_ref().unwrap();
+        assert!(source.proofs().all(|proof| proof.gate_end_frame == 16));
+        let mut released = [[0.0; 2]; 16];
+        candidate.render(&mut released).unwrap();
+        assert!(
+            candidate.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .committed_is_quiescent()
+        );
+        assert!(candidate.revision.arrangement().tracks()[0].instrument_slot_enabled());
+    }
+}
+
+#[test]
+fn disabling_one_note_keeps_another_held_note_sounding() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(0.5, 0, 1 << 28), id, 0);
+    let mut editor = Editor::new(base, 8).unwrap();
+    let clip = editor.project().tracks()[0].midi_clips()[0].id();
+    let muted_note = editor.project().midi_clip(clip).unwrap().notes()[0].id();
+    let Created::Note(other_note) = editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1 << 28),
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap()
+    else {
+        panic!("note")
+    };
+    let old_revision =
+        revision_with_instrument_registry(editor.project(), Arc::clone(&table), &registry);
+    let mut old = SessionPlayback::new(old_revision).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 16]).unwrap();
+    editor
+        .execute(Command::SetMidiNotesActive {
+            clip,
+            notes: vec![muted_note],
+            active: false,
+        })
+        .unwrap();
+    let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+        editor.project(),
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let proofs = candidate.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        proofs
+            .iter()
+            .find(|proof| proof.signature.key().note == muted_note)
+            .unwrap()
+            .gate_end_frame,
+        16
+    );
+    assert!(
+        proofs
+            .iter()
+            .find(|proof| proof.signature.key().note == other_note)
+            .unwrap()
+            .gate_end_frame
+            > 16
+    );
+    let mut output = [[0.0; 2]; 16];
+    candidate.render(&mut output).unwrap();
+    assert!(output[8..].iter().any(|frame| frame[0] != 0.0));
 }
 
 #[test]
@@ -6459,6 +6632,7 @@ fn reenabled_loop_source_skips_old_occurrences_and_plays_future_iteration() {
     clip.source.loop_end_raw = 1 << 32;
     clip.source.looping = true;
     clip.source.notes = vec![MidiNoteSnapshot {
+        active: true,
         id: clip.source.notes[0].id,
         start_raw: 1 << 30,
         duration_raw: 3 << 32,
@@ -7134,6 +7308,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
                 bypassed: false,
@@ -7162,6 +7337,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                 loop_end_raw: 32 << 32,
                 looping: false,
                 notes: vec![MidiNoteSnapshot {
+                    active: true,
                     id: arrangement_note,
                     start_raw: arrangement_start,
                     duration_raw: 1 << 32,
@@ -7190,6 +7366,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                     loop_end_raw: 32 << 32,
                     looping: false,
                     notes: vec![MidiNoteSnapshot {
+                        active: true,
                         id: session_note,
                         start_raw: session_start,
                         duration_raw: 1 << 32,
@@ -7816,6 +7993,7 @@ fn with_utility_filter_state(project: &Project, dc_remove: bool, bass_mono: bool
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
@@ -7946,6 +8124,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
         clip.source.loop_end_raw = 4 << 32;
         clip.source.looping = true;
         clip.source.notes = vec![MidiNoteSnapshot {
+            active: true,
             id: 6,
             start_raw: 5_u64 << 31, // loop phase 1/2; first repeat begins at 3.5
             duration_raw: 1 << 32,
@@ -8794,6 +8973,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
     let mut snapshot = base.snapshot();
     if let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content {
         clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: 13,
             start_raw: 1_u64 << 27, // begins 1/32 beat after the carried note
             duration_raw: 1 << 30,
@@ -8911,6 +9091,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         panic!("Session MIDI fixture expected")
     };
     original_clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: original_note_id,
         start_raw: 0,
         duration_raw: 1 << 30,
@@ -9010,6 +9191,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         panic!("Session MIDI fixture expected")
     };
     clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: added_note_id,
         start_raw: 1_u64 << 27,
         duration_raw: 1 << 30,
@@ -9174,6 +9356,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
                 loop_end_raw: 32 << 32,
                 looping: false,
                 notes: vec![MidiNoteSnapshot {
+                    active: true,
                     id: note_id,
                     start_raw: 0,
                     duration_raw: 8 << 32,
@@ -9247,6 +9430,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
         clip.looping = true;
         clip.notes = vec![
             MidiNoteSnapshot {
+                active: true,
                 id: 3,
                 start_raw: 3_u64 << 31, // intro onset, gate crosses the first loop seam
                 duration_raw: 4 << 32,
@@ -9255,6 +9439,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 velocity: 100,
             },
             MidiNoteSnapshot {
+                active: true,
                 id: 13,
                 start_raw: 5_u64 << 31, // repeated loop phase
                 duration_raw: 1 << 32,
@@ -9271,6 +9456,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
         clip.source.looping = true;
         clip.source.notes = vec![
             MidiNoteSnapshot {
+                active: true,
                 id: 14,
                 start_raw: 3_u64 << 31,
                 duration_raw: 4 << 32,
@@ -9279,6 +9465,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 velocity: 100,
             },
             MidiNoteSnapshot {
+                active: true,
                 id: 15,
                 start_raw: 5_u64 << 31,
                 duration_raw: 1 << 32,
@@ -10589,6 +10776,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
         .unwrap();
     let mut track_snapshot = project(1.0, 0, 8 << 32).snapshot();
     track_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: track_snapshot.next_id,
         bypassed: false,
@@ -10619,6 +10807,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: return_device_id,
                 bypassed: false,
@@ -10680,6 +10869,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             _ => panic!("fixture has MIDI arrangement content"),
         };
         arrangement[0].notes.push(MidiNoteSnapshot {
+            active: true,
             id: 7,
             start_raw: 1 << 24,
             duration_raw: 1 << 32,
@@ -10694,6 +10884,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             panic!("fixture has Session MIDI content");
         };
         session_clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: snapshot.next_id,
             start_raw: 1 << 24,
             duration_raw: 1 << 32,
@@ -10852,6 +11043,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
         };
         if arrangement_note {
             clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
                 id: snapshot.next_id,
                 start_raw: 0,
                 duration_raw: note_duration,
@@ -10868,6 +11060,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             panic!("fixture has Session MIDI content");
         };
         session_clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: note_duration,
@@ -11013,6 +11206,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             _ => panic!("fixture has MIDI arrangement content"),
         };
         clips[0].notes.push(MidiNoteSnapshot {
+            active: true,
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
@@ -11026,6 +11220,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             panic!("fixture has Session MIDI content");
         };
         session_clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
@@ -11170,6 +11365,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: track_effect_id,
         bypassed: false,
@@ -11189,6 +11385,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: return_effect_id,
                 bypassed: false,
@@ -11249,6 +11446,9 @@ fn section_loop_preroll_matches_canonical_loop_with_mutable_and_stateful_history
                 source.arrangement().loop_region().is_none(),
                 "saved loop remains unchanged"
             );
+            let playback =
+                crate::playback::Playback::from_interactive_arrangement_preroll(actual).unwrap();
+            assert_eq!(playback.automation_capture_loop(), Some(region));
             assert_eq!(
                 SessionPlayback::prepare_section_arrangement_preroll(
                     source,
@@ -12246,17 +12446,28 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         let device = project.tracks()[0].instrument().unwrap().id();
         let meter = Arc::clone(prepared.arrangement().device_meter(device.value()).unwrap());
         let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        let track = project.tracks()[0].id();
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
         let mut metered = SessionPlayback::new(prepared).unwrap();
         metered.set_device_metering(true);
         ordinary.apply(SessionPlaybackCommand::Play).unwrap();
         metered.apply(SessionPlaybackCommand::Play).unwrap();
         let mut a = [[0.0; 2]; 127];
         let mut b = a;
+        let mut output_peak = 0.0_f32;
         for _ in 0..5 {
             ordinary.render(&mut a).unwrap();
             metered.render(&mut b).unwrap();
             assert_eq!(a, b, "telemetry must preserve per-voice summation order");
+            output_peak = b
+                .iter()
+                .flatten()
+                .fold(output_peak, |peak, sample| peak.max(sample.abs()));
         }
+        let track_meter = observation.track_output_meter(track).unwrap();
+        assert_eq!(track_meter.take_track_output(), output_peak);
+        assert_eq!(track_meter.take_track_output(), 0.0);
         let peaks = meter.take_peaks();
         assert_eq!(peaks[0], 0.0);
         assert!(peaks[1] > 0.0);
@@ -12293,6 +12504,168 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
             assert!((a * gain - b).abs() < 1e-7);
         }
+    }
+}
+
+#[test]
+fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_blocks() {
+    use super::capture::{CaptureSink, OutputCaptureId};
+    use super::meter_capture::{Cell, MeterCapture};
+
+    let mut editor = Editor::new(project(1.0, 0, 8 << 32), 8).unwrap();
+    let first = editor.project().tracks()[0].id();
+    let Created::Track(second) = editor
+        .execute(Command::AddTrack {
+            name: "second".into(),
+        })
+        .unwrap()
+    else {
+        panic!("fixture track");
+    };
+    let prepared = revision(editor.project(), Arc::new(hex_devices::SineTable::new()));
+    let observation = crate::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
+    let mut cells = vec![
+        Cell::new(OutputCaptureId::Track(first)),
+        Cell::new(OutputCaptureId::Track(second)),
+    ];
+    super::meter_capture::sort(&mut cells);
+    let mut capture = MeterCapture {
+        revision: &prepared,
+        cells: &mut cells,
+        downstream: None,
+        invalidated: false,
+    };
+    // Owners can be interleaved; two contributions to the first owner at the
+    // same offset cancel before the peak is measured.
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.5, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(second), 1, &[[0.9, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[-0.25, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 1, &[[0.1, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.25
+    );
+    assert_eq!(
+        observation
+            .track_output_meter(second)
+            .unwrap()
+            .take_track_output(),
+        0.9
+    );
+
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.3, 0.0]])
+        .unwrap();
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.3, 0.0], [0.7, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.7
+    );
+
+    capture
+        .add(OutputCaptureId::Track(first), 5, &[[0.8, 0.0]])
+        .unwrap();
+    // Out-of-order telemetry is discarded without interrupting audio.
+    capture
+        .add(OutputCaptureId::Track(first), 4, &[[0.1, 0.0]])
+        .unwrap();
+    capture.commit(2);
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.0
+    );
+    capture
+        .add(OutputCaptureId::Track(first), 0, &[[0.7, 0.0]])
+        .unwrap();
+    capture.invalidate();
+    assert_eq!(
+        observation
+            .track_output_meter(first)
+            .unwrap()
+            .take_track_output(),
+        0.0
+    );
+}
+
+#[test]
+fn track_metering_preserves_multiple_track_audio() {
+    let original = project(0.758_499_15, 0, 8 << 32);
+    let mut snapshot = original.snapshot();
+    let clips = match &mut snapshot.tracks[0].content {
+        TrackContentSnapshot::Instrument(clips) => clips,
+        TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+        _ => panic!("fixture must contain MIDI"),
+    };
+    {
+        let mut note = clips[0].notes[0].clone();
+        note.id = 24;
+        note.pitch = 67;
+        clips[0].notes.push(note);
+    }
+    let mut second = snapshot.tracks[0].clone();
+    second.id = 20;
+    second.gain = 0.431;
+    second.instrument.as_mut().unwrap().id = 21;
+    let clips = match &mut second.content {
+        TrackContentSnapshot::Instrument(clips) => clips,
+        TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+        _ => panic!("fixture must contain MIDI"),
+    };
+    {
+        clips[0].id = 22;
+        clips[0].notes[0].id = 23;
+        clips[0].notes[1].id = 25;
+    }
+    snapshot.next_id = 26;
+    snapshot.tracks.push(second);
+    let project = Project::from_legacy_snapshot(snapshot).unwrap();
+    let prepared = revision(&project, Arc::new(hex_devices::SineTable::new()));
+    let observation = crate::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap();
+    let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut metered = SessionPlayback::new(prepared).unwrap();
+    metered.set_device_metering(true);
+    ordinary.apply(SessionPlaybackCommand::Play).unwrap();
+    metered.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut a = [[0.0; 2]; 127];
+    let mut b = a;
+    for _ in 0..5 {
+        ordinary.render(&mut a).unwrap();
+        metered.render(&mut b).unwrap();
+        // The pre-existing instrument-meter path groups per-track sums, so
+        // metered and unmetered renderers can differ by f32 rounding.
+        for (actual, reference) in b.iter().flatten().zip(a.iter().flatten()) {
+            assert!((actual - reference).abs() < 1e-7);
+        }
+    }
+    for track in project.tracks() {
+        assert!(
+            observation
+                .track_output_meter(track.id())
+                .unwrap()
+                .take_track_output()
+                > 0.0
+        );
     }
 }
 

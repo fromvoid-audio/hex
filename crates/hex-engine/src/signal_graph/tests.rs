@@ -273,6 +273,33 @@ fn actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_part
         assert_eq!(capture.output(1).unwrap()[index], source);
     }
 }
+
+#[test]
+fn compensated_continuous_audio_matches_single_frame_rendering_across_loop_wraps() {
+    let mut f = fixture(&[&[], &[7], &[3]], 173);
+    for (track, audio) in f.media.values_mut().enumerate() {
+        let samples = (0..173)
+            .map(|frame| {
+                let value = ((frame * (track + 1)) % 29) as f32 / 64.0;
+                [value, -value * 0.5]
+            })
+            .collect();
+        *audio = Audio::new(48000, samples).unwrap();
+    }
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 173,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let expected = session(Arc::clone(&revision), 1200, 1);
+    assert!(expected.iter().any(|frame| frame[0] != 0.0));
+    for partition in [63, 256, 513] {
+        assert_eq!(session(Arc::clone(&revision), 1200, partition), expected);
+    }
+}
 #[test]
 fn serial_three_plus_five_matches_eight_and_return_feed_cumulative_delay() {
     let mut f = fixture(&[&[3, 5], &[8]], 32);
@@ -508,6 +535,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     snapshot.next_id += 3;
     let owner = &mut snapshot.tracks[0];
     owner.instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: next,
         bypassed: false,
@@ -537,6 +565,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
             loop_end_raw: hex_project::BeatTime::ONE.raw(),
             looping: false,
             notes: vec![hex_project::MidiNoteSnapshot {
+                active: true,
                 id: next + 2,
                 start_raw: 0,
                 duration_raw: hex_project::BeatTime::ONE.raw(),

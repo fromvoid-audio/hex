@@ -19,7 +19,9 @@ pub(crate) fn pair_bytes(
     match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
         (Some(a), Some(b))
             if entry
-                .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>() =>
+                .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>()
+                || entry.runtime_types_are::<hex_devices::saturator::SaturatorRuntime>()
+                || entry.runtime_types_are::<hex_devices::auto_pan::AutoPanRuntime>() =>
         {
             Ok(Some((a, b)))
         }
@@ -30,5 +32,8 @@ pub(crate) fn pair_bytes(
 
 /// Recognition only; constructor origin and strict state validation remain separate.
 pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
-    id == hex_devices::utility::UTILITY_TYPE_ID || id == hex_devices::reverb::REVERB_TYPE_ID
+    id == hex_devices::utility::UTILITY_TYPE_ID
+        || id == hex_devices::reverb::REVERB_TYPE_ID
+        || id == hex_devices::saturator::SATURATOR_TYPE_ID
+        || id == hex_devices::auto_pan::AUTO_PAN_TYPE_ID
 }

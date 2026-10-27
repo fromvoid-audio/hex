@@ -381,6 +381,16 @@ impl ForeignProcessors for NativeEffectCallback {
         frames: &mut [[f32; 2]],
         _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_parameters(node, offset, frames, &[], _clock)
+    }
+    fn process_segment_with_parameters(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
@@ -410,8 +420,17 @@ impl ForeignProcessors for NativeEffectCallback {
                 frame[1] *= node.input_gain;
             }
         }
+        // The original joining worker retains processor parameter observations
+        // for control queries; the native helper mirrors them to its controller.
+        // Receiving that feedback here must not revoke an otherwise valid epoch.
         self.transport
-            .stage_segment(offset, &self.input[..frames.len()], &[], frames)
+            .stage_segment_with_parameters(
+                offset,
+                &self.input[..frames.len()],
+                &[],
+                parameters,
+                frames,
+            )
             .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.

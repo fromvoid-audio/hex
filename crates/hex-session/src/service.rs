@@ -21,6 +21,8 @@ mod arrangement_sections;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
+pub mod automation_draft;
+pub mod automation_take;
 mod canonical_audio_source;
 mod comparison_audio;
 #[cfg(test)]
@@ -46,11 +48,14 @@ pub use audio_sink::{
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
 pub use sampler_parameter::SamplerEdit;
+mod device_automation_control;
+pub use device_automation_control::DeviceAutomationControlEdit;
 mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
 mod plugin_state_save;
 pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
+pub mod diagnostics;
 mod request_cancellation;
 pub use plugin_effect::{
     NativeDeviceState, PluginEffectCompletion, PluginEffectControl, PluginEffectDestination,
@@ -464,6 +469,18 @@ pub enum Request {
         revision: u64,
         clips: Vec<hex_project::ClipId>,
     },
+    DuplicateAliasClips {
+        project_generation: u64,
+        revision: u64,
+        clips: Vec<hex_project::ClipId>,
+    },
+    DuplicateSessionCell {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        scene: hex_project::SceneId,
+        alias: bool,
+    },
     /// Captured Arrangement selection to consolidate as one clip. The project
     /// command validates track and media-kind representability atomically.
     GroupClips {
@@ -579,6 +596,20 @@ pub enum Request {
         revision: u64,
         track: hex_project::TrackId,
         edit: GainLaneEdit,
+    },
+    /// Resolve source stamps before any gesture barrier or canonical edit.
+    DeviceAutomation {
+        project_generation: u64,
+        revision: u64,
+        device: hex_project::DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        points: Vec<hex_project::AutomationPoint>,
+    },
+    /// The same bounded source-stamped Edit seam for manual values/read selection.
+    DeviceAutomationControl {
+        project_generation: u64,
+        revision: u64,
+        edit: DeviceAutomationControlEdit,
     },
     DeviceGesture(GestureRequest),
     TuningGesture(TuningGestureRequest),
@@ -870,7 +901,8 @@ pub struct Service {
     #[cfg(test)]
     export_test_hook: ExportTestHook,
     requests: request_cancellation::Sender,
-    events: Receiver<Event>,
+    events: diagnostics::EventReceiver,
+    diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
@@ -1127,6 +1159,8 @@ impl Service {
             (Some(arrangement_seek), None)
         };
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
+        let diagnostics = Arc::new(diagnostics::Hooks::default());
+        let worker_diagnostics = Arc::clone(&diagnostics);
         let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
@@ -1161,7 +1195,12 @@ impl Service {
             // Structural stopped publications reuse the bounded preroll constructor.
             .stack_size(crate::arrangement_seek::SEEK_WORKER_STACK_BYTES)
             .spawn(move || {
-                let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
+                let mut events = WorkerEvents::new_with_diagnostics(
+                    event_tx,
+                    Arc::clone(&worker_shutdown),
+                    audio,
+                    worker_diagnostics,
+                );
                 let session = match session {
                     Some(session) => session,
                     None => {
@@ -1226,7 +1265,8 @@ impl Service {
             #[cfg(test)]
             export_test_hook,
             requests: request_cancellation::Sender::new(request_tx, document_intent),
-            events: event_rx,
+            diagnostics: Arc::clone(&diagnostics),
+            events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             export_events: export_event_rx,
             export_busy,
             shutdown,
@@ -1240,6 +1280,27 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        let diagnostic = self.diagnostics.begin(&request);
+        let result = self.submit_traced(request, diagnostic);
+        self.diagnostics.returned(diagnostic, &result);
+        result
+    }
+
+    /// Install one read-only control observer. Logging has no effect on request
+    /// admission, canonical state, cancellation or publication authority.
+    pub fn set_diagnostic_observer(
+        &self,
+        observer: Arc<diagnostics::DiagnosticObserver>,
+    ) -> Result<(), &'static str> {
+        self.diagnostics.install(observer)
+    }
+
+    #[allow(clippy::result_large_err)] // Original bounded request returned for caller retry.
+    fn submit_traced(
+        &self,
+        request: Request,
+        diagnostic: Option<diagnostics::DiagnosticRequest>,
+    ) -> Result<(), SubmitError> {
         if let Request::BounceArrangement {
             target:
                 hex_project::BounceTarget::Clips(ids)
@@ -1265,7 +1326,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            return match try_submit(&self.requests, request) {
+            return match try_submit_traced(&self.requests, request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.resident_seek_count.fetch_sub(1, Ordering::AcqRel);
@@ -1281,7 +1342,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            match try_submit(&self.requests, request) {
+            match try_submit_traced(&self.requests, request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.export_busy.store(false, Ordering::Release);
@@ -1289,7 +1350,7 @@ impl Service {
                 }
             }
         } else {
-            try_submit(&self.requests, request)
+            try_submit_traced(&self.requests, request, diagnostic)
         }
     }
 
@@ -1383,8 +1444,17 @@ impl Service {
 }
 
 #[allow(clippy::result_large_err)] // Preserve the exact bounded request on queue refusal.
+#[cfg(test)]
 fn try_submit(sender: &request_cancellation::Sender, request: Request) -> Result<(), SubmitError> {
     sender.submit(request)
+}
+#[allow(clippy::result_large_err)]
+fn try_submit_traced(
+    sender: &request_cancellation::Sender,
+    request: Request,
+    diagnostic: Option<diagnostics::DiagnosticRequest>,
+) -> Result<(), SubmitError> {
+    sender.submit_traced(request, diagnostic)
 }
 
 fn view_state(
@@ -2063,6 +2133,7 @@ fn run_worker(
             )
         },
     ) {
+        events.begin_diagnostics(&queued, project_generation, revision);
         events.begin_request(&document_intent, queued.document_intent);
         let request = queued.request;
         let seek_intent = match &request {
@@ -2144,7 +2215,58 @@ fn run_worker(
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
         let mut cut_clipboard = None;
+        let automation_source_error = match &request {
+            Request::DeviceAutomation {
+                project_generation: generation,
+                revision: source_revision,
+                ..
+            }
+            | Request::DeviceAutomationControl {
+                project_generation: generation,
+                revision: source_revision,
+                ..
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(
+                        "automation edit refused · project changed · retry from the current parameter",
+                    )
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active parameter gesture before editing automation")
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         let resolved_edit = match &request {
+            Request::DeviceAutomation {
+                project_generation: _,
+                revision: _,
+                device,
+                target,
+                points,
+            } => Some(if let Some(reason) = automation_source_error {
+                Err(reason.into())
+            } else if !hex_engine::project_device_automation_target_supported(
+                session.project(),
+                *device,
+                *target,
+            ) {
+                Err("automation edit refused · target no longer available".into())
+            } else {
+                Ok(Command::ReplaceDeviceAutomationTarget {
+                    device: *device,
+                    target: *target,
+                    points: points.clone(),
+                })
+            }),
+            Request::DeviceAutomationControl { edit, .. } => Some(match automation_source_error {
+                Some(reason) => Err(reason.into()),
+                None => device_automation_control::command(&session, edit),
+            }),
             Request::TrackClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -2352,6 +2474,11 @@ fn run_worker(
                 project_generation: captured_generation,
                 revision: captured_revision,
                 clips,
+            }
+            | Request::DuplicateAliasClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                clips,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("clip duplication canceled · project changed".to_owned())
@@ -2363,7 +2490,33 @@ fn run_worker(
                 {
                     Err("finish or cancel the active gesture before duplicating clips".into())
                 } else {
-                    Ok(Command::DuplicateClips(clips.clone()))
+                    Ok(if matches!(&request, Request::DuplicateAliasClips { .. }) {
+                        Command::DuplicateAliasClips(clips.clone())
+                    } else {
+                        Command::DuplicateClips(clips.clone())
+                    })
+                },
+            ),
+            Request::DuplicateSessionCell {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                scene,
+                alias,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("console duplication canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before duplicating clips".into())
+                } else {
+                    Ok(Command::DuplicateSessionCell {
+                        track: *track,
+                        scene: *scene,
+                        alias: *alias,
+                    })
                 },
             ),
             Request::GroupClips {
@@ -2427,20 +2580,7 @@ fn run_worker(
             _ => None,
         };
         let (request, resolution_failure) = match resolved_edit {
-            Some(Ok(command)) => match session.project().audio_group_render_target(&command) {
-                Ok(Some(target)) => (
-                    Request::BounceArrangement {
-                        project_generation,
-                        revision,
-                        target,
-                        in_place: true,
-                        control: hex_export::ExportControl::default(),
-                    },
-                    None,
-                ),
-                Ok(None) => (Request::Edit(command), None),
-                Err(reason) => (request, Some(reason.to_string())),
-            },
+            Some(Ok(command)) => (Request::Edit(command), None),
             Some(Err(reason)) => (request, Some(reason)),
             None => (request, None),
         };
@@ -3293,11 +3433,16 @@ fn run_worker(
                 Request::CopyArrangementClipToConsoleTrack { .. } => {
                     error = Some("console clip target was not resolved".into());
                 }
-                Request::DuplicateClips { .. } => {
+                Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. } => {
                     error = Some("clip duplication target was not resolved".into());
                 }
                 Request::GroupClips { .. } | Request::GroupTimeRange { .. } => {
                     error = Some("clip grouping target was not resolved".into());
+                }
+                Request::DeviceAutomation { .. } | Request::DeviceAutomationControl { .. } => {
+                    error = Some("automation target was not resolved".into());
                 }
                 Request::GroupAudioEvents { .. } => {
                     error = Some("audio event grouping target was not resolved".into());
@@ -4820,9 +4965,16 @@ fn run_worker(
                     match patched {
                         Ok(state) => {
                             let before_project = session.project().clone();
+                            let command = crate::device_gesture::manual_device_edit(
+                                &session,
+                                device,
+                                state,
+                                [parameter],
+                                true,
+                            );
                             match resident_audio::execute_command(
                                 &mut session,
-                                Command::ReplaceDeviceState { device, state },
+                                command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 hex_engine::AudioSourceContext {
                                     project_generation,
@@ -8987,6 +9139,7 @@ mod service_tests {
 
         service
             .submit(Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 2,
                 value: ParameterValue::Float(3.5),
@@ -9241,6 +9394,7 @@ mod service_tests {
 
         service
             .submit(Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 2,
                 value: ParameterValue::Float(0.6),
@@ -10693,12 +10847,16 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let service = Service {
+            diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
             requests: request_cancellation::Sender::new(
                 requests,
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ),
-            events,
+            events: diagnostics::EventReceiver::new(
+                events,
+                Arc::new(diagnostics::Hooks::default()),
+            ),
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -11261,6 +11419,7 @@ mod service_tests {
         };
         let notes = (0..64_u8)
             .map(|pitch| hex_project::MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::ZERO,
                 duration: hex_project::BeatTime::from_quarters(1).expect("gate"),
                 pitch,

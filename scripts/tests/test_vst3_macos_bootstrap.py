@@ -268,6 +268,13 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(value["before_value"], 0.25)
         return value
 
+    def test_actual_sdk_edit_fifo_preserves_boundaries_values_and_backpressure(self):
+        value=self.host_control(13)
+        self.assertEqual((value["edit_count"],value["edit_order"],value["edit_backpressure"],value["enqueued"]),(16,1,1,16))
+        self.assertEqual(value["refusals"],0)
+        self.assertEqual(value["before_revision"],value["after_revision"],"queue admission is not a controller refresh or DSP ACK")
+        self.assertTrue(value["closed"] and value["unloaded"])
+
     def test_real_host_messages_and_editor_metadata_refresh(self):
         value = self.host_control(0)
         self.assertEqual(value["message"], 0, value)

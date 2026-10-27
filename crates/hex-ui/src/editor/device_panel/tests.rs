@@ -5497,3 +5497,5 @@ fn shared_housing_placeholders_open_in_editor_without_device_commands(cx: &mut T
         assert_eq!(view.worker_requests_pending, 0);
     });
 }
+
+mod navigation_capture_tests;

@@ -1,5 +1,6 @@
 //! Source-local piano ruler, playback start and retained loop brace. Owns one
-//! captured preview; release uses the existing source edit command and Session ACK owner.
+//! captured preview; the Window lease owns held input only. Release uses the
+//! existing source edit command and Session ACK owner.
 //! Source start is neither the insertion cursor nor the playback cursor. Blank
 //! clicks delegate to the cue owner; drags retain source-time selection.
 use super::{
@@ -11,7 +12,7 @@ use super::{
 use crate::theme;
 use gpui::{
     Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathBuilder, ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    PathBuilder, ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use hex_project::ClipId;
 use hex_session::service::Request;
@@ -25,6 +26,7 @@ pub(super) use time_selection::State as TimeSelection;
 #[derive(Default)]
 pub(super) struct State {
     gesture: Option<Gesture>,
+    marker_hovered: bool,
 }
 impl State {
     pub(super) fn held(&self) -> bool {
@@ -74,6 +76,16 @@ enum Handle {
     LoopStart,
     LoopEnd,
     LoopBody,
+}
+impl Handle {
+    fn held_cursor(self) -> gpui::CursorStyle {
+        match self {
+            Self::Start => gpui::CursorStyle::ResizeLeftRight,
+            Self::LoopStart => gpui::CursorStyle::ResizeLeft,
+            Self::LoopEnd => gpui::CursorStyle::ResizeRight,
+            Self::LoopBody => gpui::CursorStyle::ClosedHand,
+        }
+    }
 }
 #[derive(Clone, Copy)]
 struct Gesture {
@@ -201,8 +213,15 @@ impl EditorView {
             self.midi_ruler.cancel();
         }
     }
-    fn begin_midi_start(&mut self, context: Context, x: f32) -> bool {
-        if !x.is_finite()
+    fn begin_midi_start(
+        &mut self,
+        context: Context,
+        x: f32,
+        window: &mut gpui::Window,
+        cx: &mut ViewContext<Self>,
+    ) -> bool {
+        if self.time_selection_key_held
+            || !x.is_finite()
             || self.midi_ruler_context(context.bounds) != Some(context)
             || context
                 .x(context.values.source_start)
@@ -210,10 +229,84 @@ impl EditorView {
         {
             return false;
         }
-        self.begin_midi_ruler(context, x, Handle::Start)
+        // A marker hit must not fall through to time selection if admission is refused.
+        let _ = self.begin_midi_ruler(context, x, Handle::Start, window, cx);
+        true
     }
-    fn begin_midi_ruler(&mut self, context: Context, x: f32, handle: Handle) -> bool {
+    fn begin_midi_ruler(
+        &mut self,
+        context: Context,
+        x: f32,
+        handle: Handle,
+        window: &mut gpui::Window,
+        cx: &mut ViewContext<Self>,
+    ) -> bool {
         if !x.is_finite() || self.midi_ruler_context(context.bounds) != Some(context) {
+            return false;
+        }
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        if !window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            handle.held_cursor(),
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<MouseUpEvent>()
+                    .filter(|e| e.button == MouseButton::Left);
+                let Some(position) = moved
+                    .map(|e| e.position)
+                    .or_else(|| released.map(|e| e.position))
+                else {
+                    return;
+                };
+                let _ = owner.update(cx, |view, cx| {
+                    if !view.owns_midi_ruler_capture(context, handle) {
+                        return;
+                    }
+                    let changed = if !view.clip_view_open
+                        || view.device_panel_active
+                        || !view.midi_focus.is_focused(window)
+                        || !f32::from(position.x).is_finite()
+                        || !f32::from(position.y).is_finite()
+                    {
+                        view.midi_ruler.cancel()
+                    } else {
+                        let invert_snap = moved
+                            .map(|e| e.modifiers.platform)
+                            .or_else(|| released.map(|e| e.modifiers.platform))
+                            .unwrap_or(false);
+                        if released.is_some() {
+                            view.finish_midi_ruler(
+                                context.bounds,
+                                f32::from(position.x),
+                                invert_snap,
+                            );
+                            true
+                        } else {
+                            view.update_midi_ruler(
+                                context.bounds,
+                                f32::from(position.x),
+                                invert_snap,
+                            )
+                        }
+                    };
+                    if changed {
+                        cx.notify();
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.owns_midi_ruler_capture(context, handle) {
+                        view.midi_ruler.cancel();
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        ) {
             return false;
         }
         self.cancel_midi_note_gesture();
@@ -225,6 +318,33 @@ impl EditorView {
             preview: context.values,
         });
         true
+    }
+    fn owns_midi_ruler_capture(&self, context: Context, handle: Handle) -> bool {
+        self.midi_ruler
+            .gesture
+            .is_some_and(|g| g.context == context && g.handle == handle)
+    }
+    /// clip_detail_view reconciles the canonical context before either surface.
+    /// Paint witnesses that held draft and its bounds without scanning the project.
+    fn renew_midi_ruler_capture(
+        &self,
+        bounds: CanvasBounds,
+        owner: gpui::EntityId,
+        window: &mut gpui::Window,
+    ) {
+        if self.clip_view_open
+            && !self.device_panel_active
+            && self.midi_focus.is_focused(window)
+            && let Some(gesture) = self.midi_ruler.gesture
+            && gesture.context.bounds == bounds
+            && gesture.context.generation == self.project_generation
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|s| s.revision == gesture.context.revision)
+        {
+            window.renew_pointer_capture(owner, gesture.handle.held_cursor());
+        }
     }
     fn update_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) -> bool {
         let Some(gesture) = self.midi_ruler.gesture else {
@@ -276,18 +396,14 @@ impl EditorView {
             .gesture
             .is_some_and(|gesture| gesture.handle == Handle::Start);
         let time_selection = self.midi_time_selection_bounds();
+        let start_marker_enabled = !self.time_selection_key_held;
         let entity = cx.entity();
-        let mut ruler = div()
+        let mut ruler = super::timeline_strip::ruler_surface()
             .id("midi-source-ruler")
             .debug_selector(|| "midi-source-ruler".into())
-            .relative()
             .h_full()
             .flex_1()
             .min_w_0()
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
             .tooltip(|_, cx| {
@@ -318,32 +434,21 @@ impl EditorView {
                 break;
             };
             let fraction = (offset as f64 / span as f64) as f32;
-            ruler = ruler.child(
-                div()
-                    .absolute()
-                    .left(relative(fraction))
-                    .top_0()
-                    .pl(px(3.0))
-                    .max_w(px(64.0))
-                    .truncate()
-                    .text_size(px(8.0))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(format!(
-                        "{:.2}b",
-                        raw as f64 / hex_project::BeatTime::ONE.raw() as f64
-                    ))),
-            );
+            ruler = ruler.children(super::timeline_strip::ruler_tick(
+                fraction,
+                format!(
+                    "{:.2}b",
+                    raw as f64 / hex_project::BeatTime::ONE.raw() as f64
+                ),
+                raw % (hex_project::BeatTime::ONE.raw() * 4) == 0,
+                false,
+                false,
+            ));
         }
-        ruler = ruler.children(self.arrange_midi_highlights(
-            start,
-            span,
-            0.0,
-            "arrange-reflected-ruler-range",
-        ));
         ruler = ruler.child(
             canvas(
                 |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-                move |bounds, hitbox, window, _| {
+                move |bounds, hitbox, window, cx| {
                     let b = bounds_of(bounds);
                     if !b.is_valid() {
                         return;
@@ -373,6 +478,15 @@ impl EditorView {
                     {
                         let x =
                             bounds.origin.x + px((marker as f64 / span as f64) as f32 * b.width);
+                        let hovered = start_marker_enabled
+                            && hitbox.is_hovered(window)
+                            && !window.is_pointer_dragging()
+                            && (f32::from(window.mouse_position().x - x)).abs() <= 7.0;
+                        let marker_color = rgb(theme::color(if active || hovered {
+                            theme::PaletteRole::Text
+                        } else {
+                            theme::PaletteRole::Primary
+                        }));
                         let y = bounds.origin.y + px(10.0);
                         let mut path = PathBuilder::fill();
                         path.move_to(point(x - px(5.0), y));
@@ -380,18 +494,51 @@ impl EditorView {
                         path.line_to(point(x, y + px(6.0)));
                         path.close();
                         if let Ok(path) = path.build() {
-                            window.paint_path(path, rgb(theme::color(theme::PaletteRole::Primary)));
+                            window.paint_path(path, marker_color);
                         }
                         window.paint_quad(fill(
                             Bounds::new(point(x, bounds.origin.y), size(px(1.0), px(b.height))),
-                            rgb(theme::color(theme::PaletteRole::Primary)),
+                            marker_color,
                         ));
-                        if active
-                            || (hitbox.is_hovered(window)
-                                && (f32::from(window.mouse_position().x - x)).abs() <= 7.0)
-                        {
+                        if active || hovered {
                             window.set_cursor_style(gpui::CursorStyle::ResizeLeftRight, &hitbox);
+                        } else if !start_marker_enabled {
+                            window.set_cursor_style(gpui::CursorStyle::IBeam, &hitbox);
                         }
+                    }
+                    let hover_entity = entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let hovered = !window.is_pointer_dragging()
+                            && bounds.contains(&event.position)
+                            && marker
+                                .and_then(|at| at.checked_sub(start))
+                                .filter(|at| *at <= span)
+                                .is_some_and(|at| {
+                                    let x = bounds.left()
+                                        + bounds.size.width * (at as f64 / span as f64) as f32;
+                                    (f32::from(event.position.x - x)).abs() <= 7.0
+                                });
+                        hover_entity.update(cx, |view, cx| {
+                            let hovered = hovered && !view.time_selection_key_held;
+                            if view.midi_ruler.marker_hovered != hovered {
+                                view.midi_ruler.marker_hovered = hovered;
+                                cx.notify();
+                            }
+                        });
+                    });
+                    entity
+                        .read(cx)
+                        .renew_midi_ruler_capture(b, entity.entity_id(), window);
+                    if let Some(context) = rendered {
+                        entity.read(cx).renew_midi_time_selection_capture(
+                            b,
+                            context.clip,
+                            entity.entity_id(),
+                            window,
+                        );
                     }
                     let down_entity = entity.clone();
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
@@ -405,87 +552,19 @@ impl EditorView {
                             if let Some(context) = rendered.map(|context| Context {
                                 bounds: b,
                                 ..context
-                            }) && (view.begin_midi_start(context, f32::from(event.position.x))
-                                || view.begin_midi_time_selection(
-                                    context,
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
-                                ))
-                            {
+                            }) && (view.begin_midi_start(
+                                context,
+                                f32::from(event.position.x),
+                                window,
+                                cx,
+                            ) || view.begin_midi_time_selection(
+                                context,
+                                f32::from(event.position.x),
+                                event.modifiers.platform,
+                                window,
+                                cx,
+                            )) {
                                 view.midi_focus.focus(window);
-                                cx.notify();
-                                cx.stop_propagation();
-                            }
-                        });
-                    });
-                    let move_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                        if !phase.bubble() {
-                            return;
-                        }
-                        move_entity.update(cx, |view, cx| {
-                            if view.midi_ruler_time_selection_active() {
-                                if event.pressed_button == Some(MouseButton::Left) {
-                                    view.update_midi_time_selection(
-                                        b,
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    );
-                                } else {
-                                    view.midi_time_selection.cancel();
-                                }
-                                cx.notify();
-                                cx.stop_propagation();
-                                return;
-                            }
-                            if view
-                                .midi_ruler
-                                .gesture
-                                .is_none_or(|gesture| gesture.handle != Handle::Start)
-                            {
-                                return;
-                            }
-                            let changed = if event.pressed_button == Some(MouseButton::Left) {
-                                view.update_midi_ruler(
-                                    b,
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
-                                )
-                            } else {
-                                view.midi_ruler.cancel()
-                            };
-                            if changed {
-                                cx.notify();
-                            }
-                            cx.stop_propagation();
-                        });
-                    });
-                    let up_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                        if !phase.bubble() || event.button != MouseButton::Left {
-                            return;
-                        }
-                        up_entity.update(cx, |view, cx| {
-                            if view.midi_ruler_time_selection_active() {
-                                view.finish_midi_time_selection(
-                                    b,
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
-                                );
-                                cx.notify();
-                                cx.stop_propagation();
-                                return;
-                            }
-                            if view
-                                .midi_ruler
-                                .gesture
-                                .is_some_and(|gesture| gesture.handle == Handle::Start)
-                            {
-                                view.finish_midi_ruler(
-                                    b,
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
-                                );
                                 cx.notify();
                                 cx.stop_propagation();
                             }
@@ -512,7 +591,7 @@ impl EditorView {
             )
             .size_full(),
         );
-        let source_row=div().h(px(18.0)).flex_shrink_0().flex()
+        let source_row=div().h(px(super::timeline_strip::RULER_HEIGHT)).flex_shrink_0().flex()
             .child(div().id("midi-source-ruler-label").w(px(38.0)).flex_shrink_0().text_size(px(8.0)).child(theme::text("start"))
                 .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("clip start"), description:"drag start marker · drag blank ruler to select time · cmd+d duplicate · hold cmd/control to invert snap · no seek".into() }).into()))
             .children([ruler]);
@@ -862,3 +941,11 @@ mod loop_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_time_selection_ui_tests.rs"]
 mod time_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_ruler_capture_tests.rs"]
+mod capture_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_time_selection_capture_tests.rs"]
+mod time_capture_tests;

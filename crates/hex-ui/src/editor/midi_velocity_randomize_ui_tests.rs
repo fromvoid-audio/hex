@@ -69,6 +69,7 @@ fn originals(view: &EditorView) -> Vec<GroupNote> {
         .iter()
         .map(|note| GroupNote {
             id: note.id(),
+            active: note.active(),
             start: note.start().raw(),
             duration: note.duration().raw(),
             pitch: note.pitch(),
@@ -95,6 +96,7 @@ fn randomizer_selected_only_exact_history_roundtrip_and_playback(cx: &mut TestAp
                     .into_iter()
                     .enumerate()
                     .map(|(i, velocity)| MidiNoteInsert {
+                        active: true,
                         start: BeatTime::from_raw(BeatTime::ONE.raw() * (i as u64 + 1) / 2),
                         duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
                         pitch: 60 + i as u8,
@@ -193,6 +195,7 @@ fn randomizer_bounds_determinism_and_stale_or_empty_selection_refuse(cx: &mut Te
                 notes: [60, 64]
                     .into_iter()
                     .map(|pitch| MidiNoteInsert {
+                        active: true,
                         start: BeatTime::ZERO,
                         duration: BeatTime::ONE,
                         pitch,

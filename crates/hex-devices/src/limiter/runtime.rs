@@ -1,9 +1,11 @@
 //! Original limiting laws, explicitly separate from reference parity.
 //!
 //! A bounded monotonic maximum queue anticipates each channel's next lookahead
-//! interval. Standard attack is instantaneous; true-peak attack anticipates with
-//! an exponential time constant of one eighth of the selected lookahead, capped
-//! by the reconstructed peak constraints immediately around the output sample.
+//! interval. Standard attack ramps linearly toward the required gain over the
+//! lookahead window, retaining the steepest active ramp so later peaks cannot
+//! postpone earlier deadlines. Soft-clip attack is instantaneous; true-peak
+//! attack anticipates with an exponential time constant of one eighth of the
+//! selected lookahead. Output constraints guard each mode's ceiling.
 //! Release is exponential. In true-peak mode an additional 1 ms envelope
 //! recovery floor suppresses modulation beyond the finite reconstruction band;
 //! slower authored release times remain unchanged. Auto release uses
@@ -68,6 +70,7 @@ struct Scalar {
     head: [usize; 2],
     len: [usize; 2],
     gain: [f64; 2],
+    attack_step: [f64; 2],
     program: [f64; 2],
     input: [[f64; 2]; TAPS],
     input_next: usize,
@@ -81,6 +84,7 @@ impl Default for Scalar {
             head: [0; 2],
             len: [0; 2],
             gain: [1.0; 2],
+            attack_step: [0.0; 2],
             program: [0.0; 2],
             input: [[0.0; 2]; TAPS],
             input_next: 0,
@@ -232,14 +236,27 @@ impl Stage {
             } else {
                 coefficient
             };
-            let mut gain = if config.true_peak && target < s.gain[lane] {
-                s.gain[lane] + config.attack_coefficient * (target - s.gain[lane])
+            let mut gain = if target < s.gain[lane] && !config.soft_clip {
+                if config.true_peak {
+                    s.attack_step[lane] = 0.0;
+                    s.gain[lane] + config.attack_coefficient * (target - s.gain[lane])
+                } else {
+                    // Never relax an in-flight ramp: a less urgent later peak
+                    // cannot postpone the deadline of one already detected.
+                    s.attack_step[lane] = s.attack_step[lane]
+                        .max((s.gain[lane] - target) * config.attack_window_inverse);
+                    (s.gain[lane] - s.attack_step[lane]).max(target)
+                }
             } else {
+                s.attack_step[lane] = 0.0;
                 target.min(s.gain[lane] + coefficient * (target - s.gain[lane]))
             };
             let immediate_peak = immediate[lane] + link * (immediate_worst - immediate[lane]);
             if immediate_peak > config.ceiling {
                 gain = gain.min(config.ceiling / immediate_peak);
+            }
+            if gain <= target {
+                s.attack_step[lane] = 0.0;
             }
             s.gain[lane] = gain;
             applied[lane] = gain;
@@ -268,6 +285,7 @@ struct Config {
     release_coefficient: f64,
     guard_release_coefficient: f64,
     attack_coefficient: f64,
+    attack_window_inverse: f64,
     antimodulation_coefficient: f64,
     program_coefficient: f64,
     auto_release: bool,
@@ -334,6 +352,7 @@ impl Config {
             antimodulation_coefficient: 1.0 - (-1.0 / (0.001 * f64::from(rate))).exp(),
             attack_coefficient: 1.0
                 - (-8.0 / (delay - if true_peak { TAPS - 1 } else { 0 }) as f64).exp(),
+            attack_window_inverse: 1.0 / (delay + 1) as f64,
             guard_release_coefficient: 1.0 - (-1.0 / (0.22 * f64::from(rate))).exp(),
             release_coefficient: 1.0
                 - (-1000.0 / (f64::from(settings.value(RELEASE)) * f64::from(rate))).exp(),
@@ -426,6 +445,12 @@ impl History {
     }
     fn quiet(&self) -> bool {
         self.first.quiet() && self.final_stage.as_ref().is_none_or(Stage::quiet)
+    }
+    fn clear_attack(&mut self) {
+        self.first.scalar.attack_step = [0.0; 2];
+        if let Some(stage) = &mut self.final_stage {
+            stage.scalar.attack_step = [0.0; 2];
+        }
     }
     fn reset(&mut self, config: Config) {
         self.first.reset();
@@ -575,6 +600,10 @@ impl OwnedProcessorRuntime for Runtime {
             if self.same_history_layout(old) {
                 self.primary.copy_from(&old.primary);
                 self.scratch.copy_from(&old.primary);
+                if self.config.soft_clip != old.config.soft_clip {
+                    self.primary.clear_attack();
+                    self.scratch.clear_attack();
+                }
             } else {
                 // Admission proved that no donor audio remains queued. A new
                 // layout starts with its own configuration, including both

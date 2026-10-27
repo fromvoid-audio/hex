@@ -205,7 +205,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     h.run(Request::Undo);
     let (applied, _) = h.applied(applied);
     assert_eq!(replay(&mut h), expected);
-    // Re-group a repeated retained root through the actual render/admission lane.
+    // Re-group a repeated retained root through the actual publication lane.
     let before_render = h.run(Request::Edit(Command::ResizeAudioClipView {
         clip: group,
         operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 205 },
@@ -245,22 +245,25 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     assert_eq!(refused.state.project, before_render.state.project);
     assert_eq!(refused.state.revision, before_render.state.revision);
     h.refuse.store(false, std::sync::atomic::Ordering::Release);
-    let rendered = h.run(request());
+    let regrouped = h.run(request());
     (applied, _) = h.applied(applied);
-    let Some(Created::Clip(result)) = rendered.created else {
+    let Some(Created::Clip(result)) = regrouped.created else {
         panic!("one clip")
     };
     assert_eq!(
-        rendered.state.project.track(track).unwrap().clips().len(),
+        regrouped.state.project.track(track).unwrap().clips().len(),
         1
     );
     assert!(
-        !rendered
+        regrouped
             .state
             .project
             .clip(result)
             .unwrap()
-            .has_retained_audio_roots()
+            .audio_events()
+            .sources
+            .iter()
+            .any(|root| root.clip.has_retained_audio_roots())
     );
     assert_eq!(replay(&mut h), expected);
     let undone = h.run(Request::Undo);
@@ -271,13 +274,13 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     assert_eq!(replay(&mut h), expected);
     let redone = h.run(Request::Redo);
     h.applied(applied);
-    assert_eq!(redone.state.project, rendered.state.project);
+    assert_eq!(redone.state.project, regrouped.state.project);
     assert_eq!(replay(&mut h), expected);
-    let saved = files.0.join("rendered-group.hex");
+    let saved = files.0.join("nested-group.hex");
     h.run(Request::SaveNew(saved.clone()));
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let reopened = h.run(Request::Open(saved));
-    assert_eq!(reopened.state.project, rendered.state.project);
+    assert_eq!(reopened.state.project, regrouped.state.project);
     h.release_relinquished_output();
     h.wait_fresh_output(old_output);
     h.applied(0);

@@ -359,6 +359,7 @@ fn compile_with_midi_preview<'a>(
         shared_contexts,
         transforms,
         None,
+        None,
     )
 }
 
@@ -372,6 +373,7 @@ fn compile_with_midi_preview_scoped<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -396,6 +398,7 @@ fn compile_with_midi_preview_scoped<'a>(
         shared_contexts,
         transforms,
         samplers,
+        native_input,
     )?;
     compiled_previews.sort_unstable_by_key(|clip| clip.clip_id);
     Ok((
@@ -425,6 +428,7 @@ fn compile_project<'a>(
         shared_contexts,
         transforms,
         None,
+        None,
     )
 }
 
@@ -439,6 +443,7 @@ fn compile_project_scoped<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     let fallback = crate::audio_transform::AudioTransformPreparation::default();
     let transforms = transforms.unwrap_or(&fallback);
@@ -453,6 +458,7 @@ fn compile_project_scoped<'a>(
             shared_contexts,
             transforms,
             samplers,
+            native_input,
         )
     })
 }
@@ -468,12 +474,14 @@ fn compile_project_inner<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: &crate::audio_transform::AudioTransformPreparation,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     if snapshot.has_group_tracks() {
         return Err(Invalid("group track playback is not prepared"));
     }
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
+    crate::device_automation::validate_project_with_registry(snapshot, registry)?;
     crate::gain_envelope::validate_project(snapshot)?;
     validate_source_midi_roots(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
@@ -486,7 +494,7 @@ fn compile_project_inner<'a>(
             .track(root)
             .ok_or(Invalid("midi source root is missing"))?;
         for clip in source.midi_clips().iter().filter(|clip| clip.active()) {
-            for note in clip.notes() {
+            for note in clip.notes().iter().filter(|note| note.active()) {
                 let n = clip
                     .source_playback()
                     .map_err(|error| Invalid(error.0))?
@@ -563,7 +571,7 @@ fn compile_project_inner<'a>(
             && let Some(instrument) = instrument_config.map(Arc::as_ref)
         {
             for clip in midi_source.midi_clips().iter().filter(|clip| clip.active()) {
-                for note in clip.source().notes() {
+                for note in clip.source().notes().iter().filter(|note| note.active()) {
                     instrument
                         .validate_event_note(note.pitch(), note.velocity())
                         .map_err(|_| Invalid("mutable instrument note is unsupported"))?;
@@ -600,7 +608,9 @@ fn compile_project_inner<'a>(
                     let mut sources = Vec::new();
                     sources.try_reserve_exact(events.sources.len())
                         .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
-                    for root in &events.sources {
+                    for root in clip.retained_audio_roots() {
+                        sources.try_reserve(1)
+                            .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
                         let asset = snapshot.asset(root.clip.asset())
                             .ok_or(Invalid("grouped audio source asset missing"))?;
                         let PreparedAudioSourceRef::Resident(audio) = resolve_source(asset, snapshot.sample_rate())? else {
@@ -705,7 +715,7 @@ fn compile_project_inner<'a>(
                 crate::midi_note_bank::MAX_ARRANGEMENT_NOTE_BANK_REFERENCES,
             )?;
         }
-        let effect_plan = compile_device_effects(track, registry, &device_context)?;
+        let effect_plan = compile_device_effects(track, registry, &device_context, native_input)?;
         let device_chain = effect_plan.device_chain;
         for device in &device_chain {
             if let Some(definition) = &device.definition {
@@ -801,6 +811,7 @@ fn compile_project_inner<'a>(
             0,
             &device_context,
             registry,
+            native_input,
         )?;
         for device in &effect_plan.device_chain {
             if let Some(definition) = &device.definition {
@@ -829,6 +840,7 @@ fn compile_project_inner<'a>(
             muted: return_track.muted(),
             matrix: effect_plan.fused,
             device_chain: std::sync::Arc::from(effect_plan.device_chain),
+            output_meter: Default::default(),
         });
     }
     let main_plan = compile_effect_devices(
@@ -837,6 +849,7 @@ fn compile_project_inner<'a>(
         0,
         &device_context,
         registry,
+        native_input,
     )?;
     for device in &main_plan.device_chain {
         if let Some(definition) = &device.definition {
@@ -1012,6 +1025,7 @@ fn compile_device_effects(
     track: &hex_project::Track,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     context: &hex_lattice::DevicePreparationContext<'_>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 ) -> Result<CompiledEffectPlan, Invalid> {
     compile_effect_devices(
         track.devices(),
@@ -1019,6 +1033,7 @@ fn compile_device_effects(
         track.instrument_position().unwrap_or(0),
         context,
         registry,
+        native_input,
     )
 }
 
@@ -1028,6 +1043,7 @@ fn compile_effect_devices(
     _split: usize,
     context: &hex_lattice::DevicePreparationContext<'_>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 ) -> Result<CompiledEffectPlan, Invalid> {
     let sample_rate = context.sample_rate;
     let mut devices = Vec::new();
@@ -1042,9 +1058,19 @@ fn compile_effect_devices(
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
+        let automation = crate::device_automation::prepare_with_registry_and_input(
+            device,
+            registry,
+            native_input,
+        )?;
         let prepared_device = registry
-            .prepare_runtime_instance(identity, &migrated, context)
-            .map_err(|_| Invalid("native device state could not be prepared"))?;
+            .prepare_runtime_instance_with_automation(
+                identity,
+                &migrated,
+                context,
+                automation.parameter_ids(),
+            )
+            .map_err(|_| Invalid("native device state or automation could not be prepared"))?;
         let processor = prepared_device.processor;
 
         let prepared = if device.bypassed() {
@@ -1066,6 +1092,7 @@ fn compile_effect_devices(
                 .map_err(|error| Invalid(error.0))?;
         }
         devices.push(hex_lattice::PreparedRuntimeInstance {
+            automation,
             meter: Default::default(),
             owner,
             device_id: device.id().value(),
@@ -1150,6 +1177,7 @@ pub(crate) fn project_with_source_bank<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    native_input: Option<crate::device_automation::NativeParameterInputTarget>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview_scoped(
         snapshot,
@@ -1160,5 +1188,6 @@ pub(crate) fn project_with_source_bank<'a>(
         shared_contexts,
         transforms,
         samplers,
+        native_input,
     )
 }

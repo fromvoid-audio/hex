@@ -166,6 +166,7 @@ fn decoder_and_computer_chord_paint_matches_right_arrow_after_real_ack(cx: &mut 
                 .notes()
                 .iter()
                 .map(|n| MidiNoteInsert {
+                    active: true,
                     start: n.start(),
                     duration: n.duration(),
                     pitch: n.pitch(),

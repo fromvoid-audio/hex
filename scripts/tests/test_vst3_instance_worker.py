@@ -67,9 +67,12 @@ class Session:
         if prefix == b"HXVB":
             header = prefix + self.exact(60)
             frames = struct.unpack_from("<H", header, 6)[0]
+            version, parameters = struct.unpack_from("<H", header, 4)[0], struct.unpack_from("<H", header, 10)[0]
             if not 1 <= frames <= 256:
                 raise AssertionError("invalid returned PCM extent")
-            return prefix, header + self.exact(frames * 8)
+            if version not in (1, 2) or parameters > 64 or (version == 1 and parameters) or any(header[12:16]):
+                raise AssertionError("invalid returned parameter extent")
+            return prefix, header + self.exact(frames * 8 + parameters * 16)
         magic = prefix + self.exact(4)
         length = struct.unpack("<I", self.exact(4))[0]
         if length > 8192:
@@ -107,6 +110,19 @@ class Session:
         self.sequence += 1
         self.frames += frames
         return header, inputs, message
+
+    def render_parameters(self, frames, points):
+        inputs = tuple(v for n in range(frames) for v in
+                       [(self.frames + n + 1) / 256 if self.channels[0] else 0,
+                        -(self.frames + n + 3) / 512 if self.channels[0] == 2 else 0])
+        header = struct.pack("<4sHHHH4x6Q", b"HXVB", 2, frames, 0, len(points),
+                             *BINDING, self.sequence, self.frames)
+        payload = b"".join(struct.pack("<HHId", offset, 0, parameter, value) for offset, parameter, value in points)
+        self.socket.sendall(header + struct.pack("<" + "f" * len(inputs), *inputs) + payload)
+        message = self.message()
+        self.sequence += 1
+        self.frames += frames
+        return inputs, message
 
     def stop(self):
         self.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVE", 1, 0, 0,
@@ -148,7 +164,7 @@ class NativeInstanceTests(unittest.TestCase):
         self.addCleanup(value.close)
         return value
 
-    def ready(self, session):
+    def ready(self, session, *, controller=False):
         magic, body = session.message()
         self.assertEqual(magic, b"HXVIRD04", body)
         self.assertEqual(struct.unpack_from("<H4Q", body), (1, *BINDING))
@@ -160,14 +176,117 @@ class NativeInstanceTests(unittest.TestCase):
         size = struct.unpack_from("<H", body, 82)[0]
         self.assertEqual(size, len(body) - 84)
         state = body[84:]
-        self.assertEqual(state[:8], b"HXVS\x01\x01\x00\x00")
+        self.assertEqual(state[:8], b"HXVS\x01" + bytes([3 if controller else 1, 0, 0]))
         self.assertEqual(state[8:24], CID)
         self.assertEqual(state[24:56], session.exe_hash)
         self.assertEqual(state[56:88], session.info_hash)
-        self.assertEqual(struct.unpack_from("<II", state, 88), (32, 0))
+        self.assertEqual(struct.unpack_from("<II", state, 88), (32, 8 if controller else 0))
         self.assertEqual(state[96:100], b"HXPS")
         self.assertEqual(struct.unpack_from("<IfdBB2xII", state, 100),
                          (0, 1.0, 48000.0, *session.channels, 77, 91))
+        if controller:
+            self.assertEqual(state[128:], b"HXCT" + struct.pack("<I", 7))
+
+    def test_actual_parameter_step_ramp_and_feedback_across_variable_sdk_blocks(self):
+        session = self.session(variant=37)
+        self.ready(session, controller=True)
+        cases = [
+            (1, [(0, 7, .25)], [.25]),
+            (7, [(6, 7, .75)], [.25 + .5 * (n + 1) / 7 for n in range(7)]),
+            (64, [(0, 7, .75), (30, 7, .75), (31, 7, .125), (63, 7, .125)],
+             [.75 if n < 31 else .125 for n in range(64)]),
+            (256, [(255, 7, 1.0)], [.125 + .875 * (n + 1) / 256 for n in range(256)]),
+        ]
+        for block, (frames, points, curve) in enumerate(cases):
+            with self.subTest(frames=frames):
+                inputs, (magic, reply) = session.render_parameters(frames, points)
+                self.assertEqual(magic, b"HXVB")
+                self.assertEqual(struct.unpack_from("<HHHH", reply, 4), (2, frames, 0, 1))
+                output = struct.unpack_from("<" + "f" * frames * 2, reply, 64)
+                scale = .5 + block * .125
+                for frame, normalized in enumerate(curve):
+                    for channel in (0, 1):
+                        self.assertAlmostEqual(output[frame * 2 + channel],
+                                               inputs[frame * 2 + channel] * scale * normalized * 4,
+                                               places=6)
+                self.assertEqual(struct.unpack_from("<HHId", reply, 64 + frames * 8),
+                                 (frames - 1, 0, 7, curve[-1]))
+                self.assertEqual(len(reply), 64 + frames * 8 + 16)
+        # Empty queues retain the last actual DSP value; they do not reset it
+        # or echo the preceding block's feedback as a new processor change.
+        header, inputs, (magic, reply) = session.render(13)
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(reply[:64], header)
+        self.assertEqual(struct.unpack_from("<26f", reply, 64), tuple(value * 4 for value in inputs))
+        self.terminal(session, 0, message=session.stop())
+
+    def test_processor_feedback_reaches_original_controller_before_live_and_quiescent_capture(self):
+        session = self.session(variant=37)
+        self.ready(session, controller=True)
+        for n in range(32):
+            # Rapid changes may coalesce for display, but the final value must
+            # reach the real controller rather than just its copied Rust reply.
+            _, (magic, _) = session.render_parameters(7, [(6, 7, (n + 1) / 64)])
+            self.assertEqual(magic, b"HXVB")
+        def capture(magic, operation):
+            session.socket.sendall(struct.pack("<4sHHH6x7Q", magic, 1, 0, 0,
+                                              *BINDING, session.sequence, session.frames, operation))
+            return session.message()
+        magic, body = capture(b"HXVL", 1)
+        self.assertEqual(magic, b"HXVLCA01")
+        for _ in range(10000):
+            magic, body = capture(b"HXVP", 1)
+            self.assertEqual(magic, b"HXVLCA01")
+            if body[58]:
+                break
+        else:
+            self.fail("actual controller feedback/capture did not complete")
+        state = body[61:]
+        self.assertEqual(struct.unpack_from("<f", state, 104)[0], 2.0)
+        self.assertEqual(self.restore_observation()[6], struct.unpack("<i", struct.pack("<f", 2.0))[0])
+        _, (magic, _) = session.render_parameters(1, [(0, 7, .875)])
+        self.assertEqual(magic, b"HXVB")
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,
+                                          *BINDING, session.sequence, session.frames))
+        self.assertEqual(session.message()[0], b"HXVIQF02")
+        self.assertEqual(self.restore_observation()[6], struct.unpack("<i", struct.pack("<f", 3.5))[0])
+        magic, body = capture(b"HXVC", 1)
+        self.assertEqual(magic, b"HXVICS01")
+        self.assertEqual(struct.unpack_from("<f", body, 60 + 104)[0], 3.5)
+        self.terminal(session, 0, message=session.stop())
+        self.assertEqual(self.observation()[1], 0, "controller setters stay on main")
+
+    def test_stopped_flush_rejects_live_stale_malformed_and_unknown_before_sdk_entry(self):
+        for mode in ("live", "operation", "prefix", "binding", "offset", "unknown", "duplicate"):
+            with self.subTest(mode=mode):
+                session=self.session(variant=37);self.ready(session, controller=True)
+                if mode!="live":
+                    session.socket.sendall(struct.pack("<4sHHH6x6Q",b"HXVQ",1,0,0,*BINDING,0,0))
+                    self.assertEqual(session.message()[0],b"HXVIQF02")
+                binding=(*BINDING[:3],99) if mode=="binding" else BINDING
+                operation=2 if mode=="operation" else 1
+                prefix=1 if mode=="prefix" else 0
+                packet=struct.pack("<4sHHHH4x7QHHId",b"HXVF",2,0,0,1,*binding,prefix,0,operation,
+                                   1 if mode=="offset" else 0,0,999 if mode=="unknown" else 7,.5)
+                session.socket.sendall(packet)
+                if mode=="duplicate":
+                    magic,body=session.message();self.assertEqual(magic,b"HXVIFL01")
+                    self.assertEqual(struct.unpack_from("<H7QBHId",body),(1,*BINDING,0,0,1,1,1,7,.5))
+                    session.socket.sendall(packet)
+                self.error(session,8);self.terminal(session,8)
+                self.assertEqual(self.observation()[10],0)
+                self.assertEqual(self.observation()[11],1 if mode=="duplicate" else 0)
+
+    def test_parameter_unknown_ids_offsets_and_nonfinite_values_refuse_before_sdk_processing(self):
+        for point in [(0, 9999, .5), (8, 7, .5), (0, 7, float("nan")), (0, 0x80000000, .5)]:
+            with self.subTest(point=point):
+                session = self.session(variant=37)
+                self.ready(session, controller=True)
+                _, (magic, body) = session.render_parameters(8, [point])
+                self.assertEqual(magic, b"HXVIER01")
+                self.assertEqual(struct.unpack("<HB4QI", body), (1, 1, *BINDING, 8))
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
 
     def terminal(self, session, expected, *, closed=True, unloaded=True, message=None):
         magic, body = message or session.message()

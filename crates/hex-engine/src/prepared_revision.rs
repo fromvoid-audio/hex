@@ -113,6 +113,7 @@ pub struct PreparedRevision {
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
     authored_midi_sources: Vec<authored_midi::Source>,
     gain_recording_track: Option<TrackId>,
+    native_parameter_input: Option<crate::device_automation::NativeParameterInputTarget>,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -291,6 +292,62 @@ impl PreparedRevision {
         Ok(self)
     }
 
+    /// Prepare one transient native input through the ordinary compiler, without
+    /// creating canonical points or acquiring a second runtime/publication owner.
+    pub fn prepare_for_native_parameter_input(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        device: hex_project::DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_for_native_parameter_input_with_audio_transforms(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            device,
+            target,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+        )
+    }
+    /// Same transient input with the control worker's existing transform lifecycle.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_for_native_parameter_input_with_audio_transforms(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        device: hex_project::DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+    ) -> Result<Self, Invalid> {
+        let input =
+            crate::device_automation::native_parameter_input_target(project, device, target)?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_source_bank(
+            project,
+            crate::compile::SourceBank::Resident(media),
+            sine_table,
+            previous_session,
+            &effects,
+            &instruments,
+            transforms,
+            None,
+            Some(input),
+        )
+    }
+    /// Exact source locator armed during preparation, never a live application ACK.
+    pub fn native_parameter_input_target(
+        &self,
+    ) -> Option<crate::device_automation::NativeParameterInputTarget> {
+        self.native_parameter_input
+    }
+
     pub fn gain_recording_track(&self) -> Option<TrackId> {
         self.gain_recording_track
     }
@@ -421,6 +478,7 @@ impl PreparedRevision {
             instruments,
             transforms,
             samplers,
+            None,
         )
     }
 
@@ -434,6 +492,7 @@ impl PreparedRevision {
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         transforms: &crate::audio_transform::AudioTransformPreparation,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
             crate::gain_envelope::validate_project(project)?;
@@ -461,6 +520,7 @@ impl PreparedRevision {
                 Some(Arc::clone(&shared_contexts)),
                 Some(transforms),
                 samplers,
+                native_input,
             )?;
             let session = PreparedSessionInventory::prepare_with_source_bank(
                 project,
@@ -514,12 +574,14 @@ impl PreparedRevision {
                 authored_midi_sources: if samplers
                     .and_then(|sources| sources.device_scope())
                     .is_some()
+                    || authored_midi::has_inactive(project)
                 {
                     authored_midi::prepare(project)?
                 } else {
                     Vec::new()
                 },
                 gain_recording_track: None,
+                native_parameter_input: native_input,
             })
         })
     }
@@ -663,6 +725,7 @@ impl PreparedRevision {
             &instruments,
             transforms,
             Some(&preparation),
+            None,
         )
     }
 
@@ -813,6 +876,7 @@ impl PreparedRevision {
             mutable_track_revisions,
             authored_midi_sources: Vec::new(),
             gain_recording_track: None,
+            native_parameter_input: None,
         })
     }
 
@@ -1238,8 +1302,8 @@ impl PreparedRevision {
         })
     }
 
-    /// Missing DSP history is suppressed only for a genuinely added/restored stable authored
-    /// identity. Complete global evidence prevents a moved clip or an old note outside playback
+    /// Missing DSP history is suppressed for a genuinely added/restored or newly enabled
+    /// authored note. Complete evidence prevents a moved clip or an old note outside playback
     /// markers from being mistaken for a new note. This grants no voice/history continuity.
     pub(crate) fn newly_authored_mutable_note(
         &self,
@@ -1288,6 +1352,14 @@ impl PreparedRevision {
                     .and_then(|index| track.arrangement_midi_sources.get(index))
             })
             .is_some_and(|clip| !clip.active)
+    }
+
+    pub(crate) fn midi_note_inactive(
+        &self,
+        clip: hex_project::ClipId,
+        note: hex_project::NoteId,
+    ) -> bool {
+        authored_midi::inactive_note(&self.authored_midi_sources, clip, note)
     }
 
     /// A retained prefix is a strict narrowing of the same source clock, not
@@ -1504,6 +1576,7 @@ fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevis
                                 && a.bypassed == b.bypassed
                                 && a.sample_rate == b.sample_rate
                                 && a.matrix == b.matrix
+                                && a.automation == b.automation
                                 && match (&a.configuration, &b.configuration) {
                                     (Some(a), Some(b)) => a.processing_eq(b),
                                     (None, None) => true,
