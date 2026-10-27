@@ -482,6 +482,12 @@ pub(crate) fn run_worker(
             }
         }
     }
+    // Stop may arrive during a scalar quantum, after the loop's initial
+    // return drain. Reclaim every returned buffer on every loop exit before
+    // destroying the worker queue; otherwise the original pair loses custody.
+    while let Ok(page) = queues.returns.pop() {
+        free_pages.push(page);
+    }
     // All final descriptor/kernel and scratch destruction occurs after the
     // worker loop, and the caller joins this thread outside rendering.
     if let Some(job) = scalar_job.take() {
