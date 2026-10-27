@@ -178,8 +178,8 @@ pub struct BorrowedScalarPage<'a> {
 /// borrow before PCM rendering/parameter adapters borrow their own inputs.
 /// Known positions outside the declared source extent require no page. Within
 /// it, a missing page is an error and requests retry through the same endpoint.
-pub fn read_scalar_values(
-    pages: &mut dyn MediaPages,
+pub fn read_scalar_values<P: MediaPages + ?Sized>(
+    pages: &mut P,
     source: &ScalarSourceMetadata,
     start: u64,
     output: &mut [Option<AutomationValue>],

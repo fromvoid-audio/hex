@@ -6,42 +6,74 @@
 //! bounded, lookup borrows cached PCM, and callback paths neither allocate nor perform file I/O,
 //! wait, log, join or finally drop a source/page owner. Control retires the endpoint only after
 //! callback quiescence.
-use crate::types::{PageKey, StreamFailure};
-use hex_engine::{BorrowedMediaPage, Frame, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey};
+use crate::types::{PageKey, ResourcePageKey, StreamFailure};
+use hex_engine::{
+    BorrowedMediaPage, BorrowedScalarPage, Frame, MediaPages, STREAM_PAGE_FRAMES, ScalarSourceKey,
+    StreamResourceKey, StreamSourceKey,
+};
 use rtrb::{Consumer, Producer, PushError};
 #[cfg(test)]
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PageRequest(pub(crate) PageKey);
+pub(crate) struct PageRequest(pub(crate) ResourcePageKey);
 
 pub(crate) struct PageBuffer {
-    pub(crate) key: Option<PageKey>,
+    pub(crate) key: Option<ResourcePageKey>,
     pub(crate) frames: Box<[Frame]>,
+    pub(crate) scalar_values: Box<[f32]>,
+    pub(crate) scalar_coverage: Box<[u64]>,
     pub(crate) valid_frames: usize,
 }
 
 impl PageBuffer {
     #[cfg(test)]
     pub(crate) fn new() -> Result<Box<Self>, ()> {
-        Self::new_with_capacity().map(|(page, _)| page)
+        Self::new_with_capacity(false).map(|(page, _)| page)
     }
-    pub(crate) fn new_with_capacity() -> Result<(Box<Self>, usize), ()> {
+    pub(crate) fn new_with_capacity(scalar: bool) -> Result<(Box<Self>, usize), ()> {
         let mut frames = Vec::new();
         frames
             .try_reserve_exact(STREAM_PAGE_FRAMES)
             .map_err(|_| ())?;
         frames.resize(STREAM_PAGE_FRAMES, [0.0; 2]);
-        let old_capacity = frames.capacity();
+        let old_capacity = frames.capacity() * std::mem::size_of::<Frame>();
+        let mut scalar_values = Vec::new();
+        let mut scalar_coverage = Vec::new();
+        if scalar {
+            scalar_values
+                .try_reserve_exact(STREAM_PAGE_FRAMES)
+                .map_err(|_| ())?;
+            scalar_values.resize(STREAM_PAGE_FRAMES, 0.0);
+            scalar_coverage
+                .try_reserve_exact(STREAM_PAGE_FRAMES.div_ceil(64))
+                .map_err(|_| ())?;
+            scalar_coverage.resize(STREAM_PAGE_FRAMES.div_ceil(64), 0);
+        }
+        // Vec-to-box may briefly retain the old backing beside the new box.
+        let old_capacity = old_capacity
+            .max(scalar_values.capacity() * std::mem::size_of::<f32>())
+            .max(scalar_coverage.capacity() * std::mem::size_of::<u64>());
         Ok((
             Box::new(Self {
                 key: None,
                 frames: frames.into_boxed_slice(),
+                scalar_values: scalar_values.into_boxed_slice(),
+                scalar_coverage: scalar_coverage.into_boxed_slice(),
                 valid_frames: 0,
             }),
             old_capacity,
         ))
+    }
+    fn payload_len(&self) -> usize {
+        match self.key.map(|key| key.source) {
+            Some(StreamResourceKey::Scalar(_)) => self
+                .scalar_values
+                .len()
+                .min(self.scalar_coverage.len().saturating_mul(64)),
+            _ => self.frames.len(),
+        }
     }
 }
 
@@ -60,7 +92,7 @@ enum CacheSlot {
 #[derive(Clone, Copy)]
 enum PendingSlot {
     Empty,
-    Key(PageKey),
+    Key(ResourcePageKey),
 }
 
 pub(crate) struct Endpoint {
@@ -70,7 +102,7 @@ pub(crate) struct Endpoint {
     eviction_cursor: usize,
     pending: Vec<PendingSlot>,
     pending_mask: usize,
-    source_keys: Vec<StreamSourceKey>,
+    source_keys: Vec<StreamResourceKey>,
     request_tx: Producer<PageRequest>,
     ready_rx: Consumer<Box<PageBuffer>>,
     return_tx: Producer<Box<PageBuffer>>,
@@ -132,7 +164,7 @@ impl Endpoint {
         Some(crate::EndpointData {
             cache: crate::AllocationData::of::<CacheSlot>(cache_slots),
             pending: crate::AllocationData::of::<PendingSlot>(pending_count),
-            source_keys: crate::AllocationData::of::<StreamSourceKey>(source_count),
+            source_keys: crate::AllocationData::of::<StreamResourceKey>(source_count),
             held_returns: crate::AllocationData::of::<Box<PageBuffer>>(cache_pages.checked_add(1)?),
         })
     }
@@ -149,7 +181,7 @@ impl Endpoint {
     pub(crate) fn new(
         cache_pages: usize,
         request_capacity: usize,
-        sources: Vec<StreamSourceKey>,
+        sources: Vec<StreamResourceKey>,
         queues: EndpointQueues,
     ) -> Result<Self, ()> {
         let max_cached_pages = cache_pages.saturating_sub(1);
@@ -228,7 +260,7 @@ impl Endpoint {
 
     pub(crate) fn take_failure(&mut self) -> Option<StreamFailure> {
         let failure = self.failure_rx.pop().ok()?;
-        self.pending_remove(PageKey {
+        self.pending_remove(ResourcePageKey {
             source: failure.key,
             page_index: failure.page_index,
         });
@@ -264,8 +296,9 @@ impl Endpoint {
     pub(crate) fn cache_capacity(&self) -> usize {
         self.max_cached_pages
     }
-    pub(crate) fn has_extent(&self, extent: crate::StreamPageExtent) -> bool {
-        let key = PageKey {
+    pub(crate) fn has_extent(&self, extent: impl Into<crate::StreamResourceExtent>) -> bool {
+        let extent = extent.into();
+        let key = ResourcePageKey {
             source: extent.source,
             page_index: extent.page_index,
         };
@@ -274,19 +307,19 @@ impl Endpoint {
             .is_some_and(|slot| {
                 matches!(slot, CacheSlot::Occupied { page, .. }
                 if page.key == Some(key) && extent.start < extent.end
-                    && extent.end <= page.valid_frames && page.valid_frames <= page.frames.len())
+                    && extent.end <= page.valid_frames && page.valid_frames <= page.payload_len())
             })
     }
     /// The caller validates the entire extent set before this nonfallible role
     /// replacement. Other roles and legacy pins remain independent.
-    pub(crate) fn replace_protection(&mut self, mask: u8, extents: &[crate::StreamPageExtent]) {
+    pub(crate) fn replace_protection(&mut self, mask: u8, extents: &[crate::StreamResourceExtent]) {
         for slot in &mut self.cache {
             if let CacheSlot::Occupied { pinned, .. } = slot {
                 *pinned &= !mask;
             }
         }
         for extent in extents {
-            if let Some(index) = self.cache_lookup(PageKey {
+            if let Some(index) = self.cache_lookup(ResourcePageKey {
                 source: extent.source,
                 page_index: extent.page_index,
             }) && let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index]
@@ -332,7 +365,8 @@ impl Endpoint {
         count
     }
 
-    fn pending_remove(&mut self, key: PageKey) {
+    fn pending_remove(&mut self, key: impl Into<ResourcePageKey>) {
+        let key = key.into();
         let mut slot = page_slot(key, self.pending_mask);
         for _ in 0..self.pending.len() {
             #[cfg(test)]
@@ -368,7 +402,8 @@ impl Endpoint {
         }
     }
 
-    fn queue_request(&mut self, key: PageKey) {
+    fn queue_request(&mut self, key: impl Into<ResourcePageKey>) {
+        let key = key.into();
         if self.source_keys.binary_search(&key.source).is_err() {
             self.rejected_requests = self.rejected_requests.saturating_add(1);
             return;
@@ -406,7 +441,8 @@ impl Endpoint {
         }
     }
 
-    fn cache_lookup(&self, key: PageKey) -> Option<usize> {
+    fn cache_lookup(&self, key: impl Into<ResourcePageKey>) -> Option<usize> {
+        let key = key.into();
         let mask = self.cache.len() - 1;
         let mut slot = page_slot(key, mask);
         for _ in 0..self.cache.len() {
@@ -498,7 +534,8 @@ impl Endpoint {
         Some((page, pinned))
     }
 
-    fn cache_insertion_slot(&self, key: PageKey) -> Option<usize> {
+    fn cache_insertion_slot(&self, key: impl Into<ResourcePageKey>) -> Option<usize> {
+        let key = key.into();
         let mask = self.cache.len() - 1;
         let mut slot = page_slot(key, mask);
         for _ in 0..self.cache.len() {
@@ -548,8 +585,8 @@ impl Endpoint {
 
 impl MediaPages for Endpoint {
     fn page(&mut self, key: StreamSourceKey, page_index: u64) -> Option<BorrowedMediaPage<'_>> {
-        let key = PageKey {
-            source: key,
+        let key = ResourcePageKey {
+            source: key.into(),
             page_index,
         };
         if let Some(slot) = self.cache_lookup(key) {
@@ -565,8 +602,36 @@ impl MediaPages for Endpoint {
     }
 
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
-        self.queue_request(PageKey {
-            source: key,
+        self.queue_request(ResourcePageKey {
+            source: key.into(),
+            page_index,
+        });
+    }
+    fn scalar_page(
+        &mut self,
+        key: ScalarSourceKey,
+        page_index: u64,
+    ) -> Option<BorrowedScalarPage<'_>> {
+        let resource = ResourcePageKey {
+            source: key.into(),
+            page_index,
+        };
+        if let Some(slot) = self.cache_lookup(resource) {
+            if let CacheSlot::Occupied { page, .. } = &self.cache[slot] {
+                return Some(BorrowedScalarPage {
+                    key,
+                    page_index,
+                    values: &page.scalar_values[..page.valid_frames],
+                    coverage: &page.scalar_coverage[..page.valid_frames.div_ceil(64)],
+                });
+            }
+        }
+        self.misses = self.misses.saturating_add(1);
+        None
+    }
+    fn request_scalar_page(&mut self, key: ScalarSourceKey, page_index: u64) {
+        self.queue_request(ResourcePageKey {
+            source: key.into(),
             page_index,
         });
     }
@@ -576,7 +641,8 @@ fn probe_distance(home: usize, slot: usize, mask: usize) -> usize {
     slot.wrapping_sub(home) & mask
 }
 
-fn page_slot(key: PageKey, mask: usize) -> usize {
+fn page_slot(key: impl Into<ResourcePageKey>, mask: usize) -> usize {
+    let key = key.into();
     struct FastHasher(u64);
     impl Hasher for FastHasher {
         fn finish(&self) -> u64 {
@@ -622,7 +688,7 @@ impl Endpoint {
         crate::EndpointData {
             cache: crate::AllocationData::of::<CacheSlot>(cache.capacity()),
             pending: crate::AllocationData::of::<PendingSlot>(pending.capacity()),
-            source_keys: crate::AllocationData::of::<StreamSourceKey>(source_keys.capacity()),
+            source_keys: crate::AllocationData::of::<StreamResourceKey>(source_keys.capacity()),
             held_returns: crate::AllocationData::of::<Box<PageBuffer>>(held_returns.capacity()),
         }
     }
@@ -674,7 +740,7 @@ mod tests {
         let endpoint = Endpoint::new(
             cache_pages,
             request_capacity,
-            vec![key],
+            vec![key.into()],
             EndpointQueues {
                 request_tx,
                 ready_rx,
@@ -727,7 +793,7 @@ mod tests {
 
     fn page(key: PageKey) -> Box<PageBuffer> {
         let mut page = PageBuffer::new().expect("page buffer");
-        page.key = Some(key);
+        page.key = Some(key.into());
         page.valid_frames = 1;
         page.frames[0] = [key.page_index as f32, -(key.page_index as f32)];
         page
@@ -909,8 +975,8 @@ mod tests {
             CacheSlot::Occupied { page, .. } => page.frames.as_ptr(),
             CacheSlot::Empty => panic!("page"),
         };
-        test.endpoint.replace_protection(1, &[extent]);
-        test.endpoint.replace_protection(2, &[extent]);
+        test.endpoint.replace_protection(1, &[extent.into()]);
+        test.endpoint.replace_protection(2, &[extent.into()]);
         test.endpoint.replace_protection(1, &[]);
         assert!(matches!(
             test.endpoint.cache[index],
@@ -1006,7 +1072,7 @@ mod tests {
             assert_eq!(pending.requests.pop().expect("queued page").0, *key);
         }
         let failure = StreamFailure {
-            key: source,
+            key: source.into(),
             page_index: keys[1].page_index,
             kind: crate::types::StreamFailureKind::SourceChanged,
         };

@@ -20,7 +20,7 @@ mod types;
 mod worker;
 
 pub use endpoint::EndpointStats;
-pub use hex_engine::StreamPageExtent;
+pub use hex_engine::{StreamPageExtent, StreamResourceExtent};
 pub use runtime::{
     AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
     AudioStreamStorageSummary, CatalogLease, ConstructorPageLoan, ConstructorStreamDomain,
@@ -34,6 +34,6 @@ pub use runtime::{
     StreamSourceDomainObligation,
 };
 pub use types::{
-    CatalogFootprint, PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,
-    StreamRuntimeError,
+    CatalogFootprint, PageKey, ResourcePageKey, ScalarSourceDefinition, SourceDefinition,
+    StreamConfig, StreamFailure, StreamFailureKind, StreamRuntimeError,
 };

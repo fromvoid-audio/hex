@@ -114,6 +114,7 @@ pub struct PreparedRevision {
     authored_midi_sources: Vec<authored_midi::Source>,
     gain_recording_track: Option<TrackId>,
     native_parameter_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    pub(crate) scalar_automation: Option<crate::scalar_automation::ScalarAutomationBinding>,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -141,6 +142,48 @@ impl PreparedRevision {
             previous_session,
             &instruments,
         )
+    }
+
+    /// Prepare one recorded normalized source through the same native factory
+    /// union as live input. This first streamed-source path admits only a graph
+    /// with zero final latency; delayed stage origins require separate admission.
+    /// Metadata alone grants no page lease or native publication authority.
+    pub fn prepare_with_scalar_automation(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        binding: crate::scalar_automation::ScalarAutomationBinding,
+    ) -> Result<Self, Invalid> {
+        if binding.source.project_rate() != project.sample_rate() {
+            return Err(Invalid(
+                "scalar automation source rate differs from project",
+            ));
+        }
+        let mut prepared = Self::prepare_for_native_parameter_input(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            binding.device,
+            binding.target,
+        )?;
+        if prepared.arrangement.main_latency_frames() != 0 {
+            return Err(Invalid(
+                "scalar automation requires uncompensated stage origins",
+            ));
+        }
+        let input = prepared
+            .native_parameter_input
+            .ok_or(Invalid("scalar automation native target is unavailable"))?;
+        prepared.arrangement.prepare_scalar_automation(input)?;
+        prepared.scalar_automation = Some(binding);
+        Ok(prepared)
+    }
+    pub fn scalar_automation_binding(
+        &self,
+    ) -> Option<&crate::scalar_automation::ScalarAutomationBinding> {
+        self.scalar_automation.as_ref()
     }
 
     /// Prepare a tuning-only publication in the authoritative Session's existing
@@ -581,6 +624,7 @@ impl PreparedRevision {
                 },
                 gain_recording_track: None,
                 native_parameter_input: native_input,
+                scalar_automation: None,
             })
         })
     }
@@ -876,6 +920,7 @@ impl PreparedRevision {
             authored_midi_sources: Vec::new(),
             gain_recording_track: None,
             native_parameter_input: None,
+            scalar_automation: None,
         })
     }
 
@@ -932,7 +977,9 @@ impl PreparedRevision {
     }
 
     pub fn contains_streamed_sources(&self) -> bool {
-        self.arrangement.contains_streamed_sources() || self.session.contains_streamed_sources()
+        self.scalar_automation.is_some()
+            || self.arrangement.contains_streamed_sources()
+            || self.session.contains_streamed_sources()
     }
 
     /// Whether the compiled Arrangement owns any enabled mutable instrument.

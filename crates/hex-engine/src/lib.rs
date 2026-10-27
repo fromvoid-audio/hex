@@ -3583,6 +3583,8 @@ pub mod tuning_audition;
 pub mod compile;
 
 pub mod playback;
+mod scalar_automation;
+pub use scalar_automation::ScalarAutomationBinding;
 mod scalar_streamed;
 pub use scalar_streamed::{
     BorrowedScalarPage, ScalarFileIdentity, ScalarProjectionIdentity, ScalarSourceKey,

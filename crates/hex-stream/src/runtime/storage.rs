@@ -245,6 +245,7 @@ impl Domain<'_> {
         let VerifiedCatalog {
             footprint: _,
             sources: _,
+            scalar_sources: _,
             data,
         } = catalog.as_ref();
         if Arc::weak_count(catalog) != 0 || Arc::weak_count(&self.control.owner.stop) != 0 {

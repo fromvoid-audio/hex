@@ -1,6 +1,12 @@
-use hex_engine::{STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata};
+use hex_engine::{
+    STREAM_PAGE_FRAMES, ScalarSourceKey, ScalarSourceMetadata, StreamResourceKey, StreamSourceKey,
+    StreamedSourceMetadata,
+};
 use hex_media::VerifiedWavReaderLimits;
+use hex_project::TempoMap;
+use hex_storage::automation_draft::{PreparedAutomationTake, automation_projection_fingerprint};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamConfig {
@@ -116,6 +122,73 @@ impl SourceDefinition {
     }
 }
 
+/// Closed scalar source. Construction derives metadata from the retained verified
+/// reader and exact immutable projection; callers cannot substitute map facts.
+/// Ownership, descriptor destruction and cursor construction are control/worker only.
+pub struct ScalarSourceDefinition {
+    pub(crate) source: PreparedAutomationTake,
+    pub(crate) projection: Arc<TempoMap>,
+    metadata: ScalarSourceMetadata,
+}
+impl ScalarSourceDefinition {
+    pub fn new(
+        key: ScalarSourceKey,
+        source: PreparedAutomationTake,
+        projection: Arc<TempoMap>,
+    ) -> Result<Self, StreamRuntimeError> {
+        let ranges = source
+            .projected_coverage(&projection)
+            .map_err(|_| StreamRuntimeError::InvalidConfiguration)?;
+        let start = ranges.iter().flatten().map(|r| r.start).min().unwrap_or(0);
+        let end = ranges
+            .iter()
+            .flatten()
+            .map(|r| r.end)
+            .max()
+            .unwrap_or(start);
+        let identity = source.content_identity();
+        let metadata = ScalarSourceMetadata::new(
+            key,
+            projection.sample_rate(),
+            start,
+            end,
+            hex_engine::ScalarProjectionIdentity {
+                version: hex_project::AUTOMATION_PROJECTION_VERSION,
+                fingerprint: automation_projection_fingerprint(&projection),
+            },
+            hex_engine::ScalarFileIdentity {
+                format_version: identity.version(),
+                file_bytes: identity.file_bytes(),
+                terminal_chain: identity.terminal_chain(),
+            },
+        )
+        .map_err(|_| StreamRuntimeError::InvalidConfiguration)?;
+        Ok(Self {
+            source,
+            projection,
+            metadata,
+        })
+    }
+    pub fn metadata(&self) -> &ScalarSourceMetadata {
+        &self.metadata
+    }
+}
+
+/// Tagged request/cache identity; PCM wrappers remain available through PageKey.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResourcePageKey {
+    pub source: StreamResourceKey,
+    pub page_index: u64,
+}
+impl From<PageKey> for ResourcePageKey {
+    fn from(key: PageKey) -> Self {
+        Self {
+            source: key.source.into(),
+            page_index: key.page_index,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamFailureKind {
     SourceChanged,
@@ -127,7 +200,7 @@ pub enum StreamFailureKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamFailure {
-    pub key: StreamSourceKey,
+    pub key: StreamResourceKey,
     pub page_index: u64,
     pub kind: StreamFailureKind,
 }
@@ -156,6 +229,7 @@ pub(crate) struct VerifiedCatalog {
     pub(crate) data: crate::WorkerData,
     pub(crate) footprint: CatalogFootprint,
     pub(crate) sources: Vec<StreamedSourceMetadata>,
+    pub(crate) scalar_sources: Vec<ScalarSourceMetadata>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
