@@ -130,6 +130,7 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
             clip,
             notes: vec![
                 MidiNoteInsert {
+                    active: true,
                     start: beat(0),
                     duration: beat(1),
                     pitch: 60,
@@ -137,6 +138,7 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
                     velocity: 37
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: beat(2),
                     duration: beat(1),
                     pitch: 64,

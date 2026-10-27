@@ -512,6 +512,7 @@ fn rapid_batches_use_each_real_canonical_range_and_malformed_ranges_preserve_bas
                     notes: [1, 0]
                         .into_iter()
                         .map(|index| hex_project::MidiNoteInsert {
+                            active: true,
                             start: BeatTime::from_quarters(offset + index).unwrap(),
                             duration: BeatTime::ONE,
                             pitch: 60 + index as u8,
@@ -545,6 +546,7 @@ fn rapid_batches_use_each_real_canonical_range_and_malformed_ranges_preserve_bas
             clip,
             remove: vec![first_batch[1]],
             insert: vec![hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::ZERO,
                 duration: BeatTime::ONE,
                 pitch: 67,

@@ -494,7 +494,7 @@ fn compile_project_inner<'a>(
             .track(root)
             .ok_or(Invalid("midi source root is missing"))?;
         for clip in source.midi_clips().iter().filter(|clip| clip.active()) {
-            for note in clip.notes() {
+            for note in clip.notes().iter().filter(|note| note.active()) {
                 let n = clip
                     .source_playback()
                     .map_err(|error| Invalid(error.0))?
@@ -571,7 +571,7 @@ fn compile_project_inner<'a>(
             && let Some(instrument) = instrument_config.map(Arc::as_ref)
         {
             for clip in midi_source.midi_clips().iter().filter(|clip| clip.active()) {
-                for note in clip.source().notes() {
+                for note in clip.source().notes().iter().filter(|note| note.active()) {
                     instrument
                         .validate_event_note(note.pitch(), note.velocity())
                         .map_err(|_| Invalid("mutable instrument note is unsupported"))?;

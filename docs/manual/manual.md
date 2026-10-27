@@ -118,7 +118,8 @@ audio; unsupported streamed sources refuse before the edit is committed.
 with a positive arrange time selection, **g** instead groups only the included
 pieces, splitting clips at both selection edges and preserving outside material.
 each populated track gets its own clip, preserving track routing; empty tracks
-are skipped. each track must contain one media kind with matching activation.
+are skipped. each track must contain one media kind. audio clips must have
+matching activation; midi grouping preserves inactive notes inside an active clip.
 the final track's result becomes the selected clip. one undo restores all tracks.
 
 the lower clip editor shows the accepted arrange playback position inside the
@@ -345,6 +346,9 @@ devices and track headers; in clip editing they affect the selected clips or tim
 span. a partial time span splits clips at its edges. automation lanes prevent
 activation of the retained background clips. text fields and the computer midi
 keyboard keep their own input.
+
+in the focused midi editor, **c** or **0** toggles the selected notes. inactive
+notes remain editable and are silent during playback; copies retain their state.
 
 click a curve to add a point, drag a point to change its time or value, and
 release to apply the edit. editing another track's curve keeps the background

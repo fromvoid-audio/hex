@@ -198,6 +198,53 @@ fn ordinary_restored_or_added_authored_notes_suppress_past_and_admit_future_atom
 }
 
 #[test]
+fn newly_enabled_notes_do_not_chase_missing_mutable_history() {
+    registry_test(|registry, id| {
+        let full = with_test_instrument(
+            &with_second_arrangement_note(&with_second_session_note(&project(1.0, 0, 8 << 32))),
+            id,
+            0,
+        );
+        for selected_session in [false, true] {
+            let mut snapshot = full.snapshot();
+            arrangement(&mut snapshot)[0].notes[0].active = false;
+            session(&mut snapshot).notes[0].active = false;
+            let before = Project::from_legacy_snapshot(snapshot).unwrap();
+            let mut old = ordinary_mutable_playback(&before, registry);
+            warm(&mut old, selected_session);
+            let mut next = ordinary_mutable_playback(&full, registry);
+            next.try_inherit_state_from(&mut old).unwrap();
+            assert_eq!(next.suppressions.len(), 1);
+            let mut output = [[1.0; 2]; 64];
+            next.render(&mut output).unwrap();
+            assert_eq!(output, [[0.0; 2]; 64]);
+            let mut until_onset = vec![[0.0; 2]; 24_000 - 128];
+            next.render(&mut until_onset).unwrap();
+            assert!(until_onset.iter().all(|frame| *frame == [0.0; 2]));
+            next.render(&mut output[..1]).unwrap();
+            assert!(output[0][0] > 0.0);
+            let mut legacy = SessionPlayback::new(revision_with_instrument_registry(
+                &before,
+                Arc::new(hex_devices::SineTable::new()),
+                registry,
+            ))
+            .unwrap();
+            warm(&mut legacy, selected_session);
+            let mut legacy_next = SessionPlayback::new(revision_with_instrument_registry(
+                &full,
+                Arc::new(hex_devices::SineTable::new()),
+                registry,
+            ))
+            .unwrap();
+            assert_eq!(
+                legacy_next.try_inherit_state_from(&mut legacy),
+                Err(SessionPlaybackError::MutableInstrumentChase)
+            );
+        }
+    });
+}
+
+#[test]
 fn ordinary_existing_authored_identity_marker_or_owner_changes_remain_strict() {
     registry_test(|registry, id| {
         for selected_session in [false, true] {

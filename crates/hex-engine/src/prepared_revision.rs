@@ -619,6 +619,7 @@ impl PreparedRevision {
                 authored_midi_sources: if samplers
                     .and_then(|sources| sources.device_scope())
                     .is_some()
+                    || authored_midi::has_inactive(project)
                 {
                     authored_midi::prepare(project)?
                 } else {
@@ -1350,8 +1351,8 @@ impl PreparedRevision {
         })
     }
 
-    /// Missing DSP history is suppressed only for a genuinely added/restored stable authored
-    /// identity. Complete global evidence prevents a moved clip or an old note outside playback
+    /// Missing DSP history is suppressed for a genuinely added/restored or newly enabled
+    /// authored note. Complete evidence prevents a moved clip or an old note outside playback
     /// markers from being mistaken for a new note. This grants no voice/history continuity.
     pub(crate) fn newly_authored_mutable_note(
         &self,
@@ -1400,6 +1401,14 @@ impl PreparedRevision {
                     .and_then(|index| track.arrangement_midi_sources.get(index))
             })
             .is_some_and(|clip| !clip.active)
+    }
+
+    pub(crate) fn midi_note_inactive(
+        &self,
+        clip: hex_project::ClipId,
+        note: hex_project::NoteId,
+    ) -> bool {
+        authored_midi::inactive_note(&self.authored_midi_sources, clip, note)
     }
 
     /// A retained prefix is a strict narrowing of the same source clock, not
