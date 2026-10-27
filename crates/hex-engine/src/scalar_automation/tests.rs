@@ -118,6 +118,61 @@ fn seek(runtime: &mut SessionPlayback) {
 }
 
 #[test]
+fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
+    for target in [
+        DeviceAutomationTarget::Parameter(parameter::GAIN),
+        DeviceAutomationTarget::HostOutputGain,
+    ] {
+        let (mut f, device, _, _) = fixture(target);
+        f.editor
+            .execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: vec![hex_project::AutomationPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.5).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Step,
+                }],
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::SetDeviceAutomationReadSelection {
+                device,
+                target,
+                selection: hex_project::AutomationReadSelection::Base,
+            })
+            .unwrap();
+        let binding = ScalarAutomationBinding {
+            device,
+            target,
+            source: source(f.editor.project().tempo_map()),
+        };
+        let result = PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            binding.clone(),
+        );
+        assert!(
+            result.is_err(),
+            "an overridden lane must not play its recorded source"
+        );
+        f.editor.execute(Command::ReenableDeviceAutomation).unwrap();
+        assert!(
+            PreparedRevision::prepare_with_scalar_automation(
+                f.editor.project(),
+                &f.media,
+                Arc::new(SineTable::new()),
+                None,
+                binding,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 #[ignore = "optimized scalar render profile; run explicitly with --release --ignored --nocapture"]
 fn optimized_scalar_render_cost() {
     let (f, device, _, mut pages) = fixture(DeviceAutomationTarget::Parameter(parameter::GAIN));
