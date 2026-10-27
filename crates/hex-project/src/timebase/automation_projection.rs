@@ -45,8 +45,8 @@ impl<'a> CapturedAutomationProjection<'a> {
     }
     /// Locate the source frame with latest effective event precedence at this
     /// destination position. Half-open ends and collapsed intervals contribute
-    /// nothing. Search takes at most 64 forward predicates, independent of take
-    /// duration/event/pass count, and uses the canonical conversion at each step.
+    /// nothing. Search takes at most 64 iterations plus endpoint validation,
+    /// independent of take duration/event/pass count, using canonical conversion.
     pub fn source_frame_at(
         self,
         destination_frame: u64,

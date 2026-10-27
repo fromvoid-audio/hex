@@ -597,4 +597,55 @@ fn profile_completed_automation_queries() {
             query_seconds * 1e6 / QUERIES as f64
         );
     }
+    let captured = fixture().0.tempo_map().clone();
+    let destination =
+        hex_project::TempoMap::constant(48_000, hex_project::Tempo::new(173_000_000).unwrap())
+            .unwrap();
+    let forward = |frame| {
+        destination
+            .beat_to_frame(captured.frame_to_beat(frame).unwrap())
+            .unwrap()
+    };
+    let placed: Vec<_> = events
+        .iter()
+        .map(|event| (forward(event.content_frame), *event))
+        .collect();
+    let end = forward(EVENTS * 256);
+    let positions: Vec<_> = (0..QUERIES)
+        .map(|query| (query * 104_729 + 127) % end)
+        .collect();
+    let expected: Vec<_> = positions
+        .iter()
+        .map(|frame| placed[placed.partition_point(|(at, _)| at <= frame) - 1].1)
+        .collect();
+    for trial in 0..3 {
+        let mut source = CompletedAutomationTake::open_on_control(&path, limits()).unwrap();
+        let mut output = [None; MAX_PREVIEW_QUERIES];
+        for _ in 0..2 {
+            source
+                .read_projected_preview_on_control(
+                    &destination,
+                    &positions[..MAX_PREVIEW_QUERIES],
+                    &mut output,
+                )
+                .unwrap();
+        }
+        let start = Instant::now();
+        for (frames, expected) in positions
+            .chunks(MAX_PREVIEW_QUERIES)
+            .zip(expected.chunks(MAX_PREVIEW_QUERIES))
+        {
+            source
+                .read_projected_preview_on_control(&destination, frames, &mut output)
+                .unwrap();
+            for (actual, expected) in output.iter().zip(expected) {
+                assert_eq!(*actual, Some(*expected));
+            }
+        }
+        let seconds = start.elapsed().as_secs_f64();
+        println!(
+            "projected_automation_queries trial={trial} events={EVENTS} warmup_queries=128 measured_queries={QUERIES} batch_queries={MAX_PREVIEW_QUERIES} captured_tempo=120000000 destination_tempo=173000000 query_seconds={seconds:.6} mean_query_microseconds={:.3}",
+            seconds * 1e6 / QUERIES as f64
+        );
+    }
 }
