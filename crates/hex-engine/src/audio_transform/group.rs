@@ -161,7 +161,7 @@ impl AudioTransformPreparation {
             for event in events
                 .events
                 .iter()
-                .filter(|event| event.source == source.root.id)
+                .filter(|event| event.active && event.source == source.root.id)
             {
                 let destination = root_pcm
                     .get_mut(event.start as usize..event.end as usize)

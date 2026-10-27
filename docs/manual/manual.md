@@ -118,8 +118,9 @@ audio; unsupported streamed sources refuse before the edit is committed.
 with a positive arrange time selection, **g** instead groups only the included
 pieces, splitting clips at both selection edges and preserving outside material.
 each populated track gets its own clip, preserving track routing; empty tracks
-are skipped. each track must contain one media kind. audio clips must have
-matching activation; midi grouping preserves inactive notes inside an active clip.
+are skipped. each track must contain one media kind. ordinary audio groups preserve
+inactive events, and midi grouping preserves inactive notes, inside an active clip.
+rendered groups with outer processing still require matching clip activation.
 the final track's result becomes the selected clip. one undo restores all tracks.
 
 the lower clip editor shows the accepted arrange playback position inside the
@@ -461,8 +462,14 @@ or scrolling can move the marker out of view; it returns when that source
 position is visible again. the marker is a read-only guide.
 
 select an audio clip and choose **events** in its detail area. focus the event
-waveform and hold **f** to show its fade controls. release **f** to hide default
+waveform and select an event, then press **c** or **0** to change its activation.
+inactive events keep their source and position and contribute silence. hold **f**
+to show its fade controls. release **f** to hide default
 controls; edited fades remain visible. the computer midi keyboard must be off.
+
+for a grouped event, **src** selects an event inside its retained source. use
+the adjacent arrows to choose another source event, and **c** or **0** to change
+its activation. choose **src** again to return to the grouped event.
 
 drag an upper square to change a fade length. drag a diamond horizontally and
 vertically to shape its curve. lower squares trim the event; they move freely by
