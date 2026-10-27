@@ -14,6 +14,9 @@
 //! integrity chain detects accidental damage, not malicious authenticated input.
 //! Provider capability/adoption and source path normalization belong to Session;
 //! this owner checks neutral source inventory and refuses relative media paths.
+//! The closed completed-take reader also owns semantic clock validation and bounded
+//! projected spans; Session retains live admission and canonical adoption. Full
+//! checkpoints/tokens remain reader-owned, with no native footprint claim.
 //! Version 1 retains its original unknown-clock header for recovery. Version 2
 //! additionally retains an explicit configured capture clock; it does not infer
 //! that clock from the saved loop marker. Neither format proves live admission.
@@ -39,6 +42,11 @@ pub const MAX_APPEND_EVENTS: usize = 64;
 
 mod completed;
 pub use completed::CompletedDraft;
+mod take;
+pub use take::{
+    CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES, MAX_SPANS_PER_STEP,
+    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DraftTarget {
