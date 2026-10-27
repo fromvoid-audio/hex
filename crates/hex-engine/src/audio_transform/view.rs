@@ -105,7 +105,10 @@ impl AudioTransformPreparation {
         sources
             .try_reserve_exact(events.sources.len())
             .map_err(|_| Invalid("grouped audio preview dependency allocation failed"))?;
-        for root in &events.sources {
+        for root in canonical.retained_audio_roots() {
+            sources
+                .try_reserve(1)
+                .map_err(|_| Invalid("grouped audio preview dependency allocation failed"))?;
             let asset = project
                 .asset(root.clip.asset())
                 .ok_or(Invalid("audio preview asset is missing"))?;
