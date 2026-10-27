@@ -480,6 +480,38 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn key_diagnostics_redact_typed_unicode_and_keep_control_keys(cx: &mut gpui::TestAppContext) {
+        let directory =
+            std::env::temp_dir().join(format!("hex-ui-key-redaction-test-{}", std::process::id()));
+        let mut log = hex_diagnostics::SessionLog::start(directory.clone()).unwrap();
+        cx.update(|cx| {
+            install_session_log(cx, Ok(log.handle()));
+            install_action_diagnostics(cx, true);
+            for (key, text) in [("q", Some("秘密🎵")), ("enter", None)] {
+                record_key(
+                    cx,
+                    &gpui::KeystrokeEvent {
+                        keystroke: gpui::Keystroke {
+                            key: key.into(),
+                            key_char: text.map(str::to_owned),
+                            modifiers: gpui::Modifiers::default(),
+                        },
+                        action: None,
+                        context_stack: Vec::new(),
+                    },
+                );
+            }
+        });
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert!(contents.contains("key=\\\"redacted\\\""));
+        assert!(contents.contains("key=\\\"enter\\\""));
+        assert!(!contents.contains("秘密"));
+        assert!(!contents.contains("🎵"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
     fn detailed_audio_logs_are_opt_in_correlated_and_category_filtered(
         cx: &mut gpui::TestAppContext,
     ) {
