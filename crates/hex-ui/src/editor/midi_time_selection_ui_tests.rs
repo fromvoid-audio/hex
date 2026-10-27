@@ -63,6 +63,7 @@ fn range_copy_three_times_keeps_destination_after_real_ack_and_later_frames(
                 ]
                 .into_iter()
                 .map(|(start, duration, pitch)| MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_raw(start),
                     duration: BeatTime::from_raw(duration),
                     pitch,

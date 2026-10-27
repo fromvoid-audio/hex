@@ -62,6 +62,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 next_id += 1;
                 notes.push(MidiNoteSnapshot {
                     id,
+                    active: true,
                     start_raw: 0,
                     duration_raw: 2 << 32,
                     pitch: 48 + ((index + voice) % 36) as u8,

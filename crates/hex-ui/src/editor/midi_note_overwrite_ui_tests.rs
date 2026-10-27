@@ -35,6 +35,7 @@ fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
             clip,
             notes: vec![
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::ZERO,
                     duration: beat(2),
                     pitch,
@@ -42,6 +43,7 @@ fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
                     velocity: 91
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: beat(3),
                     duration: half(1),
                     pitch: pitch + u8::from(vertical),
@@ -49,6 +51,7 @@ fn seed(cx: &mut TestAppContext, vertical: bool) -> Seed {
                     velocity: 103
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::ONE,
                     duration: beat(2),
                     pitch: pitch + 2,
@@ -283,6 +286,7 @@ fn trailing_resize_and_group_move_paint_retirement_before_atomic_worker_commit(
                 assert!(v.enqueue(Request::Edit(Command::AddMidiNotes {
                     clip,
                     notes: vec![MidiNoteInsert {
+                        active: true,
                         start: half(5),
                         duration: half(1),
                         pitch: pitch + 1,

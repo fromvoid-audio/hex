@@ -47,6 +47,7 @@ fn open(
                     notes: [0.5, 1.0]
                         .into_iter()
                         .map(|start| MidiNoteInsert {
+                            active: true,
                             start: beat(start),
                             duration: beat(0.5),
                             pitch: 60,
