@@ -118,6 +118,8 @@ impl GestureClient {
 
 fn plugin_snapshot(key: GestureKey, origin: PluginParameterOrigin) -> GestureSnapshot {
     GestureSnapshot {
+        touched_parameters: Default::default(),
+        manual_edit: false,
         key,
         target: GestureTarget::PluginParameter {
             device: origin.device,

@@ -600,6 +600,8 @@ mod tests {
             token: 4,
         };
         let draft = GestureSnapshot {
+            touched_parameters: Default::default(),
+            manual_edit: false,
             key,
             target: GestureTarget::PluginParameter {
                 device,
@@ -697,6 +699,8 @@ mod tests {
             editor_revision: 3,
         };
         let draft = GestureSnapshot {
+            touched_parameters: Default::default(),
+            manual_edit: false,
             key: GestureKey {
                 generation: 9,
                 token: 4,
