@@ -340,7 +340,9 @@ impl Counts {
                 .ok_or(AudioStorageError::Overflow)?;
         }
         let (rows, handles) = match kind {
-            Kind::Fixed => (256usize, 128usize),
+            // Includes the fixed MIDI span Box under the Session owner; its
+            // former inline payload remains under the same runtime ceiling.
+            Kind::Fixed => (257usize, 128usize),
             Kind::Source => (8, 8),
             Kind::PreparedSource => (4, 2),
             Kind::Scene => (8, 4),

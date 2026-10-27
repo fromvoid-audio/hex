@@ -451,7 +451,7 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
                 8,
                 Some(true),
                 &mut |extent| {
-                    assert_eq!(extent.source, key);
+                    assert_eq!(extent.source, key.into());
                     Ok(())
                 },
             )
@@ -470,7 +470,7 @@ fn registered_sampler_fixture(streamed: bool, shared: bool) {
             .unwrap();
         assert_eq!(window.frames, 8);
         assert!(!extents.is_empty());
-        assert!(extents.iter().all(|extent| extent.source == key));
+        assert!(extents.iter().all(|extent| extent.source == key.into()));
         actual
             .stream_playback(context)
             .commit_stream_action(prepared)

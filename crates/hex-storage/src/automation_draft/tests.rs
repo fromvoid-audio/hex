@@ -547,7 +547,7 @@ fn page_reads_recheck_integrity_after_open_and_refuse_partial_output() {
     let mut reader = open(&path);
     // Simulate a noncooperating external write after the initial full-chain validation.
     // The changed value is still well-typed; only integrity can distinguish it.
-    let offset = reader.records_start + RECORD_BYTES as u64 + 40;
+    let offset = reader.records.records_start + RECORD_BYTES as u64 + 40;
     let mut external = OpenOptions::new().write(true).open(&path).unwrap();
     external.seek(SeekFrom::Start(offset)).unwrap();
     external

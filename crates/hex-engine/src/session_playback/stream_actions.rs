@@ -3,7 +3,7 @@ use super::*;
 use crate::MidiTiming;
 use crate::{
     Invalid, PlaybackAction, PlaybackActionError, PlaybackCommand, StreamChunkWindow,
-    StreamPageExtent,
+    StreamResourceExtent,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -208,7 +208,7 @@ impl SessionPlayback {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.validate_stream_action(prepared)
             .map_err(|e| Invalid(e.diagnostic_message()))?;
@@ -321,7 +321,7 @@ impl SessionPlayback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.visit_pending_stream_chunk_in_scope(due, maximum_frames, visit, false)
     }
@@ -329,7 +329,7 @@ impl SessionPlayback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
         ordinary: bool,
     ) -> Result<StreamChunkWindow, Invalid> {
         if (!ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()))
@@ -386,7 +386,7 @@ impl crate::playback::Playback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?
@@ -396,7 +396,7 @@ impl crate::playback::Playback {
         &mut self,
         prepared: &PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?
@@ -406,7 +406,7 @@ impl crate::playback::Playback {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.session_runtime_mut_for_stream_action()
             .map_err(|_| Invalid("stream session unavailable"))?

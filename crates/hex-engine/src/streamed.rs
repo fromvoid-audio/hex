@@ -108,6 +108,17 @@ pub struct BorrowedMediaPage<'a> {
 pub trait MediaPages {
     fn page(&mut self, key: StreamSourceKey, page_index: u64) -> Option<BorrowedMediaPage<'_>>;
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64);
+
+    /// Typed scalar access shares the same endpoint borrow and lifetime owner.
+    /// None is unavailable, never an uncovered/base sample.
+    fn scalar_page(
+        &mut self,
+        _key: crate::ScalarSourceKey,
+        _page_index: u64,
+    ) -> Option<crate::BorrowedScalarPage<'_>> {
+        None
+    }
+    fn request_scalar_page(&mut self, _key: crate::ScalarSourceKey, _page_index: u64) {}
 }
 
 impl StreamedSourceMetadata {

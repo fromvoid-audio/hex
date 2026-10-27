@@ -382,7 +382,7 @@ impl ClaimedAudioCandidateRuntime {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
     ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
         if self.inner.phase != ClaimedPhase::Current {
             return Err(crate::Invalid("candidate runtime is not current"));
@@ -401,7 +401,7 @@ impl ClaimedAudioCandidateRuntime {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
     ) -> Result<crate::StreamChunkWindow, crate::PlaybackHandoffError> {
         let invalid =
             || crate::PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);

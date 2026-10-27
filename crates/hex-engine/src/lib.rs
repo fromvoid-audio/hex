@@ -123,7 +123,9 @@ pub use gain_envelope::{
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;
-pub use stream_demand::{StreamChunkWindow, StreamPageExtent};
+pub use stream_demand::{
+    StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
+};
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
@@ -2139,6 +2141,8 @@ pub struct Project {
     main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
+    // A legacy whole-project renderer cannot silently omit recorded parameters.
+    requires_scalar_automation: bool,
     shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
@@ -2256,6 +2260,7 @@ impl Project {
             main_device_chain: Arc::from([]),
             main_output_latency_frames: 0,
             has_streamed_sources,
+            requires_scalar_automation: false,
             shared_contexts: owned_shared::OwnedShared::new_owned(
                 shared_analytic::SharedAnalyticContextTable::default(),
             ),
@@ -2837,6 +2842,12 @@ impl RendererRuntime {
         mut pages: Option<&mut P>,
         began: &mut bool,
     ) -> Result<(), Invalid> {
+        if project.requires_scalar_automation {
+            output.fill([0.0; 2]);
+            return Err(Invalid(
+                "recorded parameters require shared session playback",
+            ));
+        }
         let volume_clock = project.midi_volume_timing();
         let volume_timing = volume_clock
             .as_ref()
@@ -3581,6 +3592,13 @@ pub mod tuning_audition;
 pub mod compile;
 
 pub mod playback;
+mod scalar_automation;
+pub use scalar_automation::ScalarAutomationBinding;
+mod scalar_streamed;
+pub use scalar_streamed::{
+    BorrowedScalarPage, ScalarFileIdentity, ScalarProjectionIdentity, ScalarSourceKey,
+    ScalarSourceMetadata, StreamResourceKey, StreamResourceMetadata, read_scalar_values,
+};
 mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
