@@ -4491,6 +4491,16 @@ fn opening_document_waits_for_stopped_plugin_recovery() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn delayed_plugin_change_restores_before_the_held_undo() {
+    delayed_plugin_change_restores_before_held_request(false);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn correlated_save_retains_identity_behind_delayed_plugin_change() {
+    delayed_plugin_change_restores_before_held_request(true);
+}
+
+fn delayed_plugin_change_restores_before_held_request(correlated_save: bool) {
     use hex_session::device_gesture::{
         GestureKey, GestureRequest, PluginParameterOrigin, PluginParameterValue,
     };
@@ -4564,7 +4574,19 @@ fn delayed_plugin_change_restores_before_the_held_undo() {
     let pending = h.next();
     assert!(!pending.request_complete && pending.gesture_ack.is_none());
     wait(|| *h.gesture_probe.pending.lock().unwrap() == Some(change));
-    h.service.submit(Request::Undo).unwrap();
+    let save_path = files.0.join("correlated-plugin-save.hex");
+    let correlation = hex_session::service::SaveCorrelation {
+        request_id: 91,
+        project_generation: context.project_generation,
+        revision: inserted.state.revision,
+    };
+    if correlated_save {
+        h.service
+            .submit_correlated_save(Request::SaveNew(save_path.clone()), correlation)
+            .unwrap();
+    } else {
+        h.service.submit(Request::Undo).unwrap();
+    }
     submit_cancel_intent(&h, change);
     wait(|| h.gesture_probe.cancelled.lock().unwrap().contains(&change));
     h.gesture_probe.ready.store(true, Release);
@@ -4602,7 +4624,14 @@ fn delayed_plugin_change_restores_before_the_held_undo() {
         std::thread::yield_now();
     };
     assert!(undone.error.is_none(), "{:?}", undone.error);
-    assert!(undone.state.project.device(device).is_none());
+    if correlated_save {
+        assert!(undone.save_complete);
+        assert_eq!(undone.save_correlation, Some(correlation));
+        assert!(save_path.exists());
+        assert_eq!(undone.state.project, inserted.state.project);
+    } else {
+        assert!(undone.state.project.device(device).is_none());
+    }
 }
 
 #[test]

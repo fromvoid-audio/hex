@@ -83,7 +83,7 @@ def inventory(root):
     return files
 
 
-def verify(receipt, run=False):
+def verify(receipt, run=False, expected_source_digest=None, expected_sdk_pins=None):
     receipt = receipt.resolve()
     if receipt.stat().st_size > MAX_FILE:
         raise ValueError("oversized receipt")
@@ -93,7 +93,8 @@ def verify(receipt, run=False):
     app = INSTANCE_APP if instance else APP
     if (data.get("version") != 1 or data.get("platform") != "darwin-arm64"
             or data.get("scope") not in ("original-macos-bootstrap", "native-macos-factory-discovery", "native-macos-instance")
-            or data.get("sdk_pins") != PINS or data.get("source_sha256") != source_digest()):
+            or data.get("sdk_pins") != (PINS if expected_sdk_pins is None else expected_sdk_pins)
+            or data.get("source_sha256") != (source_digest() if expected_source_digest is None else expected_source_digest)):
         raise ValueError("unsupported or stale bootstrap receipt")
     root = receipt.parent
     if data.get("package_layout") is not None:

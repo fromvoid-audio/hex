@@ -309,6 +309,9 @@ impl EditorView {
     }
 
     pub(super) fn enqueue_device_barrier(&mut self, request: Request) -> bool {
+        if let Some(admitted) = self.submit_update_save(&request) {
+            return admitted;
+        }
         if self.device_gesture.snapshot().is_none() {
             return self.enqueue(request);
         }
