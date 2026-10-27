@@ -16,8 +16,8 @@
 //! implemented here. Future playback must prepare bounded pages through its existing
 //! resource owner; retaining this reader never grants a callback a disk operation.
 use super::{
-    AppliedEvent, CompletedDraft, DraftClock, DraftProvenance, DraftReadLimits, DraftTarget,
-    MAX_APPEND_EVENTS,
+    AppliedEvent, AutomationContentIdentity, CaptureClock, CompletedDraft, DraftClock, DraftError,
+    DraftProvenance, DraftReadLimits, DraftTarget, MAX_APPEND_EVENTS,
 };
 use hex_project::{CapturedAutomationProjection, LoopRegion, Project, TempoMap};
 use std::{ops::Range, path::Path, sync::Arc};
@@ -28,7 +28,73 @@ pub const MAX_PREVIEW_QUERIES: usize = 64;
 /// The original file survives Drop and every refusal. Canonical source equivalence,
 /// capability validation and saved/history/runtime custody still precede adoption.
 pub struct CompletedAutomationTake {
-    source: CompletedDraft,
+    core: TakeCore<CompletedDraft>,
+}
+
+trait TakeReader {
+    fn captured_tempo_map(&self) -> &TempoMap;
+    fn target(&self) -> DraftTarget;
+    fn provenance(&self) -> DraftProvenance;
+    fn capture_clock(&self) -> Option<CaptureClock>;
+    fn end_clock(&self) -> DraftClock;
+    fn content_identity(&self) -> AutomationContentIdentity;
+    fn event_count(&self) -> u64;
+    fn path(&self) -> &Path;
+    fn read_events(
+        &mut self,
+        first: u64,
+        output: &mut [Option<AppliedEvent>],
+    ) -> Result<usize, DraftError>;
+    fn event_with_ordinal_at_or_before(
+        &mut self,
+        performance: u64,
+    ) -> Result<Option<(u64, AppliedEvent)>, DraftError>;
+    fn event_at_or_before(&mut self, performance: u64) -> Result<Option<AppliedEvent>, DraftError> {
+        self.event_with_ordinal_at_or_before(performance)
+            .map(|event| event.map(|(_, event)| event))
+    }
+}
+impl TakeReader for CompletedDraft {
+    fn captured_tempo_map(&self) -> &TempoMap {
+        self.source().tempo_map()
+    }
+    fn target(&self) -> DraftTarget {
+        self.target()
+    }
+    fn provenance(&self) -> DraftProvenance {
+        self.provenance()
+    }
+    fn capture_clock(&self) -> Option<CaptureClock> {
+        self.capture_clock()
+    }
+    fn end_clock(&self) -> DraftClock {
+        self.end_clock()
+    }
+    fn content_identity(&self) -> AutomationContentIdentity {
+        self.content_identity()
+    }
+    fn event_count(&self) -> u64 {
+        self.event_count()
+    }
+    fn path(&self) -> &Path {
+        self.path()
+    }
+    fn read_events(
+        &mut self,
+        first: u64,
+        output: &mut [Option<AppliedEvent>],
+    ) -> Result<usize, DraftError> {
+        self.read_events(first, output)
+    }
+    fn event_with_ordinal_at_or_before(
+        &mut self,
+        performance: u64,
+    ) -> Result<Option<(u64, AppliedEvent)>, DraftError> {
+        self.event_with_ordinal_at_or_before(performance)
+    }
+}
+struct TakeCore<R> {
+    source: R,
     mapping: Option<ClockMapping>,
     cursor_owner: Arc<()>,
 }
@@ -50,9 +116,11 @@ impl CompletedAutomationTake {
             .map_err(|error| error.to_string())?;
         let Some(first) = page.first().copied().flatten() else {
             return Ok(Self {
-                source,
-                mapping: None,
-                cursor_owner: Arc::new(()),
+                core: TakeCore {
+                    source,
+                    mapping: None,
+                    cursor_owner: Arc::new(()),
+                },
             });
         };
         let end = source.end_clock();
@@ -105,14 +173,31 @@ impl CompletedAutomationTake {
             }
         }
         Ok(Self {
-            source,
-            mapping: Some(mapping),
-            cursor_owner: Arc::new(()),
+            core: TakeCore {
+                source,
+                mapping: Some(mapping),
+                cursor_owner: Arc::new(()),
+            },
         })
     }
 
     pub fn source(&self) -> &Project {
-        self.source.source()
+        self.core.source.source()
+    }
+}
+
+impl<R: TakeReader> TakeCore<R> {
+    fn captured_tempo_map(&self) -> &TempoMap {
+        self.source.captured_tempo_map()
+    }
+    pub fn capture_clock(&self) -> Option<CaptureClock> {
+        self.source.capture_clock()
+    }
+    pub fn end_clock(&self) -> DraftClock {
+        self.source.end_clock()
+    }
+    pub fn content_identity(&self) -> AutomationContentIdentity {
+        self.source.content_identity()
     }
     pub fn target(&self) -> DraftTarget {
         self.source.target()
@@ -139,7 +224,7 @@ impl CompletedAutomationTake {
         &self,
         destination: &TempoMap,
     ) -> Result<[Option<Range<u64>>; 2], String> {
-        let projection = CapturedAutomationProjection::new(self.source().tempo_map(), destination);
+        let projection = CapturedAutomationProjection::new(self.captured_tempo_map(), destination);
         let mut output = [None, None];
         for (range, slot) in self.captured_coverage().into_iter().zip(&mut output) {
             if let Some(range) = range {
@@ -174,7 +259,7 @@ impl CompletedAutomationTake {
             for (&frame, slot) in frames.iter().zip(output.iter_mut()) {
                 let captured = {
                     let projection =
-                        CapturedAutomationProjection::new(self.source().tempo_map(), destination);
+                        CapturedAutomationProjection::new(self.captured_tempo_map(), destination);
                     let mut captured = None;
                     for range in coverage.iter().flatten() {
                         if let Some(source_frame) = projection
@@ -363,8 +448,107 @@ impl ClockMapping {
     }
 }
 
+mod prepared;
+pub use prepared::{
+    AutomationSharedData, PreparedAutomationTake, PreparedAutomationTakeDataLayout,
+    automation_projection_fingerprint,
+};
+
 mod spans;
 pub use spans::{
     MAX_SCALAR_RANGE_FRAMES, MAX_SPANS_PER_STEP, ProjectedAutomationSpan, ProjectedSpanCursor,
     SpanReadProgress, SpanReadState,
 };
+
+// Public wrappers delegate every query to the same private interpreter. The
+// lean wrapper's type contains no Project/FileToken alternative or optional slot.
+macro_rules! take_queries {
+    ($type:ty) => {
+        impl $type {
+            pub fn captured_tempo_map(&self) -> &TempoMap {
+                self.core.captured_tempo_map()
+            }
+            pub fn target(&self) -> DraftTarget {
+                self.core.target()
+            }
+            pub fn provenance(&self) -> DraftProvenance {
+                self.core.provenance()
+            }
+            pub fn capture_clock(&self) -> Option<CaptureClock> {
+                self.core.capture_clock()
+            }
+            pub fn end_clock(&self) -> DraftClock {
+                self.core.end_clock()
+            }
+            pub fn content_identity(&self) -> AutomationContentIdentity {
+                self.core.content_identity()
+            }
+            pub fn path(&self) -> &Path {
+                self.core.path()
+            }
+            pub fn event_count(&self) -> u64 {
+                self.core.event_count()
+            }
+            pub fn captured_coverage(&self) -> [Option<Range<u64>>; 2] {
+                self.core.captured_coverage()
+            }
+            pub fn projected_coverage(
+                &self,
+                destination: &TempoMap,
+            ) -> Result<[Option<Range<u64>>; 2], String> {
+                self.core.projected_coverage(destination)
+            }
+            pub fn value_at_on_control(
+                &mut self,
+                frame: u64,
+            ) -> Result<Option<AppliedEvent>, String> {
+                self.core.value_at_on_control(frame)
+            }
+            pub fn read_preview_on_control(
+                &mut self,
+                frames: &[u64],
+                output: &mut [Option<AppliedEvent>],
+            ) -> Result<(), String> {
+                self.core.read_preview_on_control(frames, output)
+            }
+            pub fn read_projected_preview_on_control(
+                &mut self,
+                destination: &TempoMap,
+                frames: &[u64],
+                output: &mut [Option<AppliedEvent>],
+            ) -> Result<(), String> {
+                self.core
+                    .read_projected_preview_on_control(destination, frames, output)
+            }
+            pub fn begin_projected_spans_on_control(
+                &mut self,
+                destination: Arc<TempoMap>,
+                range: Range<u64>,
+            ) -> Result<ProjectedSpanCursor, String> {
+                self.core
+                    .begin_projected_spans_on_control(destination, range)
+            }
+            pub fn read_projected_spans_on_control(
+                &mut self,
+                destination: &Arc<TempoMap>,
+                cursor: &mut ProjectedSpanCursor,
+                input_budget: usize,
+                output: &mut [Option<ProjectedAutomationSpan>],
+            ) -> Result<SpanReadProgress, String> {
+                self.core
+                    .read_projected_spans_on_control(destination, cursor, input_budget, output)
+            }
+            pub fn read_projected_values_on_control(
+                &mut self,
+                destination: Arc<TempoMap>,
+                start: u64,
+                output: &mut [Option<hex_project::AutomationValue>],
+            ) -> Result<(), String> {
+                self.core
+                    .read_projected_values_on_control(destination, start, output)
+            }
+        }
+    };
+}
+take_queries!(CompletedAutomationTake);
+take_queries!(PreparedAutomationTake);

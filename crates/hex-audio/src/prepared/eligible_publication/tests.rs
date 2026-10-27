@@ -4,6 +4,8 @@ mod actions;
 #[cfg(feature = "allocation-probe")]
 mod current_sampler;
 #[cfg(feature = "allocation-probe")]
+mod domain_facts;
+#[cfg(feature = "allocation-probe")]
 mod fanout;
 #[cfg(feature = "allocation-probe")]
 mod native_resources;
@@ -13,6 +15,8 @@ mod pages;
 mod readiness;
 #[cfg(feature = "allocation-probe")]
 mod reverb;
+#[cfg(feature = "allocation-probe")]
+mod scalar;
 #[cfg(feature = "allocation-probe")]
 pub(in crate::prepared) mod stream_fixture;
 #[cfg(feature = "allocation-probe")]

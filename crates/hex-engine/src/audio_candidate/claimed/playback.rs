@@ -197,7 +197,7 @@ impl ClaimedAudioCandidateRuntime {
         &mut self,
         prepared: &crate::PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
     ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
         if !prepared.matches_owner(self.identity(), self.source_context()) {
             return Err(crate::Invalid("stream action owner differs"));
@@ -210,7 +210,7 @@ impl ClaimedAudioCandidateRuntime {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
     ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
         self.current_playback_mut()
             .ok_or(crate::Invalid("stream current owner missing"))?
