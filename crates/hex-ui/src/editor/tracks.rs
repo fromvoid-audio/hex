@@ -2737,6 +2737,16 @@ impl EditorView {
                 }));
             content = content.children([move_surface]).children(trim_handles);
         }
+        if !active_trim_preview {
+            content = content.children(self.clip_gain_handle(
+                state,
+                track,
+                clip,
+                clip_pixel_width,
+                viewport,
+                cx,
+            ));
+        }
         if !active_trim_preview
             && self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
         {
