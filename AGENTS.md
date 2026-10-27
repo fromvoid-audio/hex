@@ -6,6 +6,9 @@ Arrangement and Session workflows, audio/MIDI behavior, editing, recording,
 automation, routing, and project fidelity, while improving architecture,
 responsiveness, and measured performance.
 
+Hex's project-specific instructions and established conventions take precedence
+over the Google Rust Style Guide wherever they conflict.
+
 ## Saved-project compatibility policy
 
 Hex is active alpha software. Saved projects must remain openable through explicit,
