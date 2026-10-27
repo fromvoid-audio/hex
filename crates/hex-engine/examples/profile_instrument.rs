@@ -71,6 +71,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 next_id += 1;
                 MidiNoteSnapshot {
                     id,
+                    active: true,
                     start_raw: if workload.dense_sustain {
                         0
                     } else {
@@ -84,6 +85,8 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -96,12 +99,14 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: vec![
                 DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: prefix_id,
                     bypassed: false,
                     state: utility_state.clone(),
                 },
                 DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: suffix_id,
                     bypassed: false,
@@ -109,6 +114,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                 },
             ],
             instrument: Some(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
                 bypassed: false,
@@ -165,7 +171,9 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             sends: Vec::new(),
         });
     }
-    Ok(Project::from_snapshot(Snapshot {
+    Ok(Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),

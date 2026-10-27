@@ -1233,6 +1233,25 @@ fn owner_finalization_returns_typed_value_without_emitting_protocol_events(
     );
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    let passive = control
+        .update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx))
+        .unwrap()
+        .unwrap();
+    assert!(
+        !passive.explicit_edit,
+        "passive owner finalization is not a touch"
+    );
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0");
+    let same = control
+        .update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx))
+        .unwrap()
+        .unwrap();
+    assert_eq!(same.previous, same.value);
+    assert!(
+        same.explicit_edit,
+        "modified equal-value text retains edit intent"
+    );
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("0.625");
     let finalized = control.update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx));
@@ -1240,6 +1259,7 @@ fn owner_finalization_returns_typed_value_without_emitting_protocol_events(
         .expect("valid draft prepares")
         .expect("draft value");
     assert_eq!((finalized.previous, finalized.value), (0.0, 0.625));
+    assert!(finalized.explicit_edit);
     assert!(
         phases.borrow().is_empty(),
         "owner emits protocol exactly once"
@@ -1613,6 +1633,11 @@ fn value_cursor_preserves_click_editing_and_restores_after_outside_drag(cx: &mut
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert!(!visual.update(|window, _| window.has_hidden_cursor_override()));
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::Arrow),
+        "a stationary readout press retains its own cursor"
+    );
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert!(control.read_with(cx, |control, _| control.is_editing()));
@@ -2003,6 +2028,8 @@ fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut Te
             })
             .unwrap();
         assert!(fill.size.height > px(100.0));
+        // A native double click has a matching release between its downs.
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
         visual.simulate_event(MouseDownEvent {
             position,
             modifiers: Modifiers::default(),
@@ -2828,5 +2855,304 @@ fn fixed_numeric_presentations_match_their_public_tile_dimensions(cx: &mut TestA
         visual.run_until_parked();
         let bounds = visual.debug_bounds("test-control").expect("numeric tile");
         assert_eq!(bounds.size, size(px(width), px(height)), "{appearance:?}");
+    }
+}
+
+#[gpui::test]
+fn busy_controls_keep_available_paint_but_refuse_input(cx: &mut TestAppContext) {
+    use crate::ControlAvailability;
+    for kind in [
+        NumericControlKind::HorizontalSlider,
+        NumericControlKind::VerticalSlider,
+        NumericControlKind::Knob,
+    ] {
+        let (handle, control) = open_numeric_control(cx, kind);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| control.read(cx).focus_handle(cx).focus(window));
+        visual.run_until_parked();
+        let before = visual.rendered_filled_quads("test-control");
+        assert!(!before.is_empty());
+        control.update(cx, |control, cx| {
+            control.set_availability(ControlAvailability::Busy, cx)
+        });
+        let id = gpui::AccessibilityId(control.entity_id().as_u64());
+        assert!(
+            !visual.update(|window, app| window.perform_accessibility_action(
+                id,
+                &gpui::AccessibilityAction::SetNumber(0.5),
+                app
+            )),
+            "previous available paint cannot authorize a busy control"
+        );
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_filled_quads("test-control"), before);
+        let at = visual.debug_bounds("test-control").unwrap().center();
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(at.x, at.y - px(32.0)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("up enter");
+        control.read_with(cx, |control, _| {
+            assert_eq!(control.value(), 0.0);
+            assert!(!control.is_interacting());
+        });
+        control.update(cx, |control, cx| control.set_enabled(false, cx));
+        visual.run_until_parked();
+        assert_ne!(
+            visual.rendered_filled_quads("test-control"),
+            before,
+            "semantic unavailable remains visibly disabled"
+        );
+        control.update(cx, |control, cx| control.set_enabled(true, cx));
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_filled_quads("test-control"), before);
+    }
+    let (handle, toggle, _, _) = open_discrete_controls(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| toggle.read(cx).focus_handle(cx).focus(window));
+    visual.run_until_parked();
+    let before = visual.rendered_filled_quads("test-toggle");
+    toggle.update(cx, |toggle, cx| {
+        toggle.set_availability(ControlAvailability::Busy, cx)
+    });
+    let id = gpui::AccessibilityId(toggle.entity_id().as_u64());
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::Press,
+            app
+        ))
+    );
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_filled_quads("test-toggle"), before);
+    let at = visual.debug_bounds("test-toggle").unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("space");
+    assert!(!toggle.read_with(cx, |toggle, _| toggle.checked()));
+    toggle.update(cx, |toggle, cx| toggle.set_enabled(true, cx));
+    visual.simulate_keystrokes("space");
+    assert!(toggle.read_with(cx, |toggle, _| toggle.checked()));
+}
+
+#[gpui::test]
+fn numeric_f32_storage_and_equivalent_accessibility_values_use_canonical_precision(
+    cx: &mut TestAppContext,
+) {
+    let spec =
+        NumericSpec::new_f32(0.1, 0.7, 0.2, NumericScale::Linear, 2, None::<String>).unwrap();
+    let (handle, control) =
+        open_numeric_control_with_spec(cx, NumericControlKind::HorizontalSlider, spec, 0.1);
+    assert_eq!(control.read_with(cx, |c, _| c.value()), f64::from(0.1_f32));
+    control.update(cx, |c, cx| c.set_external_value(0.7, cx).unwrap());
+    assert_eq!(control.read_with(cx, |c, _| c.value()), f64::from(0.7_f32));
+    // Native accessibility preflight retains its declared canonical bounds.
+    // Use an interior decimal to test equivalent-value coalescing there.
+    control.update(cx, |c, cx| c.set_external_value(0.3, cx).unwrap());
+    let acknowledged = control.read_with(cx, |c, _| c.accessibility_value(0.3).unwrap());
+    control.update(cx, |c, cx| {
+        c.set_accessibility_binding(
+            gpui::AccessibilityBinding {
+                revision: 1,
+                name: "f32".into(),
+                value: acknowledged,
+                pending: false,
+                guard: Rc::new(|_| true),
+            },
+            cx,
+        )
+    });
+    let phases = Rc::new(RefCell::new(Vec::new()));
+    let events = phases.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            events.borrow_mut().push((event.phase, event.value));
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(180.0)));
+    visual.run_until_parked();
+    let id = gpui::AccessibilityId(control.entity_id().as_u64());
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::SetNumber(0.3),
+            app
+        ))
+    );
+    assert!(
+        phases.borrow().is_empty(),
+        "equivalent f32 value is not a new edit"
+    );
+    assert!(
+        visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::SetNumber(f64::from(0.1_f32)),
+            app
+        )),
+        "equivalent earlier value must not mark the owner pending"
+    );
+    assert_eq!(control.read_with(cx, |c, _| c.value()), f64::from(0.1_f32));
+    assert_eq!(
+        *phases.borrow(),
+        vec![
+            (crate::NumericEventPhase::Begin, f64::from(0.3_f32)),
+            (crate::NumericEventPhase::Change, f64::from(0.1_f32)),
+            (crate::NumericEventPhase::Commit, f64::from(0.1_f32)),
+        ]
+    );
+}
+
+#[gpui::test]
+fn meter_fader_input_fill_and_ceiling_triangle_share_calibrated_bounds(cx: &mut TestAppContext) {
+    let spec = NumericSpec::new(-24.0, 0.0, -0.3, NumericScale::Linear, 2, Some("db")).unwrap();
+    let (handle, control) = open_numeric_control_appearance(
+        cx,
+        NumericControlKind::VerticalSlider,
+        spec,
+        -6.0,
+        NumericControlPresentation::MeterFader,
+    );
+    control.update(cx, |control, cx| {
+        control.set_meter_readout(
+            crate::DeviceMeterReadout {
+                levels: [10.0_f32.powf(-6.0 / 20.0), 0.0],
+                signal: 0x00ff00,
+                clipping: 0xff0000,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(240.0)));
+    visual.run_until_parked();
+    let rail = visual.debug_bounds("test-control-slider").unwrap();
+    let fill = visual.debug_bounds("test-control-input-fill").unwrap();
+    let thumb = visual.debug_bounds("test-control-slider-thumb").unwrap();
+    assert!((fill.size.height / rail.size.height - 0.75).abs() < 0.02);
+    assert!((thumb.center().y - fill.top()).abs() < px(2.0));
+    assert!(visual.debug_bounds("test-control-value").unwrap().top() > rail.bottom());
+    let start = thumb.center();
+    let end = point(start.x, start.y + px(15.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!((control.read_with(cx, |control, _| control.value()) + 9.0).abs() < 0.01);
+    assert_eq!(
+        visual.debug_bounds("test-control-input-fill").unwrap(),
+        fill,
+        "ceiling drag cannot invent signal"
+    );
+}
+
+#[gpui::test]
+fn choice_dial_commits_one_bounded_choice_and_cancels_preview(cx: &mut TestAppContext) {
+    let handle = *cx.add_window(|_, _| Empty);
+    let selector = cx
+        .update_window(handle, |_, window, cx| {
+            let selector = cx.new(|cx| {
+                Selector::from_config(
+                    cx,
+                    crate::SelectorConfig::new("lookahead", ["1.5 ms", "3 ms", "6 ms"], 0, STYLE)
+                        .unwrap()
+                        .with_accessibility_name("lookahead")
+                        .with_appearance(crate::SelectorAppearance::CompactDial),
+                )
+            });
+            let toggle = cx.new(|cx| Toggle::new(cx, "outside", "outside", false, STYLE).unwrap());
+            window.replace_root(cx, |_, _| DiscreteTestRoot {
+                toggle,
+                selector: selector.clone(),
+                key_events: Rc::default(),
+            });
+            selector
+        })
+        .unwrap();
+    let choices = Rc::new(RefCell::new(Vec::new()));
+    let capture = choices.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&selector, move |_, event, _| {
+            capture.borrow_mut().push(event.index)
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let start = visual.debug_bounds("lookahead-knob").unwrap().center();
+    let end = point(start.x, start.y - px(48.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("up");
+    assert!(
+        choices.borrow().is_empty(),
+        "preview does not publish timing edits"
+    );
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*choices.borrow(), vec![2]);
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 2);
+    let start = visual.debug_bounds("lookahead-knob").unwrap().center();
+    let end = point(start.x, start.y + px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*choices.borrow(), vec![2]);
+    visual.simulate_keystrokes("down");
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 1);
+    let start = visual.debug_bounds("lookahead-knob").unwrap().center();
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    selector.update(cx, |selector, cx| selector.set_selected(0, cx).unwrap());
+    visual.run_until_parked();
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 0);
+    assert_eq!(
+        *choices.borrow(),
+        vec![2, 1],
+        "external update cancels stale preview without publishing it"
+    );
+    selector.update(cx, |selector, cx| selector.set_enabled(false, cx));
+    visual.simulate_keystrokes("up");
+    assert_eq!(selector.read_with(cx, |selector, _| selector.selected()), 0);
+}
+
+#[gpui::test]
+fn reduction_gauge_grows_down_from_zero_and_bounds_invalid_readings(cx: &mut TestAppContext) {
+    struct Gauge(f32);
+    impl Render for Gauge {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(24.0)).h(px(100.0)).child(crate::reduction_meter(
+                "gr".into(),
+                self.0,
+                crate::LevelMeterStyle {
+                    background: 0x202020,
+                    fill: 0xffaa00,
+                    above: 0xff0000,
+                },
+            ))
+        }
+    }
+    let window = cx.add_window(|_, _| Gauge(0.5));
+    let gauge = window.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*window, cx);
+    for (fraction, expected_height) in [(0.5, 50.0), (2.0, 100.0), (f32::NAN, 0.0)] {
+        gauge.update(cx, |gauge, cx| {
+            gauge.0 = fraction;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let well = visual.debug_bounds("gr").unwrap();
+        let fill = visual.debug_bounds("gr-fill").unwrap();
+        assert_eq!(fill.top(), well.top());
+        assert_eq!(fill.size.height, px(expected_height));
     }
 }

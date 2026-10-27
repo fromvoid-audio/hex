@@ -54,6 +54,7 @@ impl ComputerKeyboardRuntime {
             supported,
             context: None,
             mutable: Some(mutable),
+            source_input: None,
             retarget: None,
             tuning_family: None,
             tuning_preservation: false,
@@ -96,6 +97,7 @@ impl ComputerKeyboardRuntime {
             || !self.samplers.is_empty()
             || self.samplers.capacity() != 0
             || self.context.is_some()
+            || self.source_input.is_some()
             || self.retarget.is_some()
             || self.expression.is_some()
             || self.tuning_family.is_some()

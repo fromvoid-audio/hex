@@ -27,7 +27,7 @@ enum Branch {
 }
 
 pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
-    if bytes.len() > crate::MAX_DOCUMENT_BYTES || !(1..=29).contains(&version) {
+    if !(1..=29).contains(&version) {
         return Err(StorageError::Invalid("invalid early project schema"));
     }
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;

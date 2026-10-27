@@ -9,13 +9,19 @@ pub(crate) struct NativeEffectEntry {
     staged: bool,
 }
 impl NativeEffectEntry {
+    pub(crate) fn has_live_epoch(&self) -> bool {
+        !self.staged && !self.callback.transport.is_revoked()
+    }
+    pub(crate) fn transport_is_live(&self) -> bool {
+        !self.callback.transport.is_revoked()
+    }
     pub(crate) fn new(callback: NativeEffectCallback) -> Self {
         Self {
             callback,
             staged: false,
         }
     }
-    #[cfg(all(test, feature = "allocation-probe"))]
+    #[cfg(feature = "allocation-probe")]
     pub(crate) fn committed_frames_for_test(&self) -> u64 {
         self.callback.transport.committed_position_for_test()
     }
@@ -37,6 +43,7 @@ impl NativeEffectEntry {
         node: ForeignProcessorNode<'_>,
         offset: usize,
         frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.staged {
@@ -45,7 +52,8 @@ impl NativeEffectEntry {
                 .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
             self.staged = true;
         }
-        self.callback.process_segment(node, offset, frames, clock)
+        self.callback
+            .process_segment_with_parameters(node, offset, frames, parameters, clock)
     }
     pub(crate) fn finish(&mut self) -> Result<(), Fault> {
         if self.staged {
@@ -192,6 +200,16 @@ impl ForeignProcessors for NativeEffectCallbacks {
         frames: &mut [[f32; 2]],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_parameters(node, offset, frames, &[], clock)
+    }
+    fn process_segment_with_parameters(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
         let selected = node.prepared.binding().and_then(|binding| {
             self.entries
                 .binary_search_by_key(&binding, NativeEffectEntry::binding)
@@ -199,7 +217,7 @@ impl ForeignProcessors for NativeEffectCallbacks {
         });
         let result = match (self.cycle.extent(), selected) {
             (Some(extent), Some(index)) => {
-                self.entries[index].process(extent, node, offset, frames, clock)
+                self.entries[index].process(extent, node, offset, frames, parameters, clock)
             }
             _ => Err(DeviceContractError::ForeignProcessingUnavailable),
         };

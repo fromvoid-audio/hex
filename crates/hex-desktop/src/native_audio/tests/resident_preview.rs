@@ -18,11 +18,138 @@ struct ResidentSink {
     budget_refuse: Arc<AtomicBool>,
     loop_witness_fault: Arc<AtomicU8>,
     pending_present: Arc<AtomicBool>,
+    file_publication_waiting: Arc<AtomicBool>,
     pending_observation_generation: Arc<AtomicU64>,
+    publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
+}
+struct PublicationProbe {
+    ready: SyncSender<()>,
+    resume: mpsc::Receiver<()>,
+    busy: SyncSender<()>,
 }
 impl WorkerAudioSink for ResidentSink {
+    fn capture_plugin_states_for_save(
+        &mut self,
+        input: hex_session::service::PluginStateSaveInput<'_>,
+    ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
+        self.inner.capture_plugin_states_for_save(input)
+    }
+    fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
+        self.inner.begin_request(cancellation);
+    }
+    fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
+        self.inner.finish_resident_effect_edit(context, accepted);
+    }
+    fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
+        self.inner.plugin_state_restore_ready()
+    }
+    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
+        self.inner.finish_plugin_state_restore(context, accepted);
+    }
+    fn prepare_stopped_playback_restore(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<bool>, String> {
+        self.inner.prepare_stopped_playback_restore(context)
+    }
+    fn stopped_playback_restore_ready(&self) -> bool {
+        self.inner.stopped_playback_restore_ready()
+    }
+    fn cancel_stopped_playback_restore(&mut self) {
+        self.inner.cancel_stopped_playback_restore();
+    }
+    fn prepare_plugin_effect(
+        &mut self,
+        input: hex_session::service::PluginEffectPreparation<'_>,
+    ) -> Result<hex_session::service::PluginEffectPreparationState, String> {
+        self.inner.prepare_plugin_effect(input)
+    }
+    fn plugin_effect_ready(&self) -> bool {
+        self.inner.plugin_effect_ready()
+    }
+    fn finish_plugin_effect(
+        &mut self,
+        control: &Arc<hex_session::service::PluginEffectControl>,
+        accepted: bool,
+    ) {
+        self.inner.finish_plugin_effect(control, accepted);
+    }
+    fn prepare_resident_effects(
+        &mut self,
+        input: hex_session::service::ResidentEffectPreparation<'_>,
+        prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        self.inner.prepare_resident_effects(input, prepare)
+    }
+    fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
+        self.inner.ordinary_source_reservation()
+    }
+    fn prepare_resident_file_metadata(
+        &mut self,
+        input: hex_session::service::ResidentFileInput<'_>,
+    ) -> Result<Option<hex_session::service::ResidentFileMetadata>, String> {
+        self.inner.prepare_resident_file_metadata(input)
+    }
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Exact production inputs and injected final admission refusal.
+    fn publish_resident_with_files(
+        &mut self,
+        playback: Playback,
+        resources: Option<&PreparedDeviceResources>,
+        observation: Arc<PreparedPlaybackObservation>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        limit: usize,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+        files: Option<hex_session::service::ResidentFilePublication<'_>>,
+    ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        self.file_publication_waiting
+            .store(files.is_some(), std::sync::atomic::Ordering::Release);
+        let refuse = self.refuse.load(Acquire);
+        if let Some(probe) = self.publication_probe.lock().unwrap().take() {
+            self.inner.native_graph_gate = Some((probe.ready, probe.resume));
+            self.inner.native_graph_busy_observer = Some(probe.busy);
+        }
+        let result = self.inner.publish_resident_with_files(
+            playback,
+            resources,
+            observation,
+            metadata,
+            policy,
+            limit,
+            &mut |actual| {
+                admit(actual)?;
+                if refuse {
+                    Err("fixture final admission refusal".into())
+                } else {
+                    Ok(())
+                }
+            },
+            files,
+        );
+        self.inner.native_graph_gate = None;
+        self.inner.native_graph_busy_observer = None;
+        self.file_publication_waiting
+            .store(false, std::sync::atomic::Ordering::Release);
+        result
+    }
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
+    }
+    fn resident_file_seek_preparer(
+        &self,
+    ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
+        self.inner.resident_file_seek_preparer()
+    }
+    fn resident_file_seek_storage_bytes(
+        &self,
+        prepared: &hex_engine::PreparedRevision,
+        sources: &hex_session::service::ResidentFileSet,
+    ) -> Result<usize, String> {
+        self.inner
+            .resident_file_seek_storage_bytes(prepared, sources)
     }
 
     fn resident_runtime_loop(
@@ -164,19 +291,28 @@ impl WorkerAudioSink for ResidentSink {
 
 pub(super) struct ResidentHarness {
     pub(super) service: Service,
+    event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
-    callback: Arc<Mutex<Option<HeadlessBackend>>>,
+    pub(super) callback: Arc<Mutex<Option<HeadlessBackend>>>,
     pub(super) audio: Option<EditorAudio>,
     pub(super) submitted: Option<(u64, ResidentPublicationMetadata)>,
+    submitted_observation: Option<Arc<PreparedPlaybackObservation>>,
     pub(super) refuse: Arc<AtomicBool>,
     pub(super) budget_refuse: Arc<AtomicBool>,
     pub(super) loop_witness_fault: Arc<AtomicU8>,
     pub(super) pending_present: Arc<AtomicBool>,
+    file_publication_waiting: Arc<AtomicBool>,
     pub(super) pending_observation_generation: Arc<AtomicU64>,
+    publication_probe: Arc<Mutex<Option<PublicationProbe>>>,
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
+    native_plugins: bool,
+    pub(super) plugin_completed: Arc<AtomicU64>,
+    pub(super) plugin_queued: Arc<AtomicBool>,
+    pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
 }
 impl ResidentHarness {
     pub(super) fn new() -> Self {
@@ -204,11 +340,85 @@ impl ResidentHarness {
         capacity: usize,
         rate: u32,
     ) -> Self {
+        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None)
+    }
+    pub(super) fn with_plugins(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some((host, presentation)),
+            None,
+            None,
+        )
+    }
+    pub(super) fn with_plugins_paused_at_facts(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        facts: crate::native_audio::plugins::FactsGate,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some((host, presentation)),
+            Some(facts),
+            None,
+        )
+    }
+    pub(super) fn with_plugins_and_catalog(
+        host: hex_audio::plugin_effects::Hosting,
+        presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+        catalog: PathBuf,
+    ) -> Self {
+        Self::with_plugin_fixture(
+            8192,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            Some((host, presentation)),
+            None,
+            Some(catalog),
+        )
+    }
+    fn with_plugin_fixture(
+        frame_limit: u64,
+        gate: Arc<AtomicBool>,
+        capacity: usize,
+        rate: u32,
+        plugin: Option<(
+            hex_audio::plugin_effects::Hosting,
+            Option<hex_audio::plugin_effects::EffectPresentation>,
+        )>,
+        facts_gate: Option<crate::native_audio::plugins::FactsGate>,
+        catalog: Option<PathBuf>,
+    ) -> Self {
+        let native_plugins = plugin.is_some();
         let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(capacity);
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
-        let mut inner = NativeAudioSink::new(sender);
+        let mut inner = NativeAudioSink::new(sender.clone());
+        let plugin_completed = Arc::new(AtomicU64::new(0));
+        let plugin_queued = Arc::new(AtomicBool::new(false));
+        let plugin_records = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let plugin_progress = Arc::new(Mutex::new(
+            crate::native_audio::plugins::PreparationObservation::default(),
+        ));
+        if let Some((host, presentation)) = plugin {
+            inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
+            inner.plugins.catalog = catalog;
+            inner.plugins.facts_gate = facts_gate;
+            inner.plugins.progress = Some(Arc::clone(&plugin_progress));
+            inner.plugins.completed = Some(Arc::clone(&plugin_completed));
+            inner.plugins.queued = Some(Arc::clone(&plugin_queued));
+            inner.plugins.records = Some(Arc::clone(&plugin_records));
+        }
         assert!(
             inner.worker_owned_resident_graphs,
             "production resident publication default"
@@ -234,7 +444,9 @@ impl ResidentHarness {
         let budget_refuse = Arc::new(AtomicBool::new(false));
         let loop_witness_fault = Arc::new(AtomicU8::new(0));
         let pending_present = Arc::new(AtomicBool::new(false));
+        let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
+        let publication_probe = Arc::new(Mutex::new(None));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
@@ -245,27 +457,77 @@ impl ResidentHarness {
                 budget_refuse: Arc::clone(&budget_refuse),
                 loop_witness_fault: Arc::clone(&loop_witness_fault),
                 pending_present: Arc::clone(&pending_present),
+                file_publication_waiting: Arc::clone(&file_publication_waiting),
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
+                publication_probe: Arc::clone(&publication_probe),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
         .unwrap();
         Self {
             service,
+            event_sender: sender,
             events,
             callback,
             audio: None,
             submitted: None,
+            submitted_observation: None,
             refuse,
             budget_refuse,
             loop_witness_fault,
             pending_present,
+            file_publication_waiting,
             pending_observation_generation,
+            publication_probe,
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
             constructor_submitted: None,
+            native_plugins,
+            plugin_completed,
+            plugin_queued,
+            plugin_records,
+            plugin_progress,
         }
+    }
+    /// Attach the actual already-open output and latest submission observation
+    /// to a rendered view. These are original events, never manufactured ACKs;
+    /// the simulated callback and publication owner stay in their usual custody.
+    pub(super) fn into_plugin_ui_backend(mut self) -> EditorBackend {
+        let audio = self.audio.take().expect("actual opened output");
+        let output_identity = audio.control.output_identity().unwrap();
+        let (audio_revision, metadata) = self.submitted.unwrap();
+        assert_eq!(
+            audio.status().unwrap().applied_revision.load(Acquire),
+            audio_revision
+        );
+        self.event_sender
+            .try_send(EditorAudioEvent::Opened {
+                project_generation: metadata.context.project_generation,
+                restart_request: None,
+                audio,
+            })
+            .unwrap_or_else(|_| panic!("actual opened event handoff"));
+        self.event_sender
+            .try_send(EditorAudioEvent::Publication {
+                context: metadata.context,
+                output_identity,
+                state: EditorPublicationState::ResidentSubmitted {
+                    audio_revision,
+                    metadata,
+                    observation: self.submitted_observation.take().unwrap(),
+                },
+            })
+            .unwrap_or_else(|_| panic!("actual submission event handoff"));
+        EditorBackend {
+            service: self.service,
+            audio_events: self.events,
+            source_reservation: AudioPolicy::source_reservation(),
+        }
+    }
+
+    pub(super) fn submitted_observation(&self) -> Option<&PreparedPlaybackObservation> {
+        self.submitted_observation.as_deref()
     }
     pub(super) fn pump(&mut self) {
         while let Ok(event) = self.events.try_recv() {
@@ -276,10 +538,13 @@ impl ResidentHarness {
                         EditorPublicationState::ResidentSubmitted {
                             audio_revision,
                             metadata,
-                            ..
+                            observation,
                         },
                     ..
-                } => self.submitted = Some((audio_revision, metadata)),
+                } => {
+                    self.submitted = Some((audio_revision, metadata));
+                    self.submitted_observation = Some(observation);
+                }
                 EditorAudioEvent::Unavailable { error, .. } => {
                     assert!(self.allow_unavailable, "{error}");
                     self.unavailable.push(error);
@@ -301,6 +566,9 @@ impl ResidentHarness {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
+            if self.file_publication_waiting.load(Acquire) {
+                self.render_worker_step();
+            }
             if let Ok(event) = self.service.try_event() {
                 return event;
             }
@@ -373,7 +641,14 @@ impl ResidentHarness {
         let mut pcm = [[0.0; 2]; 64];
         let mut slot = self.callback.lock().unwrap();
         let callback = slot.as_mut().unwrap();
-        let allocations = allocation_counter::measure(|| callback.render(&mut pcm).unwrap());
+        let mut host = [0.0; 128];
+        let allocations = allocation_counter::measure(|| {
+            if self.native_plugins {
+                callback.render_native_direct(&mut pcm, &mut host).unwrap();
+            } else {
+                callback.render(&mut pcm).unwrap();
+            }
+        });
         assert_eq!(
             (
                 allocations.count_total,
@@ -384,6 +659,103 @@ impl ResidentHarness {
             (0, 0, 0, 0)
         );
         pcm
+    }
+    pub(super) fn render_plugin_block(&self) -> [hex_engine::Frame; 256] {
+        let mut pcm = [[0.0; 2]; 256];
+        let mut host = [0.0; 512];
+        let mut slot = self.callback.lock().unwrap();
+        let callback = slot.as_mut().unwrap();
+        let counts = allocation_counter::measure(|| {
+            callback.render_native_direct(&mut pcm, &mut host).unwrap()
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(host.chunks_exact(2).zip(&pcm).all(|(h, p)| h == p));
+        pcm
+    }
+    /// Advance the simulated callback, then observe each exact original
+    /// endpoint's committed requests on control. The Session worker may be
+    /// waiting for page/callback progress and is not the DSP completion clock.
+    fn render_worker_step(&self) {
+        self.render();
+        if self.native_plugins
+            && self
+                .audio
+                .as_ref()
+                .and_then(EditorAudio::status)
+                .is_some_and(|status| {
+                    status.playing.load(Acquire) && status.native_effect_source().is_some()
+                })
+        {
+            let end = Instant::now() + Duration::from_secs(10);
+            loop {
+                let ready = self
+                    .callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .native_workers_idle_on_control();
+                if ready == Some(true) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < end,
+                    "original worker requests did not complete"
+                );
+                std::thread::yield_now();
+            }
+        }
+    }
+    pub(super) fn hold_native_work_on_control(
+        &self,
+        held: SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    ) -> std::thread::JoinHandle<()> {
+        let callback = Arc::clone(&self.callback);
+        std::thread::spawn(move || {
+            let result = {
+                callback
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .with_native_source_work_held_on_control(|| {
+                        held.send(()).map_err(|error| error.to_string())?;
+                        release
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|error| error.to_string())
+                    })
+            };
+            // A broken fixture channel must fail after both original locks
+            // are released, without poisoning Root's production Work mutex.
+            assert_eq!(result, Some(Ok(())));
+        })
+    }
+    pub(super) fn probe_next_native_publication(
+        &self,
+    ) -> (mpsc::Receiver<()>, SyncSender<()>, mpsc::Receiver<()>) {
+        let (ready, entered) = mpsc::sync_channel(1);
+        let (resume, resumed) = mpsc::sync_channel(1);
+        let (busy, observed_busy) = mpsc::sync_channel(1);
+        let old = self
+            .publication_probe
+            .lock()
+            .unwrap()
+            .replace(PublicationProbe {
+                ready,
+                resume: resumed,
+                busy,
+            });
+        assert!(old.is_none(), "one exact publication probe");
+        (entered, resume, observed_busy)
     }
     pub(super) fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {
         let end = Instant::now() + Duration::from_secs(10);
@@ -398,7 +770,7 @@ impl ResidentHarness {
                 .and_then(EditorAudio::status)
                 .is_none_or(|status| status.applied_revision.load(Acquire) <= after)
             {
-                self.render();
+                self.render_worker_step();
             }
             if let Some((revision, reason)) = self
                 .audio
@@ -432,6 +804,15 @@ impl ResidentHarness {
             std::thread::yield_now();
         }
     }
+}
+
+#[test]
+fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (revision, _) = h.applied(0);
+    assert!(revision > 0);
 }
 
 #[test]
@@ -528,6 +909,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
     h.service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
             key,
             sequence: 2,
             value: ParameterValue::Float(0.25),
@@ -602,6 +984,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
             (last, _) = h.applied(after);
         }
         let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
             key,
             sequence: 2,
             value: ParameterValue::Float(1.0),
@@ -929,11 +1312,31 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     assert_eq!(prepared.tuning_preview.as_ref().unwrap().identity, identity);
     assert!(!next.is_cancelled());
     assert_eq!(h.render(), [[0.25; 2]; 64]);
+    // A preview returning exactly to canonical tuning still carries the
+    // accepted family's live-note phase. Then change away again before Cancel.
+    let canonical_preview = h.run(Request::TuningGesture(TuningGestureRequest::Change {
+        key,
+        sequence: 2,
+        tuning: canonical.state.project.tuning(),
+    }));
+    (applied, _) = h.applied(applied);
+    assert_eq!(canonical_preview.state.project, canonical.state.project);
+    assert!(!next.is_cancelled());
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    let preview = h.run(Request::TuningGesture(TuningGestureRequest::Change {
+        key,
+        sequence: 3,
+        tuning: tuned,
+    }));
+    (applied, _) = h.applied(applied);
+    let identity = preview.tuning_preview.as_ref().unwrap().identity;
+    assert!(!next.is_cancelled());
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
     h.service
         .submit(Request::TuningGesture(TuningGestureRequest::Commit {
             key,
-            sequence: 2,
+            sequence: 4,
             tuning: super::sampler::tuning(660.0),
         }))
         .unwrap();
@@ -962,13 +1365,32 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     assert_eq!(h.render(), [[0.25; 2]; 64]);
     h.refuse.store(false, std::sync::atomic::Ordering::Release);
     let cancelled = h.run(Request::TuningGesture(TuningGestureRequest::Cancel { key }));
-    let (_, metadata) = h.applied(applied);
+    let (cancelled_audio, metadata) = h.applied(applied);
+    applied = cancelled_audio;
     assert!(metadata.tuning_preview.is_none());
     assert!(cancelled.active_tuning_gesture.is_none());
     assert!(cancelled.tuning_preview.is_none());
     assert_eq!(cancelled.state.project, canonical.state.project);
     assert_eq!(cancelled.state.revision, canonical.state.revision);
     assert_eq!(h.render(), [[0.25; 2]; 64]);
+    // Canonical tuning edits and their global history use the same validated
+    // family as previews; none may cancel the held physical input.
+    let committed = h.run(Request::Edit(Command::SetTuning(tuned)));
+    (applied, _) = h.applied(applied);
+    assert_eq!(committed.state.project.tuning(), tuned);
+    assert!(!next.is_cancelled());
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    for (request, expected) in [
+        (Request::Undo, canonical.state.project.tuning()),
+        (Request::Redo, tuned),
+        (Request::Undo, canonical.state.project.tuning()),
+    ] {
+        let changed = h.run(request);
+        (applied, _) = h.applied(applied);
+        assert_eq!(changed.state.project.tuning(), expected);
+        assert!(!next.is_cancelled());
+        assert_eq!(h.render(), [[0.25; 2]; 64]);
+    }
     assert!(loaded.playback.is_none());
 }
 

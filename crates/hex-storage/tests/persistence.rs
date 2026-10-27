@@ -1,6 +1,6 @@
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{BeatTime, Command, Created, Editor, Meter, Project, Tempo};
-use hex_storage::{MAX_DOCUMENT_BYTES, decode, encode, load, save_new};
+use hex_storage::{LEGACY_READER_DOCUMENT_BYTES, decode, encode, load, save_new};
 use std::fs;
 
 fn project() -> Project {
@@ -480,7 +480,7 @@ fn current_format_preserves_opaque_instrument_state_and_requires_its_field() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(
-        json["tracks"][0]["instrument"]["type_id"],
+        json["native_sources"][0]["devices"][0]["device"]["type_id"],
         "future.instrument"
     );
     assert_eq!(
@@ -544,30 +544,30 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
-    assert_eq!(json["tracks"][0]["instrument_position"], 1);
+    assert_eq!(json["track_source_bindings"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
     let mut missing = json.clone();
-    missing["tracks"][0]
+    missing["track_source_bindings"][0]
         .as_object_mut()
         .unwrap()
         .remove("instrument_position");
     assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
 
     let mut out_of_range = json.clone();
-    out_of_range["tracks"][0]["instrument_position"] = 2.into();
+    out_of_range["track_source_bindings"][0]["instrument_position"] = 2.into();
     assert!(decode(&serde_json::to_vec(&out_of_range).unwrap()).is_err());
 
     let mut orphaned = json.clone();
-    orphaned["tracks"][0]["instrument"] = serde_json::Value::Null;
-    orphaned["tracks"][0]["instrument_position"] = 0.into();
+    orphaned["track_source_bindings"][0]["source"] = serde_json::Value::Null;
+    orphaned["track_source_bindings"][0]["instrument_position"] = 0.into();
     assert!(decode(&serde_json::to_vec(&orphaned).unwrap()).is_err());
 
     let mut missing_instrument = json;
-    missing_instrument["tracks"][0]
+    missing_instrument["track_source_bindings"][0]
         .as_object_mut()
         .unwrap()
-        .remove("instrument");
+        .remove("source");
     assert!(decode(&serde_json::to_vec(&missing_instrument).unwrap()).is_err());
     assert!(editor.project().device(effect).is_some());
 }
@@ -784,7 +784,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
 }
 
 #[test]
-fn malformed_unknown_future_and_oversized_documents_refused() {
+fn malformed_unknown_future_and_large_invalid_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -818,7 +818,7 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     assert!(decode(&serde_json::to_vec(&invalid_phase).unwrap()).is_err());
     json["tracks"][0]["audio_clips"][0]["asset"] = 999.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
-    assert!(decode(&vec![b' '; MAX_DOCUMENT_BYTES + 1]).is_err());
+    assert!(decode(&vec![b' '; LEGACY_READER_DOCUMENT_BYTES + 1]).is_err());
 }
 
 #[test]
@@ -1282,4 +1282,12 @@ fn current_audio_clip_gains_roundtrip_and_refuse_invalid_values() {
             assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
         }
     }
+}
+
+#[test]
+fn historical_layout_admission_has_no_blanket_document_byte_ceiling() {
+    let project = Project::new(48_000).unwrap();
+    let mut historical = hex_storage::encode_schema20(&project).unwrap();
+    historical.resize(LEGACY_READER_DOCUMENT_BYTES + 1, b' ');
+    assert_eq!(decode(&historical).unwrap(), project);
 }

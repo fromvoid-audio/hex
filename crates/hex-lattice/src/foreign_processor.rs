@@ -3,7 +3,8 @@
 //! host-format acceptance. A scalar declaration or state equality grants none.
 use crate::{NativeInstrumentClock, ProcessorChainOwner, StereoFrame};
 use hex_lattice_contract::{
-    DeviceContractError, DeviceTypeId, ForeignProcessorBinding, NativeDeviceState,
+    DeviceContractError, DeviceTypeId, ForeignParameterPoint, ForeignProcessorBinding,
+    NativeDeviceState,
 };
 
 /// Control-validated facts for a copied foreign endpoint. No runtime factory,
@@ -119,6 +120,26 @@ pub trait ForeignProcessors {
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError>;
+    /// Stage provider parameter points through the same segment/source and
+    /// final host acceptance as PCM. Providers validate raw IDs and metadata;
+    /// this data cannot grant resource custody or mutate canonical state.
+    /// Hosts without this capability must refuse nonempty input explicitly.
+    fn process_segment_with_parameters(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [StereoFrame],
+        parameters: &[ForeignParameterPoint],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        if parameters.is_empty() {
+            self.process_segment(node, frame_offset, frames, clock)
+        } else {
+            self.reject_callback();
+            frames.fill([0.0; 2]);
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        }
+    }
     /// Read an accepted drain observation from this exact retained endpoint.
     /// Pending zeros must not advance the proof; pending renewed input must
     /// invalidate it. Missing/unknown/revoked endpoints return false. This query

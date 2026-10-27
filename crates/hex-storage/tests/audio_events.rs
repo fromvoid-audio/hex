@@ -74,7 +74,7 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
 }
 
 #[test]
-fn event_serialization_respects_the_existing_document_byte_limit() {
+fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
     let Created::Imported { clip, .. } = editor
         .execute(Command::ImportAudioTrack {
@@ -94,6 +94,7 @@ fn event_serialization_respects_the_existing_document_byte_limit() {
             next_id: 1025,
             events: (0..1024)
                 .map(|i| hex_project::AudioEvent {
+                    active: true,
                     source: 0,
                     id: i + 1,
                     start: i * 2,
@@ -121,12 +122,9 @@ fn event_serialization_respects_the_existing_document_byte_limit() {
         .collect();
     snapshot.next_id = 2000;
     let project = Project::from_snapshot(snapshot).unwrap();
-    assert!(matches!(
-        hex_storage::encode(&project),
-        Err(hex_storage::StorageError::Invalid(
-            "project document exceeds byte limit"
-        ))
-    ));
+    let bytes = hex_storage::encode(&project).unwrap();
+    assert!(bytes.len() > hex_storage::LEGACY_READER_DOCUMENT_BYTES);
+    assert_eq!(hex_storage::decode(&bytes).unwrap(), project);
 }
 
 #[test]

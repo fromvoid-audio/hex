@@ -508,6 +508,7 @@ impl Custody {
         token: AudioCandidatePreparationToken,
         header: Header,
         rate: u32,
+        expected_context: Option<hex_engine::AudioSourceContext>,
         enqueue: impl FnOnce(Queued),
     ) -> Result<AudioCandidateTicket, &'static str> {
         let mut work = self
@@ -588,6 +589,9 @@ impl Custody {
                 .as_mut()
                 .and_then(|c| c.owner_on_control())
                 .ok_or("candidate preparation is not ready")?;
+            if expected_context.is_some_and(|expected| owner.source_context() != Some(expected)) {
+                return Err("native epoch successor source context differs");
+            }
             if owner.sample_rate() != rate
                 || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
                 || header.policy != crate::prepared::PublicationPolicy::InheritRuntime

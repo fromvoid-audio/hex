@@ -140,6 +140,19 @@ fn render_return_drop_target(
         .flex_shrink_0()
         .when(before.is_some(), |style| style.pr(px(DEVICE_CHAIN_PADDING)))
         .when(before.is_none(), |style| style.flex_1().min_w(px(40.0)))
+        .when(before.is_none(), |style| {
+            style.on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    view.device_panel.select_only(None);
+                    view.device_panel
+                        .chain_window
+                        .selection_focus(cx)
+                        .focus(window);
+                    cx.notify();
+                }),
+            )
+        })
         .on_drag_move::<NativeDeviceDrag>(move |event, _, cx| {
             let Some(payload) = event.dragged_item().downcast_ref::<NativeDeviceDrag>() else {
                 return;

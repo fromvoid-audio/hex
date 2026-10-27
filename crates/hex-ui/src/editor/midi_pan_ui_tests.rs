@@ -106,15 +106,28 @@ fn pan_mode_intercepts_drawing_and_cancelled_creation_never_commits(cx: &mut Tes
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     double_down(&mut visual, roll.center(), Modifiers::default());
     editor.read_with(&visual, |v, _| assert!(v.midi_creation.is_some()));
-    // A middle press retires an already captured edit before any movement.
+    // Creation now owns its held left press; a secondary middle press cannot
+    // preempt it. End that gesture before starting fresh middle navigation.
     visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_creation.is_some());
+        assert!(v.midi_pan.gesture.is_none());
+        assert!(!v.edit_pending());
+    });
+    visual.simulate_mouse_up(roll.center(), MouseButton::Middle, Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_creation.is_none());
+        assert!(v.midi_pan.gesture.is_some());
+    });
     visual.simulate_mouse_move(
         point(roll.center().x - px(20.0), roll.center().y),
         Some(MouseButton::Middle),
         Modifiers::default(),
     );
     visual.simulate_mouse_up(roll.center(), MouseButton::Middle, Modifiers::default());
-    visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     let toggle = visual
         .debug_bounds("toggle pan mode · drag to move time and pitch · middle-drag always pans")

@@ -7,9 +7,21 @@ use crate::{
     MidiClipVolume, MidiClipVolumePoint, MidiSource, NoteId, Project,
 };
 use std::{collections::BTreeSet, sync::Arc};
+pub(crate) mod render;
 
 pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, Invalid> {
-    if !(2..=MAX_CLIPS).contains(&ids.len()) {
+    group(project, ids, None)
+}
+
+/// A time selection supplies the container bounds before source materialization,
+/// so audio events, MIDI occurrences and volume points retain their song timing.
+fn group(
+    project: &mut Project,
+    ids: Vec<ClipId>,
+    range: Option<&crate::TimeRange>,
+) -> Result<Created, Invalid> {
+    let minimum = if range.is_some() { 1 } else { 2 };
+    if !(minimum..=MAX_CLIPS).contains(&ids.len()) {
         return Err(Invalid("select at least two clips to group"));
     }
     let selected: BTreeSet<_> = ids.iter().copied().collect();
@@ -53,7 +65,7 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
     }
     let track = owner.ok_or(Invalid("selected track no longer exists"))?;
     if audio {
-        return self::audio(project, track, &selected);
+        return self::audio(project, track, &selected, range);
     }
     let row = project
         .track(track)
@@ -65,7 +77,10 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no midi clips selected"))?;
-    let start = first.start().raw();
+    let start = match range {
+        Some(range) => project.tempo_map().frame_to_beat(range.start())?.raw(),
+        None => first.start().raw(),
+    };
     let end = clips.iter().try_fold(start, |end, c| {
         c.start()
             .raw()
@@ -73,11 +88,15 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
             .map(|n| end.max(n))
             .ok_or(Invalid("grouped midi end overflow"))
     })?;
-    let length = BeatTime::from_raw(end - start);
-    let active = first.active();
-    if clips.iter().any(|c| c.active() != active) {
-        return Err(Invalid("grouped clips must have the same activation state"));
-    }
+    let end = match range {
+        Some(range) => project.tempo_map().frame_to_beat(range.end())?.raw(),
+        None => end,
+    };
+    let length = BeatTime::from_raw(
+        end.checked_sub(start)
+            .ok_or(Invalid("grouped midi bounds reversed"))?,
+    );
+    crate::midi::validate_clip(BeatTime::from_raw(start), length)?;
     // Preflight occurrence expansion before allocating or enumerating any loop.
     let count = clips.iter().try_fold(0usize, |count, c| {
         count
@@ -109,6 +128,7 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
             {
                 let mut copy = note.clone();
                 copy.id = NoteId(0);
+                copy.active &= clip.active();
                 copy.start = BeatTime::from_raw(
                     offset
                         .checked_add(occurrence.timeline_start().raw())
@@ -157,7 +177,7 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
     notes.sort_by_key(|n| (n.start(), n.pitch(), n.channel()));
     let mut merged = MidiClip {
         content_view: None,
-        active,
+        active: true,
         playback_offset: BeatTime::ZERO,
         name: first.name().into(),
         flavor: first.flavor(),
@@ -189,6 +209,7 @@ fn audio(
     project: &mut Project,
     track: crate::TrackId,
     selected: &BTreeSet<ClipId>,
+    range: Option<&crate::TimeRange>,
 ) -> Result<Created, Invalid> {
     use crate::{
         AudioClipEdit, AudioEvent, AudioEvents, ClipFade, ClipGain, MAX_AUDIO_EVENTS,
@@ -204,38 +225,55 @@ fn audio(
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no audio clips selected"))?;
-    let start = first.start();
+    let start = range.map_or(first.start(), crate::TimeRange::start);
     let end = clips.iter().try_fold(start, |end, clip| {
         clip.start()
             .checked_add(clip.duration())
             .map(|n| end.max(n))
             .ok_or(Invalid("grouped audio end overflow"))
     })?;
-    let duration = end - start;
+    let end = range.map_or(end, crate::TimeRange::end);
+    let duration = end
+        .checked_sub(start)
+        .ok_or(Invalid("grouped audio bounds reversed"))?;
     if duration > crate::MAX_AUDIO_DOMAIN_FRAMES {
         return Err(Invalid("grouped audio exceeds bounded preparation length"));
     }
-    if clips.iter().any(|c| c.active() != first.active()) {
-        return Err(Invalid("grouped clips must have the same activation state"));
+    // Retained source events still have disjoint, replacement semantics.
+    // Top-level crossfades must not be silently flattened into that program.
+    let mut previous_end = start;
+    for clip in &clips {
+        let first = clip.start().max(start);
+        let last = clip
+            .start()
+            .checked_add(clip.duration())
+            .ok_or(Invalid("grouped audio end overflow"))?
+            .min(end);
+        if first < last {
+            if first < previous_end {
+                return Err(Invalid(
+                    "grouping overlapping audio crossfades is unsupported; keep the clips separate",
+                ));
+            }
+            previous_end = last;
+        }
     }
     let mut sources = Vec::new();
     let mut events = Vec::new();
     let tempo = Arc::new(project.tempo_map().clone());
     for clip in &clips {
         let offset = clip.start() - start;
-        if clip.has_retained_audio_roots() {
+        let neutral_group = clip.has_retained_audio_roots()
+            && clip.audio_edit().is_some_and(|edit| {
+                edit.content_view.is_none()
+                    && edit.placement.is_none()
+                    && clip.gain() == ClipGain::UNITY
+                    && edit.domain.fade.is_neutral()
+            });
+        if neutral_group {
             let edit = clip
                 .audio_edit()
                 .ok_or(Invalid("grouped audio root missing"))?;
-            if edit.content_view.is_some()
-                || edit.placement.is_some()
-                || clip.gain() != ClipGain::UNITY
-                || !edit.domain.fade.is_neutral()
-            {
-                return Err(Invalid(
-                    "grouped audio with outer processing or repeats cannot be nested; group unprocessed source clips",
-                ));
-            }
             let sequence = edit
                 .domain
                 .events
@@ -271,6 +309,7 @@ fn audio(
                     .try_reserve(1)
                     .map_err(|_| Invalid("could not reserve grouped audio events"))?;
                 events.push(AudioEvent {
+                    active: event.active && clip.active(),
                     fade: event.fade,
                     source,
                     id: events.len() as u64 + 1,
@@ -302,6 +341,7 @@ fn audio(
                 .try_reserve(1)
                 .map_err(|_| Invalid("could not reserve grouped audio events"))?;
             events.push(AudioEvent {
+                active: clip.active(),
                 fade: None,
                 source: id,
                 id: events.len() as u64 + 1,
@@ -315,6 +355,7 @@ fn audio(
         }
     }
     let mut merged = (*first).clone();
+    merged.active = true;
     merged.start = start;
     merged.duration = duration;
     merged.source_offset = 0;
@@ -432,4 +473,89 @@ pub(crate) fn event_range(
     row.content.audio_clips.extend(fragments);
     Project::from_snapshot(project.snapshot())?;
     Ok(Created::Clip(result))
+}
+
+/// Use the ordinary split owners so retained source windows, processing and MIDI
+/// gates follow the same law as explicit cuts. Each populated row spans the full
+/// selection, including empty margins. Publish only after every row groups.
+pub(crate) fn time_range(
+    project: &mut Project,
+    range: &crate::TimeRange,
+) -> Result<Created, Invalid> {
+    range.validate(project)?;
+    let left = project.tempo_map().frame_to_beat(range.start())?;
+    let right = project.tempo_map().frame_to_beat(range.end())?;
+    let mut candidate = project.clone();
+    let mut result = None;
+    for track in range.tracks() {
+        for (frame, beat) in [(range.start(), left), (range.end(), right)] {
+            let row = candidate
+                .track(*track)
+                .ok_or(Invalid("selected track no longer exists"))?;
+            let mut cuts = Vec::new();
+            for clip in row.clips() {
+                let end = clip
+                    .start()
+                    .checked_add(clip.duration())
+                    .ok_or(Invalid("clip end overflow"))?;
+                if clip.start() < frame && frame < end {
+                    cuts.push(crate::Command::SplitClip {
+                        clip: clip.id(),
+                        frame,
+                    });
+                }
+            }
+            for clip in row.midi_clips() {
+                let end = clip
+                    .start()
+                    .raw()
+                    .checked_add(clip.length().raw())
+                    .ok_or(Invalid("midi clip end overflow"))?;
+                if clip.start() < beat && beat.raw() < end {
+                    cuts.push(crate::Command::SplitMidiClip {
+                        clip: clip.id(),
+                        beat,
+                    });
+                }
+            }
+            for cut in cuts {
+                candidate.apply(cut)?;
+            }
+        }
+        let row = candidate
+            .track(*track)
+            .ok_or(Invalid("selected track no longer exists"))?;
+        let mut ids = Vec::new();
+        for clip in row.clips() {
+            if clip.start() >= range.start() && clip.start() < range.end() {
+                ids.push(clip.id());
+            }
+        }
+        for clip in row.midi_clips() {
+            if clip.start() >= left && clip.start() < right {
+                ids.push(clip.id());
+            }
+        }
+        match ids.as_slice() {
+            [] => (),
+            // An exact single-clip selection already has the requested bounds.
+            // Preserve its source representation, including directed/processed groups.
+            [id] if row.clips().iter().any(|clip| {
+                clip.id() == *id
+                    && clip.start() == range.start()
+                    && clip.duration() == range.end() - range.start()
+            }) || row.midi_clips().iter().any(|clip| {
+                clip.id() == *id
+                    && clip.start() == left
+                    && clip.length().raw() == right.raw() - left.raw()
+            }) =>
+            {
+                result = Some(Created::Clip(*id));
+            }
+            _ => result = Some(group(&mut candidate, ids, Some(range))?),
+        }
+    }
+    let result = result.ok_or(Invalid("selected time range contains no clips"))?;
+    *project = candidate;
+    Ok(result)
 }

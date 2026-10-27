@@ -274,6 +274,7 @@ fn prepared_return_project_with_bus(
             gain: return_gain,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
@@ -349,6 +350,7 @@ fn eq8_return_project(gain_db: f32, q: f32, kind: u32) -> Project {
         gain: 1.0,
         muted: false,
         devices: vec![DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
@@ -530,6 +532,9 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                     .unwrap();
         } else {
             candidate_snapshot.tracks.clear();
+            for source in &mut candidate_snapshot.native_sources {
+                source.receiver = None;
+            }
             candidate_snapshot.return_tracks.clear();
         }
         let candidate_project = Project::from_snapshot(candidate_snapshot).unwrap();
@@ -615,6 +620,9 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                 512,
             )
             .unwrap();
+        candidate.set_device_metering(true);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&candidate.revision).unwrap();
         let arrangement_before = candidate.arrangement_frame;
         let performance_before = candidate.performance_frame;
         candidate.arrangement_frame = u64::MAX - 300;
@@ -633,6 +641,22 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         assert_eq!(candidate.arrangement_frame, u64::MAX - 300);
         assert!(refused_main.iter().flatten().all(|sample| *sample == 0.0));
         assert!(refused_capture.output(0).unwrap().is_empty());
+        if replacement {
+            assert_eq!(
+                observation
+                    .track_output_meter(track_id)
+                    .unwrap()
+                    .take_track_output(),
+                0.0
+            );
+            assert_eq!(
+                observation
+                    .return_output_meter(return_id)
+                    .unwrap()
+                    .take_track_output(),
+                0.0
+            );
+        }
         candidate.arrangement_frame = arrangement_before;
         let mut main = [[0.0; 2]; 8];
         let mut track = main;
@@ -648,6 +672,23 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
                 .render_with_capture(&mut main[offset..offset + frames], &mut capture)
                 .unwrap();
             assert_eq!(capture.valid_frames(), frames);
+            if replacement {
+                for (index, meter) in [
+                    observation.track_output_meter(track_id).unwrap(),
+                    observation.return_output_meter(return_id).unwrap(),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let expected = capture
+                        .output(index)
+                        .unwrap()
+                        .iter()
+                        .flatten()
+                        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+                    assert_eq!(meter.take_track_output(), expected);
+                }
+            }
             offset += frames;
         }
         for index in 0..8 {
@@ -1330,6 +1371,9 @@ fn full_return_tail_bank_refuses_atomically_and_retries_after_stop() {
 fn feed_capture_includes_retired_return_tail_once_without_refeeding_it() {
     let mut snapshot = prepared_return_project(true, 0.5).snapshot();
     snapshot.tracks.clear();
+    for source in &mut snapshot.native_sources {
+        source.receiver = None;
+    }
     snapshot.return_tracks[0].gain = 1.0;
     snapshot.session = hex_project::SessionSnapshot::default();
     let source_id = snapshot.return_tracks[0].id;

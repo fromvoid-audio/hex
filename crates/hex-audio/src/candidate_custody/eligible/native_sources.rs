@@ -4,6 +4,7 @@
 //! loans, actual node matching and original graph references close that witness.
 //! Source reports retain custody through native disposal and recovery.
 use super::*;
+use crate::plugin_effects::NativeEffectReference;
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
 use hex_plugin_host::native::{
@@ -11,17 +12,45 @@ use hex_plugin_host::native::{
 };
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
+mod capture;
 mod completion;
 mod definition;
 mod effect;
 mod endpoints;
+mod epoch;
+pub(super) mod ordinary;
 mod references;
+pub(crate) use ordinary::OrdinaryNativeReferences;
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
 pub(super) use references::References;
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
+struct EndpointSignal {
+    requested: AtomicBool,
+    // Written only by actual callback installation/return. Queue admission is
+    // not an endpoint ACK and this observation grants no graph admission.
+    installed: AtomicBool,
+    // Published by the owning callback before a predecessor graph can return.
+    // An ordinary successor can still own that source in an inherited tail.
+    runtime_required: AtomicBool,
+}
+impl EndpointSignal {
+    fn new() -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+            installed: AtomicBool::new(false),
+            runtime_required: AtomicBool::new(false),
+        }
+    }
+    fn load(&self, order: Ordering) -> bool {
+        self.requested.load(order)
+    }
+    fn store(&self, value: bool, order: Ordering) {
+        self.requested.store(value, order);
+    }
+}
 /// Per-cell allowances charged for the whole configured pool before any child
 /// or cancellation pair starts. These are reserved capacity, not allocated bytes
 /// or a producer/resource witness. The same fixed pool also reserves its
@@ -33,6 +62,22 @@ pub struct NativeSourceDataReservation {
     pub max_construction_peak_data_bytes: usize,
 }
 impl NativeSourceDataReservation {
+    /// Whole fixed pool's listed metadata and per-source DATA allowances.
+    /// These are reserved capacities, not actual allocations or opaque native
+    /// RSS. The output owner adds them to its existing domain reservation before
+    /// configuration; Root still checks actual construction and every admission.
+    pub fn pool_data_bytes(self, capacity: usize) -> Option<(usize, usize)> {
+        self.validate().ok()?;
+        if capacity == 0 || capacity > MAX_SOURCES {
+            return None;
+        }
+        let metadata =
+            capacity.checked_mul(std::mem::size_of::<Slot>() + std::mem::size_of::<Execution>())?;
+        Some((
+            metadata.checked_add(capacity.checked_mul(self.max_retained_data_bytes)?)?,
+            metadata.checked_add(capacity.checked_mul(self.max_construction_peak_data_bytes)?)?,
+        ))
+    }
     fn validate(self) -> Result<(), &'static str> {
         let file = usize::try_from(hex_plugin_scan::MAX_BINARY)
             .map_err(|_| "native validation file bound overflow")?;
@@ -92,7 +137,7 @@ struct Slot {
     cancellation: Option<Cancellation>,
     cancellation_requested: bool,
     endpoint_loaned: bool,
-    endpoint_return: Option<Arc<AtomicBool>>,
+    endpoint_return: Option<Arc<EndpointSignal>>,
 }
 impl Slot {
     fn vacant() -> Self {
@@ -151,6 +196,7 @@ impl Bank {
             if source.retiring
                 && !publication.references_native_source(index)
                 && let Some(signal) = &source.endpoint_return
+                && !signal.runtime_required.load(Ordering::Acquire)
             {
                 signal.store(true, Ordering::Release);
             }
@@ -185,6 +231,7 @@ impl Bank {
 enum Owner {
     Pending(Pending),
     Prepared(native::Prepared),
+    Quiescent(native::Quiescent),
     Effect(crate::plugin_effects::NativeEffect),
     Loaned(crate::plugin_effects::NativeEffectControl),
     WorkerRefused(crate::plugin_worker::NativeWorkerStartFailure),
@@ -257,11 +304,8 @@ impl Custody {
         let peak = capacity
             .checked_mul(limits.max_construction_peak_data_bytes)
             .ok_or("native source reservation overflow")?;
-        let retained_quote = quote
-            .checked_add(retained)
-            .ok_or("native source reservation overflow")?;
-        let peak_quote = quote
-            .checked_add(peak)
+        let (retained_quote, peak_quote) = limits
+            .pool_data_bytes(capacity)
             .ok_or("native source reservation overflow")?;
         {
             let bank = lock(&self.bank);
@@ -532,7 +576,10 @@ impl Custody {
                 return false;
             }
             slot.retiring = true;
-            if !referenced && let Some(signal) = &slot.endpoint_return {
+            if !referenced
+                && let Some(signal) = &slot.endpoint_return
+                && !signal.runtime_required.load(Ordering::Acquire)
+            {
                 signal.store(true, Ordering::Release);
             }
             if slot.processor.is_none() {
@@ -550,18 +597,42 @@ impl Custody {
         &self,
         binding: Binding,
     ) -> Option<String> {
-        let work = self.work.try_lock().ok()?;
-        let bank = self.bank.try_lock().ok()?;
-        let index = bank.sources.index(binding)?;
-        let cell = work.sources.cells.get(index)?;
-        match (cell.cause(), &cell.cleanup_error) {
+        self.try_native_source_error(binding).ok().flatten()
+    }
+    pub(in crate::candidate_custody) fn try_native_source_error(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<String>, &'static str> {
+        let work = self
+            .work
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let bank = self
+            .bank
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let index = bank.sources.index(binding).ok_or("native source differs")?;
+        let cell = work
+            .sources
+            .cells
+            .get(index)
+            .ok_or("native source cell unavailable")?;
+        Ok(match (cell.cause(), &cell.cleanup_error) {
             (Some(error), Some(cleanup)) => Some(format!("{error} · cleanup: {cleanup}")),
             (Some(error), None) | (None, Some(error)) => Some(error.to_string()),
             (None, None) => None,
-        }
+        })
     }
 
     pub(super) fn advance_native_sources(&self, work: &mut Work, abandoned: bool) {
+        // Ordinary tails can release their last runtime requirement after the
+        // introducing graph has already returned. Re-observe that callback
+        // frontier on this existing control pump, not only on constructor-slot
+        // release or the original retirement request.
+        {
+            let bank = lock(&self.bank);
+            bank.sources.request_unreferenced_returns(&bank.publication);
+        }
         for (index, cell) in work.cells.iter_mut().enumerate() {
             let eligible = {
                 let bank = lock(&self.bank);
@@ -584,6 +655,11 @@ impl Custody {
                     }
                     if let Some(Owner::Prepared(_)) = cell.owner.as_ref()
                         && let Some(Owner::Prepared(owner)) = cell.owner.take()
+                    {
+                        cell.owner = Some(Owner::Refused(owner.cancel_retained_on_control()));
+                    }
+                    if let Some(Owner::Quiescent(_)) = cell.owner.as_ref()
+                        && let Some(Owner::Quiescent(owner)) = cell.owner.take()
                     {
                         cell.owner = Some(Owner::Refused(owner.cancel_retained_on_control()));
                     }
@@ -792,6 +868,74 @@ impl CandidateRoot {
     ) -> Option<NativeSourcePreparationProgress> {
         self.0.eligible.native_source_progress(binding)
     }
+    pub(crate) fn native_source_endpoint_installed(&self, binding: Binding) -> Option<bool> {
+        let bank = self.0.eligible.bank.try_lock().ok()?;
+        let slot = bank.sources.slots.get(bank.sources.index(binding)?)?;
+        if bank.closing
+            || slot.phase != Phase::Accepted
+            || slot.retiring
+            || slot.cancellation_requested
+        {
+            return None;
+        }
+        Some(
+            slot.endpoint_loaned
+                && slot
+                    .endpoint_return
+                    .as_ref()
+                    .is_some_and(|signal| signal.installed.load(Ordering::Acquire)),
+        )
+    }
+    pub(crate) fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
+        let work = self.0.eligible.work.try_lock().ok()?;
+        let bank = self.0.eligible.bank.try_lock().ok()?;
+        let index = bank.sources.index(binding)?;
+        let slot = bank.sources.slots.get(index)?;
+        if bank.closing
+            || slot.phase != Phase::Accepted
+            || slot.retiring
+            || slot.starting
+            || slot.cancellation_requested
+        {
+            return None;
+        }
+        let live = match work.sources.cells.get(index)?.owner.as_ref()? {
+            Owner::Effect(effect) => {
+                NativeEffectReference::Unsplit(effect).transport_is_live_on_control()
+            }
+            Owner::Loaned(control) => {
+                NativeEffectReference::Loaned(control).transport_is_live_on_control()
+            }
+            _ => return None,
+        };
+        Some((slot.endpoint_loaned, live))
+    }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_source_completed_blocks(&self, binding: Binding) -> Option<u64> {
+        let work = self.0.eligible.work.try_lock().ok()?;
+        let bank = self.0.eligible.bank.try_lock().ok()?;
+        let index = bank.sources.index(binding)?;
+        match work.sources.cells.get(index)?.owner.as_ref()? {
+            Owner::Effect(effect) => {
+                Some(NativeEffectReference::Unsplit(effect).completed_blocks_on_control())
+            }
+            Owner::Loaned(control) => {
+                Some(NativeEffectReference::Loaned(control).completed_blocks_on_control())
+            }
+            _ => None,
+        }
+    }
+    /// Headless control fixture only: retain the actual Work exclusion while
+    /// another control request observes contention. This runs outside a callback
+    /// entry and changes no slot, source, native state or acknowledgement.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn with_native_source_work_held_on_control<R>(
+        &self,
+        run: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let _work = self.0.eligible.work.lock().ok()?;
+        Some(run())
+    }
     pub(crate) fn retire_native_source_preparation(&self, binding: Binding) -> bool {
         let accepted = self.0.eligible.retire_native_source(binding);
         crate::lifecycle::request_candidate_cleanup(self);
@@ -799,6 +943,12 @@ impl CandidateRoot {
     }
     pub(crate) fn native_source_preparation_error(&self, binding: Binding) -> Option<String> {
         self.0.eligible.native_source_error(binding)
+    }
+    pub(crate) fn try_native_source_preparation_error(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<String>, &'static str> {
+        self.0.eligible.try_native_source_error(binding)
     }
     pub(crate) fn recover_native_source_preparation(
         &self,

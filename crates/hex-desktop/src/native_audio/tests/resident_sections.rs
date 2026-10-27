@@ -10,7 +10,7 @@ fn section_request(revision: u64, command: Command) -> Request {
         command,
     }
 }
-fn run_callback(h: &mut ResidentHarness, request: Request) -> Event {
+pub(super) fn run_callback(h: &mut ResidentHarness, request: Request) -> Event {
     h.service.submit(request).unwrap();
     let until = Instant::now() + Duration::from_secs(10);
     loop {
@@ -516,6 +516,16 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             before: chorus,
         },
         Command::DuplicateArrangementSection(intro),
+        Command::DuplicateArrangementSectionAt {
+            section: intro,
+            target: chorus,
+            after: true,
+        },
+        Command::DuplicateArrangementSectionAt {
+            section: intro,
+            target: chorus,
+            after: false,
+        },
     ] {
         let before = event.state.project.snapshot();
         let revision = event.state.revision;
@@ -546,6 +556,30 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             )
             .unwrap(),
         );
+        if matches!(command, Command::DuplicateArrangementSectionAt { .. }) {
+            let Some(Created::ArrangementSection(copy)) = event.created else {
+                panic!("destination copy identity");
+            };
+            let marker = event.state.project.arrangement_section(copy).unwrap();
+            let start = event
+                .state
+                .project
+                .tempo_map()
+                .beat_to_frame(marker.start())
+                .unwrap();
+            let mut copied = hex_engine::playback::Playback::try_from_prepared_with_session(
+                Arc::clone(&prepared),
+            )
+            .unwrap();
+            copied.apply(PlaybackCommand::Seek(start));
+            copied.apply(PlaybackCommand::Play);
+            let mut literal = [[0.0; 2]; 64];
+            copied.render(&mut literal).unwrap();
+            assert_eq!(
+                literal, [[0.25; 2]; 64],
+                "copy must read the original intro's PCM, not destination music"
+            );
+        }
         let mut oracle =
             hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
         oracle.apply(PlaybackCommand::Seek(cursor));
@@ -593,7 +627,11 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             &mut h,
             section_request(
                 event.state.revision,
-                Command::DuplicateArrangementSection(intro),
+                if matches!(command, Command::DuplicateArrangementSectionAt { .. }) {
+                    command.clone()
+                } else {
+                    Command::DuplicateArrangementSection(intro)
+                },
             ),
         );
         assert!(refused.error.is_some());
@@ -628,7 +666,11 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
 #[test]
 fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
-    for micro_bpm in [143_000_000, 180_000_000] {
+    for (micro_bpm, copy_before_self) in [
+        (143_000_000, false),
+        (180_000_000, false),
+        (143_000_000, true),
+    ] {
         let files = Files::new();
         let mut h = ResidentHarness::with_frame_limit(8_000_000);
         assert!(h.next().error.is_none());
@@ -708,6 +750,15 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .tempo_map()
             .beat_to_frame(BeatTime::from_quarters(2).unwrap())
             .unwrap();
+        let expected_from_start = |start: u64| -> [hex_engine::Frame; 64] {
+            std::array::from_fn(|i| source_period[((start + i as u64) % loop_frames % 64) as usize])
+        };
+        let expected_at = |end: u64| {
+            let start = (end + loop_frames - 64) % loop_frames;
+            std::array::from_fn::<_, 64, _>(|index| {
+                source_period[((start + index as u64) % loop_frames % 64) as usize]
+            })
+        };
         let mut intent = h.seek_intent(2, event.state.revision, None, None);
         intent.destination_frame = 0;
         intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
@@ -729,6 +780,12 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .instrument()
             .unwrap();
         let before_comparison = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let comparison_clock = (
+            status.position.load(Acquire),
+            status.performance_frame.load(Acquire),
+        );
+        assert_eq!(before_comparison, expected_at(comparison_clock.0));
         event = h.run(Request::CompareDevice {
             owner: hex_session::service::preset::Owner {
                 project_generation: 0,
@@ -750,7 +807,17 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 .load(Acquire),
             applied
         );
-        assert_eq!(h.render(), before_comparison);
+        let compared = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(
+            status.performance_frame.load(Acquire),
+            comparison_clock.1 + 64
+        );
+        assert_eq!(
+            status.position.load(Acquire),
+            (comparison_clock.0 + 64) % loop_frames
+        );
+        assert_eq!(compared, expected_at(status.position.load(Acquire)));
         let before_noop = event.state.project.snapshot();
         let noop = run_callback(
             &mut h,
@@ -788,10 +855,6 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 name: "metadata".into(),
             },
             Command::DuplicateArrangementSection(intro),
-            Command::ReorderSectionAfter {
-                section: intro,
-                after: chorus,
-            },
         ] {
             let before = event.state.project.snapshot();
             let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_))
@@ -836,6 +899,15 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 .position
                 .load(Acquire);
             let before_pcm = h.render();
+            let before_status = h.audio.as_ref().unwrap().status().unwrap();
+            let before_clock = (
+                before_status.position.load(Acquire),
+                before_status.performance_frame.load(Acquire),
+            );
+            if unchanged_prefix {
+                assert_eq!(before_pcm, expected_from_start(before_frame));
+                assert_eq!(before_pcm, expected_at(before_clock.0));
+            }
             let request = if matches!(&command, Command::RenameTrack { .. }) {
                 Request::Edit(command)
             } else {
@@ -864,21 +936,29 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             let heard = h.render();
             assert!(heard.iter().flatten().any(|s| *s != 0.0));
             if unchanged_prefix {
-                let expected = |start: u64| -> [hex_engine::Frame; 64] {
-                    std::array::from_fn(|i| {
-                        source_period[((start + i as u64) % loop_frames % 64) as usize]
-                    })
-                };
+                assert_eq!(heard, expected_from_start(heard_frame));
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                let after_clock = (
+                    status.position.load(Acquire),
+                    status.performance_frame.load(Acquire),
+                );
+                assert!(after_clock.1 >= before_clock.1 + 64);
                 assert_eq!(
-                    before_pcm,
-                    expected(before_frame),
-                    "original PCM oracle at the actual content position"
+                    after_clock.0,
+                    (before_clock.0 + after_clock.1 - before_clock.1) % loop_frames
                 );
                 assert_eq!(
                     heard,
-                    expected(heard_frame),
-                    "metadata or duplicating later music must retain held-note phase and amplitude at content frame {heard_frame}"
+                    expected_at(after_clock.0),
+                    "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
                 );
+            }
+            // A new loop pass dispatches the shortened prefix signature. Undo
+            // must work after this boundary, independently of worker timing.
+            if unchanged_prefix && event.state.project.arrangement_sections().len() > 2 {
+                for _ in 0..loop_frames.div_ceil(64) + 1 {
+                    h.render();
+                }
             }
             event = run_callback(&mut h, Request::Undo);
             assert!(event.error.is_none(), "{:?}", event.error);
@@ -886,7 +966,70 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             let mut restored = event.state.project.snapshot();
             restored.next_id = before.next_id;
             assert_eq!(restored, before);
+            if unchanged_prefix {
+                let start = h
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .position
+                    .load(Acquire);
+                assert_eq!(
+                    h.render(),
+                    expected_from_start(start),
+                    "Undo must preserve the original sampler phase without a second NoteOn"
+                );
+            }
         }
+        let original = event.state.project.snapshot();
+        let flags = (event.state.can_undo, event.state.can_redo);
+        let relocation = if copy_before_self {
+            Command::DuplicateArrangementSectionAt {
+                section: intro,
+                target: intro,
+                after: false,
+            }
+        } else {
+            Command::ReorderSectionAfter {
+                section: intro,
+                after: chorus,
+            }
+        };
+        let refused = run_callback(
+            &mut h,
+            section_request(event.state.revision, relocation.clone()),
+        );
+        assert!(
+            refused
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("stop playback")),
+            "{:?}",
+            refused.error
+        );
+        assert_eq!(refused.state.revision, event.state.revision);
+        assert_eq!(refused.state.project.snapshot(), original);
+        assert_eq!((refused.state.can_undo, refused.state.can_redo), flags);
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            applied
+        );
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .rejected_revision()
+                .is_none()
+        );
         for _ in 0..800 {
             h.render();
         }
@@ -908,6 +1051,91 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .command(PlaybackCommand::Stop)
             .unwrap();
         assert!(h.render().iter().flatten().all(|s| *s == 0.0));
+        let moved = run_callback(&mut h, section_request(refused.state.revision, relocation));
+        assert!(moved.error.is_none(), "{:?}", moved.error);
+        (applied, _) = h.applied(applied);
+        // Transport admission resumes only after control and callback retire
+        // the acknowledged stopped-edit fence, not merely its graph revision.
+        let until = Instant::now() + Duration::from_secs(2);
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stopped_edit_pending()
+        {
+            h.pump();
+            h.render();
+            assert!(Instant::now() < until, "installed gate did not retire");
+            std::thread::yield_now();
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        for _ in 0..loop_frames.div_ceil(64) + 1 {
+            h.render();
+        }
+        let refused_undo = run_callback(&mut h, Request::Undo);
+        assert!(
+            refused_undo
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("stop playback")),
+            "{:?}",
+            refused_undo.error
+        );
+        assert_eq!(refused_undo.state.revision, moved.state.revision);
+        assert_eq!(
+            refused_undo.state.project.snapshot(),
+            moved.state.project.snapshot()
+        );
+        assert_eq!(
+            (refused_undo.state.can_undo, refused_undo.state.can_redo),
+            (moved.state.can_undo, moved.state.can_redo)
+        );
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            applied
+        );
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .rejected_revision()
+                .is_none()
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render();
+        let undone = run_callback(&mut h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        (applied, _) = h.applied(applied);
+        let mut restored = undone.state.project.snapshot();
+        restored.next_id = original.next_id;
+        assert_eq!(restored, original);
+        let redone = run_callback(&mut h, Request::Redo);
+        assert!(redone.error.is_none(), "{:?}", redone.error);
+        h.applied(applied);
+        assert_eq!(
+            redone.state.project.snapshot(),
+            moved.state.project.snapshot()
+        );
     }
 }
 

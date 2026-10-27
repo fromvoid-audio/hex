@@ -110,7 +110,7 @@ pub(super) fn overlay(
             "audio clip state references a non-audio clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 pub(crate) fn refuse_legacy_audio(project: &Project) -> Result<(), StorageError> {
     if project.tracks().iter().flat_map(|t|t.clips()).any(|c|c.gain()!=hex_project::ClipGain::UNITY || c.audio_edit().is_some() || c.fade().has_shape())

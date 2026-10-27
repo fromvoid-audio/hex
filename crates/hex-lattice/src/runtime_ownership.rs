@@ -22,6 +22,72 @@ pub(super) enum RuntimeOwnership {
     Foreign(ForeignRuntime),
 }
 impl RuntimeOwnership {
+    pub(super) fn supports_parameter_automation(
+        &self,
+        parameter: hex_lattice_contract::ParameterId,
+    ) -> bool {
+        match self {
+            Self::Legacy { primary, scratch } => {
+                primary.supports_parameter_automation(parameter)
+                    && scratch.supports_parameter_automation(parameter)
+            }
+            Self::Owned(value) => value.supports_parameter_automation(parameter),
+            _ => false,
+        }
+    }
+    pub(super) fn process_automation(
+        &mut self,
+        frames: &mut [crate::StereoFrame],
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        automation: &dyn crate::NativeParameterAutomation,
+        bypassed: bool,
+    ) -> Result<(), DeviceContractError> {
+        match self {
+            Self::Legacy { scratch, .. } => {
+                if bypassed {
+                    scratch.process_bypassed_block_with_automation(
+                        frames,
+                        clock,
+                        automation,
+                        &crate::EMPTY_DEVICE_RESOURCES,
+                    )?;
+                } else {
+                    scratch.process_block_with_automation(
+                        frames,
+                        clock,
+                        automation,
+                        &crate::EMPTY_DEVICE_RESOURCES,
+                    )?;
+                }
+            }
+            Self::Owned(value) => {
+                if bypassed {
+                    value.process_bypassed_block_with_automation(
+                        frames,
+                        clock,
+                        automation,
+                        &crate::EMPTY_DEVICE_RESOURCES,
+                    )?;
+                } else {
+                    value.process_block_with_automation(
+                        frames,
+                        clock,
+                        automation,
+                        &crate::EMPTY_DEVICE_RESOURCES,
+                    )?;
+                }
+            }
+            _ => return Err(DeviceContractError::UnsupportedProcessingClass),
+        }
+        Ok(())
+    }
+    pub(super) fn take_dynamics_meter(&mut self) -> Option<crate::DynamicsMeter> {
+        match self {
+            Self::Legacy { primary, .. } => primary.take_dynamics_meter(),
+            Self::Owned(runtime) => runtime.take_dynamics_meter(),
+            Self::Memoryless | Self::Foreign(_) => None,
+        }
+    }
     pub(super) fn prepare(
         factory: Option<&PreparedProcessorFactory>,
     ) -> Result<Self, DeviceContractError> {
@@ -136,6 +202,20 @@ impl RuntimeOwnership {
                 new.inherit_from(old.as_ref())
             }
             _ => {}
+        }
+    }
+    pub(super) fn transfer_history_from(&mut self, old: &mut Self) {
+        if let (Self::Owned(new), Self::Owned(previous)) = (&mut *self, &mut *old) {
+            if new.can_inherit_from(previous.as_ref()) {
+                new.transfer_history_from(previous.as_mut());
+            }
+        } else {
+            self.inherit_from(old);
+        }
+    }
+    pub(super) fn begin_output_tail(&mut self) {
+        if let Self::Owned(runtime) = self {
+            runtime.begin_output_tail();
         }
     }
     pub(super) fn begin(&mut self) {

@@ -34,9 +34,14 @@ fn quantize(level: f32) -> [i16; 2] {
 #[test]
 fn loaded_resident_service_exports_exact_default_range_captures_and_stems_without_monitor_input() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
+    for frame_limit in [32_768, 8192] {
+        loaded_resident_export_case(frame_limit);
+    }
+}
+fn loaded_resident_export_case(frame_limit: u64) {
     let files = Files::new();
     let audio_file = Files::new();
-    let mut h = ResidentHarness::with_frame_limit(32_768);
+    let mut h = ResidentHarness::with_frame_limit(frame_limit);
     h.next();
     let (mut applied, _) = h.applied(0);
     let added = h.run(Request::Edit(Command::AddMidiTrack {
@@ -88,6 +93,17 @@ fn loaded_resident_service_exports_exact_default_range_captures_and_stems_withou
         start: 0,
     });
     (applied, _) = h.applied(applied);
+    assert_eq!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_))),
+        frame_limit == 8192
+    );
     let audio = imported
         .state
         .project

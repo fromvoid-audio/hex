@@ -252,6 +252,16 @@ fn sampler_history_occupied_refusal_and_new_cancel_share_the_single_pending_fenc
     assert!(replaced.project_replaced);
     assert!(replaced.state.project.tracks().is_empty());
     h.open();
-    assert_eq!(h.render(), [[0.0; 2]; 64]);
-    assert_eq!(h.observation.lock().unwrap().native_hold.frames, 0);
+    // Opened proves fresh native construction, not delivery of the worker's
+    // next native_sampler_input observation. Wait for that actual refreshed
+    // hold instead of asserting against the previous sampler's cached value.
+    let deadline = Instant::now() + h.wait;
+    loop {
+        assert_eq!(h.render(), [[0.0; 2]; 64]);
+        if h.observation.lock().unwrap().native_hold.frames == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "old sampler hold did not retire");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }

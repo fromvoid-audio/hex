@@ -331,8 +331,32 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
                 .as_ref()
                 .unwrap()
                 .project
-                .device(device)
-                .is_none()
+                .track(track)
+                .unwrap()
+                .ordered_device_chain()
+                .all(|node| match node {
+                    hex_project::TrackDeviceRef::Instrument(item)
+                    | hex_project::TrackDeviceRef::Effect(item) => item.id() != device,
+                })
+        });
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert_eq!(project.device(device).is_some(), device == instrument);
+            let mut expected_sources = before.snapshot().native_sources;
+            if device == instrument {
+                let source_id = before.track(track).unwrap().source_id().unwrap().value();
+                let source = expected_sources
+                    .iter_mut()
+                    .find(|source| source.id == source_id)
+                    .expect("instrument source remains in the inventory");
+                assert_eq!(source.receiver, Some(track.value()));
+                source.receiver = None;
+            }
+            assert_eq!(
+                project.snapshot().native_sources,
+                expected_sources,
+                "removing an instrument unlinks only its source receiver"
+            );
         });
         editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
         pump_until(&editor, cx, |view| {

@@ -419,8 +419,14 @@ fn help_toggle_preserves_collapsed_source_identification_query_focus_and_changel
     visual.simulate_keystrokes("space");
     visual.run_until_parked();
     assert!(
+        !visual.update(|_, cx| crate::tooltips::enabled(cx)),
+        "Space remains the global transport shortcut"
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(
         visual.update(|_, cx| crate::tooltips::enabled(cx)),
-        "tab returns to the help toggle"
+        "Enter activates the focused help toggle"
     );
     visual.simulate_keystrokes("shift-tab enter");
     visual.run_until_parked();

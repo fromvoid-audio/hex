@@ -72,6 +72,7 @@ fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>>
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
@@ -81,6 +82,7 @@ fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>>
     snapshot.return_tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: snapshot.next_id,
             bypassed: false,
@@ -226,5 +228,216 @@ fn actual_deleted_instrument_effect_and_return_tails_capture_without_callback_dr
         }
     }
     // Graphs/plans and completed owners are reclaimed outside measured scopes.
+    Ok(())
+}
+
+// This combined headless fixture retains multiple large host/oracle owners.
+// Give its test worker a finite explicit stack; runtime construction and worker
+// lifetime remain outside every allocation measurement.
+#[test]
+fn automated_utility_callback_publication_and_late_failure_retry_are_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            run_automated_native_allocation_probe(AutomatedFamily::Utility)
+                .map_err(|e| e.to_string())
+        })?
+        .join()
+        .map_err(|_| "automation allocation probe panicked")?
+        .map_err(Into::into)
+}
+#[test]
+fn automated_saturator_callback_publication_and_late_failure_retry_are_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            run_automated_native_allocation_probe(AutomatedFamily::Saturator)
+                .map_err(|e| e.to_string())
+        })?
+        .join()
+        .map_err(|_| "saturator allocation probe panicked")?
+        .map_err(Into::into)
+}
+#[test]
+fn automated_auto_pan_callback_publication_and_late_failure_retry_are_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            run_automated_native_allocation_probe(AutomatedFamily::AutoPan)
+                .map_err(|e| e.to_string())
+        })?
+        .join()
+        .map_err(|_| "auto pan allocation probe panicked")?
+        .map_err(Into::into)
+}
+#[derive(Clone, Copy)]
+enum AutomatedFamily {
+    Utility,
+    Saturator,
+    AutoPan,
+}
+fn run_automated_native_allocation_probe(family: AutomatedFamily) -> Result<(), Box<dyn Error>> {
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
+    let (project, track, bus) = source()?;
+    let mut editor = Editor::new(project, 16)?;
+    let clip = editor.project().track(track).ok_or("track")?.midi_clips()[0].id();
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 67,
+        channel: 0,
+        velocity: 100,
+    })?;
+    let devices = [
+        editor.project().track(track).ok_or("track")?.devices()[0].id(),
+        editor
+            .project()
+            .return_tracks()
+            .iter()
+            .find(|t| t.id() == bus)
+            .ok_or("return")?
+            .devices()[0]
+            .id(),
+    ];
+    for device in devices {
+        let (state, controls): (_, &[(u32, f32, f32)]) = match family {
+            AutomatedFamily::Utility => (
+                None,
+                &[
+                    (1, 0.0, 0.04),
+                    (3, 0.25, 0.75),
+                    (12, 1.0, 1.0),
+                    (13, 0.25, 0.75),
+                ],
+            ),
+            AutomatedFamily::Saturator => (
+                Some(hex_devices::saturator::SATURATOR_DEFINITION.default_state()?),
+                &[
+                    (1, 0.5, 0.75),
+                    (2, 0.75, 1.0),
+                    (3, 0.25, 0.75),
+                    (4, 0.0, 1.0),
+                ],
+            ),
+            AutomatedFamily::AutoPan => (
+                Some(hex_devices::auto_pan::AUTO_PAN_DEFINITION.default_state()?),
+                &[
+                    (1, 0.25, 0.75),
+                    (2, 0.25, 0.75),
+                    (3, 0.9, 0.0),
+                    (4, 0.0, 1.0),
+                ],
+            ),
+        };
+        if let Some(state) = state {
+            editor.execute(Command::ReplaceDeviceState { device, state })?;
+        }
+        for &(parameter, start, end) in controls {
+            editor.execute(Command::ReplaceDeviceAutomation {
+                device,
+                parameter: ParameterId::new(parameter)?,
+                points: vec![
+                    AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(start)?,
+                        outgoing: AutomationInterpolation::Linear,
+                    },
+                    AutomationPoint {
+                        beat: BeatTime::from_raw(1 << 26),
+                        value: AutomationValue::new(end)?,
+                        outgoing: AutomationInterpolation::Step,
+                    },
+                ],
+            })?;
+        }
+    }
+    for device in devices {
+        for target in [
+            hex_project::DeviceAutomationTarget::HostInputGain,
+            hex_project::DeviceAutomationTarget::HostOutputGain,
+        ] {
+            editor.execute(Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points: vec![
+                    AutomationPoint {
+                        beat: BeatTime::ZERO,
+                        value: AutomationValue::new(0.65)?,
+                        outgoing: AutomationInterpolation::Linear,
+                    },
+                    AutomationPoint {
+                        beat: BeatTime::from_raw(1 << 26),
+                        value: AutomationValue::new(0.75)?,
+                        outgoing: AutomationInterpolation::Step,
+                    },
+                ],
+            })?;
+        }
+    }
+    let revision = prepare(editor.project())?;
+    let mut runtime = SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision))?;
+    runtime.apply(SessionPlaybackCommand::Play)?;
+    let ids = [OutputCaptureId::Track(track), OutputCaptureId::Return(bus)];
+    let plan = runtime.output_capture_plan(&ids, 512)?;
+    let mut output = [[0.0; 2]; 512];
+    let mut track_output = output;
+    let mut return_output = output;
+    let mut buffers: [&mut [Frame]; 2] = [&mut track_output, &mut return_output];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    let mut result = Ok(());
+    REFUSE_GATEOFF.with(|fault| fault.set(true));
+    zero(measure(|| {
+        result = runtime.render_with_capture(&mut output, &mut capture)
+    }));
+    REFUSE_GATEOFF.with(|fault| fault.set(false));
+    assert!(result.is_err());
+    assert_eq!(runtime.performance_frame(), 0);
+    assert_eq!(capture.valid_frames(), 0);
+    zero(measure(|| {
+        result = runtime.render_with_capture(&mut output, &mut capture)
+    }));
+    result?;
+    let mut oracle = SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision))?;
+    oracle.apply(SessionPlaybackCommand::Play)?;
+    let mut expected = [[0.0; 2]; 512];
+    oracle.render(&mut expected)?;
+    assert_eq!(output, expected);
+    // Actual prepared callback admission, rendering, revision replacement and
+    // shutdown borrow the same flat program without allocation or destruction.
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &revision,
+        ))?)
+        .map_err(|_| "publish")?;
+    control
+        .command_with_ticket(PlaybackCommand::Play)
+        .map_err(|_| "play")?;
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+    editor.execute(Command::ReplaceDeviceAutomation {
+        device: devices[0],
+        parameter: ParameterId::new(1)?,
+        points: vec![AutomationPoint {
+            beat: BeatTime::ZERO,
+            value: AutomationValue::new(0.02)?,
+            outgoing: AutomationInterpolation::Step,
+        }],
+    })?;
+    let replacement = prepare(editor.project())?;
+    control
+        .publish(Playback::try_from_prepared_with_session(replacement)?)
+        .map_err(|_| "replacement")?;
+    for _ in 0..4 {
+        measured_block(&mut callback, &mut output);
+    }
+    assert!(control.status.rejected_revision().is_none());
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
     Ok(())
 }

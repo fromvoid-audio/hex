@@ -60,6 +60,7 @@ fn fixture(notes: usize, duration: u64) -> Project {
     let authored = |first: u64| {
         (0..notes)
             .map(|index| MidiNoteSnapshot {
+                active: true,
                 id: first + index as u64,
                 start_raw: 0,
                 duration_raw: duration,
@@ -79,7 +80,7 @@ fn fixture(notes: usize, duration: u64) -> Project {
         clip.source.notes = authored(100);
     }
     snapshot.next_id = 300;
-    Project::from_snapshot(snapshot).unwrap()
+    Project::from_legacy_snapshot(snapshot).unwrap()
 }
 fn edit(project: &Project, changes: &[(ParameterId, ParameterValue)]) -> Project {
     edit_track(project, project.tracks()[0].id(), changes)
@@ -363,9 +364,18 @@ fn routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and
             track: source,
             quantization: LaunchQuantization::Immediate,
         }),
-        Err(SessionPlaybackError::MutableInstrumentActive),
-        "the source route cannot cut off the destination's committed mutable voices"
+        Ok(()),
+        "the source route cuts its authored destination gates without resetting source DSP"
     );
+    // Independent routing oracle: explicitly stop the destination and source.
+    for track in [destination, source] {
+        painted_reference
+            .apply(SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+    }
     let mut actual = [[0.0; 2]; 37];
     let mut expected = actual;
     painted.render(&mut actual).unwrap();
@@ -684,7 +694,7 @@ fn arrangement_clip_gain_uses_content_clock_after_looped_tempo_handoff() {
         let clip = source.tracks()[0].midi_clips()[0].id();
         let mut snapshot = source.snapshot();
         snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
-        let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+        let mut editor = Editor::new(Project::from_legacy_snapshot(snapshot).unwrap(), 8).unwrap();
         if volume {
             let length = editor.project().midi_source(clip).unwrap().source_length();
             editor
@@ -715,7 +725,7 @@ fn arrangement_clip_gain_uses_content_clock_after_looped_tempo_handoff() {
             BeatTime::ZERO,
             Tempo::new(90_000_000).unwrap(),
         )];
-        let changed = Project::from_snapshot(snapshot).unwrap();
+        let changed = Project::from_legacy_snapshot(snapshot).unwrap();
         let mut next =
             SessionPlayback::new(prepared(&changed, Some(old.revision.session()))).unwrap();
         next.try_inherit_state_from(&mut old).unwrap();
@@ -734,4 +744,64 @@ fn arrangement_clip_gain_uses_content_clock_after_looped_tempo_handoff() {
             assert!((a[c] - b[c] * 0.25).abs() < 2e-7);
         }
     }
+}
+
+#[test]
+fn first_track_limiter_keeps_held_mutable_voice_and_its_note_off() {
+    let original = edit(
+        &fixture(1, 1 << 28),
+        &[(harmonic_parameter(1, 2), ParameterValue::Float(0.1))],
+    );
+    let mut donor = start(&original, false);
+    let mut oracle = start(&original, false);
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.render(&mut [[0.0; 2]; 257]).unwrap();
+        assert_eq!(
+            runtime.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .proofs()
+                .count(),
+            1
+        );
+    }
+    let mut editor = Editor::new(original, 8).unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: editor.project().tracks()[0].id(),
+            before: None,
+            state: crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Effect,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let revision = prepared(editor.project(), Some(donor.revision.session()));
+    let delay = revision.arrangement().main_latency_frames() as usize;
+    let mut candidate = SessionPlayback::new(revision).unwrap();
+    candidate.try_inherit_state_from(&mut donor).unwrap();
+    assert_eq!(candidate.performance_frame(), donor.performance_frame());
+    assert_eq!(
+        candidate.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .count(),
+        1
+    );
+    let mut actual = vec![[0.0; 2]; delay + 2048];
+    let mut expected = actual.clone();
+    oracle.render(&mut expected[delay..]).unwrap();
+    for block in actual.chunks_mut(63) {
+        candidate.render(block).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        candidate.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .all(|proof| proof.note_off_sent)
+    );
 }

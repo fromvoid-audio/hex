@@ -66,6 +66,11 @@ struct Row {
     ordinal: usize,
     installed_ordinal: Option<usize>,
     id: Option<hex_project::TrackId>,
+    source_id: Option<hex_project::SourceId>,
+    source_receiver_index: Option<usize>,
+    source_audio_receiver: bool,
+    source_input_enabled: bool,
+    audio_content_enabled: bool,
     mix: Option<PreparedTrackMix>,
     source_mix: Option<PreparedTrackMix>,
     clips: Vec<Clip>,
@@ -338,6 +343,7 @@ impl TrackAssembly {
             &OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
         )>,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
@@ -387,10 +393,19 @@ impl TrackAssembly {
             r.ordinal = ordinal;
             r.installed_ordinal = None;
             r.id = Some(t.id());
+            r.source_id = t.source_id();
+            r.source_receiver_index = t
+                .source_id()
+                .and_then(|id| project.native_source(id))
+                .and_then(|source| source.receiver())
+                .and_then(|id| project.tracks().iter().position(|track| track.id() == id));
+            r.source_audio_receiver = t.receives_source_audio();
+            r.source_input_enabled = !t.muted() && (!solo || t.soloed());
+            r.audio_content_enabled = r.source_input_enabled;
             r.meter_disposal = Disposal::Unstarted;
             r.chain_disposal = Disposal::Unstarted;
             r.mix = Some(
-                PreparedTrackMix::new(t.gain(), t.balance(), t.muted() || (solo && !t.soloed()))
+                PreparedTrackMix::new(t.gain(), t.balance(), crate::effective_track_mute(t, solo))
                     .map_err(invalid)?,
             );
             r.source_mix = r.mix;
@@ -398,7 +413,7 @@ impl TrackAssembly {
             reserve(&mut r.pairs, t.clips().len(), &mut self.growth)?;
             reserve(&mut r.sends, t.sends().len(), &mut self.growth)?;
             let neutral =
-                PreparedTrackMix::new(1.0, t.balance(), t.muted() || (solo && !t.soloed()))
+                PreparedTrackMix::new(1.0, t.balance(), crate::effective_track_mute(t, solo))
                     .map_err(invalid)?;
             r.gain
                 .reserve(t.gain_envelope(), project.tempo_map(), neutral, t.gain())
@@ -453,11 +468,12 @@ impl TrackAssembly {
                 .fill(t.gain_envelope(), project.tempo_map())
                 .map_err(gain_error)?;
             r.meter = Some(OwnedShared::new_owned(hex_lattice::DeviceMeter::default()));
-            r.chain = Some(r.effects.prepare_with_effects(
+            r.chain = Some(r.effects.prepare_with_effects_and_input(
                 t.devices(),
                 hex_lattice::ProcessorChainOwner::Track(t.id().value()),
                 project.sample_rate(),
                 effects,
+                native_input,
             )?);
             self.growth = self
                 .growth
@@ -591,6 +607,11 @@ impl TrackAssembly {
             ) {
                 r.track = Some(Track {
                     track_id: r.id,
+                    source_id: r.source_id,
+                    source_receiver_index: r.source_receiver_index,
+                    source_audio_receiver: r.source_audio_receiver,
+                    source_input_enabled: r.source_input_enabled,
+                    audio_content_enabled: r.audio_content_enabled,
                     clips: mem::take(&mut r.clips),
                     mix,
                     source_mix,
@@ -696,6 +717,11 @@ impl TrackAssembly {
             }
             if let Some(Track {
                 track_id: _,
+                source_id: _,
+                source_receiver_index: _,
+                source_audio_receiver: _,
+                source_input_enabled: _,
+                audio_content_enabled: _,
                 clips,
                 mix: _,
                 source_mix: _,
@@ -989,6 +1015,11 @@ impl TrackAssembly {
         l.growth(*growth)?;
         for r in rows {
             let Row {
+                source_id: _,
+                source_receiver_index: _,
+                source_audio_receiver: _,
+                source_input_enabled: _,
+                audio_content_enabled: _,
                 ordinal: _,
                 installed_ordinal: _,
                 id: _,
@@ -1026,6 +1057,11 @@ impl TrackAssembly {
             let actual_clips = if let Some(t) = actual {
                 let Track {
                     track_id: _,
+                    source_id: _,
+                    source_receiver_index: _,
+                    source_audio_receiver: _,
+                    source_input_enabled: _,
+                    audio_content_enabled: _,
                     clips,
                     mix: _,
                     source_mix: _,

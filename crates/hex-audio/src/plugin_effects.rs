@@ -19,9 +19,14 @@ use hex_plugin_host::{
 
 mod definition;
 mod tail;
-pub use definition::NativeEffectDefinition;
+pub use definition::{NativeEffectDefinition, UnavailableEffect};
+mod hosting;
+pub use hex_lattice_contract::ForeignProcessorBinding as EffectBinding;
+pub use hosting::{EffectPresentation, EffectSelection, Hosting};
 mod control;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
+mod source_metadata;
+pub use source_metadata::EffectSourceMetadata;
 mod callbacks;
 pub use callbacks::NativeEffectCallbacks;
 pub(crate) use callbacks::{NativeEffectCycle, NativeEffectEntry};
@@ -41,20 +46,27 @@ struct Configuration {
 pub struct NativeEffect {
     worker: NativeWorker,
     callback: NativeEffectCallback,
+    source_metadata: EffectSourceMetadata,
 }
 /// Listed constructor backing of the original unsplit effect. Inline effect
 /// storage belongs to the host cell. The configuration state aliases the actual
 /// worker source's restored/captured payload, so it adds one handle, no payload
-/// or shared group. Diagnostics and construction/exchange peaks remain separate.
+/// or shared group. Copied source paths/digests add listed control DATA and no
+/// shared handles; temporary query copies belong to their caller. Diagnostics
+/// and construction/exchange peaks remain separate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeEffectStorage {
     pub worker: crate::plugin_worker::NativeWorkerStorage,
     pub dry_data_bytes: usize,
+    pub source_metadata_data_bytes: usize,
     pub state_alias_handles: usize,
 }
 impl NativeEffectStorage {
     pub fn data_bytes(&self) -> Option<usize> {
-        self.worker.data_bytes.checked_add(self.dry_data_bytes)
+        self.worker
+            .data_bytes
+            .checked_add(self.dry_data_bytes)?
+            .checked_add(self.source_metadata_data_bytes)
     }
     pub fn shared_handle_bound(&self) -> Option<usize> {
         self.worker
@@ -63,6 +75,27 @@ impl NativeEffectStorage {
     }
 }
 impl NativeEffect {
+    /// Root calls this only after all graph references and the unique endpoint
+    /// loan have returned. Old copied queues/dry history are destroyed on this
+    /// control lane; failures retain the exact native/transport custody packet.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn into_quiescent_on_control(
+        self,
+    ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
+        let Self {
+            worker,
+            callback,
+            source_metadata,
+        } = self;
+        let NativeEffectCallback {
+            transport,
+            configuration,
+            dry,
+            ..
+        } = callback;
+        drop((configuration, dry, source_metadata));
+        worker.into_quiescent_on_control(transport)
+    }
     pub fn prepare_on_control(
         identity: ProcessorInstanceIdentity,
         instance: Prepared,
@@ -111,6 +144,11 @@ impl NativeEffect {
         // the unused allowance is not part of its resident storage inventory.
         let known_data = NativeWorker::preconstruction_data_bytes_on_control(&instance)
             .and_then(|n| n.checked_add(dry_frames.checked_mul(std::mem::size_of::<[f32; 2]>())?))
+            .and_then(|n| {
+                n.checked_add(EffectSourceMetadata::required_data_bytes(
+                    instance.configuration(),
+                )?)
+            })
             .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
         if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -118,6 +156,15 @@ impl NativeEffect {
                 instance,
             ));
         }
+        let source_metadata =
+            match EffectSourceMetadata::from_configuration(instance.configuration()) {
+                Ok(source) => source,
+                Err(cause) => {
+                    return Err(NativeWorkerStartFailure::retain_source_on_control(
+                        cause, instance,
+                    ));
+                }
+            };
         let mut dry = Vec::new();
         if dry.try_reserve_exact(dry_frames).is_err() || dry.capacity() != dry_frames {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
@@ -133,6 +180,7 @@ impl NativeEffect {
         let (worker, callback) = NativeWorker::start_retained_on_control(instance)?;
         Ok(Self {
             worker,
+            source_metadata,
             callback: NativeEffectCallback {
                 configuration,
                 transport: callback,
@@ -252,6 +300,7 @@ impl NativeEffect {
                 .dry
                 .capacity()
                 .checked_mul(std::mem::size_of::<[f32; 2]>())?,
+            source_metadata_data_bytes: self.source_metadata.data_bytes()?,
             state_alias_handles: 1,
         })
     }
@@ -332,6 +381,16 @@ impl ForeignProcessors for NativeEffectCallback {
         frames: &mut [[f32; 2]],
         _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_parameters(node, offset, frames, &[], _clock)
+    }
+    fn process_segment_with_parameters(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
         if !self.matches(node)
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
@@ -361,8 +420,17 @@ impl ForeignProcessors for NativeEffectCallback {
                 frame[1] *= node.input_gain;
             }
         }
+        // The original joining worker retains processor parameter observations
+        // for control queries; the native helper mirrors them to its controller.
+        // Receiving that feedback here must not revoke an otherwise valid epoch.
         self.transport
-            .stage_segment(offset, &self.input[..frames.len()], &[], frames)
+            .stage_segment_with_parameters(
+                offset,
+                &self.input[..frames.len()],
+                &[],
+                parameters,
+                frames,
+            )
             .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.

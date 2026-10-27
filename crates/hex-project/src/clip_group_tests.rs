@@ -1,6 +1,6 @@
 //! Complete selection projection and canonical atomic history; no media/backend fixture.
 use super::*;
-use crate::{ClipFlavor, Command, Editor, MAX_NOTES, NoteId};
+use crate::{ClipFlavor, Command, Editor, MAX_NAME_BYTES, MAX_NOTES, NoteId};
 
 struct Fixture {
     editor: Editor,
@@ -114,6 +114,152 @@ fn command(f: &Fixture, anchor: ClipId, track: TrackId, position: ClipGroupPosit
         position,
         copy: false,
     }
+}
+#[test]
+fn audio_name_candidates_preserve_source_history_and_owned_snapshots() {
+    let mut f = fixture();
+    let original = f.editor.project().clone();
+    let original_snapshot = original.snapshot();
+    let rename = |name: &str| Command::RenameClip {
+        clip: f.audio,
+        name: name.into(),
+    };
+    let changed = "Lead Äudio 01";
+    f.editor.execute(rename(changed)).unwrap();
+    assert_eq!(f.editor.project().clip_name(f.audio), Some(changed));
+    assert_eq!(original.clip_name(f.audio), Some("kept audio"));
+    assert_eq!(original.snapshot(), original_snapshot);
+    let renamed = f.editor.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(renamed.clone()).unwrap(),
+        *f.editor.project()
+    );
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), original_snapshot);
+    // A new allocation containing the same label is still a semantic no-op.
+    f.editor.execute(rename("kept audio")).unwrap();
+    assert!(f.editor.can_redo());
+    let refused: Result<(Created, ()), Invalid> =
+        f.editor
+            .execute_prepared_transition(rename("refused label"), |source, candidate| {
+                assert_eq!(source.clip_name(f.audio), Some("kept audio"));
+                assert_eq!(candidate.clip_name(f.audio), Some("refused label"));
+                Err(Invalid("test preparation refusal"))
+            });
+    assert!(refused.is_err());
+    assert_eq!(f.editor.project().snapshot(), original_snapshot);
+    assert!(f.editor.can_redo());
+    assert!(f.editor.redo());
+    assert_eq!(f.editor.project().snapshot(), renamed);
+    assert_eq!(original.snapshot(), original_snapshot);
+}
+#[test]
+fn retained_root_labels_are_bounded_and_independent_of_the_project() {
+    let f = fixture();
+    let project = f.editor.project();
+    let before = project.snapshot();
+    let tempo = std::sync::Arc::new(project.tempo_map().clone());
+    let mut snapshot = project.clip(f.audio).unwrap().retained_snapshot();
+    snapshot.name = "Ā".repeat(MAX_NAME_BYTES / "Ā".len());
+    let root = project
+        .restore_retained_audio_root(1, snapshot.clone(), tempo.clone())
+        .unwrap();
+    assert_eq!(root.clip.retained_snapshot(), snapshot);
+    for name in [String::new(), "\n".into(), "x".repeat(MAX_NAME_BYTES + 1)] {
+        let mut invalid = snapshot.clone();
+        invalid.name = name;
+        assert!(
+            project
+                .restore_retained_audio_root(1, invalid, tempo.clone())
+                .is_err()
+        );
+    }
+    assert_eq!(project.snapshot(), before);
+    assert_eq!(root.clip.retained_snapshot(), snapshot);
+}
+
+#[test]
+fn retained_root_nesting_has_a_bounded_depth() {
+    use crate::{AudioClipEdit, AudioEvent, AudioEvents};
+    use std::sync::Arc;
+
+    let f = fixture();
+    let project = f.editor.project();
+    let clip = project.clip(f.audio).unwrap();
+    let tempo = Arc::new(project.tempo_map().clone());
+    let mut root = project
+        .restore_retained_audio_root(1, clip.retained_snapshot(), tempo.clone())
+        .unwrap();
+    for depth in 2..=crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH + 1 {
+        let mut snapshot = clip.retained_snapshot();
+        snapshot.looping = false;
+        snapshot.source_phase = 0;
+        let mut edit = AudioClipEdit::capture(clip);
+        Arc::make_mut(&mut edit.domain).looping = false;
+        Arc::make_mut(&mut edit.domain).source_phase = 0;
+        Arc::make_mut(&mut edit.domain).events = Some(Arc::new(AudioEvents {
+            next_id: 2,
+            events: vec![AudioEvent {
+                active: true,
+                source: 1,
+                id: 1,
+                start: 0,
+                end: clip.duration(),
+                source_start: 0,
+                fade: None,
+            }],
+            sources: vec![root.clone()],
+        }));
+        snapshot.edit = Some(edit);
+        let result = project.restore_retained_audio_root(1, snapshot, tempo.clone());
+        if depth <= crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH {
+            root = result.unwrap();
+            assert_eq!(root.clip.referenced_assets().count(), depth);
+        } else {
+            assert_eq!(
+                result.unwrap_err().0,
+                "retained audio nesting limit reached"
+            );
+            break;
+        }
+    }
+    let before = root.clip.audio_events();
+    let changed = before
+        .edited(
+            crate::AudioEventEdit::SetRetainedPathActive {
+                sources: vec![1; crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH - 1],
+                events: vec![1],
+                active: false,
+            },
+            root.clip.audio_edit().unwrap().domain.clock.length(),
+        )
+        .unwrap();
+    let mut events = &changed;
+    for _ in 0..crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH - 1 {
+        events = events.sources[0]
+            .clip
+            .audio_edit()
+            .unwrap()
+            .domain
+            .events
+            .as_ref()
+            .unwrap();
+    }
+    assert!(!events.events[0].active);
+    assert!(before.events[0].active);
+    assert!(
+        before
+            .edited(
+                crate::AudioEventEdit::SetRetainedPathActive {
+                    sources: vec![1, 999],
+                    events: vec![1],
+                    active: false,
+                },
+                root.clip.audio_edit().unwrap().domain.clock.length(),
+            )
+            .is_err()
+    );
+    assert_eq!(root.clip.audio_events(), before);
 }
 #[test]
 fn mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step() {
@@ -1358,13 +1504,15 @@ fn group_bounds_occurrence_enumeration_separately_from_tiny_retained_tail() {
             .find(|c| c.id() == id)
             .unwrap();
         victim.source = std::sync::Arc::new(crate::MidiSource {
+            content: std::sync::Arc::new(crate::MidiContent {
+                source_length: length,
+                notes: vec![note],
+            }),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-            source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: true,
-            notes: vec![note],
         });
         assert!(crate::midi::overwrite_occurrence_count(victim).unwrap() > MAX_NOTES);
         assert_eq!(Project::from_snapshot(p.snapshot()).unwrap(), p);

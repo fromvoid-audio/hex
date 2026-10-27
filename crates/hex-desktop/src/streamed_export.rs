@@ -1,22 +1,25 @@
 //! Independent offline source verification/pages, never native admission.
 //!
 //! One existing Session export job owns this control-thread facade, fixed pool
-//! and joining worker. Native sources/catalogs/readiness/output tokens are not
-//! borrowed. Core export owns DSP, cancellation/progress and file publication.
+//! and joining worker. Native output/domain/catalog/readiness tokens are not
+//! borrowed. Optional job-owned ordinary resources are forwarded as the exact
+//! borrowed compiler scope. Core export owns DSP, cancellation/progress and
+//! file publication; page preparation never transfers resource custody.
 //! Pool/catalog/reader/kernel bounds are the existing StreamConfig limits; no
 //! full-file resident PCM fallback or process-RSS/deadline claim is made.
 use hex_engine::{
     BorrowedMediaPage, MediaPages, SessionPlayback, StreamPageExtent, StreamSourceKey,
 };
 use hex_export::{ExportControl, ExportError, ExportReport, PreparedExportPages};
-use hex_session::{
-    AudioSourceBinding, DocumentAudioMode, VerifiedAudioFile, service::StreamedExportRequest,
-};
+use hex_session::{AudioSourceBinding, VerifiedAudioFile, service::StreamedExportRequest};
 use hex_stream::{
     PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind, StreamRuntime,
 };
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -36,6 +39,7 @@ pub(crate) fn render_with_config(
     hex_export::render_prepared_with_pages_and_policy(
         request.path(),
         Arc::clone(request.prepared()),
+        request.resources(),
         request.start(),
         request.frames(),
         request.signal().clone(),
@@ -44,7 +48,20 @@ pub(crate) fn render_with_config(
         &mut pages,
     )
 }
-fn check(control: &ExportControl) -> Result<(), ExportError> {
+trait Cancellation {
+    fn is_cancelled(&self) -> bool;
+}
+impl Cancellation for ExportControl {
+    fn is_cancelled(&self) -> bool {
+        ExportControl::is_cancelled(self)
+    }
+}
+impl Cancellation for AtomicBool {
+    fn is_cancelled(&self) -> bool {
+        self.load(Ordering::Acquire)
+    }
+}
+fn check(control: &impl Cancellation) -> Result<(), ExportError> {
     if control.is_cancelled() {
         Err(ExportError::Cancelled)
     } else {
@@ -69,11 +86,37 @@ impl VerifiedPages {
         request: &StreamedExportRequest<'_>,
         config: StreamConfig,
     ) -> Result<Self, ExportError> {
-        if request.source().audio_mode() != DocumentAudioMode::VerifiedStreaming
-            || request.source().sample_rate() != request.prepared().arrangement().sample_rate()
-        {
+        if request.source().sample_rate() != request.prepared().arrangement().sample_rate() {
             return Err(ExportError::Invalid(
                 "verified export source context differs",
+            ));
+        }
+        Self::capture_files(
+            request.prepared(),
+            |key| match request.source().sources().get(&key.asset()) {
+                Some(AudioSourceBinding::VerifiedFile(file)) => Ok(file),
+                Some(_) => Err(ExportError::Invalid(
+                    "verified export requires exact file facts",
+                )),
+                None => Err(ExportError::Invalid(
+                    "verified export source binding is missing",
+                )),
+            },
+            Some(request.path()),
+            config,
+            request.control(),
+        )
+    }
+    fn capture_files<'a>(
+        prepared: &hex_engine::PreparedRevision,
+        mut file_for: impl FnMut(StreamSourceKey) -> Result<&'a VerifiedAudioFile, ExportError>,
+        destination: Option<&std::path::Path>,
+        config: StreamConfig,
+        control: &impl Cancellation,
+    ) -> Result<Self, ExportError> {
+        if prepared.scalar_automation_binding().is_some() {
+            return Err(ExportError::Invalid(
+                "offline scalar source capture is not prepared",
             ));
         }
         // These private composition inputs must be bounded before reserving Vecs.
@@ -88,10 +131,11 @@ impl VerifiedPages {
         }
         // Overwrite consent concerns an export, never an imported source. Resolve
         // existing paths so an alias through a symlink cannot replace the media.
-        let destination = match std::fs::canonicalize(request.path()) {
-            Ok(path) => Some(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(media(error)),
+        let destination = match destination.map(std::fs::canonicalize) {
+            Some(Ok(path)) => Some(path),
+            Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Some(Err(error)) => return Err(media(error)),
+            None => None,
         };
         let mut definitions: Vec<SourceDefinition> = Vec::new();
         let mut files = Vec::new();
@@ -99,20 +143,9 @@ impl VerifiedPages {
             .try_reserve_exact(config.max_sources)
             .map_err(media)?;
         files.try_reserve_exact(config.max_sources).map_err(media)?;
-        for metadata in request.prepared().arrangement_stream_sources() {
-            check(request.control())?;
-            let AudioSourceBinding::VerifiedFile(file) = request
-                .source()
-                .sources()
-                .get(&metadata.key().asset())
-                .ok_or(ExportError::Invalid(
-                    "verified export source binding is missing",
-                ))?
-            else {
-                return Err(ExportError::Invalid(
-                    "verified export requires exact file facts",
-                ));
-            };
+        for metadata in prepared.arrangement_stream_sources() {
+            check(control)?;
+            let file = file_for(metadata.key())?;
             if let Some(destination) = &destination {
                 let source = std::fs::canonicalize(file.path()).map_err(media)?;
                 if &source == destination {
@@ -170,7 +203,7 @@ impl VerifiedPages {
             missed: false,
         })
     }
-    fn failure(&self, failure: StreamFailure, control: &ExportControl) -> ExportError {
+    fn failure(&self, failure: StreamFailure, control: &impl Cancellation) -> ExportError {
         if control.is_cancelled() {
             return ExportError::Cancelled;
         }
@@ -187,10 +220,9 @@ impl VerifiedPages {
                 "offline media preparation exceeds its fixed resources"
             }
         };
-        match self
-            .files
-            .binary_search_by_key(&failure.key, |(key, _)| *key)
-        {
+        match self.files.binary_search_by_key(&failure.key, |(key, _)| {
+            hex_engine::StreamResourceKey::Audio(*key)
+        }) {
             Ok(index) => ExportError::Media(format!(
                 "{reason}: {}",
                 self.files[index].1.path().display()
@@ -200,7 +232,7 @@ impl VerifiedPages {
     }
     fn ensure_runtime(
         &mut self,
-        control: &ExportControl,
+        control: &impl Cancellation,
         required: usize,
     ) -> Result<(), ExportError> {
         if self.runtime.is_some() {
@@ -236,7 +268,7 @@ impl VerifiedPages {
                     let key = self.keys.first().map(|key| key.source);
                     if let Some(key) = key {
                         let mut failures = [StreamFailure {
-                            key,
+                            key: key.into(),
                             page_index: 0,
                             kind,
                         }];
@@ -294,56 +326,69 @@ impl MediaPages for VerifiedPages {
         self.missed = true;
     }
 }
-impl PreparedExportPages for VerifiedPages {
-    fn prepare_chunk(
+impl VerifiedPages {
+    fn prepare_stream_chunk(
         &mut self,
         playback: &SessionPlayback,
         frames: usize,
-        control: &ExportControl,
-    ) -> Result<(), ExportError> {
+        ordinary: bool,
+        control: &impl Cancellation,
+    ) -> Result<usize, ExportError> {
         check(control)?;
         self.extents.clear();
         self.keys.clear();
         self.missed = false;
         let maximum = self.config.page_buffers;
         let extents = &mut self.extents;
-        let window = playback
-            .visit_next_stream_chunk(frames, None, &mut |extent| {
-                if control.is_cancelled() {
-                    return Err(hex_engine::Invalid("export cancelled"));
+        let mut visit = |extent: hex_engine::StreamResourceExtent| {
+            let hex_engine::StreamResourceKey::Audio(source) = extent.source else {
+                return Err(hex_engine::Invalid(
+                    "offline scalar source capture is not prepared",
+                ));
+            };
+            let extent = StreamPageExtent {
+                source,
+                page_index: extent.page_index,
+                start: extent.start,
+                end: extent.end,
+            };
+            if control.is_cancelled() {
+                return Err(hex_engine::Invalid("export cancelled"));
+            }
+            if extent.start >= extent.end || extent.end > hex_engine::STREAM_PAGE_FRAMES {
+                return Err(hex_engine::Invalid("invalid offline stream extent"));
+            }
+            let key = (extent.source, extent.page_index);
+            match extents.binary_search_by_key(&key, |old| (old.source, old.page_index)) {
+                Ok(index) => {
+                    extents[index].start = extents[index].start.min(extent.start);
+                    extents[index].end = extents[index].end.max(extent.end);
                 }
-                if extent.start >= extent.end || extent.end > hex_engine::STREAM_PAGE_FRAMES {
-                    return Err(hex_engine::Invalid("invalid offline stream extent"));
-                }
-                let key = (extent.source, extent.page_index);
-                match extents.binary_search_by_key(&key, |old| (old.source, old.page_index)) {
-                    Ok(index) => {
-                        extents[index].start = extents[index].start.min(extent.start);
-                        extents[index].end = extents[index].end.max(extent.end);
+                Err(index) => {
+                    if extents.len() == maximum {
+                        return Err(hex_engine::Invalid(
+                            "offline export page demand exceeds its fixed pool",
+                        ));
                     }
-                    Err(index) => {
-                        if extents.len() == maximum {
-                            return Err(hex_engine::Invalid(
-                                "offline export page demand exceeds its fixed pool",
-                            ));
-                        }
-                        extents.insert(index, extent);
-                    }
+                    extents.insert(index, extent);
                 }
-                Ok(())
-            })
-            .map_err(|error| {
-                if control.is_cancelled() {
-                    ExportError::Cancelled
-                } else {
-                    ExportError::Render(error)
-                }
-            })?;
-        if window.frames != frames {
-            return Err(ExportError::Invalid("linear export demand width differs"));
-        }
+            }
+            Ok(())
+        };
+        let window = (if ordinary {
+            playback.visit_ordinary_stream_chunk(frames, None, &mut visit)
+        } else {
+            playback.visit_next_stream_chunk(frames, None, &mut visit)
+        })
+        .map_err(|error| {
+            if control.is_cancelled() {
+                ExportError::Cancelled
+            } else {
+                ExportError::Render(error)
+            }
+        })?;
         if self.extents.is_empty() {
-            return Ok(());
+            return Ok(window.frames);
         }
         for extent in &self.extents {
             if self
@@ -399,7 +444,7 @@ impl PreparedExportPages for VerifiedPages {
             runtime.wake_worker();
             runtime.pump_ready(self.config.max_ready_pages_per_pump);
             let mut failures = [StreamFailure {
-                key: first_key.source,
+                key: first_key.source.into(),
                 page_index: 0,
                 kind: StreamFailureKind::Cancelled,
             }];
@@ -422,7 +467,7 @@ impl PreparedExportPages for VerifiedPages {
                         ));
                     }
                 }
-                return Ok(());
+                return Ok(window.frames);
             }
             if Instant::now() >= deadline {
                 return Err(ExportError::Media(
@@ -432,19 +477,9 @@ impl PreparedExportPages for VerifiedPages {
             std::thread::sleep(POLL);
         }
     }
-    fn complete_chunk(&mut self) -> Result<(), ExportError> {
-        if let Some(runtime) = self.runtime.as_mut() {
-            runtime.unpin_all();
-        }
-        if self.missed {
-            Err(ExportError::Invalid(
-                "export encountered an unexpected media page miss",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-    fn finish(&mut self, control: &ExportControl) -> Result<(), ExportError> {
+}
+impl VerifiedPages {
+    fn finish_pages(&mut self, control: &impl Cancellation) -> Result<(), ExportError> {
         check(control)?;
         if let Some(mut runtime) = self.runtime.take() {
             runtime.unpin_all();
@@ -485,6 +520,183 @@ impl PreparedExportPages for VerifiedPages {
         check(control)
     }
 }
+impl PreparedExportPages for VerifiedPages {
+    fn prepare_chunk(
+        &mut self,
+        playback: &SessionPlayback,
+        frames: usize,
+        control: &ExportControl,
+    ) -> Result<(), ExportError> {
+        let width = self.prepare_stream_chunk(playback, frames, false, control)?;
+        if width != frames {
+            return Err(ExportError::Invalid("linear export demand width differs"));
+        }
+        Ok(())
+    }
+    fn complete_chunk(&mut self) -> Result<(), ExportError> {
+        if let Some(runtime) = self.runtime.as_mut() {
+            runtime.unpin_all();
+        }
+        if self.missed {
+            Err(ExportError::Invalid(
+                "export encountered an unexpected media page miss",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    fn finish(&mut self, control: &ExportControl) -> Result<(), ExportError> {
+        self.finish_pages(control)
+    }
+}
+
+fn seek_error(error: ExportError) -> hex_engine::ArrangementPrerollError {
+    match error {
+        ExportError::Cancelled => hex_engine::ArrangementPrerollError::Cancelled,
+        ExportError::Invalid(message) => {
+            hex_engine::ArrangementPrerollError::MediaPreparation(message)
+        }
+        _ => hex_engine::ArrangementPrerollError::MediaPreparation(
+            "file-backed seek media unavailable; reopen or relink the source",
+        ),
+    }
+}
+impl hex_engine::PreparedPrerollPages for VerifiedPages {
+    fn prepare_chunk(
+        &mut self,
+        playback: &SessionPlayback,
+        maximum_frames: usize,
+        cancelled: &AtomicBool,
+    ) -> Result<usize, hex_engine::ArrangementPrerollError> {
+        self.prepare_stream_chunk(playback, maximum_frames, true, cancelled)
+            .map_err(seek_error)
+    }
+    fn complete_chunk(&mut self) -> Result<(), hex_engine::ArrangementPrerollError> {
+        PreparedExportPages::complete_chunk(self).map_err(seek_error)
+    }
+}
+/// Quote the original stream constructor's listed data before any pool/thread
+/// exists, including this adapter's bounded metadata. No source I/O occurs here.
+pub(super) fn resident_seek_storage_bytes(
+    prepared: &hex_engine::PreparedRevision,
+    sources: &hex_session::service::ResidentFileSet,
+) -> Result<usize, String> {
+    let pages = VerifiedPages::capture_files(
+        prepared,
+        |key| {
+            sources
+                .files()
+                .iter()
+                .find(|(asset, _)| *asset == key.asset())
+                .map(|(_, file)| file)
+                .ok_or(ExportError::Invalid(
+                    "verified seek source binding is missing",
+                ))
+        },
+        None,
+        StreamConfig::initial(),
+        &AtomicBool::new(false),
+    )
+    .map_err(|error| error.to_string())?;
+    let definitions = pages
+        .definitions
+        .as_ref()
+        .ok_or("offline definitions missing")?;
+    let bound = hex_stream::PendingStreamDomain::preparation_bound(
+        pages.config,
+        definitions,
+        definitions.capacity(),
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    let adapter = std::mem::size_of::<VerifiedPages>()
+        .checked_add(
+            pages
+                .extents
+                .capacity()
+                .checked_mul(std::mem::size_of::<StreamPageExtent>())
+                .ok_or("seek extent quote overflow")?,
+        )
+        .and_then(|n| {
+            n.checked_add(
+                pages
+                    .keys
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<PageKey>())?,
+            )
+        })
+        .and_then(|n| {
+            n.checked_add(
+                pages
+                    .files
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<(StreamSourceKey, VerifiedAudioFile)>())?,
+            )
+        })
+        .ok_or("seek adapter quote overflow")?;
+    bound
+        .construction_peak_data_bytes
+        .checked_add(adapter)
+        .ok_or_else(|| "seek page quote overflow".into())
+}
+
+/// Run only on the original seek worker. This composes its exact admitted
+/// ordinary resource scope with this adapter's independent bounded page owner.
+/// All readers/pages are joined before returning to ordinary native publication.
+pub(super) fn prepare_resident_seek(
+    request: hex_session::service::ResidentFileSeekRequest<'_>,
+) -> Result<hex_engine::playback::Playback, hex_engine::ArrangementPrerollError> {
+    let spec = request.spec();
+    let cancelled = request.cancelled();
+    if request.sources().context().project_generation != spec.generation {
+        return Err(hex_engine::ArrangementPrerollError::MediaPreparation(
+            "file seek source context differs",
+        ));
+    }
+    check(cancelled).map_err(seek_error)?;
+    let section = match spec.mode {
+        hex_session::arrangement_seek::ArrangementSeekMode::SectionLoop(region) => Some(region),
+        hex_session::arrangement_seek::ArrangementSeekMode::Interactive => None,
+        _ => {
+            return Err(hex_engine::ArrangementPrerollError::MediaPreparation(
+                "ordinary seek requires interactive policy",
+            ));
+        }
+    };
+    let mut pages = VerifiedPages::capture_files(
+        &spec.prepared_revision,
+        |key| {
+            request
+                .sources()
+                .files()
+                .iter()
+                .find(|(asset, _)| *asset == key.asset())
+                .map(|(_, file)| file)
+                .ok_or(ExportError::Invalid(
+                    "verified seek source binding is missing",
+                ))
+        },
+        None,
+        StreamConfig::initial(),
+        cancelled,
+    )
+    .map_err(seek_error)?;
+    let runtime = SessionPlayback::prepare_ordinary_arrangement_preroll_with_pages(
+        Arc::clone(&spec.prepared_revision),
+        request.resources(),
+        spec.destination_frame,
+        spec.work_budget_frames,
+        spec.start_playing,
+        section,
+        cancelled,
+        &mut pages,
+    )?;
+    pages.finish_pages(cancelled).map_err(seek_error)?;
+    hex_engine::playback::Playback::from_interactive_arrangement_preroll(runtime)
+}
 
 #[cfg(all(test, feature = "allocation-probe"))]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+mod tests;

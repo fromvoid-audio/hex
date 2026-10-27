@@ -3,6 +3,8 @@ use crate::{
     decode_wav,
 };
 use hex_engine::Frame;
+use sha2::{Digest, Sha256};
+use sha2_legacy::{Digest as LegacyDigest, Sha256 as LegacySha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
@@ -118,9 +120,14 @@ fn supported_format_wav(encoding: u16, channels: u16, bits: u16) -> Vec<u8> {
     fmt.extend_from_slice(&bits.to_le_bytes());
     push_chunk(&mut body, b"fmt ", &fmt);
     let mut data = Vec::new();
-    for frame_index in 0..193_i32 {
+    for frame_index in 0..20_000_i32 {
         for channel in 0..channels {
             match (encoding, bits) {
+                (1 | 6 | 7, 8) => data.push((frame_index + i32::from(channel) * 17) as u8),
+                (3, 64) => {
+                    let value = f64::from(frame_index) / 256.0 - f64::from(channel) * 0.125;
+                    data.extend_from_slice(&value.to_le_bytes());
+                }
                 (1, 16) => {
                     let value = frame_index * 251 + i32::from(channel) * 103 - 20_000;
                     data.extend_from_slice(&(value as i16).to_le_bytes());
@@ -193,22 +200,44 @@ fn fingerprint_matches_independent_sha256_and_decoded_pcm_matches_resident_impor
 
 #[test]
 fn verified_windows_match_resident_bits_for_every_supported_encoding_and_channel_count() {
-    for (encoding, bits) in [(1, 16), (1, 24), (1, 32), (3, 32)] {
+    for (encoding, bits) in [
+        (1, 8),
+        (1, 16),
+        (1, 24),
+        (1, 32),
+        (3, 32),
+        (3, 64),
+        (6, 8),
+        (7, 8),
+    ] {
         for channels in [1, 2] {
             let bytes = supported_format_wav(encoding, channels, bits);
-            let expected =
-                decode_wav(&bytes, Limits::new(bytes.len(), 256)).expect("resident source decoder");
+            let expected = decode_wav(&bytes, Limits::new(bytes.len(), 20_000))
+                .expect("resident source decoder");
             let fixture = TempFile::create(&bytes);
-            let mut reader = VerifiedWavReader::open(fixture.path(), limits(128))
+            let mut reader = VerifiedWavReader::open(fixture.path(), limits(8193))
                 .expect("verified source decoder");
-            for (start, count) in [(0, 1), (29, 41), (191, 8)] {
-                let actual = reader
-                    .read_frames(start, count)
+            // Include frame/8 KiB decode-batch/64 KiB raw-page crossings and EOF.
+            // 24-bit mono/stereo frames do not divide the staging size.
+            for (start, count) in [
+                (0, 1),
+                (29, 41),
+                (191, 8),
+                (2039, 4097),
+                (10899, 8193),
+                (19997, 16),
+            ] {
+                let mut actual = vec![[4.0; 2]; count];
+                let decoded = reader
+                    .read_frames_into(start, &mut actual)
                     .expect("verified source window");
-                for (actual, expected) in actual
-                    .iter()
-                    .zip(expected.frames()[start as usize..].iter().take(count))
-                {
+                assert_eq!(decoded, count.min(expected.frames().len() - start as usize));
+                for (offset, actual) in actual.iter().enumerate() {
+                    let expected = expected
+                        .frames()
+                        .get(start as usize + offset)
+                        .copied()
+                        .unwrap_or([0.0; 2]);
                     assert_eq!(actual[0].to_bits(), expected[0].to_bits());
                     assert_eq!(actual[1].to_bits(), expected[1].to_bits());
                 }
@@ -385,21 +414,31 @@ fn cancellation_and_all_manifest_window_and_header_caps_are_enforced() {
         Err(ImportError::LimitExceeded("source frames"))
     ));
 
-    let large_frames = (0..17_000_i32)
-        .map(|index| [index as i16, -(index as i16)])
-        .collect::<Vec<_>>();
-    let large = TempFile::create(&pcm16_wav(&large_frames, true));
-    let mut large_reader = VerifiedWavReader::open(large.path(), limits(16)).expect("large open");
+    let large = TempFile::create(&pcm16_wav(&many_frames, true));
+    let mut large_reader = VerifiedWavReader::open(large.path(), limits(8193)).expect("large open");
+    // Calibrate a complete short read, rather than assuming a fixed number of
+    // per-frame reader calls. A longer read must continue to poll and honor
+    // cancellation after a valid prefix has been decoded.
+    let mut prefix_checks = 0;
+    let mut prefix = [[0.0; 2]; 1];
+    large_reader
+        .read_frames_into_with_cancel(16_370, &mut prefix, || {
+            prefix_checks += 1;
+            false
+        })
+        .expect("short read");
+    assert_ne!(prefix[0], [0.0; 2]);
+    assert!(prefix_checks > 0);
     let mut cancel_checks = 0;
-    let mut partial = [[8.0, 8.0]; 10];
+    let mut partial = vec![[8.0, 8.0]; 8193];
     assert!(matches!(
         large_reader.read_frames_into_with_cancel(16_370, &mut partial, || {
             cancel_checks += 1;
-            cancel_checks > 10
+            cancel_checks > prefix_checks
         }),
         Err(ImportError::Cancelled)
     ));
-    assert_eq!(partial, [[0.0; 2]; 10]);
+    assert!(partial.iter().all(|frame| *frame == [0.0; 2]));
 }
 
 #[test]
@@ -422,14 +461,17 @@ fn truncation_is_reported_as_source_change_and_clears_output() {
 
 #[test]
 fn nonfinite_float_window_clears_the_entire_verified_output() {
-    let fixture = TempFile::create(&float32_wav(&[[0.25, -0.25], [f32::NAN, 0.0]]));
-    let mut reader = VerifiedWavReader::open(fixture.path(), limits(8)).expect("open");
-    let mut output = [[4.0, 4.0]; 2];
+    // The invalid sample follows valid decoded batches and crosses a raw page.
+    let mut samples = vec![[0.25, -0.25]; 8193];
+    samples[8192][0] = f32::NAN;
+    let fixture = TempFile::create(&float32_wav(&samples));
+    let mut reader = VerifiedWavReader::open(fixture.path(), limits(samples.len())).expect("open");
+    let mut output = vec![[4.0, 4.0]; samples.len()];
     assert!(matches!(
         reader.read_frames_into(0, &mut output),
         Err(ImportError::Invalid("float samples must be finite"))
     ));
-    assert_eq!(output, [[0.0; 2]; 2]);
+    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
 }
 
 #[test]
@@ -508,4 +550,45 @@ fn sparse_seventeen_million_frame_file_supports_far_verified_conversion() {
     plan.render_window(required_start, &local_frames, output_start, &mut expected)
         .expect("local conversion oracle");
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn sha256_backend_preserves_legacy_bytes_and_hex_across_padding_and_page_boundaries() {
+    for (input, expected) in [
+        (
+            b"".as_slice(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            b"abc".as_slice(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+    ] {
+        let actual: [u8; 32] = Sha256::digest(input).into();
+        assert_eq!(hex(&actual), expected);
+    }
+    let lengths = (0..=130).chain([
+        255, 256, 257, 511, 512, 513, 8191, 8192, 8193, 65535, 65536, 65537, 262147,
+    ]);
+    for length in lengths {
+        let input: Vec<u8> = (0..length)
+            .map(|i| ((i * 37 + i / 3) & 255) as u8)
+            .collect();
+        let expected: [u8; 32] = LegacySha256::digest(&input).into();
+        let actual: [u8; 32] = Sha256::digest(&input).into();
+        assert_eq!(actual, expected, "whole input length {length}");
+        assert_eq!(hex(&actual), format!("{:x}", LegacySha256::digest(&input)));
+        for width in [1, 3, 4, 17, 63, 64, 65, 4096, 65536] {
+            let mut legacy = LegacySha256::new();
+            let mut current = Sha256::new();
+            for chunk in input.chunks(width) {
+                legacy.update(chunk);
+                current.update(chunk);
+            }
+            let legacy: [u8; 32] = legacy.finalize().into();
+            let current: [u8; 32] = current.finalize().into();
+            assert_eq!(legacy, expected, "legacy length {length}, chunk {width}");
+            assert_eq!(current, expected, "current length {length}, chunk {width}");
+        }
+    }
 }

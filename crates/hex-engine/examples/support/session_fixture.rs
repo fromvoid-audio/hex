@@ -17,6 +17,7 @@ fn notes(next: &mut u64, track: usize, transposition: u8) -> Vec<MidiNoteSnapsho
             let id = *next;
             *next += 1;
             MidiNoteSnapshot {
+                active: true,
                 id,
                 start_raw: 0,
                 duration_raw: 2 << 32,
@@ -39,6 +40,8 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
         next += 3;
         let arrangement_notes = notes(&mut next, index, 0);
         tracks.push(TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -51,6 +54,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: Vec::new(),
             instrument: Some(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument,
                 bypassed: false,
@@ -103,7 +107,9 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             });
         }
     }
-    let project = Project::from_snapshot(Snapshot {
+    let project = Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),

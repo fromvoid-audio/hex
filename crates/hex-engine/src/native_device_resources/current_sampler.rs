@@ -238,6 +238,16 @@ pub(crate) fn validate_project_with_effects(
     if !present {
         return Ok(false);
     }
+    // This closed constructor has one track-local generator/configuration per
+    // row. Shared sources use ordinary PreparedDeviceResources publication,
+    // whose receiver owns the single factory and source lease.
+    if project
+        .tracks()
+        .iter()
+        .any(|track| track.source_id().is_some() && !track.receives_source_audio())
+    {
+        return Err(AudioStorageError::UnsupportedGraph);
+    }
     if project.loop_region().is_some_and(|r| r.enabled())
         || (!effects && !project.main_devices().is_empty())
         || !project.audio_feeds().is_empty()

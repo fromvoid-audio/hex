@@ -22,9 +22,32 @@ pub(super) struct UtilityModeAction {
     mid_side: bool,
 }
 
+#[derive(Clone, Copy)]
+enum ClipAliasOperation {
+    Duplicate(super::duplicate::DuplicateKind),
+    MakeUnique,
+    ApplySettings,
+}
+
+#[derive(Clone)]
+pub(super) struct ClipAliasAction {
+    generation: u64,
+    revision: u64,
+    track: TrackId,
+    clip: ClipId,
+    operation: ClipAliasOperation,
+}
+
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    Automation(super::device_automation::Action),
+    ClipAlias(ClipAliasAction),
     Section(super::arrangement_sections::MenuAction),
+    BounceTrack {
+        generation: u64,
+        revision: u64,
+        track: TrackId,
+    },
     TrackClipboard {
         generation: u64,
         revision: u64,
@@ -109,6 +132,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -147,6 +171,7 @@ impl EditorView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -232,6 +257,23 @@ impl EditorView {
                 },
             });
         }
+        if let Some(track) = after_track
+            && let Some(menu) = &mut self.context_menu
+        {
+            menu.items.push(MenuItem {
+                label: "bounce in place",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::BounceTrack {
+                    generation,
+                    revision,
+                    track,
+                },
+            });
+        }
+        if let Some(track) = after_track {
+            self.append_automation_menu(device_panel::DevicePanelOwner::Track(track));
+        }
         self.append_adaptive_grid_choices();
         cx.notify();
     }
@@ -303,6 +345,7 @@ impl EditorView {
         }
         let revision = state.revision;
         self.open_track_context_menu(position, None, window, cx);
+        self.append_automation_menu(device_panel::DevicePanelOwner::Return(id));
         if let Some(menu) = &mut self.context_menu {
             menu.items.push(MenuItem {
                 label: "rename track · cmd+r",
@@ -347,6 +390,7 @@ impl EditorView {
         window.focus(&focus);
         let target = flavor.toggled();
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -372,10 +416,70 @@ impl EditorView {
                 },
             }],
         });
+        if let Some(state) = &self.state {
+            let generation = self.project_generation;
+            let revision = state.revision;
+            let linked = state.project.clip_alias(clip).is_some();
+            let mut entries = vec![
+                (
+                    "duplicate · d",
+                    ClipAliasOperation::Duplicate(super::duplicate::DuplicateKind::Independent),
+                ),
+                (
+                    "duplicate alias · cmd+d",
+                    ClipAliasOperation::Duplicate(super::duplicate::DuplicateKind::Alias),
+                ),
+            ];
+            if linked {
+                entries.push(("make unique · i", ClipAliasOperation::MakeUnique));
+                entries.push((
+                    "apply settings to aliases",
+                    ClipAliasOperation::ApplySettings,
+                ));
+            }
+            if let Some(menu) = &mut self.context_menu {
+                menu.items
+                    .extend(entries.into_iter().map(|(label, operation)| MenuItem {
+                        label,
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::ClipAlias(ClipAliasAction {
+                            generation,
+                            revision,
+                            track,
+                            clip,
+                            operation,
+                        }),
+                    }));
+            }
+        }
         if self.mode == super::EditorMode::Arrangement {
             self.append_adaptive_grid_choices();
         }
         cx.notify();
+    }
+
+    pub(super) fn append_utility_mode_choice(&mut self, device: DeviceId, mid_side: bool) {
+        let Some(owner) = self.device_panel.owner else {
+            return;
+        };
+        if let Some(menu) = &mut self.context_menu {
+            menu.items.push(MenuItem {
+                label: if mid_side {
+                    "switch to width"
+                } else {
+                    "switch to mid/side"
+                },
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::UtilityMode(UtilityModeAction {
+                    generation: self.project_generation,
+                    owner,
+                    device,
+                    mid_side: !mid_side,
+                }),
+            });
+        }
     }
 
     pub(super) fn open_utility_mode_context_menu(
@@ -406,6 +510,7 @@ impl EditorView {
             ("switch to mid/side", true)
         };
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             items: vec![MenuItem {
@@ -441,6 +546,55 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::Automation(action) => {
+                self.automation_menu_action(action, window, cx)
+            }
+            EditorContextAction::ClipAlias(target) => {
+                if !self.clip_alias_menu_current(&target) || self.edit_pending() {
+                    return;
+                }
+                let console = self.state.as_ref().and_then(|s| {
+                    s.project.session_cells().iter().find_map(|cell| {
+                        if cell.track() != target.track {
+                            return None;
+                        }
+                        match cell.content() {
+                            hex_project::SessionCellContent::Midi(c) if c.id() == target.clip => {
+                                Some((cell.scene(), true))
+                            }
+                            hex_project::SessionCellContent::Audio(c) if c.id() == target.clip => {
+                                Some((cell.scene(), false))
+                            }
+                            _ => None,
+                        }
+                    })
+                });
+                if let Some((scene, midi)) = console {
+                    if midi {
+                        self.select_session_midi(target.track, scene, target.clip);
+                    } else {
+                        self.select_session_cell(target.track, scene);
+                    }
+                } else if !self.selected_clip_ids().contains(&target.clip) {
+                    self.select_clip_header(
+                        target.track,
+                        target.clip,
+                        gpui::Modifiers::default(),
+                        window,
+                        cx,
+                    );
+                }
+                match target.operation {
+                    ClipAliasOperation::Duplicate(kind) => self.duplicate_selected_with_kind(kind),
+                    ClipAliasOperation::MakeUnique => self.make_selected_clips_unique(),
+                    ClipAliasOperation::ApplySettings => {
+                        self.enqueue(Request::Edit(Command::ApplyClipSettingsToAliases(
+                            target.clip,
+                        )));
+                    }
+                }
+                cx.notify();
+            }
             EditorContextAction::InputQuantization { generation, policy } => {
                 if generation == self.project_generation {
                     self.set_input_quantization(policy);
@@ -475,6 +629,14 @@ impl EditorView {
             }
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
+            }
+            EditorContextAction::BounceTrack {
+                generation,
+                revision,
+                track,
+            } => {
+                self.bounce_track_in_place(track, generation, revision);
+                cx.notify();
             }
             EditorContextAction::TrackClipboard {
                 generation,
@@ -612,9 +774,22 @@ impl EditorView {
                 } else {
                     (menu.selected + count - 1) % count
                 };
+                if menu.icon_grid.is_none() {
+                    menu.scroll.scroll_to_item(menu.selected);
+                }
             }
             cx.notify();
         }
+    }
+
+    fn clip_alias_menu_current(&self, target: &ClipAliasAction) -> bool {
+        target.generation == self.project_generation
+            && self.state.as_ref().is_some_and(|s| {
+                s.revision == target.revision
+                    && clip_belongs_to_track(&s.project, target.track, target.clip)
+                    && (matches!(target.operation, ClipAliasOperation::Duplicate(_))
+                        || s.project.clip_alias(target.clip).is_some())
+            })
     }
 
     pub(super) fn context_menu_overlay(
@@ -624,6 +799,8 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::Automation(action) => self.automation_action_stale(action),
+                EditorContextAction::ClipAlias(target) => !self.clip_alias_menu_current(target),
                 EditorContextAction::Section(action) => self.section_menu_stale(action),
                 EditorContextAction::LoadFirstSampler(target) => {
                     !self.first_sampler_target_current(target)
@@ -639,6 +816,16 @@ impl EditorView {
                 }
                 EditorContextAction::RemoveBrowserSource(source) => {
                     !self.browser_source_removable(source)
+                }
+                EditorContextAction::BounceTrack {
+                    generation,
+                    revision,
+                    track,
+                } => {
+                    *generation != self.project_generation
+                        || self.state.as_ref().is_none_or(|s| {
+                            s.revision != *revision || s.project.track(*track).is_none()
+                        })
                 }
                 EditorContextAction::TrackClipboard {
                     generation,
@@ -716,15 +903,44 @@ impl EditorView {
             return None;
         }
         self.context_menu.as_ref().map(|menu| {
-            crate::context_menu::popup(
+            if !menu
+                .items
+                .iter()
+                .any(|item| matches!(item.action, EditorContextAction::Automation(_)))
+            {
+                return crate::context_menu::popup(
+                    menu,
+                    window,
+                    cx,
+                    Self::select_context_item,
+                    Self::dismiss_context_menu,
+                    Self::navigate_context_menu,
+                );
+            }
+            crate::context_menu::popup_with_labels(
                 menu,
                 window,
                 cx,
                 Self::select_context_item,
                 Self::dismiss_context_menu,
                 Self::navigate_context_menu,
+                context_item_label,
             )
         })
+    }
+}
+
+pub(super) fn context_item_label(item: &MenuItem<EditorContextAction>) -> gpui::SharedString {
+    match &item.action {
+        EditorContextAction::Automation(super::device_automation::Action::Show(entry, _))
+            if item.label == "parameter" =>
+        {
+            entry.label.clone()
+        }
+        EditorContextAction::Automation(super::device_automation::Action::Device {
+            label, ..
+        }) => label.clone(),
+        _ => item.label.into(),
     }
 }
 
@@ -821,7 +1037,12 @@ mod tests {
             visual.run_until_parked();
             editor.read_with(cx, |view, _| {
                 let menu = view.context_menu.as_ref().expect("clip menu");
-                assert_eq!(menu.items.len(), 4);
+                assert!(menu.items.iter().all(|item| matches!(
+                    &item.action,
+                    EditorContextAction::ClipFlavor { .. }
+                        | EditorContextAction::ClipAlias(_)
+                        | EditorContextAction::AdaptiveGrid { .. }
+                )));
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
             visual.simulate_keystrokes("enter");
@@ -979,7 +1200,6 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 20);
             assert_eq!(
                 menu.items
                     .iter()
@@ -1513,6 +1733,121 @@ mod tests {
                 assert!(view.context_menu.is_none());
                 assert_eq!(view.state.as_ref().unwrap().project, full);
             })
+        });
+    }
+    #[gpui::test]
+    fn alias_menu_applies_local_settings_and_refuses_captured_stale_action(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::drag::group_drag_ui_test::{click, fixture, pump};
+        let (_files, handle, editor, originals) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        click(&mut visual, originals[0], false);
+        visual.simulate_keystrokes("cmd-d");
+        pump(&editor, &mut visual);
+        let (track, alias) = editor.read_with(&visual, |view, _| {
+            (view.selected_track.unwrap(), view.selected_clip.unwrap())
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::SetClipFades {
+                clip: alias,
+                fade_in: 120,
+                fade_out: 240
+            })))
+        });
+        pump(&editor, &mut visual);
+        let placements = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.tracks()[0]
+                .clips()
+                .iter()
+                .map(|c| (c.id(), c.start(), c.duration()))
+                .collect::<Vec<_>>()
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_clip_context_menu(point(px(600.0), px(100.0)), track, alias, window, cx)
+            })
+        });
+        visual.run_until_parked();
+        let apply = editor.read_with(&visual, |view, _| {
+            let menu = view.context_menu.as_ref().unwrap();
+            for label in [
+                "duplicate · d",
+                "duplicate alias · cmd+d",
+                "make unique · i",
+                "apply settings to aliases",
+            ] {
+                assert!(menu.items.iter().any(|item| item.label == label));
+            }
+            menu.items
+                .iter()
+                .find(|item| item.label == "apply settings to aliases")
+                .unwrap()
+                .action
+                .clone()
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| view.select_context_item(apply, window, cx))
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let p = &view.state.as_ref().unwrap().project;
+            assert_eq!(
+                p.clip(originals[0]).unwrap().retained_fade(),
+                p.clip(alias).unwrap().retained_fade()
+            );
+            assert_eq!(
+                p.tracks()[0]
+                    .clips()
+                    .iter()
+                    .map(|c| (c.id(), c.start(), c.duration()))
+                    .collect::<Vec<_>>(),
+                placements
+            );
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_clip_context_menu(point(px(600.0), px(100.0)), track, alias, window, cx)
+            })
+        });
+        let stale = editor.read_with(&visual, |view, _| {
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.label == "make unique · i")
+                .unwrap()
+                .action
+                .clone()
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::RenameTrack {
+                track,
+                name: "later".into()
+            })))
+        });
+        pump(&editor, &mut visual);
+        let before = editor.read_with(&visual, |view, _| {
+            (
+                view.state.as_ref().unwrap().revision,
+                view.state.as_ref().unwrap().project.clone(),
+            )
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| view.select_context_item(stale, window, cx))
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.worker_requests_pending, 0);
+            assert_eq!(
+                (
+                    view.state.as_ref().unwrap().revision,
+                    view.state.as_ref().unwrap().project.clone()
+                ),
+                before
+            );
         });
     }
 }

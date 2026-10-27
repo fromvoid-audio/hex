@@ -218,7 +218,7 @@ fn closed_foreign_chains_copy_state_and_process_at_each_original_owner() {
         for frames in output.chunks_mut(8) {
             runtime.begin_block();
             runtime
-                .process_range_with_foreign(0..1, frames, 0, None, &mut borrowed)
+                .process_range_with_foreign(0..1, frames, 0, None, None, &mut borrowed)
                 .unwrap();
         }
         assert_eq!(&output[..19], &[[0.0; 2]; 19]);

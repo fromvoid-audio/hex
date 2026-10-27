@@ -93,6 +93,270 @@ fn group_fixture() -> (
 }
 
 #[test]
+fn retained_source_event_can_be_reactivated_without_losing_processing() {
+    let (mut editor, ids, media) = group_fixture();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let expected = render(&prepare(&editor, &media, &context), 0, 16_000, 127);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: ids[0],
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![1],
+                active: false,
+            },
+        })
+        .unwrap();
+    let muted = render(&prepare(&editor, &media, &context), 0, 16_000, 127);
+    assert_ne!(muted, expected);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 64),
+        muted
+    );
+    let source = editor.project().clip(group).unwrap().audio_events().events[0].source;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetRetainedActive {
+                source,
+                events: vec![1],
+                active: true,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 257),
+        expected
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 127),
+        muted
+    );
+}
+
+#[test]
+fn repeated_nested_group_preserves_pcm_and_reactivates_inner_event() {
+    let (mut editor, ids, mut media) = group_fixture();
+    editor
+        .execute(Command::SetClipActive {
+            clip: ids[1],
+            active: false,
+        })
+        .unwrap();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 20_000,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: group,
+            millidb: -2_300,
+        })
+        .unwrap();
+    let inner_event = editor
+        .project()
+        .clip(group)
+        .unwrap()
+        .audio_events()
+        .events
+        .iter()
+        .find(|event| !event.active)
+        .unwrap()
+        .id;
+    let Created::Imported {
+        clip: third, asset, ..
+    } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "third".into(),
+            path: "third.wav".into(),
+            sample_rate: 16_000,
+            frames: 2_000,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    media.insert(asset, Audio::new(16_000, vec![[0.2, -0.1]; 2_000]).unwrap());
+    let mut snapshot = editor.project().snapshot();
+    let mut third_clip = snapshot.tracks[1].audio_clips_mut().unwrap().remove(0);
+    third_clip.start = 24_000;
+    snapshot.tracks[0]
+        .audio_clips_mut()
+        .unwrap()
+        .push(third_clip);
+    snapshot.tracks.remove(1);
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    let context = isolated(32 * 1024 * 1024, 16 * 1024 * 1024, 32);
+    let muted = render(&prepare(&editor, &media, &context), 0, 27_000, 127);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![inner_event],
+                active: true,
+            },
+        })
+        .unwrap();
+    let active = render(&prepare(&editor, &media, &context), 0, 27_000, 257);
+    assert_ne!(active, muted);
+    assert!(editor.undo());
+    let Created::Clip(outer) = editor
+        .execute(Command::GroupClips(vec![group, third]))
+        .unwrap()
+    else {
+        panic!("regroup")
+    };
+    for block in [64, 257] {
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 27_000, block),
+            muted
+        );
+    }
+    let source = editor
+        .project()
+        .clip(outer)
+        .unwrap()
+        .audio_events()
+        .sources
+        .iter()
+        .find(|root| root.clip.has_retained_audio_roots())
+        .unwrap()
+        .id;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: outer,
+            operation: hex_project::AudioEventEdit::SetRetainedPathActive {
+                sources: vec![source],
+                events: vec![inner_event],
+                active: true,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 27_000, 127),
+        active
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 27_000, 64),
+        muted
+    );
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::GroupTimeRange(
+            hex_project::TimeRange::new(vec![track], 1_000, 25_000).unwrap(),
+        ))
+        .unwrap();
+    for block in [64, 257] {
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 27_000, block),
+            muted
+        );
+    }
+}
+
+#[test]
+fn directed_nested_group_preserves_pcm_and_undo() {
+    let (mut editor, ids, media) = group_fixture();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    editor.execute(Command::ReverseClips(vec![group])).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().clip(group).unwrap().asset();
+    let Created::Clip(third) = editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 17_000,
+            duration: 1_000,
+            source_offset: 0,
+            source_length: 1_000,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("third")
+    };
+    let context = isolated(32 * 1024 * 1024, 16 * 1024 * 1024, 32);
+    let expected = render(&prepare(&editor, &media, &context), 0, 19_000, 127);
+    editor
+        .execute(Command::GroupClips(vec![group, third]))
+        .unwrap();
+    for block in [64, 257] {
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 19_000, block),
+            expected
+        );
+    }
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 19_000, 64),
+        expected
+    );
+}
+
+#[test]
+fn mixed_group_preserves_silence_and_reactivation_restores_original_audio() {
+    let (mut editor, ids, media) = group_fixture();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let active = render(&prepare(&editor, &media, &context), 0, 16_000, 127);
+    editor
+        .execute(Command::SetClipActive {
+            clip: ids[1],
+            active: false,
+        })
+        .unwrap();
+    let muted = render(&prepare(&editor, &media, &context), 0, 16_000, 127);
+    assert_ne!(active, muted);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 257),
+        muted
+    );
+    let event = editor
+        .project()
+        .clip(group)
+        .unwrap()
+        .audio_events()
+        .events
+        .iter()
+        .find(|event| !event.active)
+        .unwrap()
+        .id;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![event],
+                active: true,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 64),
+        active
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 127),
+        muted
+    );
+}
+
+#[test]
 fn grouped_sources_preserve_exact_pcm_gaps_gains_fades_loops_offsets_and_undo() {
     let (mut editor, ids, media) = group_fixture();
     let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
@@ -738,4 +1002,56 @@ fn grouped_child_and_event_fades_keep_source_phase_through_move_and_history() {
         render(&prepare(&editor, &media, &context), 0, 15_000, 17),
         moved
     );
+}
+
+#[test]
+fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm() {
+    let (mut editor, ids, media) = group_fixture();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let original = prepare(&editor, &media, &context);
+    let pcm_bytes = context.retained_pcm_bytes();
+    let audio = original.arrangement().audio_clip_views()[0].audio.clone();
+    let expected = render(&original, 0, 15_000, 127);
+    let track = editor.project().tracks()[0].id();
+    let clipboard = Arc::new(editor.project().capture_clips(&[group]).unwrap());
+    for index in 1..=1_000_u64 {
+        editor
+            .execute(Command::PasteClips {
+                clipboard: Arc::clone(&clipboard),
+                track,
+                frame: index * 15_000,
+                insert: false,
+            })
+            .unwrap();
+        if index == 1 || index == 1_000 {
+            let prepared = prepare(&editor, &media, &context);
+            assert_eq!(
+                context.retained_pcm_bytes(),
+                pcm_bytes,
+                "copying a frame group must retain references, not new destination-sized PCM"
+            );
+            assert!(
+                prepared
+                    .arrangement()
+                    .audio_clip_views()
+                    .iter()
+                    .all(|view| view.audio.shares_pcm_with(&audio))
+            );
+            assert_eq!(render(&prepared, index * 15_000, 15_000, 63), expected);
+        }
+    }
+    assert!(editor.undo());
+    let undone = prepare(&editor, &media, &context);
+    assert!(
+        render(&undone, 15_000_000, 15_000, 257)
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+    assert!(editor.redo());
+    let redone = prepare(&editor, &media, &context);
+    assert_eq!(render(&redone, 15_000_000, 15_000, 257), expected);
+    assert_eq!(context.retained_pcm_bytes(), pcm_bytes);
 }

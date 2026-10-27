@@ -18,6 +18,8 @@ hex-engine = { path = "../hex-engine" }
 hex-media = { path = "../hex-media" }
 hex-project = { path = "../hex-project" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
+# Pure saved-envelope identity validation; no runtime/ABI or source custody.
+hex-plugin-state = { path = "../hex-plugin-state" }
 hex-export = { path = "../hex-export" }
 hex-tuning = { path = "../hex-tuning" }
 

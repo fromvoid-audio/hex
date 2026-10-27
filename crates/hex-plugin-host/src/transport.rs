@@ -22,7 +22,11 @@ use std::sync::{
         Ordering::{Acquire, Release},
     },
 };
+mod parameters;
 mod storage;
+pub use parameters::{MAX_PARAMETER_POINTS, ParameterPoint, Parameters};
+#[cfg(test)]
+mod parameter_tests;
 pub mod wire;
 pub use storage::{ConstructorStorage, channel_storage_bound};
 
@@ -37,6 +41,7 @@ pub enum Fault {
     Protocol,
     InvalidSamples,
     InvalidEvents,
+    InvalidParameters,
     MissingOutput,
     Identity,
     Saturated,
@@ -50,6 +55,7 @@ impl Fault {
             Self::Protocol => "plugin block or host delivery refused",
             Self::InvalidSamples => "plugin exchange contains nonfinite samples",
             Self::InvalidEvents => "plugin exchange contains invalid or excessive events",
+            Self::InvalidParameters => "plugin exchange contains invalid or excessive parameters",
             Self::MissingOutput => "plugin output missed its fixed pipeline deadline",
             Self::Identity => "plugin output identity does not match the pending block",
             Self::Saturated => "plugin exchange queue is full",
@@ -126,6 +132,7 @@ pub struct Block {
     pub frames: u16,
     pub pcm: [Frame; MAX_FRAMES],
     pub events: Events,
+    pub parameters: Parameters,
 }
 impl Block {
     fn empty(binding: Binding, quantum: u16) -> Self {
@@ -136,6 +143,7 @@ impl Block {
             frames: quantum,
             pcm: [[0.0; 2]; MAX_FRAMES],
             events: Events::default(),
+            parameters: Parameters::default(),
         }
     }
     fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
@@ -155,6 +163,9 @@ impl Block {
         }
         if !self.events.valid(usize::from(quantum)) {
             return Err(Fault::InvalidEvents);
+        }
+        if !self.parameters.valid(usize::from(quantum)) {
+            return Err(Fault::InvalidParameters);
         }
         Ok(())
     }
@@ -193,6 +204,16 @@ struct Stage {
     staged_frames: usize,
     input_events: usize,
     output_events: usize,
+    input_parameters: usize,
+    output_parameters: usize,
+}
+
+/// Copied responses for one staged graph segment. Like PCM, this is not a
+/// final host-delivery acknowledgement. Offsets are relative to the segment.
+#[derive(Clone, Copy)]
+pub struct SegmentReply {
+    pub events: Events,
+    pub parameters: Parameters,
 }
 
 /// Callback endpoint. Install before native callback reservation; return the
@@ -293,7 +314,7 @@ impl Callback {
     }
     /// Diagnostic observation of actual committed transport progress. Staging
     /// alone does not advance it; this grants no worker/readiness authority.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "allocation-probe"))]
     pub fn committed_position_for_test(&self) -> u64 {
         self.state.position
     }
@@ -351,6 +372,8 @@ impl Callback {
             staged_frames: 0,
             input_events: 0,
             output_events: 0,
+            input_parameters: 0,
+            output_parameters: 0,
         });
         Ok(())
     }
@@ -379,8 +402,29 @@ impl Callback {
         events: &[MidiEvent],
         output: &mut [Frame],
     ) -> Result<Events, Fault> {
+        let reply = self.stage_segment_with_parameters(frame_offset, input, events, &[], output)?;
+        if !reply.parameters.as_slice().is_empty() {
+            // Legacy event-only consumers cannot silently discard processor
+            // feedback. Parameter-capable consumers use the complete reply.
+            output.fill([0.0; 2]);
+            return self.fail(Fault::InvalidParameters);
+        }
+        Ok(reply.events)
+    }
+    /// Stage input and collect processor feedback using the same physical
+    /// callback/quantum acceptance as PCM and MIDI. At most 64 input and output
+    /// points may cross one callback and at most 64 remain in either quantum.
+    /// Malformed/overflowing input revokes before any staged request is sent.
+    pub fn stage_segment_with_parameters(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+    ) -> Result<SegmentReply, Fault> {
         output.fill([0.0; 2]);
-        let result = self.stage_segment_inner(frame_offset, input, events, output);
+        let result = self.stage_segment_inner(frame_offset, input, events, parameters, output);
         if let Err(fault) = result {
             output.fill([0.0; 2]);
             return self.fail(fault);
@@ -392,8 +436,9 @@ impl Callback {
         frame_offset: usize,
         input: &[Frame],
         events: &[MidiEvent],
+        parameters: &[ParameterPoint],
         output: &mut [Frame],
-    ) -> Result<Events, Fault> {
+    ) -> Result<SegmentReply, Fault> {
         if self.revoked.load(Acquire) {
             return Err(Fault::Revoked);
         }
@@ -417,9 +462,23 @@ impl Callback {
         {
             return Err(Fault::InvalidEvents);
         }
+        if parameters.len() > MAX_PARAMETER_POINTS - stage.input_parameters
+            || !parameters
+                .iter()
+                .all(|point| parameters::valid(*point, input.len()))
+            || parameters
+                .windows(2)
+                .any(|pair| pair[0].frame > pair[1].frame)
+        {
+            return Err(Fault::InvalidParameters);
+        }
         let q = u64::from(self.quantum);
-        let mut result = Events::default();
+        let mut result = SegmentReply {
+            events: Events::default(),
+            parameters: Parameters::default(),
+        };
         let mut event_index = 0;
+        let mut parameter_index = 0;
         for (index, (source, destination)) in input.iter().zip(output).enumerate() {
             let position = stage.state.position;
             let offset = (position % q) as usize;
@@ -444,6 +503,16 @@ impl Callback {
                 stage.state.input.events.push(event)?;
                 event_index += 1;
             }
+            while let Some(point) = parameters
+                .get(parameter_index)
+                .filter(|point| usize::from(point.frame) == index)
+            {
+                stage.state.input.parameters.push(ParameterPoint {
+                    frame: offset as u16,
+                    ..*point
+                })?;
+                parameter_index += 1;
+            }
             if sequence >= 2 {
                 *destination = stage.state.output.pcm[offset];
                 for event in stage
@@ -456,7 +525,20 @@ impl Callback {
                 {
                     let mut event = *event;
                     event.frame = index as u16;
-                    result.push(event)?;
+                    result.events.push(event)?;
+                }
+                for point in stage
+                    .state
+                    .output
+                    .parameters
+                    .as_slice()
+                    .iter()
+                    .filter(|point| usize::from(point.frame) == offset)
+                {
+                    result.parameters.push(ParameterPoint {
+                        frame: index as u16,
+                        ..*point
+                    })?;
                 }
             }
             stage.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
@@ -464,11 +546,16 @@ impl Callback {
                 stage.request = Some(stage.state.input);
             }
         }
-        if result.as_slice().len() > MAX_EVENTS - stage.output_events {
+        if result.events.as_slice().len() > MAX_EVENTS - stage.output_events {
             return Err(Fault::InvalidEvents);
         }
+        if result.parameters.as_slice().len() > MAX_PARAMETER_POINTS - stage.output_parameters {
+            return Err(Fault::InvalidParameters);
+        }
         stage.input_events += events.len();
-        stage.output_events += result.as_slice().len();
+        stage.output_events += result.events.as_slice().len();
+        stage.input_parameters += parameters.len();
+        stage.output_parameters += result.parameters.as_slice().len();
         stage.staged_frames = end;
         Ok(result)
     }

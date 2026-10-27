@@ -48,6 +48,8 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(ui["test_selectors"], core["test_selectors"])
         self.assertIn("test_local_ci", ui["excluded_groups"])
         self.assertIn("test_launch_restart_compile", ui["excluded_groups"])
+        self.assertIn("test_hex_update_entry", ui["excluded_groups"])
+        self.assertIn("test_pending_update_exit", ui["excluded_groups"])
         self.assertIn("test_ci_plan:remaining-cases", ui["excluded_groups"])
 
     def test_current_repository_inventory_retains_scoped_feedback_and_impact_fallbacks(self):
@@ -59,6 +61,8 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(chosen["test_selectors"], [*impact.SHARED_TESTS, "test_python_test_plan"])
         for path in (
             "scripts/check-architecture.py", "scripts/tests/test_architecture.py", "AGENTS.md",
+            "scripts/hex-update-entry.py", "scripts/pending_update_exit.py",
+            "scripts/tests/test_hex_update_entry.py", "scripts/tests/test_pending_update_exit.py",
             "crates/hex-plugin-scan/native/macos_bootstrap.py",
             "crates/hex-plugin-scan/native/macos_helper.mm",
             "crates/hex-plugin-scan/native/macos_fixture.cpp",

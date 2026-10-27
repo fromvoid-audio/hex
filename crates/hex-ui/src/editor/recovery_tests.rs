@@ -73,6 +73,12 @@ impl WorkerAudioSink for Sink {
             ResidentPublicationPolicy::InstallFreshRuntime => {
                 PublicationPolicy::InstallFreshRuntime
             }
+            ResidentPublicationPolicy::RestorePluginState => {
+                return Err(ResidentPublicationRefusal {
+                    playback,
+                    error: "fixture has no fresh native plugin restoration".into(),
+                });
+            }
             ResidentPublicationPolicy::FreshIfUnchanged(expected)
             | ResidentPublicationPolicy::SectionWhenReady {
                 fence: expected, ..
@@ -161,6 +167,8 @@ impl WorkerAudioSink for Sink {
 fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
     cx: &mut gpui::TestAppContext,
 ) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let deadline = Instant::now() + Duration::from_secs(5);
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
@@ -174,13 +182,15 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             Err(error) => panic!("{error}"),
         }
     };
+    // Recovery constructs an interactive runtime with full release/handoff banks.
+    let runtime_storage = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
     let reservation = hex_session::ResidentNativeReservation {
         storage: hex_engine::AudioStorageLedgerReservation {
             data_rows: 512,
             handle_rows: 256,
             root_rows: 128,
-            max_retained_bytes: 20_000_000,
-            max_construction_peak_bytes: 20_000_000,
+            max_retained_bytes: runtime_storage.checked_mul(2).unwrap(),
+            max_construction_peak_bytes: runtime_storage.checked_mul(3).unwrap(),
         },
         max_scan_frames: 100_000,
     };

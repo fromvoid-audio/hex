@@ -51,8 +51,13 @@ impl std::fmt::Display for PreparedTempoError {
 }
 
 /// Small event-boundary timing contract shared by canonical and periodic maps.
-/// Callers should use it at block/event boundaries, never per sample.
+/// Beat conversion is for block/event boundaries. The optional local-tempo
+/// query also serves native effects at sample offsets through a bounded map lookup.
 pub trait MidiTiming {
+    /// Optional exact local tempo, excluding any constant beat-origin shift.
+    fn tempo_micro_bpm_at_frame(&self, _frame: u64) -> Option<u32> {
+        None
+    }
     fn sample_rate(&self) -> u32;
     fn max_micro_bpm(&self) -> u64;
     fn beat_to_frame(&self, beat: BeatTime) -> Result<u64, PreparedTempoError>;
@@ -188,6 +193,11 @@ impl PreparedTempoMap {
 }
 
 impl MidiTiming for PreparedTempoMap {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        SessionBaseTimingView::Canonical(self)
+            .micro_bpm_at_frame(frame)
+            .ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.sample_rate()
     }
@@ -368,6 +378,9 @@ impl AnchoredSessionTempoView<'_> {
 }
 
 impl MidiTiming for AnchoredSessionTempoView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.base.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.base.sample_rate()
     }
@@ -476,6 +489,11 @@ impl PeriodicSessionTempoView<'_> {
 }
 
 impl MidiTiming for PeriodicSessionTempoView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        SessionBaseTimingView::Periodic(*self)
+            .micro_bpm_at_frame(frame)
+            .ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.canonical.sample_rate()
     }
@@ -581,6 +599,9 @@ pub(crate) enum SessionBaseTimingView<'a> {
 }
 
 impl MidiTiming for SessionBaseTimingView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         match self {
             Self::Canonical(map) => map.sample_rate(),
@@ -660,6 +681,9 @@ impl<'a> SessionTimingView<'a> {
 }
 
 impl MidiTiming for SessionTimingView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         match self {
             Self::Canonical(map) => map.sample_rate(),

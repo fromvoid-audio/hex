@@ -15,8 +15,15 @@ use hex_lattice_contract::{
 use hex_project::{Command, Created, Editor};
 use std::any::Any;
 
+#[path = "tests/limiter_latency.rs"]
+mod limiter_latency;
+
 #[path = "tests/eq_automation.rs"]
 mod eq_automation;
+#[path = "tests/shared_legacy.rs"]
+mod shared_legacy;
+#[path = "tests/shared_sources.rs"]
+mod shared_sources;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.compensation.delay");
 pub(crate) struct Definition;
@@ -266,6 +273,33 @@ fn actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_part
         assert_eq!(capture.output(1).unwrap()[index], source);
     }
 }
+
+#[test]
+fn compensated_continuous_audio_matches_single_frame_rendering_across_loop_wraps() {
+    let mut f = fixture(&[&[], &[7], &[3]], 173);
+    for (track, audio) in f.media.values_mut().enumerate() {
+        let samples = (0..173)
+            .map(|frame| {
+                let value = ((frame * (track + 1)) % 29) as f32 / 64.0;
+                [value, -value * 0.5]
+            })
+            .collect();
+        *audio = Audio::new(48000, samples).unwrap();
+    }
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 173,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let expected = session(Arc::clone(&revision), 1200, 1);
+    assert!(expected.iter().any(|frame| frame[0] != 0.0));
+    for partition in [63, 256, 513] {
+        assert_eq!(session(Arc::clone(&revision), 1200, partition), expected);
+    }
+}
 #[test]
 fn serial_three_plus_five_matches_eight_and_return_feed_cumulative_delay() {
     let mut f = fixture(&[&[3, 5], &[8]], 32);
@@ -392,6 +426,8 @@ fn unknown_latency_and_cumulative_overflow_refuse_actual_preparation() {
     assert!(prepare(&fixture(&[&[40000, 40000]], 8)).is_err());
 }
 
+thread_local! { static CONTEXT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! { static INSTRUMENT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 struct InstrumentDefinition;
 const INSTRUMENT: DeviceTypeId = DeviceTypeId::from_static("test.compensation.generator");
 impl NativeDeviceMetadata for InstrumentDefinition {
@@ -443,12 +479,20 @@ impl hex_lattice::NativeInstrumentDefinition for InstrumentDefinition {
         _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
         self.migrate_state(state)?;
+        INSTRUMENT_PREPARATIONS.with(|count| count.set(count.get() + 1));
         Ok(Box::new(Instrument))
     }
 }
 impl hex_lattice::PreparedNativeInstrument for Instrument {
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(5)
+    }
+    fn prepare_shared_analytic_context(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedSharedAnalyticContext>>, DeviceContractError>
+    {
+        CONTEXT_PREPARATIONS.with(|count| count.set(count.get() + 1));
+        Ok(Some(Box::new(Instrument)))
     }
     fn prepare_note(
         &self,
@@ -462,6 +506,27 @@ impl hex_lattice::PreparedNativeInstrument for Instrument {
         ))
     }
 }
+impl hex_lattice::PreparedSharedAnalyticContext for Instrument {
+    fn declared_context_bytes(&self) -> usize {
+        1
+    }
+    fn prepare_note(
+        &self,
+        _: u8,
+        _: u8,
+    ) -> Result<hex_lattice::PreparedSharedAnalyticNote, DeviceContractError> {
+        Ok(hex_lattice::PreparedSharedAnalyticNote::new([0; 8], 5))
+    }
+    fn sample(
+        &self,
+        _: &hex_lattice::PreparedSharedAnalyticNote,
+        age: u64,
+        _: u64,
+        _: &dyn hex_lattice::DeviceResources,
+    ) -> Frame {
+        if age == 5 { [0.25, -0.5] } else { [0.0; 2] }
+    }
+}
 #[test]
 fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     let mut f = fixture(&[&[3]], 32);
@@ -470,6 +535,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     snapshot.next_id += 3;
     let owner = &mut snapshot.tracks[0];
     owner.instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: next,
         bypassed: false,
@@ -499,6 +565,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
             loop_end_raw: hex_project::BeatTime::ONE.raw(),
             looping: false,
             notes: vec![hex_project::MidiNoteSnapshot {
+                active: true,
                 id: next + 2,
                 start_raw: 0,
                 duration_raw: hex_project::BeatTime::ONE.raw(),
@@ -509,7 +576,11 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
         }],
     };
     routed_midi_fixture::separate_midi(&mut snapshot, 0);
-    f.editor = Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    f.editor = Editor::new(
+        hex_project::Project::from_legacy_snapshot(snapshot).unwrap(),
+        8,
+    )
+    .unwrap();
     let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
     let effects = NativeDeviceRegistry::new(&effects).unwrap();
     let instruments: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&InstrumentDefinition];
@@ -869,6 +940,7 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(unknown.performance_frame_at_offset(0), None);
     assert_eq!(unknown.transport_is_running(), None);
     let source = TransportStamp {
+        tempo_micro_bpm: Some(123_000_000),
         performance_frame: 900,
         transport_is_running: true,
         arrangement_frame: 12,
@@ -877,6 +949,9 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         arrangement_beat_raw: Some(1 << 32),
     };
     let clock = OriginClock(Some(source));
+    assert_eq!(clock.tempo_micro_bpm_at_offset(0), Some(123_000_000));
+    assert_eq!(clock.tempo_micro_bpm_at_offset(1), None);
+    assert_eq!(unknown.tempo_micro_bpm_at_offset(0), None);
     assert_eq!(clock.performance_frame_at_offset(0), Some(900));
     assert_eq!(clock.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(clock.loop_pass_at_offset(0), Some(7));

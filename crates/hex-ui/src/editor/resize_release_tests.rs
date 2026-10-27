@@ -1597,10 +1597,28 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 )
             });
             editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
-            let lane = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
-            let baseline = visual
-                .rendered_border(lane)
-                .expect("actual normal lane border");
+            let lane: &'static str =
+                Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+            let divider: &'static str =
+                Box::leak(format!("lane-right-divider-{}", track.value()).into_boxed_str());
+            let lane_paint = |visual: &mut VisualTestContext| {
+                assert!(
+                    visual.rendered_border(lane).is_none(),
+                    "lane must not regain a layout-consuming or resize-feedback border"
+                );
+                let bounds = visual.debug_bounds(divider).expect("paint-only divider");
+                let lane_bounds = visual.debug_bounds(lane).unwrap();
+                assert_eq!(bounds.size.width, px(1.0));
+                assert_eq!(bounds.right(), lane_bounds.right());
+                assert_eq!(bounds.size.height, lane_bounds.size.height);
+                (
+                    visual
+                        .rendered_background(divider)
+                        .expect("actual divider paint"),
+                    bounds,
+                )
+            };
+            let baseline = lane_paint(&mut visual);
             let down = visual
                 .debug_bounds(Box::leak(
                     format!(
@@ -1639,19 +1657,17 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 visual.debug_bounds(outline).is_none(),
                 "held resizing keeps selection styling local to clips"
             );
-            let painted = visual
-                .rendered_border(lane)
-                .expect("actual held lane border");
+            let painted = lane_paint(&mut visual);
             eprintln!(
                 "RESIZE_LANE_SCENE midi={midi} shift={stretch} edge={edge:?} before={baseline:?} held={painted:?}"
             );
             assert_eq!(
                 painted.0, baseline.0,
-                "resize must not replace whole-lane border color"
+                "resize must not replace the divider color"
             );
             assert_eq!(
                 painted.1, baseline.1,
-                "resize must not add whole-lane border widths"
+                "resize must not change divider geometry"
             );
             let preview = if midi {
                 "midi-trim-live-preview"
@@ -1693,7 +1709,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
             for outside in [browser, point(target.x, foreign_lane.center().y), target] {
                 visual.simulate_mouse_move(outside, MouseButton::Left, modifiers);
                 visual.run_until_parked();
-                let source_lane = visual.rendered_border(lane).unwrap();
+                let source_lane = lane_paint(&mut visual);
                 assert_eq!(source_lane.0, baseline.0);
                 assert_eq!(source_lane.1, baseline.1);
                 assert!(
@@ -1736,7 +1752,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                     assert!(v.last_enqueued_edit.is_none());
                     assert_eq!((v.selected_track, v.selected_clip), selection);
                 });
-                let terminal_lane = visual.rendered_border(lane).unwrap();
+                let terminal_lane = lane_paint(&mut visual);
                 assert_eq!(terminal_lane.0, baseline.0);
                 assert_eq!(terminal_lane.1, baseline.1);
                 assert!(!visual.update(|_, cx| cx.has_active_drag()));
@@ -1770,7 +1786,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 }
                 p.snapshot()
             });
-            assert_eq!(visual.rendered_border(lane).unwrap().0, baseline.0);
+            assert_eq!(lane_paint(&mut visual), baseline);
             assert!(visual.debug_bounds(preview).is_none());
             visual.simulate_keystrokes("cmd-z");
             pump(&editor, &mut visual);

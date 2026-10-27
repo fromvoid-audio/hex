@@ -10,15 +10,26 @@ type Interval = (u64, u64);
 struct Row {
     frames: Vec<Interval>,
     beats: Vec<Interval>,
+    // Integer frame starts, bounded by the same incoming cuts. Distinguish
+    // frame-derived starts from exact beat edits at a clipped prefix edge.
+    frame_cut_starts: Vec<u64>,
     audio: Vec<Clip>,
     midi: Vec<MidiClip>,
 }
 struct Counts {
+    alias_sources: BTreeSet<crate::AliasSourceId>,
     clips: usize,
     notes: usize,
     occurrences: usize,
 }
 impl Counts {
+    fn existing(&mut self, project: &Project, clip: ClipId, notes: usize) -> Result<(), Invalid> {
+        let notes = match project.clip_alias(clip) {
+            Some(source) if !self.alias_sources.insert(source) => 0,
+            _ => notes,
+        };
+        self.clip(notes)
+    }
     fn clip(&mut self, notes: usize) -> Result<(), Invalid> {
         self.clips = self
             .clips
@@ -100,13 +111,15 @@ fn private_copy_source(clip: &mut MidiClip) -> Result<(), Invalid> {
         .map_err(|_| Invalid("could not reserve copied midi notes"))?;
     notes.extend_from_slice(&old.notes);
     clip.source = Arc::new(crate::midi::MidiSource {
+        content: std::sync::Arc::new(crate::MidiContent {
+            source_length: old.source_length,
+            notes,
+        }),
         one_shot_boundary: old.one_shot_boundary,
-        source_length: old.source_length,
         source_start: old.source_start,
         loop_start: old.loop_start,
         loop_end: old.loop_end,
         looping: old.looping,
-        notes,
     });
     Ok(())
 }
@@ -146,6 +159,7 @@ pub(super) fn apply_with_cuts(
     rows.resize_with(project.tracks.len(), Row::default);
     let tempo = project.tempo_map();
     let mut count = Counts {
+        alias_sources: BTreeSet::new(),
         clips: 0,
         notes: 0,
         occurrences: 0,
@@ -153,7 +167,9 @@ pub(super) fn apply_with_cuts(
     for cell in &project.session.cells {
         match &cell.content {
             crate::SessionCellContent::Audio(_) => count.clip(0)?,
-            crate::SessionCellContent::Midi(clip) => count.clip(clip.source.notes.len())?,
+            crate::SessionCellContent::Midi(clip) => {
+                count.existing(project, clip.id, clip.source.notes.len())?
+            }
             crate::SessionCellContent::Stop => (),
         }
     }
@@ -171,6 +187,7 @@ pub(super) fn apply_with_cuts(
         push(&mut rows[index].frames, (start, end))?;
         if left < right {
             push(&mut rows[index].beats, (left.raw(), right.raw()))?;
+            push(&mut rows[index].frame_cut_starts, start)?;
         }
     }
     // All incoming ownership is part of the final count, before any fragments.
@@ -194,7 +211,11 @@ pub(super) fn apply_with_cuts(
                 )
             }
             ClipGroupContent::Midi(clip) => {
-                count.clip(clip.notes().len())?;
+                if copy {
+                    count.clip(clip.notes().len())?;
+                } else {
+                    count.existing(project, clip.id(), clip.notes().len())?;
+                }
                 let end = BeatTime::from_raw(
                     clip.start()
                         .raw()
@@ -215,11 +236,16 @@ pub(super) fn apply_with_cuts(
         }
         if beats.0 < beats.1 {
             push(&mut row.beats, (beats.0.raw(), beats.1.raw()))?;
+            if matches!(member.content, ClipGroupContent::Audio(_)) {
+                push(&mut row.frame_cut_starts, frames.0)?;
+            }
         }
     }
     for (original_row, row) in project.tracks.iter().zip(&mut rows) {
         union(&mut row.frames);
         union(&mut row.beats);
+        row.frame_cut_starts.sort_unstable();
+        row.frame_cut_starts.dedup();
         for original in original_row.clips() {
             if !copy && selected.contains(&original.id()) {
                 continue;
@@ -252,7 +278,7 @@ pub(super) fn apply_with_cuts(
                 .checked_add(original.length().raw())
                 .ok_or(Invalid("midi timeline end overflow"))?;
             let Some(mut pieces) = remainder(original.start().raw(), end, &row.beats)? else {
-                count.clip(original.notes().len())?;
+                count.existing(project, original.id(), original.notes().len())?;
                 push(&mut row.midi, original.clone())?;
                 continue;
             };
@@ -273,18 +299,40 @@ pub(super) fn apply_with_cuts(
                 .is_some_and(|(start, _)| *start == original.start().raw());
             if prefix {
                 let mut clip = original.clone();
-                clip.length = BeatTime::from_raw(pieces[0].1 - pieces[0].0);
-                count.clip(clip.notes().len())?;
+                let mut end = pieces[0].1;
+                if !row.frame_cut_starts.is_empty() {
+                    let end_frame = tempo.beat_to_frame(BeatTime::from_raw(end))?;
+                    if row.frame_cut_starts.binary_search(&end_frame).is_ok() {
+                        // Pasted MIDI and frame cuts can choose different beat
+                        // endpoints in this same frame. Use its first beat so
+                        // a note starting here gets no zero-frame prefix gate.
+                        // Preserve the frame edge and every authored source
+                        // note. Untouched clips never enter this branch;
+                        // exact beat-only edits retain their existing law.
+                        end = u64::try_from(tempo.beat_lower_bound_for_frame(end_frame)?)
+                            .map_err(|_| Invalid("midi frame prefix exceeds beat range"))?;
+                    }
+                }
+                clip.length = BeatTime::from_raw(
+                    end.checked_sub(pieces[0].0)
+                        .filter(|length| *length > 0)
+                        .ok_or(Invalid("midi frame prefix collapsed"))?,
+                );
+                if let Some(window) = clip.content_view {
+                    clip.content_view = Some(window.cropped(0..clip.length.raw())?);
+                }
+                count.existing(project, clip.id(), clip.notes().len())?;
                 push(&mut row.midi, clip)?;
             }
             let materialized = &pieces[usize::from(prefix)..];
             if !materialized.is_empty() {
                 count.enumerate(original)?;
-                for (index, mut clip) in
+                let fragments = if row.frame_cut_starts.is_empty() {
                     crate::midi::materialize_overwrite_ranges(original, materialized)?
-                        .into_iter()
-                        .enumerate()
-                {
+                } else {
+                    crate::midi::materialize_overwrite_frame_ranges(original, materialized, tempo)?
+                };
+                for (index, mut clip) in fragments.into_iter().enumerate() {
                     clip.id = if !prefix && index == 0 {
                         original.id()
                     } else {
