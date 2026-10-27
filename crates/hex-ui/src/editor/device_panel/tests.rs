@@ -446,6 +446,100 @@ fn device_chain_clicks_support_ranges_and_command_toggles(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn main_and_return_device_chains_support_multi_selection(cx: &mut TestAppContext) {
+    let (service, state, track, return_id, first_return, _) = actor_return_utility_fixture();
+    let utility = state.project.device(first_return).unwrap().state().clone();
+    service
+        .submit(Request::Edit(Command::InsertReturnDevice {
+            return_track: return_id,
+            before: None,
+            state: utility.clone(),
+        }))
+        .unwrap();
+    let second_return_state = receive_service_event(&service).state;
+    let second_return = second_return_state
+        .project
+        .return_tracks()
+        .iter()
+        .find(|track| track.id() == return_id)
+        .unwrap()
+        .devices()[1]
+        .id();
+    for _ in 0..2 {
+        service
+            .submit(Request::Edit(Command::InsertMainDevice {
+                before: None,
+                state: utility.clone(),
+            }))
+            .unwrap();
+        let state = receive_service_event(&service).state;
+        if state.project.main_devices().len() == 2 {
+            let main = [
+                state.project.main_devices()[0].id(),
+                state.project.main_devices()[1].id(),
+            ];
+            let (handle, editor) = actor_editor_window(cx, service, state, track);
+            editor.update(cx, |view, cx| {
+                view.focused_return = Some(return_id);
+                cx.notify();
+            });
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.simulate_resize(size(px(1400.0), px(800.0)));
+            visual.run_until_parked();
+            let title = |visual: &mut VisualTestContext, id: DeviceId| {
+                visual
+                    .debug_bounds(Box::leak(
+                        format!("device-drag-title-{}", id.value()).into_boxed_str(),
+                    ))
+                    .unwrap()
+                    .center()
+            };
+            let first = title(&mut visual, first_return);
+            let second = title(&mut visual, second_return);
+            visual.simulate_click(first, Modifiers::default());
+            visual.simulate_click(
+                second,
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            );
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert!(view.device_panel.is_selected(first_return));
+                assert!(view.device_panel.is_selected(second_return));
+            });
+            editor.update(cx, |view, cx| {
+                view.focused_return = None;
+                view.selected_track = None;
+                view.device_panel.main_selected = Some(view.project_generation);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let first = title(&mut visual, main[0]);
+            let second = title(&mut visual, main[1]);
+            visual.simulate_click(first, Modifiers::default());
+            visual.simulate_click(
+                second,
+                Modifiers {
+                    platform: true,
+                    ..Default::default()
+                },
+            );
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.device_panel.owner, Some(DevicePanelOwner::Main));
+                assert!(view.device_panel.is_selected(main[0]));
+                assert!(view.device_panel.is_selected(main[1]));
+                assert!(!view.device_panel.is_selected(first_return));
+            });
+            return;
+        }
+    }
+    panic!("main fixture did not create two devices");
+}
+
+#[gpui::test]
 fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut TestAppContext) {
     cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, state, track, return_track, device, _) = actor_return_utility_fixture();
