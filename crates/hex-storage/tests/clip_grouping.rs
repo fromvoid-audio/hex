@@ -196,6 +196,28 @@ fn nested_audio_aliases_roundtrip_and_reject_conflicting_member_projection() {
     editor
         .execute(Command::DuplicateAliasClips(vec![outer]))
         .unwrap();
+    let alias = editor.project().clip_alias(outer).unwrap();
+    let copy = editor
+        .project()
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .find(|clip| clip.id() != outer && editor.project().clip_alias(clip.id()) == Some(alias))
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: copy,
+            millidb: -4_500,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipFades {
+            clip: copy,
+            fade_in: 15,
+            fade_out: 30,
+        })
+        .unwrap();
     let original = editor.project().snapshot();
     let encoded = encode(editor.project()).unwrap();
     let loaded = decode(&encoded).unwrap();
@@ -208,6 +230,11 @@ fn nested_audio_aliases_roundtrip_and_reject_conflicting_member_projection() {
         .filter(|clip| loaded.clip_alias(clip.id()) == Some(source))
         .collect();
     assert_eq!(members.len(), 2);
+    assert_ne!(members[0].gain(), members[1].gain());
+    assert_ne!(
+        members[0].audio_edit().unwrap().domain.fade,
+        members[1].audio_edit().unwrap().domain.fade
+    );
     assert!(std::sync::Arc::ptr_eq(
         &members[0].audio_edit().unwrap().domain.content,
         &members[1].audio_edit().unwrap().domain.content
