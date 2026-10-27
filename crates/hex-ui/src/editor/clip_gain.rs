@@ -196,10 +196,15 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        let clip_id = clip.id();
+        let held = self
+            .clip_gain
+            .held
+            .as_ref()
+            .is_some_and(|d| d.clip.id() == clip_id && d.current(self));
         if !width.is_finite()
             || width < 28.0
-            || self.fade_key_held
-            || self.time_selection_key_held
+            || (!held && (self.fade_key_held || self.time_selection_key_held))
             || self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT
         {
             return None;
@@ -208,12 +213,6 @@ impl EditorView {
         let generation = self.project_generation;
         let revision = state.revision;
         let original = Rc::new(clip.clone());
-        let clip_id = clip.id();
-        let held = self
-            .clip_gain
-            .held
-            .as_ref()
-            .is_some_and(|d| d.clip.id() == clip_id && d.current(self));
         let owner = cx.entity_id();
         let displayed = self.displayed_clip_gain(clip_id);
         let value = displayed.unwrap_or(clip.gain()).millidb();

@@ -373,3 +373,32 @@ fn audio_gain_real_refusal_retires_the_frozen_value_with_canonical_state(cx: &mu
         assert_eq!(v.worker_requests_pending, 0);
     });
 }
+
+#[gpui::test]
+fn momentary_tools_preserve_a_gain_drag_already_in_custody(cx: &mut TestAppContext) {
+    for key in ["2", "f"] {
+        let cx = &mut cx.new_app();
+        let (project, _, _, clip) = clip_drag_ui_test::audio_project();
+        let (window, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        visual.run_until_parked();
+        let selector = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
+        let down = visual.debug_bounds(selector).unwrap().center();
+        let up = point(down.x, down.y + px(20.0));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            is_held: false,
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert!(v.clip_gain.held(), "{key} cannot revoke admitted input")
+        });
+        assert!(visual.debug_bounds(selector).is_some());
+        let up = point(up.x, up.y + px(10.0));
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |v, _| assert!(matches!(v.last_enqueued_edit, Some(Command::SetAudioClipGain { clip: id, millidb: -3_000 }) if id == clip)));
+    }
+}
