@@ -184,6 +184,11 @@ pub(super) fn card(
                 {
                     return;
                 }
+                if !view.device_panel.selected_others.is_empty() {
+                    view.error = Some("select one device to toggle it".into());
+                    cx.notify();
+                    return;
+                }
                 if view.opening_project
                     || view.close_prompt_open
                     || view.gain_recorder.blocks_edits()
@@ -230,6 +235,12 @@ pub(super) fn card(
                 || view.device_panel.chain_window.refused_delete.is_some()
             {
                 suspend_until_release(view, intent, &focus, window, cx);
+                return;
+            }
+            if !view.device_panel.selected_others.is_empty() {
+                view.error = Some("select one device to remove it".into());
+                suspend_until_release(view, intent, &focus, window, cx);
+                cx.notify();
                 return;
             }
             // Refuse unrelated work; an active numeric gesture may be finalized
