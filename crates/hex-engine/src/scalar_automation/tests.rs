@@ -344,6 +344,62 @@ fn delayed_host_input_and_output_match_stage_demand_seek_and_handoff() {
 }
 
 #[test]
+fn delayed_scalar_values_follow_loop_origins_across_irregular_blocks() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut f, device, _, mut pages) = fixture(target);
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 4094,
+            end: 4098,
+            enabled: true,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: Some(device),
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            ScalarAutomationBinding {
+                device,
+                target,
+                source: source(f.editor.project().tempo_map()),
+            },
+        )
+        .unwrap(),
+    );
+    let latency = revision.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    seek(&mut runtime);
+    let mut warmup = vec![[0.0; 2]; latency as usize];
+    runtime.render_with_pages(&mut warmup, &mut pages).unwrap();
+    let mut actual = Vec::new();
+    for width in [1, 3, 2, 2] {
+        let mut block = vec![[0.0; 2]; width];
+        runtime.render_with_pages(&mut block, &mut pages).unwrap();
+        actual.extend(block);
+    }
+    for cycle in actual.chunks_exact(4) {
+        assert_eq!(cycle[0], [0.0; 2]);
+        assert!(cycle[1][0] > 0.25);
+        assert!((cycle[2][0] - 0.25).abs() < 1e-6);
+        assert_eq!(cycle[3], [0.0; 2]);
+    }
+    assert_eq!(pages.requests, 0);
+}
+
+#[test]
 fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
     for target in [
         DeviceAutomationTarget::Parameter(parameter::GAIN),
