@@ -117,8 +117,7 @@ impl CatalogLease {
             .is_some_and(|member| member == source)
     }
 
-    /// Distinguishes separate catalogs even when they reuse identical
-    /// generation, asset IDs, and source metadata.
+    /// Exact verified scalar facts, including content and projection identity.
     pub fn covers_scalar_source(&self, source: &hex_engine::ScalarSourceMetadata) -> bool {
         self.catalog
             .scalar_sources
@@ -134,6 +133,22 @@ impl CatalogLease {
         &self.catalog.scalar_shared_data
     }
 
+    /// Key membership for ambiguity checks after complete fact admission.
+    pub fn covers_resource_key(&self, key: hex_engine::StreamResourceKey) -> bool {
+        match key {
+            hex_engine::StreamResourceKey::Audio(key) => self
+                .catalog
+                .sources
+                .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
+                .is_ok(),
+            hex_engine::StreamResourceKey::Scalar(key) => self
+                .catalog
+                .scalar_sources
+                .binary_search_by_key(&key, hex_engine::ScalarSourceMetadata::key)
+                .is_ok(),
+        }
+    }
+    /// Distinguishes actual catalogs even when all source facts are identical.
     pub fn same_catalog(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner) && Arc::ptr_eq(&self.pair_id, &other.pair_id)
     }
