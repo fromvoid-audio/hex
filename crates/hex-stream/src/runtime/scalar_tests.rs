@@ -15,6 +15,9 @@ impl Drop for DraftFile {
     }
 }
 fn definition(looped: bool, count: u64) -> (DraftFile, ScalarSourceDefinition) {
+    definition_spaced(looped, count, 1)
+}
+fn definition_spaced(looped: bool, count: u64, stride: u64) -> (DraftFile, ScalarSourceDefinition) {
     let path = std::env::temp_dir().join(format!(
         "hex-scalar-stream-{}-{}",
         std::process::id(),
@@ -70,8 +73,8 @@ fn definition(looped: bool, count: u64) -> (DraftFile, ScalarSourceDefinition) {
         (0..count)
             .map(|index| AppliedEvent {
                 sequence: index + 1,
-                performance_frame: index,
-                content_frame: index,
+                performance_frame: index * stride,
+                content_frame: index * stride,
                 loop_pass: 0,
                 value: AutomationValue::new(if index % 2 == 0 { 0.0 } else { 0.75 }).unwrap(),
             })
@@ -89,8 +92,8 @@ fn definition(looped: bool, count: u64) -> (DraftFile, ScalarSourceDefinition) {
             }
         } else {
             DraftClock {
-                performance_frame: count,
-                content_frame: count,
+                performance_frame: count * stride,
+                content_frame: count * stride,
                 loop_pass: 0,
             }
         }))
@@ -481,4 +484,119 @@ fn assert_zero(observed: allocation_counter::AllocationInfo) {
     assert_eq!(observed.bytes_total, 0);
     assert_eq!(observed.count_current, 0);
     assert_eq!(observed.bytes_current, 0);
+}
+
+#[test]
+fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_job() {
+    let (_first_file, first) = definition(false, 2048);
+    let first_key = first.metadata().key();
+    let (_second_file, second) = definition(false, 2048);
+    let second_key = ScalarSourceKey::new(7, 2, 1).unwrap();
+    let second = ScalarSourceDefinition::new(second_key, second.source, second.projection).unwrap();
+    let (_wav, audio) = audio_definition();
+    let audio_key = audio.key;
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (publication_tx, _publication_rx) = mpsc::sync_channel(8);
+    let (steps_tx, steps_rx) = mpsc::sync_channel(1);
+    let (quantum_tx, quantum_rx) = mpsc::sync_channel(1);
+    let hooks = crate::worker::TestWorkerHooks {
+        entered: entered_tx,
+        release: release_rx,
+        publications: publication_tx,
+        scalar_steps: Some((steps_tx, quantum_rx)),
+    };
+    let (mut runtime, _) = StreamRuntime::new_factory_with_scalar_sources(
+        StreamConfig::with_pool_pages(4),
+        vec![audio],
+        vec![first, second],
+        false,
+        Some(hooks),
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (control, mut pages) = runtime.split().ok().unwrap();
+    pages.request_scalar_page(first_key, 0);
+    pages.request_scalar_page(second_key, 0);
+    pages.request_page(audio_key, 0);
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        steps_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        first_key
+    );
+    quantum_tx.send(()).unwrap();
+    assert_eq!(
+        steps_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        first_key
+    );
+    quantum_tx.send(()).unwrap();
+    assert_eq!(
+        steps_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        first_key
+    );
+    pages.pump_ready(4);
+    assert!(
+        pages.page(audio_key, 0).is_some(),
+        "PCM must progress while the first dense scalar job is gated pending"
+    );
+    assert!(
+        pages.scalar_page(first_key, 0).is_none(),
+        "partial scalar page must not publish"
+    );
+    let mut steps = 2;
+    loop {
+        quantum_tx.send(()).unwrap();
+        let key = steps_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        steps += 1;
+        if key == second_key {
+            break;
+        }
+        assert_eq!(key, first_key);
+        assert!(steps < 100);
+    }
+    assert!(steps > 2);
+    pages.pump_ready(4);
+    assert!(pages.scalar_page(first_key, 0).is_some());
+    assert!(pages.scalar_page(second_key, 0).is_none());
+    // The second job is retained at its first bounded step. Stop interrupts
+    // the worker-only test gate, and returns that page before worker join.
+    let report = control.shutdown(pages).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 4);
+}
+
+#[test]
+#[ignore = "optimized scalar worker page profile; run explicitly with --release --ignored --nocapture"]
+fn optimized_scalar_worker_pages_sparse_and_dense() {
+    for (label, stride) in [("sparse", 64), ("dense", 1)] {
+        // Full verified source/map construction, original 65,536 records and
+        // fixed page buffers are prepared outside each timed production call.
+        let (_file, mut definition) = definition_spaced(false, 65_536, stride);
+        let total_pages = definition.metadata().end_frame().div_ceil(4096);
+        let mut elapsed = Duration::ZERO;
+        let mut quanta = 0usize;
+        for sample in 0..16 {
+            let key = crate::ResourcePageKey {
+                source: definition.metadata().key().into(),
+                page_index: sample * total_pages / 16,
+            };
+            let page = PageBuffer::new_with_capacity(true).unwrap().0;
+            let started = std::time::Instant::now();
+            let mut job = crate::worker::scalar::ScalarJob::begin(0, &mut definition, key, page)
+                .ok()
+                .unwrap();
+            loop {
+                quanta += 1;
+                if job.step(&mut definition).unwrap() {
+                    break;
+                }
+            }
+            elapsed += started.elapsed();
+            assert!(job.page.key.is_some());
+        }
+        eprintln!(
+            "scalar worker page profile: {label}, 65536 records, 16 x 4096 output frames, {quanta} bounded quanta, {elapsed:?} total; source setup excluded; no native deadline claim"
+        );
+    }
 }

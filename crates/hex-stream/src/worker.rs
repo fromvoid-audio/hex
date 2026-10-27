@@ -6,6 +6,7 @@ use crate::{
     },
 };
 use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
+use std::collections::VecDeque;
 pub(crate) mod scalar;
 use hex_media::{ResampleKernel, ResamplePlan, VerifiedWavReader};
 use rtrb::{Consumer, Producer, PushError};
@@ -125,7 +126,14 @@ pub(crate) fn preparation_data_bound_with_scalar_sources(
                 + std::mem::size_of::<crate::ScalarSharedData>(),
         )?)?;
     if !scalar_definitions.is_empty() {
-        extra = extra.checked_add(std::mem::size_of::<Option<ScalarJob>>())?;
+        extra = extra
+            .checked_add(std::mem::size_of::<Option<ScalarJob>>())?
+            .checked_add(
+                config
+                    .request_capacity
+                    .checked_mul(std::mem::size_of::<crate::ResourcePageKey>())?,
+            )?
+            .checked_add(std::mem::size_of::<VecDeque<crate::ResourcePageKey>>())?;
     }
     let mut paths = definitions
         .iter()
@@ -169,10 +177,30 @@ pub(crate) struct TestWorkerHooks {
     pub(crate) entered: SyncSender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
     pub(crate) publications: SyncSender<usize>,
+    pub(crate) scalar_steps: Option<(
+        SyncSender<hex_engine::ScalarSourceKey>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
 }
 
 #[cfg(test)]
 impl TestWorkerHooks {
+    fn before_scalar_step(&self, key: hex_engine::ScalarSourceKey, stop: &AtomicBool) -> bool {
+        let Some((steps, release)) = &self.scalar_steps else {
+            return true;
+        };
+        if steps.try_send(key).is_err() {
+            return false;
+        }
+        while !stop.load(Ordering::Acquire) {
+            match release.recv_timeout(Duration::from_millis(2)) {
+                Ok(()) => return true,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+        false
+    }
     fn wait_for_release(&self, stop: &AtomicBool) -> bool {
         if self.entered.send(()).is_err() {
             return false;
@@ -211,7 +239,12 @@ pub(crate) fn run_worker(
         && held_failures
             .try_reserve_exact(config.request_capacity.saturating_mul(2))
             .is_ok();
-    let catalog = if scratch_ok && held_ok {
+    let mut deferred_scalar = VecDeque::new();
+    let deferred_ok = scalar_definitions.is_empty()
+        || deferred_scalar
+            .try_reserve_exact(config.request_capacity)
+            .is_ok();
+    let catalog = if scratch_ok && held_ok && deferred_ok {
         build_catalog(&config, definitions, &mut source_scratch, &stop)
     } else {
         Err(StreamFailureKind::DecodeFailed)
@@ -227,6 +260,13 @@ pub(crate) fn run_worker(
                 crate::AllocationData::of::<Box<PageBuffer>>(held_pages.capacity());
             data.held_failures =
                 crate::AllocationData::of::<StreamFailure>(held_failures.capacity());
+            data.scalar_deferred_keys =
+                crate::AllocationData::of::<crate::ResourcePageKey>(deferred_scalar.capacity());
+            data.scalar_deferred_inline = if scalar_definitions.is_empty() {
+                0
+            } else {
+                std::mem::size_of::<VecDeque<crate::ResourcePageKey>>()
+            };
             data.scalar_source_slots =
                 crate::AllocationData::of::<ScalarSourceDefinition>(scalar_definitions.capacity());
             verified_membership(sources, &scalar_definitions, *footprint, data)
@@ -248,7 +288,10 @@ pub(crate) fn run_worker(
     }
     let mut scalar_job: Option<ScalarJob> = None;
     loop {
-        while let Ok(page) = queues.returns.pop() {
+        for _ in 0..config.return_capacity {
+            let Ok(page) = queues.returns.pop() else {
+                break;
+            };
             free_pages.push(page);
         }
         flush_held_pages(&mut held_pages, &mut queues.ready);
@@ -262,6 +305,14 @@ pub(crate) fn run_worker(
         if !held_pages.is_empty() || !held_failures.is_empty() {
             thread::park_timeout(Duration::from_millis(2));
             continue;
+        }
+        #[cfg(test)]
+        if let Some(job) = &scalar_job {
+            if let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source) {
+                if !hooks.before_scalar_step(key, &stop) {
+                    break;
+                }
+            }
         }
         if let Some(mut job) = scalar_job.take() {
             let outcome = job.step(&mut scalar_definitions[job.source]);
@@ -290,15 +341,43 @@ pub(crate) fn run_worker(
                     );
                 }
             }
-            // Stop is checked before every next bounded source step, including
-            // arbitrarily long runs of projected/collapsed raw changes.
-            continue;
         }
-        let Ok(request) = queues.requests.pop() else {
-            thread::park_timeout(Duration::from_millis(2));
+        // One scalar quantum, then at most one request intake. PCM can progress
+        // while a dense scalar page remains pending. Other scalar keys retain
+        // FIFO order without consuming another page/cursor. Stop wins before I/O.
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        let request = if scalar_job.is_none() {
+            deferred_scalar
+                .pop_front()
+                .map(PageRequest)
+                .or_else(|| queues.requests.pop().ok())
+        } else {
+            queues.requests.pop().ok()
+        };
+        let Some(PageRequest(key)) = request else {
+            if scalar_job.is_none() {
+                thread::park_timeout(Duration::from_millis(2));
+            }
             continue;
         };
-        let PageRequest(key) = request;
+        if matches!(key.source, StreamResourceKey::Scalar(_)) && scalar_job.is_some() {
+            if deferred_scalar.len() < deferred_scalar.capacity() {
+                deferred_scalar.push_back(key);
+            } else {
+                hold_failure(
+                    StreamFailure {
+                        key: key.source,
+                        page_index: key.page_index,
+                        kind: StreamFailureKind::CapacityExhausted,
+                    },
+                    &mut held_failures,
+                    &mut queues.failures,
+                );
+            }
+            continue;
+        }
         let Some(mut page) = free_pages.pop() else {
             // No source buffer is available until the endpoint returns an
             // evicted/stale page. Preserve the request without an allocation.

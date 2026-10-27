@@ -100,6 +100,8 @@ pub struct WorkerData {
     pub scalar_source_handles: usize,
     pub scalar_cursor_handle_bound: usize,
     pub scalar_job_data: usize,
+    pub scalar_deferred_keys: AllocationData,
+    pub scalar_deferred_inline: usize,
     pub catalog_object: usize,
     pub construction_definition_slots: AllocationData,
     pub construction_kernel_cache: AllocationData,
@@ -126,6 +128,8 @@ impl WorkerData {
             self.scalar_source_backings,
             self.scalar_projection_data,
             self.scalar_job_data,
+            self.scalar_deferred_keys.bytes()?,
+            self.scalar_deferred_inline,
             self.catalog_object,
         ])
     }

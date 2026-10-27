@@ -284,7 +284,8 @@ fn staged_seek_and_candidate_handoff_plan_the_same_scalar_window_without_committ
         0,
         "preflight cannot commit the seek"
     );
-    runtime.commit_stream_action(action).unwrap();
+    runtime.validate_stream_action(&action).unwrap();
+    runtime.apply(SessionPlaybackCommand::Seek(4094)).unwrap();
     let mut actual = Vec::new();
     runtime
         .visit_next_stream_chunk(4, None, &mut |extent| {
