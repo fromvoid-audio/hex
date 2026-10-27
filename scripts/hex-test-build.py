@@ -21,26 +21,39 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 IDENTITY = "org.portalsurfer.hex.dev"
-SPEC = importlib.util.spec_from_file_location("hex_local_ci", ROOT / "scripts/local-ci.py")
-if SPEC is None or SPEC.loader is None:
-    raise RuntimeError("local CI module unavailable")
-ci = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = ci
-SPEC.loader.exec_module(ci)
+# The sealed update helper imports this same verifier/publication owner under a
+# fixed runtime-only name. Quit-time publication must not load the CI runner,
+# changelog tooling, or a source checkout. Normal build callers retain them.
+if __name__ != "hex_update_runtime":
+    SPEC = importlib.util.spec_from_file_location("hex_local_ci", ROOT / "scripts/local-ci.py")
+    if SPEC is None or SPEC.loader is None:
+        raise RuntimeError("local CI module unavailable")
+    ci = importlib.util.module_from_spec(SPEC)
+    sys.modules[SPEC.name] = ci
+    SPEC.loader.exec_module(ci)
 
-CHANGELOG_SPEC = importlib.util.spec_from_file_location("hex_changelog", ROOT / "scripts/changelog.py")
-if CHANGELOG_SPEC is None or CHANGELOG_SPEC.loader is None:
-    raise RuntimeError("changelog validator unavailable")
-changelog = importlib.util.module_from_spec(CHANGELOG_SPEC)
-CHANGELOG_SPEC.loader.exec_module(changelog)
+    CHANGELOG_SPEC = importlib.util.spec_from_file_location("hex_changelog", ROOT / "scripts/changelog.py")
+    if CHANGELOG_SPEC is None or CHANGELOG_SPEC.loader is None:
+        raise RuntimeError("changelog validator unavailable")
+    changelog = importlib.util.module_from_spec(CHANGELOG_SPEC)
+    CHANGELOG_SPEC.loader.exec_module(changelog)
 
 
 class DeliveryError(Exception):
     """Fail closed without changing projects, preferences or unrelated apps."""
 
 
+class PublicationUncertain(DeliveryError):
+    """The target may have changed; inspect or recover before retrying."""
+
+
+class PublicationFollowupFailed(DeliveryError):
+    """The new target verified, but its post-publication reporting failed."""
+
+
 def run(argv: list[str], root: Path = ROOT) -> str:
-    return subprocess.run(argv, cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+    bounded = {"timeout": 30} if __name__ == "hex_update_runtime" else {}
+    return subprocess.run(argv, cwd=root, check=True, capture_output=True, text=True, **bounded).stdout.strip()
 
 
 def sha(path: Path) -> str:
@@ -130,9 +143,10 @@ def discovery_builder():
         sys.path.pop(0)
 
 
-def validate_discovery_input(path: Path, candidate: str, *, packaged=False) -> dict:
+def validate_discovery_input(path: Path, candidate: str, *, packaged=False, provenance=None) -> dict:
     assert_plain_path(path.absolute())
-    data = discovery_builder().verify(path)
+    kwargs = {} if provenance is None else {"expected_source_digest": provenance[0], "expected_sdk_pins": provenance[1]}
+    data = discovery_builder().verify(path, **kwargs)
     if (data.get("scope") != "native-macos-factory-discovery"
             or data.get("source_commit") != candidate or data.get("source_dirty") is not False
             or data.get("package_layout") != ("hex-app-discovery-v1" if packaged else None)):
@@ -187,7 +201,8 @@ def verify_discovery_package(app: Path, receipt: dict) -> None:
         raise DeliveryError("discovery package source/location mismatch")
     root = app / DISCOVERY_ROOT
     packaged_receipt = app / DISCOVERY_RECEIPT
-    data = validate_discovery_input(packaged_receipt, receipt["source"], packaged=True)
+    provenance = candidate_native_provenance(app, receipt) if __name__ == "hex_update_runtime" else None
+    data = validate_discovery_input(packaged_receipt, receipt["source"], packaged=True, provenance=provenance)
     if sha(packaged_receipt) != evidence.get("receipt_sha256") or sha(root / DISCOVERY_SCANNER) != evidence.get("scanner_sha256"):
         raise DeliveryError("discovery package changed")
     discovery_builder().macho(root / DISCOVERY_SCANNER, 2)
@@ -201,9 +216,10 @@ def verify_discovery_package(app: Path, receipt: dict) -> None:
         raise DeliveryError("discovery native receipt signer mismatch")
 
 
-def validate_instance_input(path: Path, candidate: str, *, packaged=False) -> dict:
+def validate_instance_input(path: Path, candidate: str, *, packaged=False, provenance=None) -> dict:
     assert_plain_path(path.absolute())
-    data = discovery_builder().verify(path)
+    kwargs = {} if provenance is None else {"expected_source_digest": provenance[0], "expected_sdk_pins": provenance[1]}
+    data = discovery_builder().verify(path, **kwargs)
     if (data.get("scope") != "native-macos-instance"
             or data.get("source_commit") != candidate or data.get("source_dirty") is not False
             or data.get("package_layout") != ("hex-app-instance-v1" if packaged else None)):
@@ -237,7 +253,8 @@ def verify_instance_package(app: Path, receipt: dict) -> None:
     if evidence.get("source") != receipt.get("source") or evidence.get("root") != str(DISCOVERY_ROOT):
         raise DeliveryError("instance package source/location mismatch")
     packaged_receipt = app / INSTANCE_RECEIPT
-    data = validate_instance_input(packaged_receipt, receipt["source"], packaged=True)
+    provenance = candidate_native_provenance(app, receipt) if __name__ == "hex_update_runtime" else None
+    data = validate_instance_input(packaged_receipt, receipt["source"], packaged=True, provenance=provenance)
     if sha(packaged_receipt) != evidence.get("receipt_sha256"):
         raise DeliveryError("instance package changed")
     helper = app / DISCOVERY_ROOT / INSTANCE_APP
@@ -332,8 +349,9 @@ def signing_configuration(configuration: dict) -> dict[str, str]:
 
 
 def native_signature(binary: Path) -> dict[str, str | None]:
+    bounded = {"timeout": 30} if __name__ == "hex_update_runtime" else {}
     result = subprocess.run(["codesign", "--display", "--verbose=4", "--requirements", "-", str(binary)],
-                            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **bounded)
     lines = result.stdout.splitlines()
     fields = dict(line.split("=", 1) for line in lines if "=" in line and not line.startswith("designated =>"))
     return {"identifier": fields.get("Identifier"), "team_identifier": fields.get("TeamIdentifier"),
@@ -352,6 +370,121 @@ def verify_signed_bundle(app: Path, signing: dict[str, str], actual: dict) -> No
             or "cdhash" in designated.lower() or f'identifier "{IDENTITY}"' not in designated
             or signing["team_identifier"] not in designated):
         raise DeliveryError("signed app has no stable configured identifier/team designated requirement")
+
+
+UPDATE_HELPER_ID = "org.portalsurfer.hex.update"
+UPDATE_HELPER = Path("Contents/Helpers/hex-update.app")
+UPDATE_RUNTIME_SCRIPTS = ("hex-test-build.py", "pending_update_exit.py", "hex-test-build.json")
+
+
+def _python_runtime_identity() -> dict:
+    """Pin the already-running local interpreter; never invoke a tool installer."""
+    process = subprocess.run(["/bin/ps", "-ww", "-p", str(os.getpid()), "-o", "comm="],
+                             capture_output=True, text=True, check=True, timeout=10)
+    lines = process.stdout.splitlines()
+    if len(lines) != 1:
+        raise DeliveryError("cannot identify local Python interpreter")
+    path = Path(lines[0].strip())
+    if not path.is_absolute():
+        raise DeliveryError("local Python interpreter path is ambiguous")
+    assert_plain_path(path)
+    metadata = path.stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 128 * 1024 * 1024:
+        raise DeliveryError("local Python interpreter is not a supported executable")
+    digest = sha(path)
+    after = path.stat()
+    if (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise DeliveryError("local Python interpreter changed while inspected")
+    return {"version": 1, "interpreter": str(path), "interpreter_sha256": digest,
+            "interpreter_device": metadata.st_dev, "interpreter_inode": metadata.st_ino}
+
+
+def stage_update_supervisor(stage: Path, signing: dict) -> dict:
+    """Create the fixed-purpose signed helper as a sealed nested app."""
+    helper = stage / UPDATE_HELPER
+    contents = helper / "Contents"
+    executable = contents / "MacOS/hex-update"
+    resources = contents / "Resources"
+    executable.parent.mkdir(parents=True)
+    scripts = resources / "runtime/scripts"
+    scripts.mkdir(parents=True)
+    for name in UPDATE_RUNTIME_SCRIPTS:
+        shutil.copy2(ROOT / "scripts" / name, scripts / name)
+    shutil.copy2(ROOT / "scripts/hex-update-entry.py", resources / "entry.py")
+    # The existing verifier validates optional discovery/instance receipts using
+    # this exact original source closure; keep it inside the signed helper.
+    native = discovery_builder()
+    native_destination = resources / "runtime/crates/hex-plugin-scan/native"
+    native_destination.mkdir(parents=True)
+    for name in native.SOURCES:
+        shutil.copy2(ROOT / "crates/hex-plugin-scan/native" / name, native_destination / name)
+    write_json(resources / "policy.json", _python_runtime_identity())
+    with (contents / "Info.plist").open("wb") as output:
+        plistlib.dump({"CFBundleExecutable": "hex-update", "CFBundleIdentifier": UPDATE_HELPER_ID,
+                       "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "LSBackgroundOnly": True}, output)
+    subprocess.run(["/usr/bin/swiftc", "-O", str(ROOT / "scripts/hex-update-launcher.swift"),
+                    "-o", str(executable)], check=True, capture_output=True, timeout=120)
+    subprocess.run(["/usr/bin/codesign", "--force", "--sign", signing["certificate_sha1"],
+                    "--identifier", UPDATE_HELPER_ID, "--timestamp=none", str(helper)],
+                   check=True, capture_output=True, timeout=120)
+    evidence = {"identifier": UPDATE_HELPER_ID, "executable_sha256": sha(executable),
+                "native_sources": list(native.SOURCES), "native_sdk_pins": native.PINS}
+    verify_update_supervisor(stage, {"update_supervisor": evidence, "signing": signing})
+    return evidence
+
+
+def candidate_native_provenance(app: Path, receipt: dict):
+    """Hash the candidate's signed source closure without executing its code."""
+    evidence = receipt.get("update_supervisor")
+    if not isinstance(evidence, dict):
+        raise DeliveryError("candidate native provenance unavailable")
+    names = evidence.get("native_sources")
+    pins = evidence.get("native_sdk_pins")
+    if (not isinstance(names, list) or not 0 < len(names) <= 256
+            or not isinstance(pins, dict) or not pins
+            or any(not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_.-]+", name) is None for name in names)
+            or len(set(names)) != len(names)):
+        raise DeliveryError("candidate native provenance is invalid")
+    root = app / UPDATE_HELPER / "Contents/Resources/runtime/crates/hex-plugin-scan/native"
+    digest = hashlib.sha256()
+    total = 0
+    for name in names:
+        path = root / name
+        assert_plain_path(path)
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 16 * 1024 * 1024:
+            raise DeliveryError("candidate native source is invalid")
+        total += info.st_size
+        if total > 64 * 1024 * 1024:
+            raise DeliveryError("candidate native sources are too large")
+        with path.open("rb") as source:
+            content = source.read(info.st_size + 1)
+        if len(content) != info.st_size:
+            raise DeliveryError("candidate native source changed")
+        digest.update(name.encode() + b"\0" + content + b"\0")
+    return digest.hexdigest(), pins
+
+
+def verify_update_supervisor(app: Path, receipt: dict) -> None:
+    evidence = receipt.get("update_supervisor")
+    if not isinstance(evidence, dict) or evidence.get("identifier") != UPDATE_HELPER_ID:
+        raise DeliveryError("invalid update helper receipt")
+    helper = app / UPDATE_HELPER
+    executable = helper / "Contents/MacOS/hex-update"
+    assert_plain_path(executable)
+    if sha(executable) != evidence.get("executable_sha256"):
+        raise DeliveryError("update helper executable changed")
+    signing = signing_configuration({"signing": receipt.get("signing")})
+    requirement = (f'identifier "{UPDATE_HELPER_ID}" and anchor apple generic and '
+                   f'certificate leaf[subject.OU] = "{signing["team_identifier"]}" and '
+                   'certificate leaf[field.1.2.840.113635.100.6.1.13] exists and '
+                   f'certificate leaf = H"{signing["certificate_sha1"]}"')
+    subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "--test-requirement",
+                    "=" + requirement, str(helper)], check=True, capture_output=True, timeout=15)
+    actual = native_signature(executable)
+    if actual.get("identifier") != UPDATE_HELPER_ID or actual.get("team_identifier") != signing["team_identifier"]:
+        raise DeliveryError("update helper signer or identifier differs")
 
 
 def sign_bundle(app: Path, signing: dict[str, str]) -> None:
@@ -386,6 +519,8 @@ def verify(app: Path) -> dict:
     if not os.access(app / "Contents/MacOS/hex", os.X_OK):
         raise DeliveryError("packaged binary is not executable")
     verify_native_executable(app / "Contents/MacOS/hex")
+    if receipt.get("update_supervisor") is not None:
+        verify_update_supervisor(app, receipt)
     if receipt.get("vst3_discovery") is not None:
         verify_discovery_package(app, receipt)
     if receipt.get("vst3_instance") is not None:
@@ -578,7 +713,7 @@ def recover(app: Path) -> None:
                 raise DeliveryError("ambiguous interrupted installation; temporary apps preserved")
             try:
                 verify(app)
-            except (DeliveryError, OSError, ValueError, subprocess.CalledProcessError):
+            except (DeliveryError, OSError, ValueError, subprocess.SubprocessError):
                 assert_identity(previous)
                 app.rename(stage)
                 previous.rename(app)
@@ -639,7 +774,7 @@ def activate(app: Path, stage: Path) -> None:
         sync_directory(workspace)
         sync_directory(app.parent)
         verify(app)
-    except (OSError, DeliveryError, ValueError, subprocess.CalledProcessError):
+    except (OSError, DeliveryError, ValueError, subprocess.SubprocessError):
         if previous.exists():
             assert_inactive(app)
             assert_inactive(previous)
@@ -654,6 +789,113 @@ def activate(app: Path, stage: Path) -> None:
     if previous.exists():
         shutil.rmtree(previous)
     remove_install_workspace(workspace)
+
+
+
+def _apply_verified_pending(target: Path, selected_receipt_sha256: str) -> dict:
+    """Publish one selected pending candidate after an independently approved exit.
+
+    The caller must first establish the exact parent session's approved normal
+    exit. This operation is intentionally not exposed as an automatic launcher
+    action. Both publication and pending selection are locked through the final
+    verification and the existing recoverable activation transaction.
+    """
+    if (not isinstance(selected_receipt_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", selected_receipt_sha256) is None):
+        raise DeliveryError("invalid selected pending receipt")
+    if not target.is_absolute() or target.name.casefold() != "hex.app":
+        raise DeliveryError("pending update target must be an absolute hex.app path")
+    assert_plain_path(target)
+    root = target.parent / ".hex-pending-update"
+    if not root.exists():
+        raise DeliveryError("selected pending update is unavailable")
+    with activation_lock(target):
+        pending = pending_candidate(target)
+        with activation_lock(pending):
+            receipt_path = pending / "Contents/Resources/test-build.json"
+            assert_plain_path(receipt_path)
+            if not receipt_path.is_file() or sha(receipt_path) != selected_receipt_sha256:
+                raise DeliveryError("pending update selection changed")
+            receipt = verify(pending)
+            if (receipt.get("schema") != 2 or receipt.get("app_path") != str(target)
+                    or receipt.get("verification") != {"mode": "full-ci", "tests": "passed"}
+                    or receipt.get("profile") != "release"
+                    or not isinstance(receipt.get("pending_target_identity"), dict)):
+                raise DeliveryError("pending update is not qualified for this target")
+            assert_inactive(target)
+            if pending_target_identity(target) != receipt["pending_target_identity"]:
+                raise DeliveryError("installed app changed since preparation")
+            old_signing = receipt["pending_target_identity"].get("signature")
+            new_signing = native_signature(pending / "Contents/MacOS/hex")
+            if not isinstance(old_signing, dict):
+                raise DeliveryError("installed app signing identity is unavailable")
+            if old_signing.get("team_identifier") not in (None, "not set") and (
+                    not old_signing.get("designated_requirement")
+                    or old_signing.get("team_identifier") != new_signing.get("team_identifier")
+                    or old_signing.get("designated_requirement") != new_signing.get("designated_requirement")):
+                raise DeliveryError("pending update changes the installed signing requirement")
+            recover(target)
+            if pending_target_identity(target) != receipt["pending_target_identity"]:
+                raise DeliveryError("installed app changed during recovery")
+            workspace = install_workspace(target)
+            workspace.mkdir()
+            stage = workspace / "stage.app"
+            shutil.copytree(pending, stage, symlinks=True)
+            if sha(receipt_path) != selected_receipt_sha256 or sha(stage / "Contents/Resources/test-build.json") != selected_receipt_sha256:
+                raise DeliveryError("pending update changed during publication")
+            if verify(stage) != receipt:
+                raise DeliveryError("pending update changed during publication")
+            assert_inactive(target)
+            if pending_target_identity(target) != receipt["pending_target_identity"]:
+                raise DeliveryError("installed app changed during publication")
+            try:
+                activate(target, stage)
+            except Exception as error:
+                # Activation normally rolls back on verification failure, but
+                # cleanup can fail after the new app has already been verified.
+                # Inspect only the selected receipt; do not assert success.
+                try:
+                    installed_receipt = target / "Contents/Resources/test-build.json"
+                    assert_plain_path(installed_receipt)
+                    may_have_published = installed_receipt.is_file() and sha(installed_receipt) == selected_receipt_sha256
+                except (OSError, DeliveryError):
+                    may_have_published = True
+                if may_have_published:
+                    raise PublicationUncertain("update publication may have completed; inspect the installed app before retry") from error
+                raise
+            try:
+                installed = verify(target)
+                if installed != receipt:
+                    raise DeliveryError("installed update does not match selected receipt")
+            except Exception as error:
+                raise PublicationUncertain("update was published but its final verification failed; inspect before retry") from error
+            try:
+                result = {**receipt, "artifact_files": inventory(target, include_receipt=True),
+                          "native_signature": native_signature(target / "Contents/MacOS/hex"),
+                          "activation": "installed on disk; not launched by delivery"}
+                write_json(target.parent / "hex-test-build-receipt.json", result)
+            except Exception as error:
+                raise PublicationFollowupFailed("update installed but its final receipt could not be written") from error
+            return result
+
+
+
+def apply_after_approved_parent_exit(parent_pid: int, approval_fd: int, ready_fd: int,
+                                     target: Path, selected_receipt_sha256: str,
+                                     *, observer_timeout: float = 60.0) -> dict:
+    """Authorize publication only after the inherited parent handshake and clean exit."""
+    spec = importlib.util.spec_from_file_location(
+        "hex_pending_update_exit", Path(__file__).with_name("pending_update_exit.py"))
+    if spec is None or spec.loader is None:
+        raise DeliveryError("approved shutdown observer unavailable")
+    observer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(observer)
+    try:
+        observer.observe_parent_exit(parent_pid, approval_fd, ready_fd,
+                                     target / "Contents/MacOS/hex", timeout=observer_timeout)
+    except observer.ExitObservationError as error:
+        raise DeliveryError(str(error)) from error
+    return _apply_verified_pending(target, selected_receipt_sha256)
 
 
 def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False) -> dict:
@@ -881,6 +1123,7 @@ def build(args) -> dict:
             for source, name in ((ROOT / "assets/fonts/ioskeley-mono/OFL.txt", "ioskeley-mono-OFL.txt"),
                                  (ROOT / "third_party/gpui/LICENSE-APACHE", "gpui-LICENSE-APACHE")):
                 shutil.copy2(source, contents / "Resources/licenses" / name)
+            update_supervisor = stage_update_supervisor(stage, signing)
             source = runner.summary["start_tree"]["commit"]
             info = {"CFBundleExecutable": "hex", "CFBundleIdentifier": IDENTITY,
                     "CFBundleName": "hex", "CFBundleDisplayName": "hex", "CFBundlePackageType": "APPL",
@@ -909,6 +1152,7 @@ def build(args) -> dict:
                        "ci_report_sha256": None if build_only else sha(args.ci_report),
                        "verification": {"mode": "source-only" if build_only else "scoped-dev-ci" if getattr(args, "dev_profile", False) else "full-ci",
                                         "tests": "not_run" if build_only else "passed"},
+                       "update_supervisor": update_supervisor,
                        "vst3_discovery": discovery_evidence,
                        "vst3_instance": instance_evidence,
                        "included": included, "changelog": changelog_identity, "app_path": str(target), "created_at": ci.utc_now(),
@@ -978,7 +1222,7 @@ def main() -> int:
         print(json.dumps(receipt, indent=2, sort_keys=True))
         return 0
     except (DeliveryError, ci.TargetCacheError, ci.InterruptedRun, OSError, ValueError,
-            KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
+            KeyError, TypeError, StopIteration, subprocess.SubprocessError, KeyboardInterrupt) as error:
         operation = "pending update preparation" if args.prepare_only else "test installation"
         print(f"{operation} incomplete: {error}; temporary publication files preserved for retry. "
               "inspect the reported process/ownership refusal before retrying; no process was terminated", file=sys.stderr)

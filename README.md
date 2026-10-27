@@ -11,7 +11,8 @@ Install the native Rust/macOS build toolchain and use locked dependencies.
 Save and quit hex before replacing the development app.
 
 ```sh
-./launch          # update clean main, build/install optimized hex, then open
+./launch          # verify/open the installed app without updating or building
+./launch --update # update clean main, build/install optimized hex, then open
 ./launch --test   # also run full local CI
 ./launch --open   # verify/open the installed app without updating or building
 ```
@@ -19,7 +20,7 @@ Save and quit hex before replacing the development app.
 The default app is `artifacts/hex.app`, identity `org.portalsurfer.hex.dev`.
 Normal launch refuses running installed or raw desktop processes. Use
 `./launch --help` for explicit restart and recovery options; never infer permission
-to discard an unsaved project. Launch without `--test` records tests as not run.
+to discard an unsaved project. An explicit `--update` build records tests as not run.
 See [native builds](docs/test-builds.md) for qualified user-test delivery.
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.
