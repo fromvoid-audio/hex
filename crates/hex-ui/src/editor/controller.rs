@@ -1549,6 +1549,16 @@ impl EditorView {
             .and_then(|status| status.rejected_revision())
             .filter(|(revision, _)| *revision > self.observed_rejected_revision);
         if let Some((audio_revision, reason)) = rejected_revision {
+            if reason == hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
+                && let Some(output) = audio.control.output_identity()
+            {
+                self.latency_rebuild = Some(super::audio_admission::LatencyRebuild::Unresolved {
+                    generation: self.project_generation,
+                    output,
+                    audio_revision,
+                });
+                visible_change |= replace_error(&mut self.error, reason.message());
+            }
             // Resolve the exact project-generation mapping before any applied
             // high-water reconciliation removes candidate metadata. Callback
             // telemetry is audio-revision-only, so stale/coalesced rejection
@@ -1596,6 +1606,9 @@ impl EditorView {
             ) {
                 // Preview failures are transient, but remain visible even
                 // though they do not change the canonical admission footer.
+                if reason == hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged {
+                    self.latency_rebuild = None;
+                }
                 visible_change |= replace_error(
                     &mut self.error,
                     &format!("preview rejected: {}", reason.message()),
@@ -3905,11 +3918,59 @@ impl EditorView {
         let Some(rebuild) = self.latency_rebuild else {
             return false;
         };
+        if let LatencyRebuild::Unresolved {
+            generation,
+            output,
+            audio_revision,
+        } = rebuild
+        {
+            if generation != self.project_generation
+                || self
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.control.output_identity())
+                    != Some(output)
+            {
+                self.latency_rebuild = None;
+                return false;
+            }
+            let Some(candidate) = self
+                .playback_candidates
+                .iter()
+                .find(|candidate| candidate.audio_revision == audio_revision)
+            else {
+                return false;
+            };
+            if candidate.project_generation != generation
+                || candidate.seek_request_id.is_some()
+                || candidate.device_preview_identity.is_some()
+                || candidate.tuning_preview_identity.is_some()
+                || self
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| state.revision != candidate.state.revision)
+            {
+                self.latency_rebuild = None;
+                return false;
+            }
+            let project = super::audio_admission::ProjectRevision {
+                generation,
+                revision: candidate.state.revision,
+            };
+            self.audio_admission.rejected(
+                project,
+                audio_revision,
+                hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged.message(),
+            );
+            self.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+            return true;
+        }
         let (project, output) = match rebuild {
             LatencyRebuild::Waiting { project, output }
             | LatencyRebuild::Restoring {
                 project, output, ..
             } => (project, output),
+            LatencyRebuild::Unresolved { .. } => return false,
         };
         if self.project_generation != project.generation
             || self
@@ -3926,6 +3987,7 @@ impl EditorView {
             return false;
         }
         match rebuild {
+            LatencyRebuild::Unresolved { .. } => false,
             LatencyRebuild::Waiting { .. } => {
                 if self.edit_pending()
                     || self.opening_project

@@ -367,6 +367,27 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
         );
         std::thread::yield_now();
     };
+    let rejected_revision = match &rejected_event {
+        EditorAudioEvent::Publication {
+            state: EditorPublicationState::ResidentSubmitted { audio_revision, .. },
+            ..
+        } => *audio_revision,
+        _ => panic!("unexpected held publication"),
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            view.observed_rejected_revision == rejected_revision
+                && matches!(view.latency_rebuild, Some(super::super::audio_admission::LatencyRebuild::Unresolved { audio_revision, .. }) if audio_revision == rejected_revision)
+        }) { break; }
+        assert!(
+            Instant::now() < deadline,
+            "rejection did not arrive before its metadata"
+        );
+        std::thread::yield_now();
+    }
     release.send(rejected_event).unwrap();
     let mut captured = None;
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -411,8 +432,27 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
         }
         assert!(
             Instant::now() < deadline,
-            "rebuild did not resume: {:?}",
-            editor.read_with(cx, |view, _| view.error.clone())
+            "rebuild did not resume (captured={captured:?}, released={released_restore}, stopped={stopped_seen}): {:?}",
+            editor.read_with(cx, |view, _| (
+                view.error.clone(),
+                view.latency_rebuild,
+                view.stopped_playback_restore,
+                view.applied_project_revision,
+                view.state.as_ref().map(|s| s.revision),
+                view.playback_candidates
+                    .iter()
+                    .map(|c| (
+                        c.audio_revision,
+                        c.state.revision,
+                        c.device_preview_identity.is_some()
+                    ))
+                    .collect::<Vec<_>>(),
+                view.audio_status().map(|s| (
+                    s.playing.load(Acquire),
+                    s.applied_revision.load(Acquire),
+                    s.rejected_revision()
+                ))
+            ))
         );
         std::thread::yield_now();
     }
