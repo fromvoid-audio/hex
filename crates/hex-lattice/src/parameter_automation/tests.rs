@@ -1322,7 +1322,9 @@ fn external_groups_apply_multiple_targets_and_processors_once() {
             matrix: crate::StereoMatrix::identity(),
             bypassed: false,
             sample_rate: 48_000,
-            configuration: None,
+            configuration: Some(std::sync::Arc::new(
+                NativeDeviceState::new(DeviceTypeId::from_static("test.host"), 1, vec![]).unwrap(),
+            )),
             definition: None,
         }
     };
