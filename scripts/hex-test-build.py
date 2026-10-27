@@ -656,6 +656,92 @@ def activate(app: Path, stage: Path) -> None:
     remove_install_workspace(workspace)
 
 
+
+def _apply_verified_pending(target: Path, selected_receipt_sha256: str) -> dict:
+    """Publish one selected pending candidate after an independently approved exit.
+
+    The caller must first establish the exact parent session's approved normal
+    exit. This operation is intentionally not exposed as an automatic launcher
+    action. Both publication and pending selection are locked through the final
+    verification and the existing recoverable activation transaction.
+    """
+    if (not isinstance(selected_receipt_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", selected_receipt_sha256) is None):
+        raise DeliveryError("invalid selected pending receipt")
+    if not target.is_absolute() or target.name.casefold() != "hex.app":
+        raise DeliveryError("pending update target must be an absolute hex.app path")
+    assert_plain_path(target)
+    root = target.parent / ".hex-pending-update"
+    if not root.exists():
+        raise DeliveryError("selected pending update is unavailable")
+    with activation_lock(target):
+        pending = pending_candidate(target)
+        with activation_lock(pending):
+            receipt_path = pending / "Contents/Resources/test-build.json"
+            assert_plain_path(receipt_path)
+            if not receipt_path.is_file() or sha(receipt_path) != selected_receipt_sha256:
+                raise DeliveryError("pending update selection changed")
+            receipt = verify(pending)
+            if (receipt.get("schema") != 2 or receipt.get("app_path") != str(target)
+                    or receipt.get("verification") != {"mode": "full-ci", "tests": "passed"}
+                    or receipt.get("profile") != "release"
+                    or not isinstance(receipt.get("pending_target_identity"), dict)):
+                raise DeliveryError("pending update is not qualified for this target")
+            assert_inactive(target)
+            if pending_target_identity(target) != receipt["pending_target_identity"]:
+                raise DeliveryError("installed app changed since preparation")
+            old_signing = receipt["pending_target_identity"].get("signature")
+            new_signing = native_signature(pending / "Contents/MacOS/hex")
+            if not isinstance(old_signing, dict):
+                raise DeliveryError("installed app signing identity is unavailable")
+            if old_signing.get("team_identifier") not in (None, "not set") and (
+                    not old_signing.get("designated_requirement")
+                    or old_signing.get("team_identifier") != new_signing.get("team_identifier")
+                    or old_signing.get("designated_requirement") != new_signing.get("designated_requirement")):
+                raise DeliveryError("pending update changes the installed signing requirement")
+            recover(target)
+            if pending_target_identity(target) != receipt["pending_target_identity"]:
+                raise DeliveryError("installed app changed during recovery")
+            workspace = install_workspace(target)
+            workspace.mkdir()
+            stage = workspace / "stage.app"
+            shutil.copytree(pending, stage, symlinks=True)
+            if sha(receipt_path) != selected_receipt_sha256 or sha(stage / "Contents/Resources/test-build.json") != selected_receipt_sha256:
+                raise DeliveryError("pending update changed during publication")
+            if verify(stage) != receipt:
+                raise DeliveryError("pending update changed during publication")
+            assert_inactive(target)
+            if pending_target_identity(target) != receipt["pending_target_identity"]:
+                raise DeliveryError("installed app changed during publication")
+            activate(target, stage)
+            installed = verify(target)
+            if installed != receipt:
+                raise DeliveryError("installed update does not match selected receipt")
+            result = {**receipt, "artifact_files": inventory(target, include_receipt=True),
+                      "native_signature": native_signature(target / "Contents/MacOS/hex"),
+                      "activation": "installed on disk; not launched by delivery"}
+            write_json(target.parent / "hex-test-build-receipt.json", result)
+            return result
+
+
+
+def apply_after_approved_parent_exit(parent_pid: int, approval_fd: int, ready_fd: int,
+                                     target: Path, selected_receipt_sha256: str,
+                                     *, observer_timeout: float = 60.0) -> dict:
+    """Authorize publication only after the inherited parent handshake and clean exit."""
+    spec = importlib.util.spec_from_file_location(
+        "hex_pending_update_exit", Path(__file__).with_name("pending_update_exit.py"))
+    if spec is None or spec.loader is None:
+        raise DeliveryError("approved shutdown observer unavailable")
+    observer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(observer)
+    try:
+        observer.observe_parent_exit(parent_pid, approval_fd, ready_fd, timeout=observer_timeout)
+    except observer.ExitObservationError as error:
+        raise DeliveryError(str(error)) from error
+    return _apply_verified_pending(target, selected_receipt_sha256)
+
+
 def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False) -> dict:
     evidence = json.loads(report.read_text())
     if not isinstance(evidence, dict):

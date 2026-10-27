@@ -646,6 +646,38 @@ class DeliveryTests(unittest.TestCase):
                         delivery.build(args)
                 self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
                 self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"external replacement")
+                selected = delivery.sha(pending / "Contents/Resources/test-build.json")
+                with patch.object(delivery, "run", return_value=""):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "changed since preparation"):
+                        delivery._apply_verified_pending(self.app, selected)
+                    (self.app / "Contents/MacOS/hex").write_bytes(b"old")
+                    with self.assertRaisesRegex(delivery.DeliveryError, "selection changed"):
+                        delivery._apply_verified_pending(self.app, "0" * 64)
+                    changed_signature = {**SIGNED, "designated_requirement": "different requirement"}
+                    with patch.object(delivery, "native_signature", side_effect=[SIGNED, SIGNED, changed_signature]):
+                        with self.assertRaisesRegex(delivery.DeliveryError, "signing requirement"):
+                            delivery._apply_verified_pending(self.app, selected)
+                    with delivery.activation_lock(self.app):
+                        with self.assertRaisesRegex(delivery.DeliveryError, "another test-build"):
+                            delivery._apply_verified_pending(self.app, selected)
+                with self.assertRaisesRegex(delivery.DeliveryError, "running"):
+                    delivery._apply_verified_pending(self.app, selected)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                original_verify = delivery.verify
+                def fail_installed_verification(path):
+                    if path == self.app and (path / "Contents/MacOS/hex").read_bytes() == b"second optimized fixture":
+                        raise delivery.DeliveryError("injected installed verification failure")
+                    return original_verify(path)
+                with patch.object(delivery, "run", return_value=""), \
+                        patch.object(delivery, "verify", side_effect=fail_installed_verification):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "injected installed"):
+                        delivery._apply_verified_pending(self.app, selected)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                with patch.object(delivery, "run", return_value=""):
+                    installed = delivery._apply_verified_pending(self.app, selected)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                self.assertEqual(installed["candidate"], candidate)
+                self.assertFalse(delivery.install_workspace(self.app).exists())
                 return
             if drift == "build":
                 with self.assertRaisesRegex(delivery.DeliveryError, "source is dirty, changed"):
