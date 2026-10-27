@@ -21,6 +21,14 @@ fn scalar_source(
     device: hex_project::DeviceId,
     target: DeviceAutomationTarget,
 ) -> (DraftFile, hex_stream::ScalarSourceDefinition) {
+    scalar_source_with_value(project, device, target, 0.75)
+}
+fn scalar_source_with_value(
+    project: &hex_project::Project,
+    device: hex_project::DeviceId,
+    target: DeviceAutomationTarget,
+    value: f32,
+) -> (DraftFile, hex_stream::ScalarSourceDefinition) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
         "hex-native-scalar-{}-{}",
@@ -60,7 +68,7 @@ fn scalar_source(
                 performance_frame: 102,
                 content_frame: 0,
                 loop_pass: 1,
-                value: AutomationValue::new(0.75).unwrap(),
+                value: AutomationValue::new(value).unwrap(),
             },
         ])
         .unwrap();
@@ -384,4 +392,152 @@ fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
     drop(errors);
     drop(control);
     finish(&mut retirement);
+}
+
+#[test]
+fn conflicting_scalar_key_facts_across_selected_domains_refuse_before_publication() {
+    let _serial = serial();
+    let mut snapshot = readiness::project_with_frames(8192).snapshot();
+    snapshot.assets[0].path = std::env::temp_dir().join("hex-native-scalar-resident.wav");
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let track = project.tracks()[0].id();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(DeviceTypeId::from_static(
+                "hex.utility",
+            ))
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("utility fixture device")
+    };
+    let project = editor.project();
+    let target = DeviceAutomationTarget::Parameter(hex_devices::utility::parameter::GAIN);
+    let (_old_file, old_scalar) = scalar_source_with_value(project, device, target, 0.25);
+    let (_new_file, new_scalar) = scalar_source_with_value(project, device, target, 0.75);
+    let old_metadata = old_scalar.metadata().clone();
+    let new_metadata = new_scalar.metadata().clone();
+    assert_eq!(old_metadata.key(), new_metadata.key());
+    assert_eq!(
+        old_metadata.projection_identity(),
+        new_metadata.projection_identity()
+    );
+    assert_eq!(old_metadata.start_frame(), new_metadata.start_frame());
+    assert_eq!(old_metadata.end_frame(), new_metadata.end_frame());
+    assert_ne!(old_metadata.file_identity(), new_metadata.file_identity());
+    let wav = stream_fixture::Wav::with_frames(8192);
+    let audio = wav.definition(project.assets().next().unwrap().id(), 11);
+    let audio_metadata = audio.metadata.clone();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 20_000_000,
+                max_construction_peak_bytes: 20_000_000,
+            },
+        )
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let mut domains = Vec::new();
+    for (audio, scalar) in [(vec![audio], old_scalar), (vec![], new_scalar)] {
+        let mut runtime = hex_stream::StreamRuntime::spawn_with_scalar_sources(
+            hex_stream::StreamConfig::with_pool_pages(4),
+            audio,
+            vec![scalar],
+        )
+        .unwrap();
+        runtime
+            .wait_until_ready(std::time::Duration::from_secs(2))
+            .unwrap();
+        let token = control
+            .register_audio_candidate_domain_with_readiness(
+                runtime.split().ok().unwrap(),
+                hex_stream::StreamReadinessReservation {
+                    extents_per_role: 3,
+                },
+            )
+            .unwrap_or_else(|_| panic!("conflicting-facts source fixture registration"));
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block());
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        domains.push(token);
+    }
+    // A has the graph's required WAV but old scalar facts. B has the graph's
+    // exact new scalar facts under the same key. Selecting both would make a
+    // callback key lookup ambiguous, despite exact membership somewhere.
+    let before = control.submitted_revision();
+    let publication = control.publish_with_admission_and_source_on_control(
+        compile(project, device, target, new_metadata, Some(&audio_metadata)),
+        PublicationPolicy::InheritRuntime,
+        hex_engine::AudioSourceContext {
+            project_generation: 7,
+            editor_revision: 3,
+        },
+        |_| Ok::<_, ()>(()),
+    );
+    let refused = matches!(&publication, Err(AdmittedPublishError::Publication(_)));
+    let after = control.submitted_revision();
+    drop(publication);
+    // Preserve physical cleanup on the intentionally failing pre-fix path.
+    // No Play or graph render is admitted before shutdown takes precedence.
+    for token in &domains {
+        assert!(control.retire_audio_candidate_domain(*token));
+    }
+    control.request_shutdown();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut reports = [false; 2];
+    while reports.iter().any(|done| !done) {
+        measured_block(&mut data);
+        control.reclaim();
+        for (index, token) in domains.iter().enumerate() {
+            if !reports[index] {
+                if let Some(report) = control.recover_audio_candidate_domain(*token) {
+                    assert!(report.worker_joined && report.accounting_complete);
+                    assert_eq!(report.page_buffers, 4);
+                    reports[index] = true;
+                }
+            }
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+    assert!(
+        refused,
+        "conflicting full scalar facts under the same selected key must refuse before publication"
+    );
+    assert_eq!(
+        after, before,
+        "refusal must not consume a publication revision"
+    );
 }

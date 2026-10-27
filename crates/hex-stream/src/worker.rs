@@ -216,6 +216,7 @@ impl TestWorkerHooks {
     }
 }
 
+#[cfg_attr(test, allow(clippy::too_many_arguments))] // Fixed owners plus a test-only gate.
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
