@@ -14,15 +14,32 @@ use std::{
 fn beat(n: u64) -> BeatTime {
     BeatTime::from_quarters(n).unwrap()
 }
-fn marker_at(visual: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
-    let b = visual.debug_bounds("midi-source-ruler").unwrap();
-    point(
-        b.origin.x + px(1.0) + (b.size.width - px(2.0)) * fraction,
-        b.origin.y + px(13.0),
+// Test coordinates and paint expectations use the completed content box,
+// including the shared strip's actual border rather than the old one-point frame.
+pub(super) fn content_bounds(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+) -> gpui::Bounds<gpui::Pixels> {
+    let bounds = visual.debug_bounds(selector).unwrap();
+    let (_, border, _) = visual.rendered_border(selector).unwrap();
+    let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+    gpui::Bounds::new(
+        point(
+            bounds.left() + px(border.left / scale),
+            bounds.top() + px(border.top / scale),
+        ),
+        gpui::size(
+            bounds.size.width - px((border.left + border.right) / scale),
+            bounds.size.height - px((border.top + border.bottom) / scale),
+        ),
     )
 }
+fn marker_at(visual: &mut VisualTestContext, fraction: f32) -> gpui::Point<gpui::Pixels> {
+    let b = content_bounds(visual, "midi-source-ruler");
+    point(b.origin.x + b.size.width * fraction, b.origin.y + px(13.0))
+}
 fn assert_marker(visual: &mut VisualTestContext, fraction: f32) {
-    let bounds = visual.debug_bounds("midi-source-ruler").unwrap();
+    let bounds = content_bounds(visual, "midi-source-ruler");
     let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
     let primary: gpui::Background = rgb(theme::color(theme::PaletteRole::Primary)).into();
     let highlighted: gpui::Background = rgb(theme::color(theme::PaletteRole::Text)).into();
@@ -40,8 +57,7 @@ fn assert_marker(visual: &mut VisualTestContext, fraction: f32) {
         1,
         "one persisted/preview playback-start witness"
     );
-    let expected =
-        f32::from(bounds.origin.x) + 1.0 + (f32::from(bounds.size.width) - 2.0) * fraction;
+    let expected = f32::from(bounds.origin.x) + f32::from(bounds.size.width) * fraction;
     assert!((quads[0].0.origin.x / scale - expected).abs() < 0.05);
 }
 fn drag(visual: &mut VisualTestContext, from: f32, to: f32) {
