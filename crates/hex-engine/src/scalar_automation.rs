@@ -48,9 +48,6 @@ impl State {
             identity: input.identity(),
         }
     }
-    pub(crate) fn is_empty(&self) -> bool {
-        self.frames == 0
-    }
     pub(crate) fn fill<P: MediaPages + ?Sized>(
         &mut self,
         pages: &mut P,
