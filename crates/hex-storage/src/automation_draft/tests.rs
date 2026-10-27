@@ -2,6 +2,9 @@ use super::*;
 use hex_project::{Command, Created, Editor};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "completed_tests.rs"]
+mod completed_tests;
+
 static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
 struct TestDir(PathBuf);
 impl TestDir {
@@ -277,7 +280,7 @@ fn source_header_budget_future_version_and_integrity_refuse_without_rewriting() 
         )
         .is_err()
     );
-    for (offset, value) in [(8, 2), (32, b'x'), (16, 255)] {
+    for (offset, value) in [(8, 3), (32, b'x'), (16, 255)] {
         let mut damaged = original.clone();
         damaged[offset] = value;
         fs::write(&path, &damaged).unwrap();

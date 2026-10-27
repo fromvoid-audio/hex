@@ -14,6 +14,9 @@
 //! integrity chain detects accidental damage, not malicious authenticated input.
 //! Provider capability/adoption and source path normalization belong to Session;
 //! this owner checks neutral source inventory and refuses relative media paths.
+//! Version 1 retains its original unknown-clock header for recovery. Version 2
+//! additionally retains an explicit configured capture clock; it does not infer
+//! that clock from the saved loop marker. Neither format proves live admission.
 use crate::{FileToken, StorageError, decode, encode, files, replacement};
 use hex_project::{AutomationValue, DeviceAutomationTarget, DeviceId, Project, TrackId};
 use serde::{Deserialize, Serialize};
@@ -27,11 +30,15 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"HEXADFT\0";
 const VERSION: u32 = 1;
+const CLOCK_VERSION: u32 = 2;
 const PREFIX_BYTES: usize = 32;
 const RECORD_BYTES: usize = 96;
 const PAYLOAD_BYTES: usize = 64;
 const MAX_METADATA_BYTES: u64 = 1024;
 pub const MAX_APPEND_EVENTS: usize = 64;
+
+mod completed;
+pub use completed::CompletedDraft;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DraftTarget {
@@ -59,6 +66,16 @@ pub struct DraftClock {
     pub performance_frame: u64,
     pub content_frame: u64,
     pub loop_pass: u64,
+}
+
+/// Configured project-rate capture law, retained independently of saved loop settings.
+/// `None` is explicitly linear; absence of this descriptor in version 1 is unknown.
+/// The caller must obtain it from the matching playback owner and fence source/transport
+/// changes. Storing these facts does not establish that an event was actually delivered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureClock {
+    pub sample_rate: u32,
+    pub loop_region: Option<hex_project::LoopRegion>,
 }
 
 /// Audit/fencing provenance only. These scalars never authorize adoption.
@@ -159,6 +176,25 @@ struct Metadata {
     provenance: DraftProvenance,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClockMetadata {
+    sample_rate: u32,
+    loop_region: LoopMetadata,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum LoopMetadata {
+    Linear {},
+    Region { start: u64, end: u64 },
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClockedMetadata {
+    metadata: Metadata,
+    capture_clock: ClockMetadata,
+}
+
 pub struct DraftWriter {
     file: File,
     path: PathBuf,
@@ -187,6 +223,25 @@ impl DraftWriter {
         )
     }
 
+    /// Publish a version-2 header retaining the caller's explicit configured capture clock.
+    /// Version-1 `create_new` remains available for raw recovery without known loop context.
+    pub fn create_with_clock(
+        path: impl AsRef<Path>,
+        source: &Project,
+        target: DraftTarget,
+        provenance: DraftProvenance,
+        clock: CaptureClock,
+    ) -> Result<Self, DraftError> {
+        Self::create_with_clock_and_finish(
+            path.as_ref(),
+            source,
+            target,
+            provenance,
+            Some(clock),
+            files::finish_publication,
+        )
+    }
+
     fn create_with_finish(
         path: &Path,
         source: &Project,
@@ -194,11 +249,34 @@ impl DraftWriter {
         provenance: DraftProvenance,
         finish: impl FnOnce(&Path, &Path) -> Result<(), (&'static str, io::Error)>,
     ) -> Result<Self, DraftError> {
+        Self::create_with_clock_and_finish(path, source, target, provenance, None, finish)
+    }
+
+    fn create_with_clock_and_finish(
+        path: &Path,
+        source: &Project,
+        target: DraftTarget,
+        provenance: DraftProvenance,
+        capture_clock: Option<CaptureClock>,
+        finish: impl FnOnce(&Path, &Path) -> Result<(), (&'static str, io::Error)>,
+    ) -> Result<Self, DraftError> {
         let mut published = false;
         let result = (|| -> Result<Self, StorageError> {
             validate_source(source)?;
             validate_provenance(provenance)?;
             let metadata = metadata(source, target, provenance)?;
+            let (version, meta) = if let Some(clock) = capture_clock {
+                validate_capture_clock(source, provenance, clock)?;
+                (
+                    CLOCK_VERSION,
+                    serde_json::to_vec(&ClockedMetadata {
+                        metadata,
+                        capture_clock: ClockMetadata::from(clock),
+                    })?,
+                )
+            } else {
+                (VERSION, serde_json::to_vec(&metadata)?)
+            };
             if path.file_name().is_none() {
                 return Err(StorageError::Invalid("automation draft needs a filename"));
             }
@@ -214,7 +292,6 @@ impl DraftWriter {
                 Err(error) => return Err(error.into()),
             }
             let source = encode(source)?;
-            let meta = serde_json::to_vec(&metadata)?;
             let mut bytes = Vec::new();
             let size = PREFIX_BYTES
                 .checked_add(source.len())
@@ -225,7 +302,7 @@ impl DraftWriter {
                 ))?;
             bytes.try_reserve_exact(size).map_err(io::Error::other)?;
             bytes.extend_from_slice(MAGIC);
-            bytes.extend_from_slice(&VERSION.to_le_bytes());
+            bytes.extend_from_slice(&version.to_le_bytes());
             bytes.extend_from_slice(&[0; 4]);
             bytes.extend_from_slice(&(source.len() as u64).to_le_bytes());
             bytes.extend_from_slice(&(meta.len() as u64).to_le_bytes());
@@ -388,6 +465,7 @@ pub struct DraftReader {
     token: FileToken,
     target: DraftTarget,
     provenance: DraftProvenance,
+    capture_clock: Option<CaptureClock>,
     progress: DraftProgress,
     outcome: DraftOutcome,
     records_start: u64,
@@ -421,7 +499,8 @@ impl DraftReader {
         if &prefix[..8] != MAGIC || prefix[12..16] != [0; 4] {
             return Err(StorageError::Invalid("invalid automation draft header"));
         }
-        if u32_at(&prefix, 8) != VERSION {
+        let version = u32_at(&prefix, 8);
+        if !matches!(version, VERSION | CLOCK_VERSION) {
             return Err(StorageError::Invalid(
                 "unsupported automation draft version; preserve original file and open it with a compatible hex build",
             ));
@@ -460,7 +539,14 @@ impl DraftReader {
         }
         let source = decode(&source_bytes)?;
         validate_source(&source)?;
-        let meta: Metadata = serde_json::from_slice(&meta_bytes)?;
+        let (meta, capture_clock) = if version == VERSION {
+            (serde_json::from_slice::<Metadata>(&meta_bytes)?, None)
+        } else {
+            let clocked: ClockedMetadata = serde_json::from_slice(&meta_bytes)?;
+            let clock = CaptureClock::try_from(clocked.capture_clock)?;
+            validate_capture_clock(&source, clocked.metadata.provenance, clock)?;
+            (clocked.metadata, Some(clock))
+        };
         validate_provenance(meta.provenance)?;
         let target = resolve_target(&source, &meta)?;
         // Keep the source file bytes untouched. Identity uses the owning codec's
@@ -474,6 +560,7 @@ impl DraftReader {
             token,
             target,
             provenance: meta.provenance,
+            capture_clock,
             progress: DraftProgress::default(),
             outcome: DraftOutcome::Interrupted,
             records_start: total,
@@ -544,6 +631,9 @@ impl DraftReader {
     }
     pub fn provenance(&self) -> DraftProvenance {
         self.provenance
+    }
+    pub fn capture_clock(&self) -> Option<CaptureClock> {
+        self.capture_clock
     }
     pub fn progress(&self) -> DraftProgress {
         self.progress
@@ -642,6 +732,53 @@ fn parent(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
+}
+impl From<CaptureClock> for ClockMetadata {
+    fn from(clock: CaptureClock) -> Self {
+        Self {
+            sample_rate: clock.sample_rate,
+            loop_region: match clock.loop_region {
+                Some(region) => LoopMetadata::Region {
+                    start: region.start(),
+                    end: region.end(),
+                },
+                None => LoopMetadata::Linear {},
+            },
+        }
+    }
+}
+impl TryFrom<ClockMetadata> for CaptureClock {
+    type Error = StorageError;
+
+    fn try_from(clock: ClockMetadata) -> Result<Self, Self::Error> {
+        Ok(Self {
+            sample_rate: clock.sample_rate,
+            loop_region: match clock.loop_region {
+                LoopMetadata::Linear {} => None,
+                LoopMetadata::Region { start, end } => Some(
+                    hex_project::LoopRegion::new(start, end, true)
+                        .map_err(|_| StorageError::Invalid("invalid automation capture loop"))?,
+                ),
+            },
+        })
+    }
+}
+fn validate_capture_clock(
+    source: &Project,
+    provenance: DraftProvenance,
+    clock: CaptureClock,
+) -> Result<(), StorageError> {
+    if clock.sample_rate != source.sample_rate() || clock.sample_rate != provenance.sample_rate {
+        return Err(StorageError::Invalid(
+            "automation capture clock rate must match source and provenance",
+        ));
+    }
+    if clock.loop_region.is_some_and(|region| !region.enabled()) {
+        return Err(StorageError::Invalid(
+            "automation capture loop must be enabled or explicitly linear",
+        ));
+    }
+    Ok(())
 }
 fn validate_source(source: &Project) -> Result<(), StorageError> {
     if source.assets().any(|asset| !asset.path().is_absolute()) {
