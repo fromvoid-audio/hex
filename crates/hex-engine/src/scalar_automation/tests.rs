@@ -118,6 +118,32 @@ fn seek(runtime: &mut SessionPlayback) {
 }
 
 #[test]
+fn scalar_origin_runs_split_missing_history_and_loop_discontinuities() {
+    let origins = [
+        None,
+        None,
+        Some(8),
+        Some(9),
+        Some(2),
+        Some(3),
+        None,
+        Some(5),
+    ];
+    let mut runs = Vec::new();
+    visit_origin_runs(
+        origins.len(),
+        |i| Ok(origins[i]),
+        |offset, frame, len| {
+            runs.push((offset, frame, len));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(runs, [(2, 8, 2), (4, 2, 2), (7, 5, 1)]);
+    assert!(visit_origin_runs(257, |_| Ok(None), |_, _, _| Ok(())).is_err());
+}
+
+#[test]
 fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
     for target in [
         DeviceAutomationTarget::Parameter(parameter::GAIN),

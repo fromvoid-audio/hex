@@ -164,6 +164,7 @@ impl SessionPlayback {
                         foreign,
                         observer,
                         None,
+                        None,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 let tail_clock = crate::effect_clock::ArrangementEffectClock::session(

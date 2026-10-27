@@ -51,6 +51,41 @@ pub(crate) fn projection_matches(
     source.projection_identity().fingerprint == fingerprint
 }
 
+/// Group a bounded stage-origin window into contiguous source-frame runs.
+/// Missing origins never request pages. Both readiness and materialization use
+/// this partition so a discontinuity cannot turn into an accidental long read.
+pub(crate) fn visit_origin_runs(
+    frames: usize,
+    mut origin: impl FnMut(usize) -> Result<Option<u64>, Invalid>,
+    mut visit: impl FnMut(usize, u64, usize) -> Result<(), Invalid>,
+) -> Result<(), Invalid> {
+    if frames > 256 {
+        return Err(Invalid("scalar origin window exceeds its fixed quantum"));
+    }
+    let mut run: Option<(usize, u64, usize)> = None;
+    for offset in 0..frames {
+        let frame = origin(offset)?;
+        if let (Some((_, start, len)), Some(frame)) = (run, frame)
+            && start.checked_add(len as u64) == Some(frame)
+        {
+            if let Some((_, _, length)) = &mut run {
+                *length += 1;
+            }
+            continue;
+        }
+        if let Some((start, frame, len)) = run.take() {
+            visit(start, frame, len)?;
+        }
+        if let Some(frame) = frame {
+            run = Some((offset, frame, 1));
+        }
+    }
+    if let Some((start, frame, len)) = run {
+        visit(start, frame, len)?;
+    }
+    Ok(())
+}
+
 /// Fixed preparation-allocated scratch. Filling completes before any PCM/DSP
 /// access for this chunk; failed materialization never becomes a base fallback.
 pub(crate) struct State {
@@ -100,13 +135,31 @@ impl State {
         frames: usize,
         offset: usize,
     ) -> Result<(), Invalid> {
+        self.fill_with_origins(pages, source, frames, offset, |index| {
+            start
+                .checked_add(index as u64)
+                .map(Some)
+                .ok_or(Invalid("scalar automation origin overflow"))
+        })
+    }
+    pub(crate) fn fill_with_origins<P: MediaPages + ?Sized>(
+        &mut self,
+        pages: &mut P,
+        source: &ScalarSourceMetadata,
+        frames: usize,
+        offset: usize,
+        origin: impl FnMut(usize) -> Result<Option<u64>, Invalid>,
+    ) -> Result<(), Invalid> {
         self.frames = 0;
         self.values.fill(None);
         let raw = self
             .raw
             .get_mut(..frames)
             .ok_or(Invalid("scalar automation chunk exceeds scratch"))?;
-        crate::read_scalar_values(pages, source, start, raw)?;
+        raw.fill(None);
+        visit_origin_runs(frames, origin, |start, frame, len| {
+            crate::read_scalar_values(pages, source, frame, &mut raw[start..start + len])
+        })?;
         for (slot, value) in self.values.iter_mut().zip(raw) {
             *slot = match value {
                 Some(value) => Some(

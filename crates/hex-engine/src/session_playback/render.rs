@@ -804,6 +804,7 @@ impl SessionPlayback {
                     capture,
                     sources,
                     foreign,
+                    external,
                 )?;
             } else {
                 self.render_route_chunk(
@@ -850,6 +851,7 @@ impl SessionPlayback {
                             self.native_parameter_state
                                 .as_deref_mut()
                                 .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     let clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -879,6 +881,7 @@ impl SessionPlayback {
                             self.native_parameter_state
                                 .as_deref_mut()
                                 .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 } else {

@@ -303,6 +303,24 @@ impl CompensationRuntime {
         self.stamps.at_delay(delay_frames as usize).flatten()
     }
 
+    /// Preview an upcoming stage origin before that sample's stamp is pushed.
+    /// The supplied incoming projection belongs to the same planned clock as
+    /// the caller's eventual render. Historical stamps are read verbatim from
+    /// this owner's current transactional history; no clock is rebased here.
+    pub(crate) fn preview_stage_stamp(
+        &self,
+        delay_frames: u32,
+        upcoming_offset: usize,
+        incoming: impl FnOnce(usize) -> Option<TransportStamp>,
+    ) -> Option<TransportStamp> {
+        let delay = delay_frames as usize;
+        if upcoming_offset >= delay {
+            incoming(upcoming_offset - delay)
+        } else {
+            self.stamp_at_delay(delay_frames - upcoming_offset as u32 - 1)
+        }
+    }
+
     pub fn node_input_stamp(
         &self,
         node_index: usize,
