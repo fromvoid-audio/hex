@@ -2035,6 +2035,7 @@ impl NativeRuntimeChain {
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // Borrowed stages plus independent live/recorded inputs.
     fn process_entry_with_foreign(
         entry: &mut RuntimeEntry,
         frames: &mut [StereoFrame],
