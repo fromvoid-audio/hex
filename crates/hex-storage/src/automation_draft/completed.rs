@@ -7,8 +7,9 @@ use super::*;
 /// Owns the existing locked source/file only after a genuine, undamaged Finished record.
 /// Completion is structural: captured context is caller-supplied and is not live admission proof.
 pub struct CompletedDraft {
-    reader: DraftReader,
-    end: DraftClock,
+    pub(super) reader: DraftReader,
+    pub(super) end: DraftClock,
+    pub(super) identity: AutomationContentIdentity,
 }
 
 impl DraftReader {
@@ -20,7 +21,16 @@ impl DraftReader {
                 "automation draft has no undamaged finished terminal; retain it for recovery",
             )));
         };
-        Ok(CompletedDraft { reader: self, end })
+        let identity = self.complete_identity.ok_or_else(|| {
+            self.error(StorageError::Invalid(
+                "completed automation draft has no validated content identity",
+            ))
+        })?;
+        Ok(CompletedDraft {
+            reader: self,
+            end,
+            identity,
+        })
     }
 }
 
@@ -39,6 +49,13 @@ impl CompletedDraft {
     }
     pub fn capture_clock(&self) -> Option<CaptureClock> {
         self.reader.capture_clock()
+    }
+    pub fn content_identity(&self) -> AutomationContentIdentity {
+        self.identity
+    }
+    #[cfg(test)]
+    pub(super) fn source_token_weak(&self) -> std::sync::Weak<[u8]> {
+        std::sync::Arc::downgrade(&self.reader.token.0)
     }
     pub fn end_clock(&self) -> DraftClock {
         self.end
@@ -71,8 +88,19 @@ impl CompletedDraft {
         &mut self,
         performance_frame: u64,
     ) -> Result<Option<(u64, AppliedEvent)>, DraftError> {
+        self.reader
+            .records
+            .event_with_ordinal_at_or_before(performance_frame)
+    }
+}
+
+impl RecordReader {
+    pub(super) fn event_with_ordinal_at_or_before(
+        &mut self,
+        performance_frame: u64,
+    ) -> Result<Option<(u64, AppliedEvent)>, DraftError> {
         let mut left = 0;
-        let mut right = self.event_count();
+        let mut right = self.progress.durable_events;
         while left < right {
             let middle = left + (right - left) / 2;
             let event = self.event(middle)?;
@@ -88,9 +116,9 @@ impl CompletedDraft {
     }
     fn event(&mut self, ordinal: u64) -> Result<AppliedEvent, DraftError> {
         let mut event = [None];
-        self.reader.read_events(ordinal, &mut event)?;
+        self.read_events(ordinal, &mut event)?;
         event[0].ok_or_else(|| {
-            self.reader.error(StorageError::Invalid(
+            self.error(StorageError::Invalid(
                 "completed automation draft event is unavailable; retain it for recovery",
             ))
         })

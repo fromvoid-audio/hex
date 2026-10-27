@@ -112,7 +112,7 @@ impl ClockMapping {
         Ok(output)
     }
 }
-impl CompletedAutomationTake {
+impl<R: TakeReader> TakeCore<R> {
     /// Construction performs at most three logarithmic predecessor seeks and
     /// forward range-location searches. The source has already been fully
     /// validated by open. Stepping has a separate explicit sequential budget.
@@ -135,7 +135,7 @@ impl CompletedAutomationTake {
         for source_piece in source_pieces.into_iter().flatten() {
             let (start, end, first_source) = {
                 let projection =
-                    CapturedAutomationProjection::new(self.source().tempo_map(), &destination);
+                    CapturedAutomationProjection::new(self.captured_tempo_map(), &destination);
                 let placed = projection
                     .project_range(source_piece.start..source_piece.end)
                     .map_err(|e| e.to_string())?;
@@ -297,7 +297,7 @@ impl CompletedAutomationTake {
                         .checked_add(delta)
                         .ok_or("automation piece content overflow")?;
                     let at = CapturedAutomationProjection::new(
-                        self.source().tempo_map(),
+                        self.captured_tempo_map(),
                         &cursor.destination,
                     )
                     .project_frame(content)

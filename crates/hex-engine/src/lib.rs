@@ -123,7 +123,9 @@ pub use gain_envelope::{
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;
-pub use stream_demand::{StreamChunkWindow, StreamPageExtent};
+pub use stream_demand::{
+    StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
+};
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
@@ -3581,6 +3583,11 @@ pub mod tuning_audition;
 pub mod compile;
 
 pub mod playback;
+mod scalar_streamed;
+pub use scalar_streamed::{
+    BorrowedScalarPage, ScalarFileIdentity, ScalarProjectionIdentity, ScalarSourceKey,
+    ScalarSourceMetadata, StreamResourceKey, StreamResourceMetadata, read_scalar_values,
+};
 mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
