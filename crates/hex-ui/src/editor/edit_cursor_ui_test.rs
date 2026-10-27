@@ -1692,9 +1692,30 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
-        assert!(
-            view.last_transport_command.is_none(),
-            "midi focus keeps Space"
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "Space reaches transport even if a retained focus is no longer mounted"
+        );
+    });
+}
+
+#[gpui::test]
+fn space_starts_from_the_focused_piano_roll_without_repeating(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _) = super::midi_canvas::creation_tests::fixture(cx);
+    assert!(visual.debug_bounds("midi-note-roll").is_some());
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("space").unwrap(),
+        is_held: true,
+    });
+    editor.read_with(cx, |view, _| assert!(view.last_transport_command.is_none()));
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(0))
         );
     });
 }
