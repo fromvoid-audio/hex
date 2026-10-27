@@ -178,7 +178,11 @@ fn real_scalar_only_native_source_requires_catalog_and_pages_then_renders_and_jo
     );
 }
 fn scalar_case(target: DeviceAutomationTarget, mixed: bool) {
-    let project = readiness::project_with_frames(8192);
+    let mut snapshot = readiness::project_with_frames(8192).snapshot();
+    // This clip is resident in the scalar-only cases. Its recovery checkpoint
+    // still uses an absolute media reference, as required by the draft codec.
+    snapshot.assets[0].path = std::env::temp_dir().join("hex-native-scalar-resident.wav");
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
     let track = project.tracks()[0].id();
     let mut editor = Editor::new(project, 8).unwrap();
     let Created::Device(device) = editor
