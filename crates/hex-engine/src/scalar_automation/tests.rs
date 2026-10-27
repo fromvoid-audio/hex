@@ -214,6 +214,136 @@ fn recorded_provider_uses_delayed_stage_origin_for_demand_and_audio() {
 }
 
 #[test]
+fn delayed_host_input_and_output_match_stage_demand_seek_and_handoff() {
+    for target in [
+        DeviceAutomationTarget::HostInputGain,
+        DeviceAutomationTarget::HostOutputGain,
+    ] {
+        let (mut f, utility, _, mut pages) = fixture(target);
+        let Created::Device(limiter) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: Some(utility),
+                state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                    "hex.limiter",
+                ))
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("limiter")
+        };
+        let binding = ScalarAutomationBinding {
+            device: limiter,
+            target,
+            source: source(f.editor.project().tempo_map()),
+        };
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_scalar_automation(
+                f.editor.project(),
+                &f.media,
+                Arc::new(SineTable::new()),
+                None,
+                binding,
+            )
+            .unwrap(),
+        );
+        let latency = revision.arrangement().main_latency_frames();
+        assert!(latency > 0);
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        seek(&mut runtime);
+        let mut initial = Vec::new();
+        runtime
+            .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+                initial.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            initial.is_empty(),
+            target == DeviceAutomationTarget::HostOutputGain
+        );
+        let mut warmup = vec![[0.0; 2]; latency as usize];
+        runtime.render_with_pages(&mut warmup, &mut pages).unwrap();
+        let mut expected = Vec::new();
+        runtime
+            .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+                expected.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            expected.is_empty(),
+            target == DeviceAutomationTarget::HostInputGain
+        );
+
+        let mut candidate = SessionPlayback::new(revision).unwrap();
+        let mut preview = Vec::new();
+        candidate
+            .preview_stream_handoff_with_scope(
+                &mut runtime,
+                4,
+                None,
+                &mut |extent| {
+                    preview.push(extent);
+                    Ok(())
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(preview, expected);
+        candidate.try_inherit_state_from(&mut runtime).unwrap();
+        let mut after = Vec::new();
+        candidate
+            .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+                after.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(after, expected);
+
+        if target == DeviceAutomationTarget::HostOutputGain {
+            pages.missing = Some(1);
+            let before = candidate.arrangement_frame();
+            let mut refused = [[9.0; 2]; 4];
+            assert!(
+                candidate
+                    .render_with_pages(&mut refused, &mut pages)
+                    .is_err()
+            );
+            assert_eq!(candidate.arrangement_frame(), before);
+            assert_eq!(refused, [[0.0; 2]; 4]);
+            pages.missing = None;
+        }
+        let mut output = [[0.0; 2]; 4];
+        candidate
+            .render_with_pages(&mut output, &mut pages)
+            .unwrap();
+        assert!((output[0][0] - 0.00025).abs() < 1e-6);
+        assert!((output[2][0] - 0.25).abs() < 1e-6);
+
+        let action = candidate
+            .prepare_stream_action_in_scope(
+                crate::playback::PlaybackAction::Session(SessionPlaybackCommand::Seek(4094)),
+                true,
+            )
+            .unwrap();
+        let mut seek_demand = Vec::new();
+        candidate
+            .visit_prepared_stream_action(&action, 4, &mut |extent| {
+                seek_demand.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            seek_demand.is_empty(),
+            target == DeviceAutomationTarget::HostOutputGain
+        );
+    }
+}
+
+#[test]
 fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
     for target in [
         DeviceAutomationTarget::Parameter(parameter::GAIN),
