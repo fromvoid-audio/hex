@@ -144,6 +144,75 @@ fn scalar_origin_runs_split_missing_history_and_loop_discontinuities() {
 }
 
 #[test]
+fn recorded_provider_uses_delayed_stage_origin_for_demand_and_audio() {
+    let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+    let (mut f, device, _, mut pages) = fixture(target);
+    f.editor
+        .execute(Command::InsertDevice {
+            track: f.tracks[0],
+            before: Some(device),
+            state: crate::default_native_device_state(crate::DeviceTypeId::from_static(
+                "hex.limiter",
+            ))
+            .unwrap(),
+        })
+        .unwrap();
+    let binding = ScalarAutomationBinding {
+        device,
+        target,
+        source: source(f.editor.project().tempo_map()),
+    };
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_scalar_automation(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            binding,
+        )
+        .unwrap(),
+    );
+    assert_eq!(revision.arrangement().main_latency_frames(), 288);
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    seek(&mut runtime);
+    let mut demand = Vec::new();
+    runtime
+        .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+            demand.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        demand.is_empty(),
+        "no content has reached the delayed parameter stage"
+    );
+    let mut warmup = [[0.0; 2]; 288];
+    runtime.render_with_pages(&mut warmup, &mut pages).unwrap();
+    runtime
+        .visit_ordinary_stream_chunk(4, None, &mut |extent| {
+            demand.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        demand
+            .iter()
+            .map(|extent| (extent.source, extent.page_index, extent.start, extent.end))
+            .collect::<Vec<_>>(),
+        vec![
+            (pages.key.into(), 0, 4094, 4096),
+            (pages.key.into(), 1, 0, 2),
+        ]
+    );
+    let mut output = [[9.0; 2]; 4];
+    runtime.render_with_pages(&mut output, &mut pages).unwrap();
+    assert_eq!(output[0], [0.0; 2]);
+    assert!(output[1][0] > 0.25);
+    assert!((output[2][0] - 0.25).abs() < 1e-6);
+    assert_eq!(output[3], [0.0; 2]);
+}
+
+#[test]
 fn recorded_binding_refuses_overridden_shared_lane_until_reenabled() {
     for target in [
         DeviceAutomationTarget::Parameter(parameter::GAIN),

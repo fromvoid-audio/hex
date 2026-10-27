@@ -158,7 +158,13 @@ impl State {
             .ok_or(Invalid("scalar automation chunk exceeds scratch"))?;
         raw.fill(None);
         visit_origin_runs(frames, origin, |start, frame, len| {
-            crate::read_scalar_values(pages, source, frame, &mut raw[start..start + len])
+            let end = start
+                .checked_add(len)
+                .ok_or(Invalid("scalar origin run overflow"))?;
+            let destination = raw
+                .get_mut(start..end)
+                .ok_or(Invalid("scalar origin run is outside scratch"))?;
+            crate::read_scalar_values(pages, source, frame, destination)
         })?;
         for (slot, value) in self.values.iter_mut().zip(raw) {
             *slot = match value {

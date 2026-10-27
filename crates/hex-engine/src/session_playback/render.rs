@@ -779,15 +779,47 @@ impl SessionPlayback {
                 let endpoint = pages
                     .as_deref_mut()
                     .ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
-                scalar
-                    .fill(
+                if let Some(compensation) = self.compensation.as_ref() {
+                    let input = self
+                        .revision
+                        .native_parameter_input_target()
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    let delay = compensation
+                        .graph
+                        .parameter_arrival(input)
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                    arrangement_frame
+                        .checked_add(chunk_frames as u64)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    scalar.fill_with_origins(
+                        endpoint,
+                        &binding.source,
+                        chunk_frames,
+                        output_offset,
+                        |index| {
+                            crate::compensation::CompensationRuntime::preview_stage_frame(
+                                Some(&compensation.delays),
+                                delay,
+                                index as u64,
+                                |source_offset| {
+                                    arrangement_frame
+                                        .checked_add(source_offset)
+                                        .map(Some)
+                                        .ok_or(crate::Invalid("scalar automation origin overflow"))
+                                },
+                            )
+                        },
+                    )
+                } else {
+                    scalar.fill(
                         endpoint,
                         &binding.source,
                         arrangement_frame,
                         chunk_frames,
                         output_offset,
                     )
-                    .map_err(|_| SessionPlaybackError::MediaPagesUnavailable)?;
+                }
+                .map_err(|_| SessionPlaybackError::MediaPagesUnavailable)?;
             }
             let external = scalar
                 .as_deref()
