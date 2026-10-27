@@ -1071,6 +1071,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_track_reorder();
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
+                    visible_change |= self.retire_clip_gain();
                     visible_change |= self.retire_pending_gain();
                     visible_change |= self.retire_pending_device_automation();
                     visible_change |= self.retire_all_eq_creations();
@@ -1101,6 +1102,7 @@ impl EditorView {
                 let track_clipboard_request = self.pending_track_clipboard_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
+                let clip_gain_request = self.clip_gain_matches(&request);
                 let gain_request = self.pending_gain_matches(&request);
                 let gain_take_request = self.pending_gain_take_matches(&request);
                 let device_automation_request = self.pending_device_automation_matches(&request);
@@ -1151,6 +1153,9 @@ impl EditorView {
                         }
                         if fade_request {
                             self.fade_submitted();
+                        }
+                        if clip_gain_request {
+                            self.clip_gain_submitted();
                         }
                         if gain_request {
                             self.gain_submitted();
@@ -1208,6 +1213,9 @@ impl EditorView {
                         }
                         if fade_request {
                             self.retire_pending_fade();
+                        }
+                        if clip_gain_request {
+                            self.retire_clip_gain();
                         }
                         if gain_request {
                             self.retire_pending_gain();
@@ -1287,6 +1295,9 @@ impl EditorView {
                         if fade_request {
                             self.retire_pending_fade();
                         }
+                        if clip_gain_request {
+                            self.retire_clip_gain();
+                        }
                         if gain_request {
                             self.retire_pending_gain();
                         }
@@ -1306,6 +1317,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
+        visible_change |= self.retire_abandoned_clip_gain();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -2059,6 +2071,7 @@ impl EditorView {
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
         self.fade_request_complete(&event);
+        self.clip_gain_complete(&event);
         self.gain_request_complete(&event);
         self.gain_take_request_complete(&event);
         self.device_automation_complete(&event);
@@ -3280,6 +3293,7 @@ impl EditorView {
         let track_clipboard_request = self.pending_track_clipboard_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
+        let clip_gain_request = self.clip_gain_matches(&request);
         let gain_request = self.pending_gain_matches(&request);
         let gain_take_request = self.pending_gain_take_matches(&request);
         let device_automation_request = self.pending_device_automation_matches(&request);
@@ -3325,6 +3339,9 @@ impl EditorView {
                 }
                 if fade_request {
                     self.fade_submitted();
+                }
+                if clip_gain_request {
+                    self.clip_gain_submitted();
                 }
                 if gain_request {
                     self.gain_submitted();
