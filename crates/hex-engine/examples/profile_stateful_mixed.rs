@@ -4,9 +4,9 @@
 #[path = "support/operator_feedback_fixture.rs"]
 mod operator_fixture;
 
-use hex_devices::{compressor, gate, saturator};
+use hex_devices::{compressor, gate, saturator, utility};
 use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
-use hex_lattice_contract::NativeDeviceMetadata;
+use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipGain, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION,
     Project, TrackContentSnapshot,
@@ -171,6 +171,125 @@ fn composition_oracle(
     }
     Ok(sum)
 }
+// Audio sources finish at the handoff while held Operator notes continue.
+// Bypassing the audio filters detaches their live histories; the old graph's
+// separately rendered track composition provides the full post-cut reference.
+fn mixed_tail(tracks: usize, block: usize) -> Result<()> {
+    let (base, mut media) = fixture(tracks, 1)?;
+    let asset = base.assets().next().ok_or("missing mixed-tail asset")?.id();
+    media.insert(asset, Audio::new(RATE, vec![[0.3, -0.1]; 512])?);
+    let mut snapshot = base.snapshot();
+    let dc = utility::UTILITY_DEFINITION.patch_parameter(
+        &utility::UTILITY_DEFINITION.default_state()?,
+        utility::parameter::DC_REMOVE,
+        ParameterValue::Bool(true),
+    )?;
+    for track in &mut snapshot.tracks {
+        track
+            .devices
+            .first_mut()
+            .ok_or("mixed-tail track lacks an effect")?
+            .state = dc.clone();
+        if let TrackContentSnapshot::Audio(clips)
+        | TrackContentSnapshot::Hybrid {
+            audio_clips: clips, ..
+        } = &mut track.content
+        {
+            if clips.is_empty() {
+                continue;
+            }
+            let clip = &mut clips[0];
+            clip.duration = 32;
+            clip.looping = false;
+            clip.fade = ClipFade::neutral(32)?;
+        }
+    }
+    let old = Project::from_snapshot(snapshot.clone())?;
+    for track in &mut snapshot.tracks {
+        if track.instrument.is_none() {
+            track
+                .devices
+                .first_mut()
+                .ok_or("mixed-tail track lacks an effect")?
+                .bypassed = true;
+        }
+    }
+    let changed = Project::from_snapshot(snapshot)?;
+    let table = Arc::new(SineTable::new());
+    let frames = RATE as usize + 32;
+    let expected = composition_oracle(&old, &media, &table, 32, frames)?;
+    // Independently demonstrate an audible audio-only residual after source end.
+    let mut audio_only = old.snapshot();
+    audio_only.tracks.retain(|track| track.instrument.is_none());
+    audio_only.native_sources.clear();
+    let audio_only = Project::from_snapshot(audio_only)?;
+    let audio_reference = composition_oracle(&audio_only, &media, &table, 32, frames)?;
+    let audio_peak = audio_reference[32..]
+        .iter()
+        .flatten()
+        .fold(0.0_f32, |peak, value| peak.max(value.abs()));
+    if audio_peak <= 2.0e-5 {
+        return Err(format!("mixed-tail audio reference too quiet: {audio_peak:e}").into());
+    }
+    let mut instrument_only = old.snapshot();
+    instrument_only
+        .tracks
+        .retain(|track| track.instrument.is_some());
+    let instrument_only = Project::from_snapshot(instrument_only)?;
+    let instrument_reference = composition_oracle(&instrument_only, &media, &table, 32, 1024)?;
+    if !instrument_reference[32..]
+        .iter()
+        .flatten()
+        .any(|value| value.abs() > 1.0e-6)
+    {
+        return Err("mixed-tail instrument reference is silent after source end".into());
+    }
+    let old_revision = revision(&old, &media, &table, None)?;
+    let candidate_revision = revision(&changed, &media, &table, Some(old_revision.session()))?;
+    let mut previous = playback(old_revision)?;
+    let mut prefix = [[0.0_f32; 2]; 32];
+    previous.render(&mut prefix)?;
+    let mut candidate = SessionPlayback::new(candidate_revision)?;
+    let handoff_start = Instant::now();
+    candidate.try_inherit_state_from(&mut previous)?;
+    let handoff_ns = handoff_start.elapsed().as_nanos();
+    let mut output = vec![[0.0_f32; 2]; block];
+    let mut hash = 0xcbf29ce484222325;
+    let mut max_error = 0.0_f32;
+    let mut first_render_ns = 0;
+    for (index, expected_chunk) in expected[32..].chunks(block).enumerate() {
+        let count = expected_chunk.len();
+        let start = Instant::now();
+        candidate.render(&mut output[..count])?;
+        let elapsed = start.elapsed().as_nanos();
+        if index == 0 {
+            first_render_ns = elapsed;
+        }
+        for (actual, expected) in output[..count].iter().zip(expected_chunk) {
+            for channel in 0..2 {
+                let error = (actual[channel] - expected[channel]).abs();
+                if !error.is_finite() || error > 2.0e-6 {
+                    return Err(format!(
+                        "mixed tail composition mismatch block={index} error={error}"
+                    )
+                    .into());
+                }
+                max_error = max_error.max(error);
+            }
+        }
+        digest(&mut hash, &output[..count]);
+    }
+    println!(
+        "mixed_tail tracks={tracks} audio_tracks={} operator_tracks={} block={block} rate={RATE} post_cut_frames={} digest={hash:016x} composition_max_error={max_error:e} audio_tail_peak={audio_peak:e} handoff_us={:.3} first_render_us={:.3} combined_us={:.3}; separate preparation/retirement; one transition, no physical deadline",
+        tracks.div_ceil(2),
+        tracks / 2,
+        RATE,
+        handoff_ns as f64 / 1000.0,
+        first_render_ns as f64 / 1000.0,
+        (handoff_ns + first_render_ns) as f64 / 1000.0
+    );
+    Ok(())
+}
 fn run(
     tracks: usize,
     devices: usize,
@@ -322,9 +441,16 @@ fn run(
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() == 2 && args[0] == "--mixed-tail" {
+        let block: usize = args[1].parse()?;
+        if ![128, 512].contains(&block) {
+            return Err("mixed-tail block must be 128 or 512".into());
+        }
+        return mixed_tail(TRACKS, block);
+    }
     if args.len() != 3 && !(args.len() == 4 && args[3] == "--composition") {
         return Err(
-            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition]".into(),
+            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition], or --mixed-tail <block:128|512>".into(),
         );
     }
     let devices = args[0].parse()?;
@@ -400,6 +526,11 @@ mod tests {
                 .any(|(a, b)| (0..2).any(|c| (a[c] - b[c]).abs() > 2.0e-6))
         );
         Ok(())
+    }
+
+    #[test]
+    fn mixed_tail_keeps_audio_residual_and_sustained_instrument() -> Result<()> {
+        mixed_tail(2, 128)
     }
 
     #[test]
