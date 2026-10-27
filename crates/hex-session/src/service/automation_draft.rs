@@ -240,6 +240,30 @@ pub fn start_on_control(
     spawn_writer_on_control(writer)
 }
 
+/// Retain the actual configured playback clock for later completed-take queries.
+/// The canonical caller must bind this exact prepared playback/output/source and
+/// transport epoch before beginning input. These metadata are not an admission
+/// receipt and must never be inferred from the saved loop marker after recording.
+/// Native publication requires the playback and output rates to match.
+pub fn start_with_playback_on_control(
+    session: &Session,
+    document_base: Option<&Path>,
+    path: PathBuf,
+    target: DraftTarget,
+    provenance: DraftProvenance,
+    playback: &hex_engine::Playback,
+) -> Result<(DraftInput, DraftWorker), String> {
+    let source = recovery::project_for_save(session, document_base)?;
+    let path = recovery::absolute_document_path(&path)?;
+    let clock = hex_storage::automation_draft::CaptureClock {
+        sample_rate: playback.sample_rate(),
+        loop_region: playback.automation_capture_loop(),
+    };
+    let writer = DraftWriter::create_with_clock(path, &source, target, provenance, clock)
+        .map_err(|error| error.to_string())?;
+    spawn_writer_on_control(writer)
+}
+
 /// The writer is already source-validated and exclusively owned. All buffer allocation and
 /// thread creation happen before a caller can reserve a receipt batch.
 fn spawn_writer_on_control(writer: DraftWriter) -> Result<(DraftInput, DraftWorker), String> {

@@ -1344,6 +1344,19 @@ impl Playback {
             .and_then(|runtime| runtime.transient_loop)
     }
 
+    /// Configured content-clock law for a control-side automation capture.
+    /// Includes a transient section loop and excludes loops during linear export.
+    /// A first-pass origin at/after its end still advances linearly, following
+    /// the renderer's absolute-seek rule. This read-only fact grants no capture
+    /// admission: the caller must fence the exact output, source and transport
+    /// epoch through the existing delivered-input endpoint.
+    pub fn automation_capture_loop(&self) -> Option<hex_project::LoopRegion> {
+        self.session_runtime.as_ref().map_or_else(
+            || self.project.loop_region().filter(|region| region.enabled()),
+            |runtime| runtime.loop_region(),
+        )
+    }
+
     /// True after the legacy monotonic clock reached its representable limit.
     /// Finite Arrangement playback continues, while Session promotion refuses.
     pub fn performance_clock_exhausted(&self) -> bool {

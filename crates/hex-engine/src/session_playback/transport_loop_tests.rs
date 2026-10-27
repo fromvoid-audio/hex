@@ -670,6 +670,8 @@ fn finite_bounce_preserves_mutable_source_phase_and_ignores_transport_wrapping()
             }
         }
         assert_eq!(bounce.arrangement_loop_pass, 0);
+        let playback = crate::Playback::from_arrangement_preroll(bounce).unwrap();
+        assert_eq!(playback.automation_capture_loop(), None);
         for frames in [0, MAX_FINITE_BOUNCE_FRAMES + 1, u64::MAX] {
             assert!(
                 SessionPlayback::new_finite_arrangement_bounce(

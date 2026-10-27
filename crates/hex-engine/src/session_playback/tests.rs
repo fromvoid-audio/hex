@@ -11284,6 +11284,8 @@ fn section_loop_preroll_matches_canonical_loop_with_mutable_and_stateful_history
                 source.arrangement().loop_region().is_none(),
                 "saved loop remains unchanged"
             );
+            let playback = crate::Playback::from_interactive_arrangement_preroll(actual).unwrap();
+            assert_eq!(playback.automation_capture_loop(), Some(region));
             assert_eq!(
                 SessionPlayback::prepare_section_arrangement_preroll(
                     source,
