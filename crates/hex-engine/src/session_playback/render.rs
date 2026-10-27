@@ -780,14 +780,7 @@ impl SessionPlayback {
                     .as_deref_mut()
                     .ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
                 if let Some(compensation) = self.compensation.as_ref() {
-                    let input = self
-                        .revision
-                        .native_parameter_input_target()
-                        .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                    let delay = compensation
-                        .graph
-                        .parameter_arrival(input)
-                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                    let delay = scalar.arrival_frames();
                     if delay == 0 {
                         scalar.fill(
                             endpoint,

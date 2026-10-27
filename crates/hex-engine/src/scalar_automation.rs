@@ -95,6 +95,7 @@ pub(crate) struct State {
     frames: usize,
     offset: usize,
     identity: hex_lattice::ProcessorInstanceIdentity,
+    arrival_frames: u32,
 }
 impl State {
     /// Fixed DATA reservation, independently checked against actual capacities.
@@ -106,7 +107,10 @@ impl State {
                 * (std::mem::size_of::<Option<hex_project::AutomationValue>>()
                     + std::mem::size_of::<Option<NormalizedAutomationValue>>())
     }
-    pub(crate) fn new(input: crate::NativeParameterInputTarget) -> Result<Self, Invalid> {
+    pub(crate) fn new(
+        input: crate::NativeParameterInputTarget,
+        arrival_frames: u32,
+    ) -> Result<Self, Invalid> {
         fn scratch<T: Copy>() -> Result<Vec<Option<T>>, Invalid> {
             let mut values = Vec::new();
             values
@@ -125,7 +129,11 @@ impl State {
             frames: 0,
             offset: 0,
             identity: input.identity(),
+            arrival_frames,
         })
+    }
+    pub(crate) fn arrival_frames(&self) -> u32 {
+        self.arrival_frames
     }
     pub(crate) fn fill<P: MediaPages + ?Sized>(
         &mut self,
