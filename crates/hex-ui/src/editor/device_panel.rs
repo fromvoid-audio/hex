@@ -1455,6 +1455,17 @@ fn render_device_end_target(
         .min_w(px(40.0))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|view, _, window, cx| {
+                view.device_panel.select_only(None);
+                view.device_panel
+                    .chain_window
+                    .selection_focus(cx)
+                    .focus(window);
+                cx.notify();
+            }),
+        )
         .bg(rgb(if active {
             theme::color(theme::PaletteRole::Hover)
         } else {
@@ -1578,6 +1589,48 @@ fn device_drag_title(
         })
 }
 
+fn chain_ids(project: &hex_project::Project, owner: DevicePanelOwner) -> Vec<DeviceId> {
+    match owner {
+        DevicePanelOwner::Track(id) => project
+            .track(id)
+            .map(|track| {
+                track
+                    .ordered_device_chain()
+                    .map(|node| match node {
+                        hex_project::TrackDeviceRef::Instrument(item)
+                        | hex_project::TrackDeviceRef::Effect(item) => item.id(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        DevicePanelOwner::Main => project
+            .main_devices()
+            .iter()
+            .map(hex_project::Device::id)
+            .collect(),
+        DevicePanelOwner::Return(id) => project
+            .return_tracks()
+            .iter()
+            .find(|track| track.id() == id)
+            .map(|track| {
+                track
+                    .devices()
+                    .iter()
+                    .map(hex_project::Device::id)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn project_owner(owner: DevicePanelOwner) -> hex_project::DeviceChainOwner {
+    match owner {
+        DevicePanelOwner::Track(id) => hex_project::DeviceChainOwner::Track(id),
+        DevicePanelOwner::Main => hex_project::DeviceChainOwner::Main,
+        DevicePanelOwner::Return(id) => hex_project::DeviceChainOwner::Return(id),
+    }
+}
+
 // Capture selection before nested controls consume their pointer event. Selection
 // is local view state and never finalizes or dispatches a parameter edit.
 fn device_selection_listener(
@@ -1596,41 +1649,10 @@ fn device_selection_listener(
         let Some(state) = view.state.as_ref() else {
             return;
         };
-        let order: Vec<DeviceId> = match view.device_panel.owner {
-            Some(DevicePanelOwner::Track(id)) => state
-                .project
-                .track(id)
-                .map(|track| {
-                    track
-                        .ordered_device_chain()
-                        .map(|node| match node {
-                            hex_project::TrackDeviceRef::Instrument(item)
-                            | hex_project::TrackDeviceRef::Effect(item) => item.id(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Some(DevicePanelOwner::Main) => state
-                .project
-                .main_devices()
-                .iter()
-                .map(hex_project::Device::id)
-                .collect(),
-            Some(DevicePanelOwner::Return(id)) => state
-                .project
-                .return_tracks()
-                .iter()
-                .find(|track| track.id() == id)
-                .map(|track| {
-                    track
-                        .devices()
-                        .iter()
-                        .map(hex_project::Device::id)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            None => return,
+        let Some(owner) = owner else {
+            return;
         };
+        let order = chain_ids(&state.project, owner);
         view.device_panel
             .select_click(device, &order, event.modifiers);
         cx.notify();

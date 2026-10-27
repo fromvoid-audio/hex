@@ -540,6 +540,231 @@ fn main_and_return_device_chains_support_multi_selection(cx: &mut TestAppContext
 }
 
 #[gpui::test]
+fn device_keyboard_copy_cut_paste_operates_on_selected_group(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, first, _, _) = actor_utility_fixture();
+    let type_id = state.project.device(first).unwrap().state().type_id();
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(type_id),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let second = state.project.track(track).unwrap().devices()[1].id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1800.0), px(800.0)));
+    visual.run_until_parked();
+    let pos = |visual: &mut VisualTestContext, id: DeviceId| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-drag-title-{}", id.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center()
+    };
+    let one = pos(&mut visual, first);
+    let two = pos(&mut visual, second);
+    visual.simulate_click(one, Modifiers::default());
+    visual.simulate_click(
+        two,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-c");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-v");
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices()
+            .len()
+            == 4
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-x");
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices()
+            .len()
+            == 2
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-v");
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices()
+            .len()
+            == 4
+    });
+}
+
+#[gpui::test]
+fn device_paste_during_playback_applies_to_actual_callback(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering::Acquire;
+    let _guard = eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1500.0), px(800.0)));
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RenameTrack {
+            track,
+            name: "device paste ready".into()
+        })))
+    });
+    let (mut output, mut backend) =
+        eq_ui_tests::held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+    let title = visual
+        .debug_bounds(Box::leak(
+            format!("device-drag-title-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_click(title, Modifiers::default());
+    visual.simulate_keystrokes("space");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !backend.status().unwrap().playing.load(Acquire) {
+        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "playback did not start"
+        );
+    }
+    visual.simulate_keystrokes("cmd-c");
+    loop {
+        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        if editor.read_with(cx, |view, _| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        }) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "copy did not complete"
+        );
+    }
+    visual.simulate_keystrokes("cmd-v");
+    loop {
+        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        let applied = editor.read_with(cx, |view, _| {
+            view.state.as_ref().is_some_and(|state| {
+                state
+                    .project
+                    .track(track)
+                    .is_some_and(|track| track.devices().len() == 2)
+                    && view.applied_project_revision() == Some(state.revision)
+            })
+        });
+        if applied && backend.status().unwrap().playing.load(Acquire) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pasted device was not applied during playback: {:?}",
+            editor.read_with(cx, |view, _| view.error.clone())
+        );
+    }
+}
+
+#[gpui::test]
+fn device_copy_pastes_into_an_empty_track_chain(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, _state, source, device, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "destination".into(),
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let destination = state
+        .project
+        .tracks()
+        .iter()
+        .find(|track| track.id() != source)
+        .unwrap()
+        .id();
+    let (handle, editor) = actor_editor_window(cx, service, state, source);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let title = visual
+        .debug_bounds(Box::leak(
+            format!("device-drag-title-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_click(title, Modifiers::default());
+    visual.simulate_keystrokes("cmd-c");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(destination);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let empty = visual
+        .debug_bounds(Box::leak(
+            format!("device-drop-end-{}", destination.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_click(empty, Modifiers::default());
+    visual.simulate_keystrokes("cmd-v");
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(destination)
+            .unwrap()
+            .devices()
+            .len()
+            == 1
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(
+            project.track(source).unwrap().devices()[0].state(),
+            project.track(destination).unwrap().devices()[0].state()
+        );
+        assert_ne!(
+            project.track(source).unwrap().devices()[0].id(),
+            project.track(destination).unwrap().devices()[0].id()
+        );
+    });
+}
+
+#[gpui::test]
 fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut TestAppContext) {
     cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, state, track, return_track, device, _) = actor_return_utility_fixture();

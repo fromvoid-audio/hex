@@ -3218,6 +3218,12 @@ impl EditorView {
                 | Request::DeviceAutomation { .. }
                 | Request::DeviceAutomationControl { .. }
                 | Request::EditArrangementSection { .. }
+                | Request::DeviceClipboard {
+                    action: hex_session::service::DeviceClipboardAction::Cut { .. }
+                        | hex_session::service::DeviceClipboardAction::Paste { .. }
+                        | hex_session::service::DeviceClipboardAction::Duplicate { .. },
+                    ..
+                }
                 | Request::TrackClipboard {
                     action: hex_session::service::TrackClipboardAction::Cut(_)
                         | hex_session::service::TrackClipboardAction::Duplicate { .. }
