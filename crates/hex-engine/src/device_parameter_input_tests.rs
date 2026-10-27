@@ -29,6 +29,36 @@ fn fixture() -> (Editor, hex_project::TrackId, DeviceId) {
     };
     (editor, track, device)
 }
+
+#[test]
+fn external_reading_union_keeps_live_arm_and_distinct_provider_and_host_slots() {
+    let (editor, _, device) = fixture();
+    let target = |target| native_parameter_input_target(editor.project(), device, target).unwrap();
+    let gain = target(DeviceAutomationTarget::Parameter(parameter::GAIN));
+    let mute = target(DeviceAutomationTarget::Parameter(parameter::MUTE));
+    let host = target(DeviceAutomationTarget::HostOutputGain);
+    let registry = hex_devices::native_registry().unwrap();
+    let current = editor.project().device(device).unwrap();
+    let program = prepare_with_registry_inputs_and_external(
+        current,
+        &registry,
+        Some(gain),
+        &[gain, mute, host],
+    )
+    .unwrap();
+    assert_eq!(program.input_target(), Some(gain.target()));
+    assert!(program.parameter_ids().contains(&parameter::GAIN));
+    assert!(program.parameter_ids().contains(&parameter::MUTE));
+    assert_eq!(program.parameter_ids().len(), 2);
+    assert!(program.has_host_target(DeviceAutomationTarget::HostOutputGain));
+    assert!(
+        program.storage_vectors().2.is_empty(),
+        "external targets do not add authored points"
+    );
+    assert!(
+        prepare_with_registry_inputs_and_external(current, &registry, None, &[gain, gain]).is_err()
+    );
+}
 #[test]
 fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_domains() {
     let (mut editor, track, device) = fixture();

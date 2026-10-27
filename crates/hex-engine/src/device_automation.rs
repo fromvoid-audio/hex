@@ -343,6 +343,19 @@ pub(crate) fn prepare_with_registry_and_input(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     input: Option<NativeParameterInputTarget>,
 ) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
+    prepare_with_registry_inputs_and_external(device, registry, input, &[])
+}
+
+/// Compile the factory's reading union once while retaining a separate single
+/// live-input arm. External targets only add reading slots; they do not arm a
+/// gesture, add authored points or own a source. Budget callers must account
+/// for each missing slot and transient vector growth before using this path.
+pub(crate) fn prepare_with_registry_inputs_and_external(
+    device: &hex_project::Device,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    input: Option<NativeParameterInputTarget>,
+    external: &[NativeParameterInputTarget],
+) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
     let mut program = prepare_envelopes_with_registry(device, registry)?;
     if let Some(input) = input.filter(|input| input.device == device.id()) {
         if input.device_type != device.state().type_id()
@@ -354,22 +367,7 @@ pub(crate) fn prepare_with_registry_and_input(
         }
         match input.target {
             DeviceAutomationTarget::Parameter(parameter) => {
-                let definition = registry
-                    .definition(input.device_type)
-                    .ok_or(Invalid("native parameter input device is unsupported"))?;
-                let descriptor =
-                    hex_lattice_contract::validated_state_descriptors(definition, device.state())
-                        .map_err(|_| Invalid("native parameter input metadata is invalid"))?
-                        .into_iter()
-                        .find(|descriptor| descriptor.id == parameter)
-                        .ok_or(Invalid("native parameter input parameter no longer exists"))?;
-                let semantics = hex_lattice_contract::validated_parameter_semantics(
-                    definition,
-                    device.state(),
-                    parameter,
-                )
-                .map_err(|_| Invalid("native parameter input semantics are invalid"))?
-                .ok_or(Invalid("native parameter input semantics are undeclared"))?;
+                let (descriptor, semantics) = provider_description(device, registry, parameter)?;
                 program
                     .arm_provider_input(descriptor, semantics)
                     .map_err(|_| {
@@ -381,7 +379,65 @@ pub(crate) fn prepare_with_registry_and_input(
                 .map_err(|_| Invalid("native host gain input target is invalid"))?,
         }
     }
+    for (index, target) in external
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| target.device == device.id())
+    {
+        if external[..index]
+            .iter()
+            .any(|previous| previous.device == target.device && previous.target == target.target)
+        {
+            return Err(Invalid("duplicate recorded automation target"));
+        }
+        if target.device_type != device.state().type_id()
+            || !target_supported(registry, device.state(), target.target)
+        {
+            return Err(Invalid(
+                "recorded parameter target changed or is unsupported",
+            ));
+        }
+        match target.target {
+            DeviceAutomationTarget::Parameter(parameter) => {
+                let (descriptor, semantics) = provider_description(device, registry, parameter)?;
+                program
+                    .prepare_external_provider(descriptor, semantics)
+                    .map_err(|_| {
+                        Invalid("recorded parameter program is invalid or exceeds its budget")
+                    })?;
+            }
+            host => program.prepare_external_host(host).map_err(|_| {
+                Invalid("recorded host gain program is invalid or exceeds its budget")
+            })?,
+        }
+    }
     Ok(program)
+}
+
+fn provider_description(
+    device: &hex_project::Device,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    parameter: ParameterId,
+) -> Result<
+    (
+        hex_lattice_contract::ParameterDescriptor,
+        hex_lattice_contract::ParameterSemantics,
+    ),
+    Invalid,
+> {
+    let definition = registry
+        .definition(device.state().type_id())
+        .ok_or(Invalid("native parameter input device is unsupported"))?;
+    let descriptor = hex_lattice_contract::validated_state_descriptors(definition, device.state())
+        .map_err(|_| Invalid("native parameter input metadata is invalid"))?
+        .into_iter()
+        .find(|descriptor| descriptor.id == parameter)
+        .ok_or(Invalid("native parameter input parameter no longer exists"))?;
+    let semantics =
+        hex_lattice_contract::validated_parameter_semantics(definition, device.state(), parameter)
+            .map_err(|_| Invalid("native parameter input semantics are invalid"))?
+            .ok_or(Invalid("native parameter input semantics are undeclared"))?;
+    Ok((descriptor, semantics))
 }
 fn prepare_envelopes_with_registry(
     device: &hex_project::Device,
