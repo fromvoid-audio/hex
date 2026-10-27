@@ -61,6 +61,15 @@ machine-specific path; do not create revision-named copies. Packaging builds
 certificate/team and preserves original notices. Missing signing identity or
 failed verification refuses publication without an ad-hoc fallback.
 
+For explicit preparation without replacing a running app, the same qualified
+command accepts `--prepare-only`. It requires full exact-source CI and writes a
+verified candidate into the target-bound `.hex-pending-update` store beside the
+configured app. It does not install or launch that candidate; the ordinary
+installer and launcher do not consume it. Failure before pending publication
+preserves the installed app and the previous candidate. Interrupted publication
+uses the existing installer recovery. Avoid starting a build or
+CI while recording: preparation is not evidence of audio deadline safety.
+
 For explicit VST3 helper packaging, build the pinned clean SDK inputs with
 `crates/hex-plugin-scan/native/macos_bootstrap.py build --help`. The
 `--discovery-only` and `--instance-only` profiles are separate minimal bundles;

@@ -462,7 +462,58 @@ class DeliveryTests(unittest.TestCase):
     def test_build_only_source_drift_during_signing_preserves_installed_app(self):
         self.assert_production_build(build_only=True, drift="signing")
 
-    def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None):
+    def test_prepare_two_candidates_while_installed_app_is_running(self):
+        self.assert_production_build(build_only=False, prepare_only=True)
+
+    def test_pending_store_requires_target_ownership_and_preserves_unknown_contents(self):
+        pending = delivery.pending_candidate(self.app)
+        self.assertEqual(pending, self.root / ".hex-pending-update/hex.app")
+        self.assertEqual(delivery.pending_candidate(self.app), pending)
+        foreign = pending.parent / "user-data"
+        foreign.write_text("preserve")
+        with self.assertRaisesRegex(delivery.DeliveryError, "unexpected"):
+            delivery.pending_candidate(self.app)
+        self.assertEqual(foreign.read_text(), "preserve")
+        foreign.unlink()
+        (pending.parent / "owner.json").write_text('{"schema":1,"target":"other"}')
+        with self.assertRaisesRegex(delivery.DeliveryError, "not owned"):
+            delivery.pending_candidate(self.app)
+
+    def test_pending_preparation_refuses_unqualified_evidence(self):
+        self.workspace.rmdir()
+        source = self.root / "repo"
+        (source / "scripts").mkdir(parents=True)
+        (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
+        args = SimpleNamespace(build_only=True, prepare_only=True, dev_profile=False)
+        with patch.object(delivery, "ROOT", source), patch.object(delivery.sys, "platform", "darwin"), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH": str(self.app)}):
+            with self.assertRaisesRegex(delivery.DeliveryError, "full exact-source CI"):
+                delivery.build(args)
+        self.assertFalse((self.root / ".hex-pending-update").exists())
+
+    def test_pending_release_recovery_still_refuses_running_installed_app(self):
+        self.bundle(self.app, b"old")
+        source = self.root / "repo"
+        (source / "scripts").mkdir(parents=True)
+        (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path": "hex.app", "signing": SIGNING}))
+        args = SimpleNamespace(build_only=False, prepare_only=True, dev_profile=False,
+                               adopt_release_target=True)
+        def tool(argv, root=source):
+            if argv[:2] == ["git", "rev-parse"]:
+                return str(source / ".git")
+            if argv[0] == "ps":
+                return f"123 {self.app}/Contents/MacOS/hex"
+            return ""
+        with patch.object(delivery, "ROOT", source), patch.object(delivery.sys, "platform", "darwin"), \
+                patch.dict(os.environ, {"HEX_DEV_APP_PATH": str(self.app)}), \
+                patch.object(delivery, "run", side_effect=tool):
+            with self.assertRaisesRegex(delivery.DeliveryError, "running"):
+                delivery.build(args)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+        self.assertFalse((self.root / ".hex-pending-update").exists())
+
+    def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
+                                prepare_only=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -514,9 +565,11 @@ class DeliveryTests(unittest.TestCase):
                 return str(source / ".git")
             if argv[:2] == ["cargo", "metadata"]:
                 return json.dumps({"packages":[{"name":"hex-desktop", "version":"0.1.0"}]})
+            if prepare_only and argv[0] == "ps":
+                return f"123 {self.app}/Contents/MacOS/hex"
             return ""
         args = SimpleNamespace(ci_report=None if build_only else report, candidate=candidate, build_only=build_only,
-                               included=included, checklist=checklist)
+                               included=included, checklist=checklist, prepare_only=prepare_only)
         @contextmanager
         def artifact_guard(*args, **kwargs):
             if rmdir_member:
@@ -560,6 +613,40 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(delivery, "native_signature", return_value=SIGNED), \
                 patch.object(delivery, "run", side_effect=tool), \
                 patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event), returncode=0)):
+            if prepare_only:
+                pending = self.root / ".hex-pending-update/hex.app"
+                # The installed app's publication lock is independent of the
+                # pending store and remains held throughout this preparation.
+                with delivery.activation_lock(self.app):
+                    first = delivery.build(args)
+                self.assertEqual(first["app_path"], str(self.app))
+                self.assertEqual(first["verification"], {"mode": "full-ci", "tests": "passed"})
+                self.assertEqual(first["pending_target_identity"]["executable_sha256"],
+                                 delivery.sha(self.app / "Contents/MacOS/hex"))
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"optimized fixture")
+                self.assertEqual(sidecar.read_bytes(), b"old adjacent receipt")
+                executable.write_bytes(b"second optimized fixture")
+                runner.output_dir = runner.output_dir.parent / "second-pending"
+                second = delivery.build(args)
+                self.assertNotEqual(first["input_executable_sha256"], second["input_executable_sha256"])
+                self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                runner.output_dir = runner.output_dir.parent / "failed-pending"
+                with patch.object(delivery, "sign_bundle", side_effect=subprocess.CalledProcessError(1, ["codesign"])):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        delivery.build(args)
+                self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                runner.output_dir = runner.output_dir.parent / "changed-target"
+                def change_target(_stage, _signing):
+                    (self.app / "Contents/MacOS/hex").write_bytes(b"external replacement")
+                with patch.object(delivery, "sign_bundle", side_effect=change_target):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "installed app changed"):
+                        delivery.build(args)
+                self.assertEqual((pending / "Contents/MacOS/hex").read_bytes(), b"second optimized fixture")
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"external replacement")
+                return
             if drift == "build":
                 with self.assertRaisesRegex(delivery.DeliveryError, "source is dirty, changed"):
                     delivery.build(args)
