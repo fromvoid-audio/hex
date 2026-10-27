@@ -1,6 +1,8 @@
 //! Arrangement audio gain input. The Window lease owns held input only; the
 //! ordinary FIFO receipt retains the released value until canonical installation.
-//! One release dispatches SetAudioClipGain; no pointer update prepares audio.
+//! Release freezes the ordinary clip-property scope: selected audio clips retain
+//! their relative gains in one EditClips command; other clips use SetAudioClipGain.
+//! No pointer update prepares audio.
 use super::{
     EditorView, ViewState,
     drag::LaneBounds,
@@ -35,6 +37,7 @@ struct Drag {
     preview: ClipGain,
 }
 struct Pending {
+    command: Command,
     drag: Drag,
     receipt: Receipt,
 }
@@ -176,8 +179,20 @@ impl EditorView {
             && drag.current(self)
             && drag.preview != drag.clip.gain()
         {
-            let command = drag.command();
+            let selected = self.selected_clip_ids();
+            let command = if selected.len() > 1 && selected.contains(&drag.clip.id()) {
+                Command::EditClips {
+                    clips: selected,
+                    edit: hex_project::ClipEdit::GainBy {
+                        // Both validated values are in -60_000..=24_000.
+                        millidb: drag.preview.millidb() - drag.clip.gain().millidb(),
+                    },
+                }
+            } else {
+                drag.command()
+            };
             self.clip_gain.pending = Some(Pending {
+                command: command.clone(),
                 drag,
                 receipt: Receipt::new(self.project_generation),
             });
@@ -324,9 +339,28 @@ impl EditorView {
         )
     }
     pub(super) fn clip_gain_matches(&self, request: &Request) -> bool {
-        self.clip_gain.pending.as_ref().is_some_and(|p| p.receipt.is_queued() && matches!(request,
-            Request::Edit(Command::SetAudioClipGain { clip, millidb }) if *clip == p.drag.clip.id() && *millidb == p.drag.preview.millidb()))
+        self.clip_gain.pending.as_ref().is_some_and(|p| {
+            p.receipt.is_queued()
+                && match (&p.command, request) {
+                    (
+                        Command::SetAudioClipGain {
+                            clip: a,
+                            millidb: av,
+                        },
+                        Request::Edit(Command::SetAudioClipGain {
+                            clip: b,
+                            millidb: bv,
+                        }),
+                    ) => (a, av) == (b, bv),
+                    (
+                        Command::EditClips { clips: a, edit: av },
+                        Request::Edit(Command::EditClips { clips: b, edit: bv }),
+                    ) => (a, av) == (b, bv),
+                    _ => false,
+                }
+        })
     }
+
     pub(super) fn clip_gain_submitted(&mut self) {
         if let Some(p) = &mut self.clip_gain.pending {
             p.receipt.submitted(self.worker_requests_pending);

@@ -402,3 +402,114 @@ fn momentary_tools_preserve_a_gain_drag_already_in_custody(cx: &mut TestAppConte
         editor.read_with(&visual, |v, _| assert!(matches!(v.last_enqueued_edit, Some(Command::SetAudioClipGain { clip: id, millidb: -3_000 }) if id == clip)));
     }
 }
+
+#[gpui::test]
+fn selected_audio_gain_preserves_offsets_and_owns_the_expanded_command_receipt(
+    cx: &mut TestAppContext,
+) {
+    let (_files, window, editor) = clip_drag_ui_test::upper_rail_owned_fixture(cx);
+    let mut visual = VisualTestContext::from_window(window, cx);
+    let (track, first) = editor.read_with(&visual, |v, _| {
+        let track = &v.state.as_ref().unwrap().project.tracks()[0];
+        (track.id(), track.clips()[0].id())
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::DuplicateClip(first))))
+    });
+    pump(&editor, &mut visual);
+    let second = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .clips()
+            .iter()
+            .find(|c| c.id() != first)
+            .unwrap()
+            .id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetAudioClipGain {
+            clip: second,
+            millidb: 3_000
+        })))
+    });
+    pump(&editor, &mut visual);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            v.select_clip_header(track, first, Modifiers::default(), window, cx);
+            v.select_clip_header(
+                track,
+                second,
+                Modifiers {
+                    platform: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_clip_ids(), vec![first, second])
+    });
+    let selector = Box::leak(format!("clip-gain-handle-{}", first.value()).into_boxed_str());
+    let label = Box::leak(format!("clip-gain-value-{}", first.value()).into_boxed_str());
+    let down = visual.debug_bounds(selector).unwrap().center();
+    let up = point(down.x, down.y + px(60.0));
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds(label).unwrap();
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| assert!(matches!(&v.last_enqueued_edit,
+        Some(Command::EditClips { clips, edit: hex_project::ClipEdit::GainBy { millidb: -6_000 } }) if clips == &[first, second])));
+    let event = terminal(&editor, &mut visual);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    assert_eq!(
+        event.state.project.clip(first).unwrap().gain().millidb(),
+        -6_000
+    );
+    assert_eq!(
+        event.state.project.clip(second).unwrap().gain().millidb(),
+        -3_000
+    );
+    // Selection can change after admission without changing frozen membership.
+    editor.update(&mut visual, |v, cx| {
+        v.clip_selection.only(track, first);
+        v.selected_clip = Some(first);
+        cx.notify();
+    });
+    for _ in 0..2 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(label), Some(held));
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(label).is_none());
+    // No tick/abandonment cleanup is needed before the next admitted gesture.
+    let down = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.clip_gain.held(),
+            "exact scoped receipt retired at canonical receive"
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}

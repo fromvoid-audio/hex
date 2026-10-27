@@ -523,7 +523,9 @@ playback, save/reopen and export.
 on an arrangement audio clip, hover over the top edge between the trim corners
 and drag vertically to adjust clip gain. drag down to reduce or up to increase;
 hold **shift** for fine adjustments. the displayed db value previews the change;
-release commits one undo step, and **escape** cancels. held **2**, existing time
+release commits one undo step, and **escape** cancels. when the clip belongs to a
+whole-clip selection, selected audio clips change by the same db amount, retaining
+their relative levels; selected midi clips remain unchanged. held **2**, existing time
 selections and fade controls retain their input priorities. this top-edge gesture
 currently applies to audio clips; midi and individual event gain gestures remain
 unavailable.
