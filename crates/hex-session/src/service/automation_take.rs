@@ -12,15 +12,15 @@
 //! Queries use project-rate sample frames. Native publication requires matching
 //! project/output rates; mismatched provenance refuses rather than resampling it.
 //! Target input/output origins may have different offsets from performance time.
-//! No canonical adoption, beat placement, DSP, callback I/O or file reclamation is
+//! No canonical adoption, editable placement, DSP, callback I/O or file reclamation is
 //! implemented here. Future playback must prepare bounded pages through its existing
 //! resource owner; retaining this reader never grants a callback a disk operation.
-use hex_project::{LoopRegion, Project};
+use hex_project::{CapturedAutomationProjection, LoopRegion, Project, TempoMap};
 use hex_storage::automation_draft::{
     AppliedEvent, CompletedDraft, DraftClock, DraftProvenance, DraftReadLimits, DraftTarget,
     MAX_APPEND_EVENTS,
 };
-use std::path::Path;
+use std::{ops::Range, path::Path};
 
 pub const MAX_PREVIEW_QUERIES: usize = 64;
 
@@ -124,6 +124,78 @@ impl CompletedAutomationTake {
         self.source.event_count()
     }
 
+    /// Exact source-frame coverage, compressed to at most two disjoint ranges
+    /// regardless of loop count. The original authored base owns every gap.
+    pub fn captured_coverage(&self) -> [Option<Range<u64>>; 2] {
+        self.mapping.map_or([None, None], ClockMapping::coverage)
+    }
+
+    /// Forward-projected half-open coverage. Collapsed ranges contribute no
+    /// destination samples; conversion failure never becomes outside coverage.
+    pub fn projected_coverage(
+        &self,
+        destination: &TempoMap,
+    ) -> Result<[Option<Range<u64>>; 2], String> {
+        let projection = CapturedAutomationProjection::new(self.source().tempo_map(), destination);
+        let mut output = [None, None];
+        for (range, slot) in self.captured_coverage().into_iter().zip(&mut output) {
+            if let Some(range) = range {
+                let placed = projection
+                    .project_range(range)
+                    .map_err(|error| error.to_string())?;
+                if !placed.is_empty() {
+                    *slot = Some(placed);
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    /// Preview through the current musical clock without rewriting captured
+    /// events or cloning tempo maps. Forward predicates resolve rounded event
+    /// collisions; the returned events retain their original application stamps.
+    /// Future callback consumers still require worker-prepared scalar pages.
+    pub fn read_projected_preview_on_control(
+        &mut self,
+        destination: &TempoMap,
+        frames: &[u64],
+        output: &mut [Option<AppliedEvent>],
+    ) -> Result<(), String> {
+        output.fill(None);
+        if frames.len() != output.len() || frames.len() > MAX_PREVIEW_QUERIES {
+            return Err("automation preview needs matching buffers of at most 64 positions".into());
+        }
+        self.projected_coverage(destination)?;
+        let coverage = self.captured_coverage();
+        let result = (|| {
+            for (&frame, slot) in frames.iter().zip(output.iter_mut()) {
+                let captured = {
+                    let projection =
+                        CapturedAutomationProjection::new(self.source().tempo_map(), destination);
+                    let mut captured = None;
+                    for range in coverage.iter().flatten() {
+                        if let Some(source_frame) = projection
+                            .source_frame_at(frame, range.clone())
+                            .map_err(|error| error.to_string())?
+                        {
+                            captured = Some(source_frame);
+                            break;
+                        }
+                    }
+                    captured
+                };
+                if let Some(captured) = captured {
+                    *slot = self.value_at_on_control(captured)?;
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            output.fill(None);
+        }
+        result
+    }
+
     /// None is outside half-open touch coverage, where the unchanged base owns
     /// the value. An invalid/unavailable source is an error, never a base value.
     pub fn value_at_on_control(
@@ -180,6 +252,31 @@ struct ClockMapping {
     region: Option<LoopRegion>,
 }
 impl ClockMapping {
+    fn coverage(self) -> [Option<Range<u64>>; 2] {
+        let duration = self.end.performance_frame - self.first.performance_frame;
+        if duration == 0 {
+            return [None, None];
+        }
+        let Some(region) = self.region else {
+            return [Some(self.first.content_frame..self.end.content_frame), None];
+        };
+        let initial = region.end() - self.first.content_frame;
+        let first = self.first.content_frame..self.first.content_frame + duration.min(initial);
+        if duration <= initial {
+            return [Some(first), None];
+        }
+        let repeated = region.start()
+            ..region.start() + (duration - initial).min(region.end() - region.start());
+        if first.start <= repeated.end && repeated.start <= first.end {
+            [
+                Some(first.start.min(repeated.start)..first.end.max(repeated.end)),
+                None,
+            ]
+        } else {
+            [Some(repeated), Some(first)]
+        }
+    }
+
     fn new(
         first: AppliedEvent,
         end: DraftClock,
