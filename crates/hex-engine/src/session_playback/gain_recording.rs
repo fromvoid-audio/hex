@@ -161,6 +161,67 @@ mod tests {
         assert_eq!(main, [[0.1 + 0.05, -0.4 - 0.2]; 8]);
     }
     #[test]
+    fn group_gain_override_changes_only_its_submix_path() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "source".into(),
+                path: "memory.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 16,
+                playback_frames: 16,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack { name: "bus".into() })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare_for_gain_recording(
+                editor.project(),
+                &BTreeMap::from([(
+                    asset,
+                    crate::Audio::new(48_000, vec![[0.25, -0.5]; 16]).unwrap(),
+                )]),
+                Arc::new(crate::SineTable::new()),
+                None,
+                group,
+            )
+            .unwrap(),
+        );
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime
+            .set_gain_recording_override(group.value(), 0.5)
+            .unwrap();
+        let mut output = [[0.0; 2]; 8];
+        runtime.render(&mut output).unwrap();
+        assert_eq!(output, [[0.25, -0.5]; 8]); // 0.5 submix + independent 0.5 send.
+        assert_eq!(runtime.gain_recording_clock(group.value()), Some((8, 0, 0)));
+    }
+    #[test]
     fn gain_recording_fault_rolls_back_pcm_clock_and_stop_clears_override() {
         let (mut runtime, track) = armed();
         runtime
