@@ -6,6 +6,16 @@
 use super::*;
 use view::Correlation;
 
+fn covers_resource(
+    owner: &hex_stream::ConstructorStreamDomain,
+    source: &hex_engine::StreamResourceMetadata,
+) -> bool {
+    match source {
+        hex_engine::StreamResourceMetadata::Audio(source) => owner.covers_source(source),
+        hex_engine::StreamResourceMetadata::Scalar(source) => owner.covers_scalar_source(source),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::candidate_custody) struct OrdinaryReservation {
     pub(in crate::candidate_custody) extents: usize,
@@ -19,7 +29,7 @@ impl OrdinaryReservation {
         if self
             .extents
             .checked_mul(2)
-            .and_then(|n| n.checked_mul(std::mem::size_of::<StreamPageExtent>()))
+            .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
             .and_then(|n| n.checked_add(std::mem::size_of::<OrdinaryStreams>()))
             .is_none_or(|n| n > self.metadata_bytes)
         {
@@ -208,7 +218,7 @@ impl Custody {
         }
         let mut refs = [None; 2];
         for source in playback
-            .streamed_sources_on_control()
+            .stream_resources_on_control()
             .map_err(|_| "ordinary prepared source inventory unavailable")?
         {
             let index = bank
@@ -221,7 +231,7 @@ impl Custody {
                         && slot
                             .owner
                             .as_ref()
-                            .is_some_and(|owner| owner.covers_source(source))
+                            .is_some_and(|owner| covers_resource(owner, &source))
                 })
                 .ok_or("ordinary graph lacks its actual retained source catalog")?;
             let slot = &bank.domains[index];
@@ -233,6 +243,24 @@ impl Custody {
                 slot: index,
                 incarnation: slot.incarnation,
             });
+        }
+        // Callback demand routes by typed key within these retained domains.
+        // An exact match in one domain cannot authorize a conflicting match
+        // under the same key in another selected domain.
+        for source in playback
+            .stream_resources_on_control()
+            .map_err(|_| "ordinary prepared source inventory unavailable")?
+        {
+            for token in refs.iter().flatten() {
+                let owner = bank
+                    .domains
+                    .get(token.slot)
+                    .and_then(|slot| slot.owner.as_ref())
+                    .ok_or("ordinary retained source catalog is unavailable")?;
+                if owner.covers_resource_key(source.key()) && !covers_resource(owner, &source) {
+                    return Err("ordinary stream source key has conflicting domain facts");
+                }
+            }
         }
         // Every fallible check precedes use-count changes; the move-only private
         // carrier is created only here and remains in its graph publication.

@@ -1,13 +1,13 @@
 //! Pure next-chunk planning adapted from published177 8d444c06.
 //! No route application, owner handoff, transport commit or DSP work.
 use super::*;
-use crate::{Invalid, StreamChunkWindow, StreamPageExtent, compile::PreparedAudioSource};
+use crate::{Invalid, StreamChunkWindow, StreamResourceExtent, compile::PreparedAudioSource};
 
 pub(super) struct HandoffDemand<'a> {
     pub ordinary: bool,
     pub maximum_frames: usize,
     pub playing: Option<bool>,
-    pub visit: &'a mut dyn FnMut(StreamPageExtent) -> Result<(), Invalid>,
+    pub visit: &'a mut dyn FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     pub window: Option<StreamChunkWindow>,
 }
 
@@ -20,7 +20,7 @@ impl SessionPlayback {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, SessionPlaybackError> {
         self.preview_stream_handoff_with_scope(previous, maximum_frames, playing, visit, false)
     }
@@ -29,7 +29,7 @@ impl SessionPlayback {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
         ordinary: bool,
     ) -> Result<StreamChunkWindow, SessionPlaybackError> {
         if self.linear_arrangement_export
@@ -64,7 +64,7 @@ impl SessionPlayback {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.visit_stream_chunk_at(
             &self.routes,
@@ -88,7 +88,7 @@ impl SessionPlayback {
         loop_pass: u64,
         playing: bool,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.visit_stream_chunk_in_scope(
             false,
@@ -113,7 +113,7 @@ impl SessionPlayback {
         loop_pass: u64,
         playing: bool,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         if !ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()) {
             return Err(Invalid("stream demand requires a closed audio runtime"));
@@ -138,7 +138,7 @@ impl SessionPlayback {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         self.visit_stream_chunk_sources_at(
             &self.routes,
@@ -161,7 +161,7 @@ impl SessionPlayback {
         loop_pass: u64,
         playing: bool,
         maximum_frames: usize,
-        visit: &mut impl FnMut(StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
         let mut window = StreamChunkWindow {
             performance_frame,
@@ -243,7 +243,7 @@ impl SessionPlayback {
                         track.visit_stream_demand(
                             window.arrangement_frame,
                             window.frames,
-                            visit,
+                            &mut |extent| visit(extent.into()),
                         )?;
                     }
                 }
@@ -264,7 +264,10 @@ impl SessionPlayback {
                                         .unwrap_or(usize::MAX),
                                 );
                                 crate::stream_demand::visit_page_range(
-                                    source, start, count, visit,
+                                    source,
+                                    start,
+                                    count,
+                                    &mut |extent| visit(extent.into()),
                                 )?;
                                 // Later complete cycles demand the same pages.
                                 // One suffix and one cycle prefix cover the union,
@@ -279,7 +282,7 @@ impl SessionPlayback {
                                             source,
                                             range.start(),
                                             rest,
-                                            visit,
+                                            &mut |extent| visit(extent.into()),
                                         )?;
                                     }
                                 }
@@ -289,6 +292,14 @@ impl SessionPlayback {
                 }
                 RouteOwner::Session { .. } | RouteOwner::Silence => {}
             }
+        }
+        if let Some(binding) = self.revision.scalar_automation.as_ref() {
+            crate::stream_demand::visit_scalar_page_range(
+                &binding.source,
+                window.arrangement_frame,
+                window.frames,
+                visit,
+            )?;
         }
         Ok(window)
     }

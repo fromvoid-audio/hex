@@ -4,17 +4,20 @@
 use crate::{Frame, NodeSignalObserver, PostNodeIdentity};
 use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
 
-pub(crate) fn process_with_native_input(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_with_native_input_and_external(
     chain: &mut NativeRuntimeChain,
     frames: &mut [Frame],
     offset: usize,
     clock: Option<&dyn NativeInstrumentClock>,
     input: Option<&mut crate::native_parameter_input::Processing>,
+    external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), crate::Invalid> {
     let range = 0..chain.len();
-    crate::native_parameter_input::process_range(
+    crate::native_parameter_input::process_range_with_external(
         input,
+        external,
         chain,
         range,
         frames,
