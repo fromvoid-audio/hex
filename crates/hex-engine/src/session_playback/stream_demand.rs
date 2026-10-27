@@ -413,7 +413,7 @@ impl SessionPlayback {
                         &binding.source,
                         frame,
                         len,
-                        visit,
+                        &mut *visit,
                     )
                 },
             )?;

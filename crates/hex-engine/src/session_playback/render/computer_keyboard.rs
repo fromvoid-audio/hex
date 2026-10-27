@@ -149,6 +149,7 @@ impl SessionPlayback {
                     capture,
                     None,
                     foreign,
+                    None,
                 )?;
                 if drain_edit_tails {
                     self.return_effect_tails
