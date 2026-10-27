@@ -149,6 +149,14 @@ impl ScalarSourceDefinition {
         let identity = source.content_identity();
         let metadata = ScalarSourceMetadata::new(
             key,
+            match source.target() {
+                hex_storage::automation_draft::DraftTarget::TrackGain { track } => {
+                    hex_engine::ScalarSourceTarget::TrackGain { track }
+                }
+                hex_storage::automation_draft::DraftTarget::Device { device, target } => {
+                    hex_engine::ScalarSourceTarget::Device { device, target }
+                }
+            },
             projection.sample_rate(),
             start,
             end,

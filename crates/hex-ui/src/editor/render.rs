@@ -629,6 +629,21 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.active_native_device_drag.as_ref().is_some_and(|drag| {
+                        matches!(
+                            drag.source,
+                            super::drag::NativeDeviceDragSource::Existing { .. }
+                        )
+                    }) {
+                        cx.set_active_drag_cursor_style(
+                            if event.modifiers.alt {
+                                gpui::CursorStyle::DragCopy
+                            } else {
+                                gpui::CursorStyle::ClosedHand
+                            },
+                            window,
+                        );
+                    }
                     if view.sections.held() {
                         let position = window.mouse_position();
                         if view.update_section_pointer(
