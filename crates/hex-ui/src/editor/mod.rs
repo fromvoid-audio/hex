@@ -31,6 +31,9 @@ mod clip_clipboard_ui_test;
 mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
+mod clip_gain;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_gain_ui_tests;
 mod clip_name;
 mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -906,6 +909,7 @@ pub(super) struct EditorView {
     time_selection_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     pending_fade: Option<fade_handles::PendingFade>,
+    clip_gain: clip_gain::State,
     hovered_fade_clip: Option<(u64, ClipId)>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
@@ -1265,6 +1269,7 @@ impl EditorView {
             view.clear_time_selection_key_on_blur(window, cx);
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
+                view.cancel_clip_gain(cx);
                 view.cancel_project_spectrum_resize(cx);
                 view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
@@ -1316,6 +1321,7 @@ impl EditorView {
                 let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
+                view.cancel_clip_gain(cx);
                 view.cancel_project_spectrum_resize(cx);
                 view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
@@ -1351,6 +1357,7 @@ impl EditorView {
         let window_bounds = cx.observe_window_bounds(window, |view, window, cx| {
             device_panel::cancel_sampler_boundary(view);
             view.cancel_fade_gesture(cx);
+            view.cancel_clip_gain(cx);
             view.cancel_project_spectrum_resize(cx);
             view.cancel_clip_detail_resize(cx);
             if view.cancel_trim_gesture(cx) {
@@ -1588,6 +1595,7 @@ impl EditorView {
             time_selection_key_held: false,
             active_fade_drag: None,
             pending_fade: None,
+            clip_gain: clip_gain::State::default(),
             hovered_fade_clip: None,
             active_midi_trim_drag: None,
             pointer_down: None,
