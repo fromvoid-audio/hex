@@ -8,39 +8,7 @@ use hex_lattice::{
 };
 use hex_lattice_contract::DeviceAutomationTarget;
 
-/// Shared borrowed adapter; ordinary renderers supply None and preserve their
-/// existing processing/tap behavior without allocating a request context.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn process_range(
-    input: Option<&mut Processing>,
-    chain: &mut NativeRuntimeChain,
-    range: std::ops::Range<usize>,
-    frames: &mut [Frame],
-    offset: usize,
-    clock: Option<&dyn NativeInstrumentClock>,
-    output_clock: Option<&dyn NativeInstrumentClock>,
-    input_arrival: u32,
-    output_arrival: u32,
-    foreign: &mut dyn ForeignProcessors,
-    observer: &mut Option<&mut NodeSignalObserver<'_>>,
-) -> Result<(), Invalid> {
-    process_range_with_external(
-        input,
-        None,
-        chain,
-        range,
-        frames,
-        offset,
-        clock,
-        output_clock,
-        input_arrival,
-        output_arrival,
-        foreign,
-        observer,
-    )
-}
-
-/// Same existing input transaction with a fully materialized scalar window.
+/// Shared input transaction with an optional fully materialized scalar window.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process_range_with_external(
     input: Option<&mut Processing>,
