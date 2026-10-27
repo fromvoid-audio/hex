@@ -505,7 +505,7 @@ impl Callback {
             context,
             frames.unwrap_or(0),
         );
-        let decision = if self
+        let mut decision = if self
             .active
             .as_ref()
             .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
@@ -535,6 +535,12 @@ impl Callback {
             .as_mut()
             .and_then(|next| next.take_handoff_diagnostic())
         {
+            if matches!(
+                decision,
+                InstallDecision::Refused(PlaybackHandoffRejection::StreamedPagesNotReady)
+            ) {
+                decision = InstallDecision::Refused(PlaybackHandoffRejection::from_error(handoff));
+            }
             self.trace_audio(
                 AudioDiagnosticKind::StreamPreflightFailed {
                     detail: "stream handoff demand refused",
