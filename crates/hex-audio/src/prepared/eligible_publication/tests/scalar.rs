@@ -71,6 +71,7 @@ fn scalar_source(
             loop_pass: 1,
         }))
         .unwrap();
+    drop(writer); // release the writer lock before transferring the closed reader
     let source = CompletedAutomationTake::open_on_control(
         &path,
         DraftReadLimits {

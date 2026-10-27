@@ -98,6 +98,7 @@ fn definition_spaced(looped: bool, count: u64, stride: u64) -> (DraftFile, Scala
             }
         }))
         .unwrap();
+    drop(writer); // release the writer lock before transferring the closed reader
     let source = CompletedAutomationTake::open_on_control(
         &path,
         DraftReadLimits {
