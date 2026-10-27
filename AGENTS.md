@@ -8,6 +8,10 @@ responsiveness, and measured performance.
 
 Hex's project-specific instructions and established conventions take precedence
 over the Google Rust Style Guide wherever they conflict.
+When implementing an issue, improve observed Rust style-guide deviations in the
+code being changed when the adjustment is small, coherent, and preserves behavior
+and Hex's contracts. Include appropriate verification; avoid unrelated or broad
+style-only refactors. Record substantial improvements separately in Pulse.
 
 ## Saved-project compatibility policy
 
