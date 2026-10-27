@@ -5411,6 +5411,7 @@ mod sampler_native_ui_protocol_tests {
 
     #[cfg(feature = "ui-test-support")]
     fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use hex_audio::prepared::PublicationPolicy;
         use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
         let service = hex_session::service::Service::with_native_reservation(
