@@ -119,6 +119,7 @@ pub(super) struct DevicePanelState {
     pub(super) selected_device: Option<DeviceId>,
     selected_others: HashSet<DeviceId>,
     selection_anchor: Option<DeviceId>,
+    pub(super) drag_copy: Option<DeviceDragCopy>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, gain_meters::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -172,6 +173,15 @@ struct OperatorPreviewInventory {
     generation: u64,
     revision: u64,
     devices: Arc<HashSet<DeviceId>>,
+}
+
+#[derive(Clone)]
+pub(super) struct DeviceDragCopy {
+    generation: u64,
+    revision: u64,
+    owner: DevicePanelOwner,
+    device: DeviceId,
+    selected: hex_project::DeviceSelectionIds,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -577,6 +587,7 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = None;
+        view.device_panel.drag_copy = None;
         view.device_panel.select_only(None);
         view.device_panel.generation = view.project_generation;
     }
@@ -682,6 +693,7 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = desired_owner;
+        view.device_panel.drag_copy = None;
         view.device_panel.select_only(None);
         view.device_panel.message = None;
     }
@@ -1580,7 +1592,14 @@ fn device_drag_title(
             }),
         )
         .on_drag(payload, move |payload, _, window, cx| {
-            cx.set_active_drag_cursor_style(gpui::CursorStyle::ClosedHand, window);
+            cx.set_active_drag_cursor_style(
+                if window.modifiers().alt {
+                    gpui::CursorStyle::DragCopy
+                } else {
+                    gpui::CursorStyle::ClosedHand
+                },
+                window,
+            );
             entity.update(cx, |view, cx| {
                 view.begin_native_device_drag(payload);
                 cx.notify();
@@ -1653,8 +1672,35 @@ fn device_selection_listener(
             return;
         };
         let order = chain_ids(&state.project, owner);
-        view.device_panel
-            .select_click(device, &order, event.modifiers);
+        let members: Vec<_> = if view.device_panel.is_selected(device) {
+            order
+                .iter()
+                .copied()
+                .filter(|id| view.device_panel.is_selected(*id))
+                .collect()
+        } else {
+            vec![device]
+        };
+        view.device_panel.drag_copy =
+            hex_project::DeviceSelectionIds::new(&members)
+                .ok()
+                .map(|selected| DeviceDragCopy {
+                    generation,
+                    revision: state.revision,
+                    owner,
+                    device,
+                    selected,
+                });
+        if event.modifiers.alt && view.device_panel.is_selected(device) {
+            if let Some(previous) = view.device_panel.selected_device {
+                view.device_panel.selected_others.insert(previous);
+            }
+            view.device_panel.selected_others.remove(&device);
+            view.device_panel.selected_device = Some(device);
+        } else {
+            view.device_panel
+                .select_click(device, &order, event.modifiers);
+        }
         cx.notify();
     })
 }
@@ -1882,6 +1928,60 @@ fn render_effect(
 }
 
 impl EditorView {
+    pub(super) fn duplicate_device_drag_request(
+        &self,
+        drag: &drag::NativeDeviceDrag,
+        destination: hex_project::DeviceChainOwner,
+        before: Option<DeviceId>,
+    ) -> Result<Request, &'static str> {
+        let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source else {
+            return Err("device copy canceled · selection changed");
+        };
+        let snapshot = self
+            .device_panel
+            .drag_copy
+            .as_ref()
+            .ok_or("device copy canceled · selection changed")?;
+        if snapshot.device != device
+            || snapshot.generation != drag.project_generation
+            || snapshot.revision != drag.revision
+        {
+            return Err("device copy canceled · selection changed");
+        }
+        let project = &self
+            .state
+            .as_ref()
+            .ok_or("device copy canceled · project changed")?
+            .project;
+        let copies_instrument = match snapshot.owner {
+            DevicePanelOwner::Track(id) => project
+                .track(id)
+                .and_then(|track| track.instrument())
+                .is_some_and(|device| snapshot.selected.ids().contains(&device.id())),
+            _ => false,
+        };
+        if copies_instrument {
+            match destination {
+                hex_project::DeviceChainOwner::Track(id)
+                    if project
+                        .track(id)
+                        .is_some_and(|track| !track.is_group() && track.instrument().is_none()) => {
+                }
+                _ => return Err("destination cannot accept another instrument"),
+            }
+        }
+        Ok(Request::DeviceClipboard {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            action: hex_session::service::DeviceClipboardAction::Duplicate {
+                source: project_owner(snapshot.owner),
+                selected: snapshot.selected.clone(),
+                destination,
+                before,
+            },
+        })
+    }
+
     fn drop_native_device_to_effect_bus(
         &mut self,
         drag: &drag::NativeDeviceDrag,
@@ -1925,6 +2025,27 @@ impl EditorView {
         }
         if !finalize_controls(self, cx) {
             self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+        if window.modifiers().alt
+            && matches!(drag.source, drag::NativeDeviceDragSource::Existing { .. })
+        {
+            let destination = match owner {
+                EffectBusOwner::Main => hex_project::DeviceChainOwner::Main,
+                EffectBusOwner::Return(id) => hex_project::DeviceChainOwner::Return(id),
+            };
+            let request = self.duplicate_device_drag_request(drag, destination, before);
+            self.clear_native_device_drag(drag);
+            match request {
+                Ok(request) => {
+                    if self.enqueue_device_barrier(request) {
+                        self.error = None;
+                        self.status = "copying devices".into();
+                    }
+                }
+                Err(reason) => self.error = Some(reason.into()),
+            }
             cx.notify();
             return;
         }
@@ -2125,6 +2246,27 @@ impl EditorView {
                 cx.notify();
                 return;
             }
+        }
+        if window.modifiers().alt
+            && matches!(drag.source, drag::NativeDeviceDragSource::Existing { .. })
+        {
+            let request = self.duplicate_device_drag_request(
+                drag,
+                hex_project::DeviceChainOwner::Track(track),
+                before,
+            );
+            self.clear_native_device_drag(drag);
+            match request {
+                Ok(request) => {
+                    if self.enqueue_device_barrier(request) {
+                        self.error = None;
+                        self.status = "copying devices".into();
+                    }
+                }
+                Err(reason) => self.error = Some(reason.into()),
+            }
+            cx.notify();
+            return;
         }
         if let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source
             && device_move_would_be_noop(&state.project, device, track, before)
