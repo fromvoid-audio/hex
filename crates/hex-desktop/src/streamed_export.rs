@@ -697,3 +697,6 @@ pub(super) fn prepare_resident_seek(
 
 #[cfg(all(test, feature = "allocation-probe"))]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+mod tests;
