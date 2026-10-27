@@ -597,6 +597,7 @@ impl PreparedRevision {
                 Some(transforms),
                 samplers,
                 native_input,
+                &[],
             )?;
             let session = PreparedSessionInventory::prepare_with_source_bank(
                 project,
