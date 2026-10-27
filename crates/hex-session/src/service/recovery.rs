@@ -12,6 +12,12 @@ pub enum ProjectSource {
     Journal(PathBuf),
     SavedJournal(PathBuf),
     PreviousSave(PathBuf),
+    /// Recover the retained source checkpoint; recorded events remain an independent draft.
+    /// This source never acquires the original saved document's overwrite association.
+    AutomationDraft {
+        path: PathBuf,
+        limits: hex_storage::automation_draft::DraftReadLimits,
+    },
 }
 
 /// Native application singleton, shared by development and review bundles.
@@ -58,6 +64,11 @@ fn read_source(
             path,
             None,
         ),
+        ProjectSource::AutomationDraft { path, limits } => {
+            let reader = hex_storage::automation_draft::DraftReader::open(path, *limits)
+                .map_err(|error| error.to_string())?;
+            (reader.source().clone(), path, None)
+        }
     };
     Ok((project, absolute_document_base(path)?, document))
 }

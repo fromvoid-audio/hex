@@ -1,12 +1,14 @@
 //! # Purpose
-//! Own strict validated serialization and recoverable publication of canonical project metadata.
+//! Own strict canonical project metadata serialization, recoverable publication and independent
+//! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
 //! formats. Unsupported/malformed input refuses without rewriting the original file.
+pub mod automation_draft;
 mod files;
 mod journal;
 pub mod preset;
@@ -27,7 +29,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 55;
+pub const CURRENT_SCHEMA_VERSION: u32 = 57;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -150,11 +152,13 @@ impl From<serde_json::Error> for StorageError {
 /// directed views, activation, MIDI, tuning, device state and retained native sources
 /// with explicit per-track source bindings, Console audio cycles and bounded
 /// faded Arrangement overlaps, explicit shared clip content (schema52), and
-/// typed host gain envelopes (schema53) and per-lane read selection (schema55).
+/// typed host gain envelopes (schema53), per-lane read selection (schema55),
+/// independent MIDI note activation (schema56), and independent audio event
+/// activation, including retained roots (schema57).
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::automation_read::encode(project)?)
+    encode_document(&schema::event_activation::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -170,6 +174,8 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::event_activation::require_all_active(project)?;
+    schema::note_activation::require_all_active(project)?;
     schema::clip_aliases::require_legacy_compatible(project)?;
     schema::crossfades::require_legacy_disjoint(project)?;
     if project.has_device_automation() {
@@ -274,7 +280,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// audio cycles while retaining the receiverless singleton-source layout. Schema49
 /// adds a required nullable source receiver and shared contributor bindings;
 /// schemas46–48 infer a receiver only from their singleton binding.
-/// Schema50 adds ordered stable device/parameter envelopes with bounded normalized
+/// Schema57 retains inactive audio event identities; schemas1–56 migrate events
+/// active. Schema56 retains inactive MIDI note identities; schemas1–55 migrate all notes
+/// active. Schema50 adds ordered stable device/parameter envelopes with bounded normalized
 /// points. Schemas1–49 migrate with no generic device automation; provider-owned
 /// opaque state, including older EQ envelopes, is retained unchanged.
 /// Schema45 retains
@@ -309,7 +317,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::automation_read::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::event_activation::decode(bytes),
+        56 => schema::note_activation::decode(bytes),
+        55 => schema::automation_read::decode(bytes),
         54 => Err(StorageError::Invalid(
             "schema54 belongs to the printed-output branch; open a copy with the matching hex build; original file unchanged",
         )),

@@ -25,19 +25,22 @@ pub(crate) fn compiler_quote(
             let playback = clip
                 .source_playback()
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-            clip.notes().iter().try_fold(total, |total, note| {
-                let count = usize::try_from(
-                    playback
-                        .note_occurrences(note.start(), note.duration())
-                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
-                        .count(),
-                )
-                .map_err(|_| AudioStorageError::Overflow)?;
-                total
-                    .checked_add(count)
-                    .filter(|n| *n <= crate::midi_compile::MAX_COMPILED_MIDI_OCCURRENCES)
-                    .ok_or(AudioStorageError::UnsupportedGraph)
-            })
+            clip.notes()
+                .iter()
+                .filter(|note| note.active())
+                .try_fold(total, |total, note| {
+                    let count = usize::try_from(
+                        playback
+                            .note_occurrences(note.start(), note.duration())
+                            .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                            .count(),
+                    )
+                    .map_err(|_| AudioStorageError::Overflow)?;
+                    total
+                        .checked_add(count)
+                        .filter(|n| *n <= crate::midi_compile::MAX_COMPILED_MIDI_OCCURRENCES)
+                        .ok_or(AudioStorageError::UnsupportedGraph)
+                })
         })?;
     let workspace = compiler_workspace_quote(notes, track.midi_clips().len())?;
     let (payload, overhead) = crate::owned_shared::OwnedShared::<

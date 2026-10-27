@@ -3899,6 +3899,7 @@ impl SessionPlayback {
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {
                 let key = signature.key();
                 if revision.midi_clip_inactive(key.track, key.clip)
+                    || revision.midi_note_inactive(key.clip, key.note)
                     || (!timing_changed
                         && old_loop == new_loop
                         && !midi_layout_changed

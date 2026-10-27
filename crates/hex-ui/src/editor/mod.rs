@@ -182,6 +182,9 @@ mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
 mod time_selection_tool;
+mod timeline_strip;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod timeline_strip_ui_tests;
 mod track_clipboard;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_clipboard_ui_test;

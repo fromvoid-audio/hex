@@ -210,6 +210,7 @@ pub struct MidiClipSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiNoteSnapshot {
     pub id: u64,
+    pub active: bool,
     pub start_raw: u64,
     pub duration_raw: u64,
     pub pitch: u8,
@@ -380,6 +381,7 @@ impl Project {
                                     .filter(|_| self.clip_alias(clip.id).is_none())
                                     .map(|note| MidiNoteSnapshot {
                                         id: note.id.0,
+                                        active: note.active,
                                         start_raw: note.start.raw(),
                                         duration_raw: note.duration.raw(),
                                         pitch: note.pitch,
@@ -462,6 +464,7 @@ impl Project {
                                             .filter(|_| self.clip_alias(clip.id).is_none())
                                             .map(|note| MidiNoteSnapshot {
                                                 id: note.id.value(),
+                                                active: note.active,
                                                 start_raw: note.start.raw(),
                                                 duration_raw: note.duration.raw(),
                                                 pitch: note.pitch,
@@ -996,6 +999,7 @@ impl Project {
                     )?;
                     notes.push(MidiNote {
                         id: NoteId(note.id),
+                        active: note.active,
                         start: note_start,
                         duration,
                         pitch: note.pitch,
@@ -1168,6 +1172,7 @@ impl Project {
                         )?;
                         notes.push(MidiNote {
                             id: NoteId(note.id),
+                            active: note.active,
                             start,
                             duration,
                             pitch: note.pitch,

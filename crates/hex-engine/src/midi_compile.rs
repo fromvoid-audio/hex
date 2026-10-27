@@ -125,7 +125,7 @@ pub(crate) fn count_project_occurrences(project: &Project) -> Result<usize, Inva
         .filter(|clip| clip.active())
     {
         let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
-        for note in clip.notes() {
+        for note in clip.notes().iter().filter(|note| note.active()) {
             let count = source
                 .note_occurrences(note.start(), note.duration())
                 .map_err(|error| Invalid(error.0))?
@@ -151,6 +151,9 @@ fn append_clip(
     events: &mut Vec<(usize, CompiledMidiEvent)>,
 ) -> Result<(), Invalid> {
     for_each_clip_occurrence(project, clip, |note, iteration, onset, off, _, _| {
+        if !note.active() {
+            return Ok(());
+        }
         for (frame, kind) in [
             (onset, MidiEventKind::NoteOn),
             (off, MidiEventKind::NoteOff),
@@ -201,7 +204,10 @@ fn for_each_clip_occurrence(
                 .tempo_map()
                 .beat_to_frame(BeatTime::from_raw(off_raw))
                 .map_err(|_| Invalid("midi note offset exceeds frame range"))?;
-            if off <= onset {
+            // An inactive authored note remains available to the editor but
+            // produces no gate. Its valid beat duration may quantize to zero
+            // frames without making the playable project unpreparable.
+            if off < onset || (off == onset && note.active()) {
                 return Err(Invalid("midi note duration quantizes to zero frames"));
             }
             visit(
@@ -355,6 +361,7 @@ fn compile_instrument_track_with_empty_bank(
     let mut span_count = 0_usize;
     for clip in track.midi_clips() {
         let mut clip_count = 0_usize;
+        let mut playable_count = 0_usize;
         let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
         for note in clip.notes() {
             let count = source
@@ -363,7 +370,7 @@ fn compile_instrument_track_with_empty_bank(
                 .count();
             let count = usize::try_from(count)
                 .map_err(|_| Invalid("compiled midi occurrence count overflow"))?;
-            if clip.active() && count != 0 && instrument.is_some() {
+            if clip.active() && note.active() && count != 0 && instrument.is_some() {
                 crate::midi_note_bank::PreparedMidiNoteBank::add_key(
                     &mut keys,
                     note.pitch(),
@@ -373,9 +380,14 @@ fn compile_instrument_track_with_empty_bank(
             clip_count = clip_count
                 .checked_add(count)
                 .ok_or(Invalid("compiled midi occurrence count overflow"))?;
+            if note.active() {
+                playable_count = playable_count
+                    .checked_add(count)
+                    .ok_or(Invalid("compiled midi occurrence count overflow"))?;
+            }
         }
         span_count = span_count
-            .checked_add(if clip.active() { clip_count } else { 0 })
+            .checked_add(if clip.active() { playable_count } else { 0 })
             .ok_or(Invalid("compiled midi occurrence count overflow"))?;
         clip_counts.push(clip_count);
     }
@@ -500,7 +512,7 @@ fn compile_instrument_track_with_empty_bank(
                 emitted = emitted
                     .checked_add(1)
                     .ok_or(Invalid("compiled midi occurrence count overflow"))?;
-                if clip.active() && instrument.is_some() {
+                if clip.active() && note.active() && instrument.is_some() {
                     let (sampler_index, end) = if mutable {
                         let tail = mutable_limits
                             .ok_or(Invalid("mutable instrument limits are missing"))?

@@ -93,6 +93,101 @@ fn group_fixture() -> (
 }
 
 #[test]
+fn retained_source_event_can_be_reactivated_without_losing_processing() {
+    let (mut editor, ids, media) = group_fixture();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let expected = render(&prepare(&editor, &media, &context), 0, 16_000, 127);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: ids[0],
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![1],
+                active: false,
+            },
+        })
+        .unwrap();
+    let muted = render(&prepare(&editor, &media, &context), 0, 16_000, 127);
+    assert_ne!(muted, expected);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 64),
+        muted
+    );
+    let source = editor.project().clip(group).unwrap().audio_events().events[0].source;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetRetainedActive {
+                source,
+                events: vec![1],
+                active: true,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 257),
+        expected
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 127),
+        muted
+    );
+}
+
+#[test]
+fn mixed_group_preserves_silence_and_reactivation_restores_original_audio() {
+    let (mut editor, ids, media) = group_fixture();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let active = render(&prepare(&editor, &media, &context), 0, 16_000, 127);
+    editor
+        .execute(Command::SetClipActive {
+            clip: ids[1],
+            active: false,
+        })
+        .unwrap();
+    let muted = render(&prepare(&editor, &media, &context), 0, 16_000, 127);
+    assert_ne!(active, muted);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 257),
+        muted
+    );
+    let event = editor
+        .project()
+        .clip(group)
+        .unwrap()
+        .audio_events()
+        .events
+        .iter()
+        .find(|event| !event.active)
+        .unwrap()
+        .id;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetActive {
+                events: vec![event],
+                active: true,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 64),
+        active
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 127),
+        muted
+    );
+}
+
+#[test]
 fn grouped_sources_preserve_exact_pcm_gaps_gains_fades_loops_offsets_and_undo() {
     let (mut editor, ids, media) = group_fixture();
     let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);

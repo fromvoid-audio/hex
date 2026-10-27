@@ -21,6 +21,8 @@ mod arrangement_sections;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
+pub mod automation_draft;
+pub mod automation_take;
 mod canonical_audio_source;
 mod comparison_audio;
 #[cfg(test)]
@@ -11430,6 +11432,7 @@ mod service_tests {
         };
         let notes = (0..64_u8)
             .map(|pitch| hex_project::MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::ZERO,
                 duration: hex_project::BeatTime::from_quarters(1).expect("gate"),
                 pitch,
