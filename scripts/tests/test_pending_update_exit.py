@@ -16,17 +16,16 @@ read_approval, write_approval = os.pipe()
 read_ready, write_ready = os.pipe()
 helper = r"""
 import importlib.util, os, sys
+from pathlib import Path
 sys.path.insert(0, sys.argv[1] + '/scripts')
 spec = importlib.util.spec_from_file_location('hex_test_build_for_observer', sys.argv[1] + '/scripts/hex-test-build.py')
 delivery = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = delivery
 spec.loader.exec_module(delivery)
 delivery._apply_verified_pending = lambda target, selected: 'approved'
-import pending_update_exit as observer
 try:
-    observer.observe_parent_exit(int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[6], timeout=1)
-    result = delivery._apply_verified_pending(None, '')
-except observer.ExitObservationError as e:
+    result = delivery.apply_after_approved_parent_exit(int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), Path(sys.argv[7]), '', observer_timeout=1)
+except delivery.DeliveryError as e:
     result = 'refused: ' + str(e)
 with open(sys.argv[5] + '.tmp', 'w') as output:
     output.write(result)
@@ -35,8 +34,11 @@ os.replace(sys.argv[5] + '.tmp', sys.argv[5])
 actual_exe = subprocess.check_output(['/bin/ps', '-ww', '-p', str(os.getpid()), '-o', 'comm='], text=True).strip()
 if mode == 'wrong_executable':
     actual_exe = '/bin/sh'
+target = os.path.join(os.path.dirname(result), 'hex.app')
+os.makedirs(os.path.join(target, 'Contents/MacOS'))
+os.symlink(actual_exe, os.path.join(target, 'Contents/MacOS/hex'))
 subprocess.Popen([sys.executable, '-c', helper, root, str(os.getpid()),
-                  str(read_approval), str(write_ready), result, actual_exe],
+                  str(read_approval), str(write_ready), result, actual_exe, target],
                  pass_fds=(read_approval, write_ready), stdout=subprocess.DEVNULL,
                  stderr=None, close_fds=True)
 os.close(read_approval)
