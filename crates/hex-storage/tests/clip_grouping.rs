@@ -154,6 +154,92 @@ fn nested_repeated_group_roundtrips_and_rejects_missing_or_invalid_sources() {
 }
 
 #[test]
+fn nested_audio_aliases_roundtrip_and_reject_conflicting_member_projection() {
+    let (mut editor, ids) = fixture();
+    editor
+        .execute(Command::SetClipActive {
+            clip: ids[1],
+            active: false,
+        })
+        .unwrap();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 700 },
+        })
+        .unwrap();
+    let track = editor.project().tracks()[0].id();
+    let asset = editor.project().clip(group).unwrap().asset();
+    let Created::Clip(third) = editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 900,
+            duration: 100,
+            source_offset: 0,
+            source_length: 100,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("third")
+    };
+    let Created::Clip(outer) = editor
+        .execute(Command::GroupClips(vec![group, third]))
+        .unwrap()
+    else {
+        panic!("regroup")
+    };
+    editor
+        .execute(Command::DuplicateAliasClips(vec![outer]))
+        .unwrap();
+    let original = editor.project().snapshot();
+    let encoded = encode(editor.project()).unwrap();
+    let loaded = decode(&encoded).unwrap();
+    assert_eq!(loaded.snapshot(), original);
+    let source = loaded.clip_alias(outer).unwrap();
+    let members: Vec<_> = loaded
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .filter(|clip| loaded.clip_alias(clip.id()) == Some(source))
+        .collect();
+    assert_eq!(members.len(), 2);
+    assert!(std::sync::Arc::ptr_eq(
+        &members[0].audio_edit().unwrap().domain.content,
+        &members[1].audio_edit().unwrap().domain.content
+    ));
+    let dir = std::env::temp_dir().join(format!(
+        "hex-nested-alias-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("group.hex");
+    hex_storage::save_new(&path, &loaded).unwrap();
+    assert_eq!(hex_storage::load(&path).unwrap().snapshot(), original);
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+    let mut value: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(value["alias_sources"].as_array().unwrap().len(), 1);
+    let row = value["nested_audio"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| !row["state"].is_null())
+        .unwrap();
+    let active = row["state"]["events"][0]["active"].as_bool().unwrap();
+    row["state"]["events"][0]["active"] = (!active).into();
+    assert!(decode(&bytes(&value)).is_err());
+}
+
+#[test]
 fn previous_event_activation_schema_migrates_without_nested_sources() {
     let (mut editor, ids) = fixture();
     editor

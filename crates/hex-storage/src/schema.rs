@@ -1,5 +1,6 @@
 pub(crate) mod appearance;
 mod arrangement_sections;
+mod audio_alias_projection;
 pub(crate) mod audio_events;
 pub(crate) mod automation_read;
 pub(crate) mod branch_audio;
