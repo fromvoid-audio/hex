@@ -12,7 +12,8 @@ running process. Preserve projects, media, preferences and historical artifacts.
 ## Update and open
 
 ```sh
-./launch          # fetch/fast-forward clean main, optimized build/install/open
+./launch          # verify/open installed app only
+./launch --update # fetch/fast-forward clean main, optimized build/install/open
 ./launch --test   # add full exact-source local CI
 ./launch --open   # verify/open installed app only
 ./launch --help
