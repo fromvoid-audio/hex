@@ -203,6 +203,9 @@ impl Drop for StreamOwner {
         if let Some(reaper) = retirement.spectrum_reaper.as_ref() {
             reaper.request_stop();
         }
+        if let Some(native) = retirement.native.as_ref() {
+            native.fail_scalar_receipts();
+        }
         let mut quarantine = match QUARANTINE.lock() {
             Ok(guard) => guard,
             Err(poison) => poison.into_inner(),
@@ -669,8 +672,16 @@ fn retire_prepared_output(mut retirement: Retirement) {
             match result {
                 Ok(Ok(true)) => return,
                 Ok(Ok(false)) => {}
-                Ok(Err(())) => retirement.failed = true,
+                Ok(Err(())) => {
+                    if let Some(native) = retirement.native.as_ref() {
+                        native.fail_scalar_receipts();
+                    }
+                    retirement.failed = true;
+                }
                 Err(payload) => {
+                    if let Some(native) = retirement.native.as_ref() {
+                        native.fail_scalar_receipts();
+                    }
                     retirement.first_panic = Some(payload);
                     retirement.failed = true;
                 }

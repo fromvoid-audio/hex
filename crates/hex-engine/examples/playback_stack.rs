@@ -324,6 +324,7 @@ fn project_fixture(
             notes.reserve(NOTES_PER_TRACK);
             for note_index in 0..NOTES_PER_TRACK {
                 notes.push(MidiNoteSnapshot {
+                    active: true,
                     id: next_id,
                     start_raw: 0,
                     duration_raw: BeatTime::ONE.raw(),
@@ -335,6 +336,7 @@ fn project_fixture(
             }
         } else {
             notes.push(MidiNoteSnapshot {
+                active: true,
                 id: next_id,
                 start_raw: 0,
                 duration_raw: BeatTime::from_quarters(2)?.raw(),

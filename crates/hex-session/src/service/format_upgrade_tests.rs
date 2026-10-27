@@ -86,7 +86,12 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         old.as_object_mut().unwrap().remove("device_automation"),
         Some(serde_json::json!([]))
     );
-    for key in ["alias_sources", "alias_members", "host_automation"] {
+    for key in [
+        "alias_sources",
+        "alias_members",
+        "host_automation",
+        "inactive_midi_notes",
+    ] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),
             Some(serde_json::json!([]))

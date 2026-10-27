@@ -12,6 +12,8 @@ mod project_tuning;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
+#[path = "callback_allocations/stage_clocks.rs"]
+mod stage_clocks;
 
 use allocation_counter::{AllocationInfo, measure};
 use hex_audio::prepared::{self, PublicationPolicy, SessionRouteOwner};
@@ -1197,6 +1199,95 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
     assert!(rejected.count_current < 0);
     assert!(rejected.bytes_current < 0);
 
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
+fn disabling_held_midi_note_handoff_allocates_and_frees_nothing_in_callback()
+-> Result<(), Box<dyn Error>> {
+    let definition = MutableFixtureDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
+        name: "notes".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
+    })?
+    else {
+        return Err("expected track".into());
+    };
+    let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8)?,
+    })?
+    else {
+        return Err("expected clip".into());
+    };
+    let Created::Note(note) = editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })?
+    else {
+        return Err("expected note".into());
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected instrument")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let media = BTreeMap::new();
+    let table = Arc::new(SineTable::new());
+    let initial = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        None,
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&initial))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial publication failed")?;
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 128];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| *sample > 0.0));
+    editor.execute(Command::SetMidiNotesActive {
+        clip,
+        notes: vec![note],
+        active: false,
+    })?;
+    let muted = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &media,
+        table,
+        Some(initial.session()),
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(muted)?;
+    control
+        .publish(playback)
+        .map_err(|_| "note activation publication failed")?;
+    measured_block(&mut callback, &mut output);
+    assert!(control.status.rejected_revision().is_none());
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().all(|sample| *sample == 0.0));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();

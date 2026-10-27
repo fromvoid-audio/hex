@@ -17,6 +17,7 @@ fn notes(next: &mut u64, track: usize, transposition: u8) -> Vec<MidiNoteSnapsho
             let id = *next;
             *next += 1;
             MidiNoteSnapshot {
+                active: true,
                 id,
                 start_raw: 0,
                 duration_raw: 2 << 32,

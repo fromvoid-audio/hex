@@ -27,6 +27,7 @@ fn fixture() -> (Editor, TrackId, SceneId, ClipId) {
 }
 fn note(pitch: u8) -> MidiNoteInsert {
     MidiNoteInsert {
+        active: true,
         start: BeatTime::ZERO,
         duration: BeatTime::from_raw(1 << 32),
         pitch,

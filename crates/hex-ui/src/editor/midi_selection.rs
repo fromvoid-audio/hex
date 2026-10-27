@@ -493,6 +493,7 @@ mod tests {
         let notes = [
             NoteGeometry {
                 id: ids[0],
+                active: true,
                 start: 0,
                 duration: 1,
                 pitch: 71,
@@ -506,6 +507,7 @@ mod tests {
             },
             NoteGeometry {
                 id: ids[1],
+                active: true,
                 start: 1,
                 duration: 1,
                 pitch: 70,

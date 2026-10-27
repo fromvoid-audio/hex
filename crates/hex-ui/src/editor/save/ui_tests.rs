@@ -130,7 +130,7 @@ fn fixture(
         old.as_object_mut().unwrap().remove("device_automation"),
         Some(serde_json::json!([]))
     );
-    for key in ["alias_sources", "alias_members"] {
+    for key in ["alias_sources", "alias_members", "inactive_midi_notes"] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),
             Some(serde_json::json!([]))

@@ -498,6 +498,7 @@ fn note_batches_resolve_session_sources_and_snapshot_ids_are_global() {
             clip,
             notes: vec![
                 MidiNoteInsert {
+                    active: true,
                     start: BeatTime::ZERO,
                     duration: beats(1),
                     pitch: 60,
@@ -505,6 +506,7 @@ fn note_batches_resolve_session_sources_and_snapshot_ids_are_global() {
                     velocity: 90,
                 },
                 MidiNoteInsert {
+                    active: true,
                     start: beats(1),
                     duration: beats(1),
                     pitch: 61,
@@ -804,6 +806,7 @@ fn arrangement_to_session_copy_respects_combined_note_limit_atomically() {
     for index in 0..(hex_project::MAX_NOTES / 2) {
         arrangement_notes.push(MidiNoteSnapshot {
             id,
+            active: true,
             start_raw: index as u64,
             duration_raw: 1,
             pitch: 60,
@@ -820,6 +823,7 @@ fn arrangement_to_session_copy_respects_combined_note_limit_atomically() {
     for index in 0..(hex_project::MAX_NOTES / 2) {
         session_clip_snapshot.source.notes.push(MidiNoteSnapshot {
             id,
+            active: true,
             start_raw: index as u64,
             duration_raw: 1,
             pitch: 61,

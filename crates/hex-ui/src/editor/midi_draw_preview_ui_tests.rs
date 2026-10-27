@@ -63,6 +63,7 @@ fn released_draw_erase_overwrite_and_extension_keep_geometry_until_real_terminal
             }
             .into_iter()
             .map(|(start, duration)| MidiNoteInsert {
+                active: true,
                 start: beat(start),
                 duration: beat(duration),
                 pitch: 60,
@@ -231,3 +232,6 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
         history(&editor, &visual, expected);
     }
 }
+
+#[path = "midi_draw_capture_ui_tests.rs"]
+mod capture_tests;

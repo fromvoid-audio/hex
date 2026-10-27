@@ -282,6 +282,11 @@ impl MidiStroke {
         }
     }
 
+    /// Immutable frame and down anchor retained across preview/traversal updates.
+    pub(super) fn admission(&self) -> (StrokeContext, u64, u8) {
+        (self.context, self.anchor, self.down_pitch)
+    }
+
     pub(super) fn shared_preview(&self) -> Arc<StrokePreview> {
         Arc::clone(&self.preview)
     }
@@ -490,6 +495,7 @@ impl MidiStroke {
                 return self.cancel_with(StrokeError::InvalidPoint);
             };
             let note = MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::from_raw(onset),
                 duration: hex_project::BeatTime::from_raw(duration),
                 pitch: cell.pitch,
