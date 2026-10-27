@@ -21,6 +21,8 @@ mod arrangement_sections;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
+pub mod automation_draft;
+pub mod automation_take;
 mod canonical_audio_source;
 mod comparison_audio;
 #[cfg(test)]
@@ -2578,20 +2580,7 @@ fn run_worker(
             _ => None,
         };
         let (request, resolution_failure) = match resolved_edit {
-            Some(Ok(command)) => match session.project().audio_group_render_target(&command) {
-                Ok(Some(target)) => (
-                    Request::BounceArrangement {
-                        project_generation,
-                        revision,
-                        target,
-                        in_place: true,
-                        control: hex_export::ExportControl::default(),
-                    },
-                    None,
-                ),
-                Ok(None) => (Request::Edit(command), None),
-                Err(reason) => (request, Some(reason.to_string())),
-            },
+            Some(Ok(command)) => (Request::Edit(command), None),
             Some(Err(reason)) => (request, Some(reason)),
             None => (request, None),
         };
@@ -11430,6 +11419,7 @@ mod service_tests {
         };
         let notes = (0..64_u8)
             .map(|pitch| hex_project::MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::ZERO,
                 duration: hex_project::BeatTime::from_quarters(1).expect("gate"),
                 pitch,

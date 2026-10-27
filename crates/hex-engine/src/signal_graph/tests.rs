@@ -538,6 +538,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
             loop_end_raw: hex_project::BeatTime::ONE.raw(),
             looping: false,
             notes: vec![hex_project::MidiNoteSnapshot {
+                active: true,
                 id: next + 2,
                 start_raw: 0,
                 duration_raw: hex_project::BeatTime::ONE.raw(),

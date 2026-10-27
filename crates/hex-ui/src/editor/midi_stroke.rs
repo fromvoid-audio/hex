@@ -495,6 +495,7 @@ impl MidiStroke {
                 return self.cancel_with(StrokeError::InvalidPoint);
             };
             let note = MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::from_raw(onset),
                 duration: hex_project::BeatTime::from_raw(duration),
                 pitch: cell.pitch,

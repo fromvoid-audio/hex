@@ -1112,6 +1112,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
             loop_end_raw: 4 << 32,
             looping: false,
             notes: vec![MidiNoteSnapshot {
+                active: true,
                 id: 9,
                 start_raw: 0,
                 duration_raw: 1 << 32,
@@ -1169,6 +1170,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         panic!("Session MIDI fixture expected")
     };
     clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: 11,
         start_raw: 0,
         duration_raw: 1 << 32,
@@ -1261,6 +1263,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                 loop_end_raw: 32 << 32,
                 looping: false,
                 notes: vec![MidiNoteSnapshot {
+                    active: true,
                     id: 3,
                     start_raw: note_start,
                     duration_raw: note_duration,
@@ -1294,6 +1297,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                         loop_end_raw: 32 << 32,
                         looping: false,
                         notes: vec![MidiNoteSnapshot {
+                            active: true,
                             id: 6,
                             start_raw: note_start,
                             duration_raw: note_duration,
@@ -2881,6 +2885,7 @@ fn with_second_session_note(project: &Project) -> Project {
         panic!("fixture has a Session MIDI clip")
     };
     clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: note_id,
         start_raw: 1 << 32,
         duration_raw: 1 << 32,
@@ -2903,6 +2908,7 @@ fn with_second_arrangement_note(project: &Project) -> Project {
         TrackContentSnapshot::Audio(_) => panic!("fixture has Arrangement MIDI content"),
     };
     clips[0].notes.push(MidiNoteSnapshot {
+        active: true,
         id: note_id,
         start_raw: 1 << 32,
         duration_raw: 1 << 32,
@@ -2926,6 +2932,7 @@ fn with_session_note_at(project: &Project, start_raw: u64) -> Project {
         panic!("fixture has a Session MIDI clip")
     };
     clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: note_id,
         start_raw,
         duration_raw: 1 << 32,
@@ -5246,6 +5253,7 @@ fn profile_mutable_occurrence_suppression_handoff() {
     let notes = &mut clips[0].notes;
     for index in 1..64_u64 {
         notes.push(MidiNoteSnapshot {
+            active: true,
             id: first_new_id + index - 1,
             start_raw: 0,
             duration_raw: 8 << 32,
@@ -5927,6 +5935,142 @@ fn activation_mute_cuts_held_mutable_gate_with_instrument_still_enabled() {
 }
 
 #[test]
+fn note_activation_cuts_the_held_mutable_gate() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    for session in [false, true] {
+        let base = with_test_instrument(&project(0.5, 0, 1 << 28), id, 0);
+        let old_revision = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+        let clip = if session {
+            old_revision.session().midi_clips()[0].id
+        } else {
+            base.tracks()[0].midi_clips()[0].id()
+        };
+        let note = base.midi_source(clip).unwrap().notes()[0].id();
+        let mut old = SessionPlayback::new(old_revision).unwrap();
+        if session {
+            old.apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        }
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 16]).unwrap();
+        let mut editor = Editor::new(base, 8).unwrap();
+        editor
+            .execute(Command::SetMidiNotesActive {
+                clip,
+                notes: vec![note],
+                active: false,
+            })
+            .unwrap();
+        let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+            editor.project(),
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        let source = candidate.mutable_instruments[0].as_ref().unwrap();
+        assert!(source.proofs().all(|proof| proof.gate_end_frame == 16));
+        let mut released = [[0.0; 2]; 16];
+        candidate.render(&mut released).unwrap();
+        assert!(
+            candidate.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .committed_is_quiescent()
+        );
+        assert!(candidate.revision.arrangement().tracks()[0].instrument_slot_enabled());
+    }
+}
+
+#[test]
+fn disabling_one_note_keeps_another_held_note_sounding() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(0.5, 0, 1 << 28), id, 0);
+    let mut editor = Editor::new(base, 8).unwrap();
+    let clip = editor.project().tracks()[0].midi_clips()[0].id();
+    let muted_note = editor.project().midi_clip(clip).unwrap().notes()[0].id();
+    let Created::Note(other_note) = editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1 << 28),
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap()
+    else {
+        panic!("note")
+    };
+    let old_revision =
+        revision_with_instrument_registry(editor.project(), Arc::clone(&table), &registry);
+    let mut old = SessionPlayback::new(old_revision).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 16]).unwrap();
+    editor
+        .execute(Command::SetMidiNotesActive {
+            clip,
+            notes: vec![muted_note],
+            active: false,
+        })
+        .unwrap();
+    let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+        editor.project(),
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let proofs = candidate.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        proofs
+            .iter()
+            .find(|proof| proof.signature.key().note == muted_note)
+            .unwrap()
+            .gate_end_frame,
+        16
+    );
+    assert!(
+        proofs
+            .iter()
+            .find(|proof| proof.signature.key().note == other_note)
+            .unwrap()
+            .gate_end_frame
+            > 16
+    );
+    let mut output = [[0.0; 2]; 16];
+    candidate.render(&mut output).unwrap();
+    assert!(output[8..].iter().any(|frame| frame[0] != 0.0));
+}
+
+#[test]
 fn activation_time_span_shortens_mutable_prefix_and_retriggers_right_window() {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
@@ -6488,6 +6632,7 @@ fn reenabled_loop_source_skips_old_occurrences_and_plays_future_iteration() {
     clip.source.loop_end_raw = 1 << 32;
     clip.source.looping = true;
     clip.source.notes = vec![MidiNoteSnapshot {
+        active: true,
         id: clip.source.notes[0].id,
         start_raw: 1 << 30,
         duration_raw: 3 << 32,
@@ -7192,6 +7337,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                 loop_end_raw: 32 << 32,
                 looping: false,
                 notes: vec![MidiNoteSnapshot {
+                    active: true,
                     id: arrangement_note,
                     start_raw: arrangement_start,
                     duration_raw: 1 << 32,
@@ -7220,6 +7366,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                     loop_end_raw: 32 << 32,
                     looping: false,
                     notes: vec![MidiNoteSnapshot {
+                        active: true,
                         id: session_note,
                         start_raw: session_start,
                         duration_raw: 1 << 32,
@@ -7977,6 +8124,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
         clip.source.loop_end_raw = 4 << 32;
         clip.source.looping = true;
         clip.source.notes = vec![MidiNoteSnapshot {
+            active: true,
             id: 6,
             start_raw: 5_u64 << 31, // loop phase 1/2; first repeat begins at 3.5
             duration_raw: 1 << 32,
@@ -8825,6 +8973,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
     let mut snapshot = base.snapshot();
     if let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content {
         clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: 13,
             start_raw: 1_u64 << 27, // begins 1/32 beat after the carried note
             duration_raw: 1 << 30,
@@ -8942,6 +9091,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         panic!("Session MIDI fixture expected")
     };
     original_clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: original_note_id,
         start_raw: 0,
         duration_raw: 1 << 30,
@@ -9041,6 +9191,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         panic!("Session MIDI fixture expected")
     };
     clip.source.notes.push(MidiNoteSnapshot {
+        active: true,
         id: added_note_id,
         start_raw: 1_u64 << 27,
         duration_raw: 1 << 30,
@@ -9205,6 +9356,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
                 loop_end_raw: 32 << 32,
                 looping: false,
                 notes: vec![MidiNoteSnapshot {
+                    active: true,
                     id: note_id,
                     start_raw: 0,
                     duration_raw: 8 << 32,
@@ -9278,6 +9430,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
         clip.looping = true;
         clip.notes = vec![
             MidiNoteSnapshot {
+                active: true,
                 id: 3,
                 start_raw: 3_u64 << 31, // intro onset, gate crosses the first loop seam
                 duration_raw: 4 << 32,
@@ -9286,6 +9439,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 velocity: 100,
             },
             MidiNoteSnapshot {
+                active: true,
                 id: 13,
                 start_raw: 5_u64 << 31, // repeated loop phase
                 duration_raw: 1 << 32,
@@ -9302,6 +9456,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
         clip.source.looping = true;
         clip.source.notes = vec![
             MidiNoteSnapshot {
+                active: true,
                 id: 14,
                 start_raw: 3_u64 << 31,
                 duration_raw: 4 << 32,
@@ -9310,6 +9465,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 velocity: 100,
             },
             MidiNoteSnapshot {
+                active: true,
                 id: 15,
                 start_raw: 5_u64 << 31,
                 duration_raw: 1 << 32,
@@ -10713,6 +10869,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             _ => panic!("fixture has MIDI arrangement content"),
         };
         arrangement[0].notes.push(MidiNoteSnapshot {
+            active: true,
             id: 7,
             start_raw: 1 << 24,
             duration_raw: 1 << 32,
@@ -10727,6 +10884,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             panic!("fixture has Session MIDI content");
         };
         session_clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: snapshot.next_id,
             start_raw: 1 << 24,
             duration_raw: 1 << 32,
@@ -10885,6 +11043,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
         };
         if arrangement_note {
             clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
                 id: snapshot.next_id,
                 start_raw: 0,
                 duration_raw: note_duration,
@@ -10901,6 +11060,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             panic!("fixture has Session MIDI content");
         };
         session_clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: note_duration,
@@ -11046,6 +11206,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             _ => panic!("fixture has MIDI arrangement content"),
         };
         clips[0].notes.push(MidiNoteSnapshot {
+            active: true,
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
@@ -11059,6 +11220,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             panic!("fixture has Session MIDI content");
         };
         session_clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
@@ -11284,6 +11446,9 @@ fn section_loop_preroll_matches_canonical_loop_with_mutable_and_stateful_history
                 source.arrangement().loop_region().is_none(),
                 "saved loop remains unchanged"
             );
+            let playback =
+                crate::playback::Playback::from_interactive_arrangement_preroll(actual).unwrap();
+            assert_eq!(playback.automation_capture_loop(), Some(region));
             assert_eq!(
                 SessionPlayback::prepare_section_arrangement_preroll(
                     source,

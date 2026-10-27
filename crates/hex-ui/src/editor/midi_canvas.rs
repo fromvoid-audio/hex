@@ -522,7 +522,11 @@ impl EditorView {
                         y + 1.0,
                         w,
                         (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                        theme::color(theme::PaletteRole::Secondary),
+                        theme::color(if note.active {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Muted
+                        }),
                     );
                     let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
                     let border = theme::color(theme::PaletteRole::Background);
@@ -569,7 +573,11 @@ impl EditorView {
                         y + 1.0,
                         w,
                         (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                        theme::color(theme::PaletteRole::Primary),
+                        theme::color(if note.active {
+                            theme::PaletteRole::Primary
+                        } else {
+                            theme::PaletteRole::Muted
+                        }),
                     );
                     if draw_primary == Some(id) {
                         let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
@@ -647,7 +655,11 @@ impl EditorView {
                                 note.y * height + 1.0,
                                 right - x,
                                 (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                                theme::color(theme::PaletteRole::Primary),
+                                theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
+                                    theme::PaletteRole::Muted
+                                } else {
+                                    theme::PaletteRole::Primary
+                                }),
                             );
                         }
                     }
@@ -683,7 +695,11 @@ impl EditorView {
                                 note.y * height + 1.0,
                                 right - x,
                                 (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                                theme::color(theme::PaletteRole::Primary),
+                                theme::color(if original.active {
+                                    theme::PaletteRole::Primary
+                                } else {
+                                    theme::PaletteRole::Muted
+                                }),
                             );
                         }
                     }
@@ -1035,6 +1051,7 @@ impl EditorView {
                                     }
                                     originals.push(super::midi_group_drag::GroupNote {
                                         id: selected_note.id(),
+                                        active: selected_note.active(),
                                         start: selected_note.start().raw(),
                                         duration: selected_note.duration().raw(),
                                         pitch: selected_note.pitch(),
@@ -1090,6 +1107,7 @@ impl EditorView {
                                 revision,
                                 clip: clip_id,
                                 note: note.id,
+                                active: note.active,
                                 original: NotePreview {
                                     start: note.start,
                                     duration: note.duration,
@@ -1208,6 +1226,7 @@ impl EditorView {
                             rendered_context,
                             f32::from(event.position.x),
                             hex_project::MidiNoteInsert {
+                                active: true,
                                 start: local_beat,
                                 duration: BeatTime::from_raw(duration),
                                 pitch,

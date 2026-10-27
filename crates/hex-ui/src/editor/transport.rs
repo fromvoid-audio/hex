@@ -35,6 +35,7 @@ impl EditorView {
             .items_center()
             .flex_shrink_0()
             .child(field)
+            .child(super::gain_recording::retained_controls(self, cx))
             .child(self.control_icon(
                 "♯",
                 "project tuning · cmd+alt+t",

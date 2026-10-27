@@ -5,6 +5,7 @@ mod fades;
 mod navigation;
 mod paint;
 mod pending;
+mod play_start;
 mod playhead;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod playhead_tests;
@@ -19,6 +20,7 @@ use super::{EditorView, musical_time::SnapGrid, viewport::Viewport};
 use gpui::{Bounds, Pixels};
 use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
 use hex_session::service::Request;
+pub(in crate::editor) use play_start::Camera as PlayStartCamera;
 pub(super) use view::view;
 
 /// Source editing exposes the complete retained root for a placed cycle,
@@ -37,6 +39,12 @@ pub(super) struct State {
     revision: u64,
     pub(super) source_view: bool,
     viewport: Option<Viewport>,
+    frame_bounds: Option<(u64, u64)>,
+    // Last canonical (root position, projected frame), plus the latest admitted
+    // grip (root position, visible frame offset, viewport length). Display only.
+    canonical_start: Option<(u64, u64)>,
+    start_grip: Option<(u64, u64, u64)>,
+    frame_domain: Option<std::sync::Arc<hex_project::AudioClipDomain>>,
     source_viewport: Option<Viewport>,
     source_fit_back: Option<Option<Viewport>>,
     wheel: f32,
@@ -46,6 +54,8 @@ pub(super) struct State {
     fit_back: Option<Option<Viewport>>,
     cursor: u64,
     selected: Option<u64>,
+    retained_selection: Option<(Vec<u64>, u64)>,
+    retained_ancestors: Vec<u64>,
     range: Option<(u64, u64)>,
     grid: SnapGrid,
     pub(super) fade_key_held: bool,
@@ -67,6 +77,20 @@ struct Clipboard {
     events: Vec<AudioEvent>,
     waveform: Option<waveform_preview::Source>,
 }
+
+fn retained_events(clip: &hex_project::Clip, path: &[u64]) -> Option<hex_project::AudioEvents> {
+    let mut clip = clip.clone();
+    for source in path {
+        let events = clip.editable_audio_events().ok()?;
+        clip = events
+            .sources
+            .iter()
+            .find(|root| root.id == *source)?
+            .clip
+            .clone();
+    }
+    clip.editable_audio_events().ok()
+}
 #[derive(Clone)]
 pub(super) struct Gesture {
     anchor: u64,
@@ -79,6 +103,7 @@ pub(super) struct Gesture {
 #[derive(Clone, Copy)]
 enum Kind {
     Select,
+    PlayStart { position: u64 },
     RangeMove { start: u64, end: u64 },
     Move(AudioEvent),
     Leading(AudioEvent),
@@ -123,6 +148,175 @@ impl EditorView {
             .iter()
             .find(|e| e.id == selected)
             .map(|e| (e.start, e.end))
+    }
+    /// Toggle the explicitly selected event; retained geometry and source stay intact.
+    pub(in crate::editor) fn event_toggle_active(&mut self) -> bool {
+        if self.audio_event_editor.source_view || !self.event_context_current() {
+            return false;
+        }
+        let Some(selected) = self.audio_event_editor.selected else {
+            return false;
+        };
+        if self.activation_gesture_blocked()
+            || self.audio_event_editor.pending.is_some()
+            || self.audio_event_editor.gesture.is_some()
+        {
+            self.error = Some("finish the current edit before changing activation".into());
+            return true;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(clip) = self.detail_clip_id().and_then(|id| state.project.clip(id)) else {
+            return false;
+        };
+        let Ok(events) = clip.editable_audio_events() else {
+            return false;
+        };
+        let Some(event) = events.events.iter().find(|event| event.id == selected) else {
+            return false;
+        };
+        if let Some((path, event_id)) = self.audio_event_editor.retained_selection.clone() {
+            if path.first() != Some(&event.source) {
+                self.error = Some("retained audio selection changed".into());
+                return true;
+            }
+            let Some(inner) = retained_events(clip, &path) else {
+                return false;
+            };
+            let Some(event) = inner.events.iter().find(|event| event.id == event_id) else {
+                self.error = Some("retained audio selection changed".into());
+                return true;
+            };
+            let active = !event.active;
+            self.event_commit(AudioEventEdit::SetRetainedPathActive {
+                sources: path,
+                events: vec![event_id],
+                active,
+            });
+            return true;
+        }
+        let active = !event.active;
+        self.event_commit(AudioEventEdit::SetActive {
+            events: vec![selected],
+            active,
+        });
+        true
+    }
+    fn event_retained_step(&mut self, forward: bool) {
+        if self.activation_gesture_blocked()
+            || self.audio_event_editor.pending.is_some()
+            || self.audio_event_editor.gesture.is_some()
+        {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(clip) = self.detail_clip_id().and_then(|id| state.project.clip(id)) else {
+            return;
+        };
+        let Ok(events) = clip.editable_audio_events() else {
+            return;
+        };
+        let Some(outer) = events
+            .events
+            .iter()
+            .find(|event| Some(event.id) == self.audio_event_editor.selected)
+        else {
+            return;
+        };
+        let continuing = self
+            .audio_event_editor
+            .retained_selection
+            .as_ref()
+            .is_some_and(|(path, _)| path.first() == Some(&outer.source));
+        if !continuing {
+            self.audio_event_editor.retained_ancestors.clear();
+        }
+        let path = self
+            .audio_event_editor
+            .retained_selection
+            .as_ref()
+            .filter(|(path, _)| path.first() == Some(&outer.source))
+            .map_or_else(|| vec![outer.source], |(path, _)| path.clone());
+        let Some(inner) = retained_events(clip, &path) else {
+            return;
+        };
+        if inner.events.is_empty() {
+            return;
+        }
+        let current = self
+            .audio_event_editor
+            .retained_selection
+            .as_ref()
+            .filter(|(selected_path, _)| *selected_path == path)
+            .and_then(|(_, id)| inner.events.iter().position(|event| event.id == *id));
+        let index = match current {
+            Some(index) if forward => (index + 1) % inner.events.len(),
+            Some(index) => (index + inner.events.len() - 1) % inner.events.len(),
+            None => 0,
+        };
+        self.audio_event_editor.retained_selection = Some((path, inner.events[index].id));
+    }
+
+    fn event_retained_depth(&mut self, deeper: bool) {
+        if self.activation_gesture_blocked()
+            || self.audio_event_editor.pending.is_some()
+            || self.audio_event_editor.gesture.is_some()
+            || !self.event_context_current()
+        {
+            return;
+        }
+        let Some((mut path, selected)) = self.audio_event_editor.retained_selection.clone() else {
+            return;
+        };
+        let Some(clip) = self
+            .state
+            .as_ref()
+            .and_then(|state| self.detail_clip_id().and_then(|id| state.project.clip(id)))
+        else {
+            return;
+        };
+        let Some(current) = retained_events(clip, &path) else {
+            return;
+        };
+        if deeper {
+            let Some(event) = current.events.iter().find(|event| event.id == selected) else {
+                return;
+            };
+            if event.source == 0 || path.len() >= hex_project::MAX_RETAINED_AUDIO_DEPTH {
+                return;
+            }
+            path.push(event.source);
+            let Some(next) = retained_events(clip, &path) else {
+                return;
+            };
+            let Some(event) = next.events.first() else {
+                return;
+            };
+            self.audio_event_editor.retained_ancestors.push(selected);
+            self.audio_event_editor.retained_selection = Some((path, event.id));
+        } else if path.len() > 1 {
+            let Some(source) = path.pop() else {
+                return;
+            };
+            let Some(parent) = retained_events(clip, &path) else {
+                return;
+            };
+            let Some(parent_id) = self.audio_event_editor.retained_ancestors.last().copied() else {
+                return;
+            };
+            let Some(event) = parent
+                .events
+                .iter()
+                .find(|event| event.id == parent_id && event.source == source)
+            else {
+                return;
+            };
+            self.audio_event_editor.retained_ancestors.pop();
+            self.audio_event_editor.retained_selection = Some((path, event.id));
+        }
     }
     pub(super) fn event_group_selected(&mut self) {
         if self.audio_event_editor.source_view
@@ -361,10 +555,19 @@ impl EditorView {
     // inside it. Only explicit cancellation discards held input.
     fn event_release_pointer(&mut self, x: f32, platform: bool) {
         self.event_update_pointer(x, platform);
-        if let Some(gesture) = self.audio_event_editor.gesture.take()
-            && let Some(operation) = gesture.operation
-        {
-            self.event_commit(operation);
+        if let Some(gesture) = self.audio_event_editor.gesture.take() {
+            if let Kind::PlayStart { position } = gesture.kind {
+                if position != gesture.anchor {
+                    if let Some((clip, _, _)) = self.event_context() {
+                        self.commit_audio_clip_loop(
+                            clip,
+                            hex_project::AudioViewResizeOperation::PlayStart { position },
+                        );
+                    }
+                }
+            } else if let Some(operation) = gesture.operation {
+                self.event_commit(operation);
+            }
         }
     }
     fn event_update_pointer(&mut self, x: f32, platform: bool) {
@@ -398,6 +601,13 @@ impl EditorView {
         };
         let position = self.event_pointer_position(x, platform).unwrap_or(raw);
         match gesture.kind {
+            Kind::PlayStart { .. } => {
+                let Some(position) = self.audio_play_start_at_pointer(&root, &gesture, x, platform)
+                else {
+                    return;
+                };
+                gesture.kind = Kind::PlayStart { position };
+            }
             Kind::Select => {
                 self.audio_event_editor.range =
                     Some((gesture.anchor.min(position), gesture.anchor.max(position)));

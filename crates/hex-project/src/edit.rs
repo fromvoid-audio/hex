@@ -779,7 +779,7 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
-    /// Recompute a clip-local loop operation from the current authored source.
+    /// Recompute a clip-local loop or playback-start operation from current source.
     /// Outer growth carves both clip kinds; cycle edits retain outer occupancy.
     ResizeAudioClipView {
         clip: ClipId,
@@ -1045,6 +1045,12 @@ pub enum Command {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
     },
+    /// Atomically enable or disable existing notes without changing their geometry.
+    SetMidiNotesActive {
+        clip: ClipId,
+        notes: Vec<NoteId>,
+        active: bool,
+    },
     RemoveMidiNote(NoteId),
     /// Atomically remove several notes in one MIDI clip as one history step.
     RemoveMidiNotes {
@@ -1102,6 +1108,7 @@ pub struct MidiNoteUpdate {
 /// Musical fields for one newly inserted MIDI note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiNoteInsert {
+    pub active: bool,
     pub start: crate::BeatTime,
     pub duration: crate::BeatTime,
     pub pitch: u8,
@@ -1993,6 +2000,7 @@ impl Project {
             | Command::DuplicateMidiSourceRange { .. }
             | Command::UpdateMidiNote { .. }
             | Command::UpdateMidiNotes { .. }
+            | Command::SetMidiNotesActive { .. }
             | Command::RemoveMidiNote(_)
             | Command::RemoveMidiNotes { .. }
             | Command::MoveMidiClip { .. }

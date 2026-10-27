@@ -494,7 +494,7 @@ fn compile_project_inner<'a>(
             .track(root)
             .ok_or(Invalid("midi source root is missing"))?;
         for clip in source.midi_clips().iter().filter(|clip| clip.active()) {
-            for note in clip.notes() {
+            for note in clip.notes().iter().filter(|note| note.active()) {
                 let n = clip
                     .source_playback()
                     .map_err(|error| Invalid(error.0))?
@@ -571,7 +571,7 @@ fn compile_project_inner<'a>(
             && let Some(instrument) = instrument_config.map(Arc::as_ref)
         {
             for clip in midi_source.midi_clips().iter().filter(|clip| clip.active()) {
-                for note in clip.source().notes() {
+                for note in clip.source().notes().iter().filter(|note| note.active()) {
                     instrument
                         .validate_event_note(note.pitch(), note.velocity())
                         .map_err(|_| Invalid("mutable instrument note is unsupported"))?;
@@ -608,7 +608,9 @@ fn compile_project_inner<'a>(
                     let mut sources = Vec::new();
                     sources.try_reserve_exact(events.sources.len())
                         .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
-                    for root in &events.sources {
+                    for root in clip.retained_audio_roots() {
+                        sources.try_reserve(1)
+                            .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
                         let asset = snapshot.asset(root.clip.asset())
                             .ok_or(Invalid("grouped audio source asset missing"))?;
                         let PreparedAudioSourceRef::Resident(audio) = resolve_source(asset, snapshot.sample_rate())? else {
