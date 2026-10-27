@@ -4,15 +4,19 @@ use hex_lattice::{NativeTransientInput, NativeTransientOperation};
 
 /// One control-allocated backing for the armed runtime. Callback operations
 /// overwrite only Copy fields; they never replace or retire this Box.
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 pub(super) struct State {
     pub(super) input: Option<NativeTransientInput>,
     pub(super) processing: Option<crate::native_parameter_input::Processing>,
     pub(super) application: Option<NativeParameterApplication>,
+    pub(super) scalar: Option<Box<crate::scalar_automation::State>>,
 }
 impl State {
     pub(super) fn is_empty(&self) -> bool {
-        self.input.is_none() && self.processing.is_none() && self.application.is_none()
+        self.input.is_none()
+            && self.processing.is_none()
+            && self.application.is_none()
+            && self.scalar.is_none()
     }
 }
 
@@ -84,7 +88,9 @@ impl crate::SessionPlayback {
     /// fallback slots restore the base or authored curve on subsequent processing.
     pub fn invalidate_native_parameter_input(&mut self) {
         if let Some(state) = self.native_parameter_state.as_deref_mut() {
-            *state = State::default();
+            state.input = None;
+            state.processing = None;
+            state.application = None;
         }
     }
 

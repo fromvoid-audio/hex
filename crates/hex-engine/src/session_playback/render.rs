@@ -629,7 +629,10 @@ impl SessionPlayback {
     ) -> Result<(), SessionPlaybackError> {
         // Move only the existing scratch Box, then restore it on every result.
         // No callback allocation, new owner, or final source/graph drop occurs.
-        let mut scalar = self.scalar_automation.take();
+        let mut scalar = self
+            .native_parameter_state
+            .as_deref_mut()
+            .and_then(|state| state.scalar.take());
         let result = self.render_playing_with_scalar(
             output,
             pages,
@@ -639,7 +642,9 @@ impl SessionPlayback {
             foreign,
             scalar.as_deref_mut(),
         );
-        self.scalar_automation = scalar;
+        if let Some(state) = self.native_parameter_state.as_deref_mut() {
+            state.scalar = scalar;
+        }
         result
     }
 

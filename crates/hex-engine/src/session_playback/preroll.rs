@@ -434,7 +434,10 @@ impl SessionPlayback {
             live_expression: self.live_expression.is_some(),
             computer_keyboard: self.computer_keyboard.as_deref(),
             native_parameter_state: self.native_parameter_state.is_some(),
-            scalar_automation: self.scalar_automation.is_some(),
+            scalar_automation: self
+                .native_parameter_state
+                .as_deref()
+                .is_some_and(|state| state.scalar.is_some()),
             compensation: self.compensation.as_ref(),
             main_chain: &self.main_chain,
             current_sampler_keyboards: &self.current_sampler_keyboards,

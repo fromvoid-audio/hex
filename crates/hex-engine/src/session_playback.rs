@@ -431,7 +431,6 @@ pub struct SessionPlayback {
     gain_recording_override: Option<f32>,
     // Optional control allocation; the callback mutates Copy contents only.
     native_parameter_state: Option<Box<native_parameter_input::State>>,
-    scalar_automation: Option<Box<crate::scalar_automation::State>>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
@@ -819,7 +818,6 @@ impl SessionPlayback {
             capture_epoch: _,
             gain_recording_override: _,
             native_parameter_state: _,
-            scalar_automation: _,
             compensation,
             device_metering: _,
             revision: _,
@@ -1837,15 +1835,20 @@ impl SessionPlayback {
         let analytic_import = analytic_import::ImportPlan::new()?;
         let current_sampler_keyboards = Vec::new();
         let current_route_cut_scratch = Vec::new();
-        let native_parameter_state = revision
-            .native_parameter_input_target()
-            .map(|_| Box::new(native_parameter_input::State::default()));
+        let native_parameter_state = revision.native_parameter_input_target().map(|_| {
+            Box::new(native_parameter_input::State {
+                scalar: scalar_automation,
+                ..Default::default()
+            })
+        });
         if let Some(allowance) = linear_resource_allowance {
             let actual = preroll::RuntimeStorage {
                 live_expression: false,
                 computer_keyboard: None,
                 native_parameter_state: native_parameter_state.is_some(),
-                scalar_automation: scalar_automation.is_some(),
+                scalar_automation: native_parameter_state
+                    .as_deref()
+                    .is_some_and(|state| state.scalar.is_some()),
                 compensation: compensation.as_ref(),
                 main_chain: &main_chain,
                 current_sampler_keyboards: &current_sampler_keyboards,
@@ -1893,7 +1896,6 @@ impl SessionPlayback {
             capture_epoch: 0,
             gain_recording_override: None,
             native_parameter_state,
-            scalar_automation,
             compensation,
             device_metering: false,
             revision,
