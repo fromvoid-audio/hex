@@ -1,7 +1,7 @@
 //! Passive time-chunk fragments retain their timeline bounds and clip shell.
 //! A supplied compact title replaces body construction; normal rows use cached
 //! waveform/note summaries. Inputs remain prepared display data, never edits.
-use super::tracks::clip_grid_layer;
+use super::tracks::aligned_clip_grid_layer;
 use super::viewport::Viewport;
 use crate::theme;
 use gpui::{AnyElement, Div, div, prelude::*, px, relative, rgb};
@@ -101,6 +101,7 @@ pub(super) fn clip_intersection(clip: &Clip, interval: (u64, u64)) -> Option<(u6
 #[allow(clippy::too_many_arguments)]
 pub(super) fn passive_audio_fragment(
     lane_width: f32,
+    scale: f32,
     fill: u32,
     clip: &Clip,
     waveform: Option<&std::sync::Arc<hex_session::CachedWaveform>>,
@@ -119,18 +120,34 @@ pub(super) fn passive_audio_fragment(
     }
     let left = (start - viewport.start) as f64 / viewport.length as f64;
     let width = (stop - start) as f64 / viewport.length as f64;
-    let mut content = hex_widgets::rectangle_surface(
-        left as f32,
-        width as f32,
-        super::trim::rendered_clip_width(lane_width, width),
-    )
-    .debug_selector(move || selector.clone())
-    .border_color(rgb(0x000000))
-    .bg(rgb(fill));
+    let pixel_width = super::trim::rendered_clip_width(lane_width, width);
+    let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
+    let stroke = 1.0 / scale.max(1.0);
+    let mut content = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
+        .left_0()
+        .w_full()
+        .border_l(px(if has_border { stroke } else { 0.0 }))
+        .border_r(px(0.0))
+        .debug_selector(move || selector.clone())
+        .border_color(rgb(0x000000))
+        .bg(rgb(fill));
     if let Some(header) = compact_header {
-        return Some(content.child(header));
+        return Some(super::tracks::clip_boundary_shell(
+            content.child(header),
+            left as f32,
+            width as f32,
+            stroke,
+            0x000000,
+            0x000000,
+            true,
+            has_border,
+            0.0,
+            || "passive-audio-trailing".into(),
+        ));
     }
-    content = content.children(clip_grid_layer(grid, start, stop));
+    content = content.children(aligned_clip_grid_layer(
+        grid, start, stop, stroke, has_border,
+    ));
     if let Some(waveform) = waveform {
         content = content.child(super::waveform::waveform_view_cached(
             waveform, clip, start, stop, cache,
@@ -148,12 +165,24 @@ pub(super) fn passive_audio_fragment(
                 .child(theme::text("missing media")),
         );
     }
-    Some(content)
+    Some(super::tracks::clip_boundary_shell(
+        content,
+        left as f32,
+        width as f32,
+        stroke,
+        0x000000,
+        0x000000,
+        true,
+        has_border,
+        0.0,
+        || "passive-audio-trailing".into(),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn passive_midi_fragment(
     lane_width: f32,
+    scale: f32,
     fill: u32,
     clip_id: hex_project::ClipId,
     samples: &[hex_engine::MidiPreviewSample],
@@ -173,18 +202,41 @@ pub(super) fn passive_midi_fragment(
     }
     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-    let mut content = hex_widgets::rectangle_surface(
-        left as f32,
-        width as f32,
-        super::trim::rendered_clip_width(lane_width, width),
-    )
-    .debug_selector(move || format!("{selector}-{}", clip_id.value()))
-    .bg(rgb(fill))
-    .border_color(rgb(0x000000));
+    let pixel_width = super::trim::rendered_clip_width(lane_width, width);
+    let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
+    let stroke = 1.0 / scale.max(1.0);
+    let mut content = hex_widgets::rectangle_surface(left as f32, width as f32, pixel_width)
+        .left_0()
+        .w_full()
+        .border_l(px(if has_border { stroke } else { 0.0 }))
+        .border_r(px(0.0))
+        .debug_selector(move || format!("{selector}-{}", clip_id.value()))
+        .bg(rgb(fill))
+        .border_color(rgb(0x000000));
     if let Some(header) = compact_header {
-        return (Some(content.child(header)), 0);
+        return (
+            Some(super::tracks::clip_boundary_shell(
+                content.child(header),
+                left as f32,
+                width as f32,
+                stroke,
+                0x000000,
+                0x000000,
+                true,
+                has_border,
+                0.0,
+                || "passive-midi-trailing".into(),
+            )),
+            0,
+        );
     }
-    content = content.children(clip_grid_layer(grid, visible_start, visible_end));
+    content = content.children(aligned_clip_grid_layer(
+        grid,
+        visible_start,
+        visible_end,
+        stroke,
+        has_border,
+    ));
     let mut shown = 0;
     for sample in samples
         .iter()
@@ -229,7 +281,21 @@ pub(super) fn passive_midi_fragment(
         );
         shown += 1;
     }
-    (Some(content), shown)
+    (
+        Some(super::tracks::clip_boundary_shell(
+            content,
+            left as f32,
+            width as f32,
+            stroke,
+            0x000000,
+            0x000000,
+            true,
+            has_border,
+            0.0,
+            || "passive-midi-trailing".into(),
+        )),
+        shown,
+    )
 }
 
 #[cfg(test)]

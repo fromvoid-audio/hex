@@ -1069,6 +1069,33 @@ impl Playback {
         }
     }
 
+    pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
+        self.session_runtime
+            .as_ref()?
+            .native_parameter_input_target()
+    }
+    pub fn set_native_parameter_input(
+        &mut self,
+        operation: hex_lattice::NativeTransientOperation,
+    ) -> Result<(), Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("native parameter input requires session playback"))?
+            .set_native_parameter_input(operation)
+    }
+    pub fn invalidate_native_parameter_input(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.invalidate_native_parameter_input();
+        }
+    }
+    pub fn take_native_parameter_application(
+        &mut self,
+    ) -> Option<crate::NativeParameterApplication> {
+        self.session_runtime
+            .as_mut()?
+            .take_native_parameter_application()
+    }
+
     /// True only for an explicitly armed, admitted Session-capable runtime.
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.session_runtime
@@ -1315,6 +1342,19 @@ impl Playback {
         self.session_runtime
             .as_ref()
             .and_then(|runtime| runtime.transient_loop)
+    }
+
+    /// Configured content-clock law for a control-side automation capture.
+    /// Includes a transient section loop and excludes loops during linear export.
+    /// A first-pass origin at/after its end still advances linearly, following
+    /// the renderer's absolute-seek rule. This read-only fact grants no capture
+    /// admission: the caller must fence the exact output, source and transport
+    /// epoch through the existing delivered-input endpoint.
+    pub fn automation_capture_loop(&self) -> Option<hex_project::LoopRegion> {
+        self.session_runtime.as_ref().map_or_else(
+            || self.project.loop_region().filter(|region| region.enabled()),
+            |runtime| runtime.loop_region(),
+        )
     }
 
     /// True after the legacy monotonic clock reached its representable limit.

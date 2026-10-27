@@ -1,5 +1,7 @@
 //! Shared painted/captured loop zones in outer clip pixels. Musical projection
 //! comes from project queries; ordinary trim/warp/fade policies stay with owners.
+//! First-boundary handles use horizontal arrows; outer repeat handles retain
+//! the circular-arrow cursor. GPUI typed drags inherit that same handle style.
 use super::*;
 use crate::theme;
 use gpui::{CursorStyle, relative, rgb};
@@ -161,24 +163,34 @@ pub(in crate::editor) fn midi_controls(
     )
 }
 
-pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>) -> Div {
+pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>, scale: f32) -> Div {
     let border = hex_widgets::rectangle_border_width(width);
-    let Some(control) = control else {
-        return hex_widgets::rectangle_edge(
-            super::super::drag::rectangle_part(Some(edge)),
-            handle_width(width),
-            -border,
-        );
+    let left_border = if border > 0.0 {
+        1.0 / scale.max(1.0)
+    } else {
+        0.0
     };
-    // Absolute children start inside border_1; the shared hit zones use outer
-    // clip coordinates, so remove that border inset exactly once here.
+    let Some(control) = control else {
+        let part = super::super::drag::rectangle_part(Some(edge));
+        return div()
+            .absolute()
+            .top(px(-border))
+            .bottom(px(-border))
+            .w(px(handle_width(width)))
+            .cursor(part.cursor())
+            .when(edge == TrimEdge::Left, |d| d.left(px(-left_border)))
+            .when(edge == TrimEdge::Right, |d| d.right_0());
+    };
     div()
         .absolute()
-        .left(px(control.left - border))
+        .left(px(control.left - left_border))
         .top(px(control.top - border))
         .w(px(WIDTH))
         .h(px(control.height))
-        .cursor(CursorStyle::Loop)
+        .cursor(match control.kind {
+            LoopHandleKind::FirstBoundary => CursorStyle::ResizeLeftRight,
+            LoopHandleKind::Outer => CursorStyle::Loop,
+        })
 }
 
 pub(super) fn decorate(surface: Stateful<Div>, control: Option<LoopControl>) -> Stateful<Div> {

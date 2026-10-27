@@ -121,6 +121,7 @@ pub(super) fn devices(snapshot: &mut Snapshot) -> impl Iterator<Item = &mut Devi
         )
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::automation_read::require_authored(project)?;
     let mut rows = Vec::new();
     for device in project.automation_devices() {
         for lane in device.automation() {
@@ -218,6 +219,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let lane = DeviceAutomation {
+            read_selection: hex_project::AutomationReadSelection::Authored,
             target: hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter),
             points,
         };

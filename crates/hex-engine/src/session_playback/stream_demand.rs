@@ -130,9 +130,8 @@ impl SessionPlayback {
         )
     }
     /// Ordinary prepared playback retains its existing keyboard and compensated
-    /// render owners. Paused monitoring reads no clip pages. Pre-Main latency
-    /// and typed routes use the renderer's one-frame source quantum; Main-only
-    /// latency and retained Main history keep upstream source work batched.
+    /// render owners. Paused monitoring reads no clip pages. Running playback
+    /// reports a bounded source window while compensated routing remains per-frame.
     /// Control consumers may inspect the same exact ordinary source quantum.
     /// This pure metadata visit establishes no native page/readiness authority.
     pub fn visit_ordinary_stream_chunk(
@@ -168,21 +167,7 @@ impl SessionPlayback {
             performance_frame,
             arrangement_frame,
             route_generation,
-            frames: if playing {
-                maximum_frames.min(
-                    if self
-                        .compensation
-                        .as_ref()
-                        .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing())
-                    {
-                        1
-                    } else {
-                        256
-                    },
-                )
-            } else {
-                0
-            },
+            frames: if playing { maximum_frames.min(256) } else { 0 },
         };
         if window.frames == 0 {
             return Ok(window);

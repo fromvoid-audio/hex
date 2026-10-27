@@ -26,6 +26,7 @@ pub(super) use time_selection::State as TimeSelection;
 #[derive(Default)]
 pub(super) struct State {
     gesture: Option<Gesture>,
+    marker_hovered: bool,
 }
 impl State {
     pub(super) fn held(&self) -> bool {
@@ -219,7 +220,8 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut ViewContext<Self>,
     ) -> bool {
-        if !x.is_finite()
+        if self.time_selection_key_held
+            || !x.is_finite()
             || self.midi_ruler_context(context.bounds) != Some(context)
             || context
                 .x(context.values.source_start)
@@ -394,6 +396,7 @@ impl EditorView {
             .gesture
             .is_some_and(|gesture| gesture.handle == Handle::Start);
         let time_selection = self.midi_time_selection_bounds();
+        let start_marker_enabled = !self.time_selection_key_held;
         let entity = cx.entity();
         let mut ruler = div()
             .id("midi-source-ruler")
@@ -452,12 +455,6 @@ impl EditorView {
                     ))),
             );
         }
-        ruler = ruler.children(self.arrange_midi_highlights(
-            start,
-            span,
-            0.0,
-            "arrange-reflected-ruler-range",
-        ));
         ruler = ruler.child(
             canvas(
                 |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
@@ -491,6 +488,15 @@ impl EditorView {
                     {
                         let x =
                             bounds.origin.x + px((marker as f64 / span as f64) as f32 * b.width);
+                        let hovered = start_marker_enabled
+                            && hitbox.is_hovered(window)
+                            && !window.is_pointer_dragging()
+                            && (f32::from(window.mouse_position().x - x)).abs() <= 7.0;
+                        let marker_color = rgb(theme::color(if active || hovered {
+                            theme::PaletteRole::Text
+                        } else {
+                            theme::PaletteRole::Primary
+                        }));
                         let y = bounds.origin.y + px(10.0);
                         let mut path = PathBuilder::fill();
                         path.move_to(point(x - px(5.0), y));
@@ -498,19 +504,41 @@ impl EditorView {
                         path.line_to(point(x, y + px(6.0)));
                         path.close();
                         if let Ok(path) = path.build() {
-                            window.paint_path(path, rgb(theme::color(theme::PaletteRole::Primary)));
+                            window.paint_path(path, marker_color);
                         }
                         window.paint_quad(fill(
                             Bounds::new(point(x, bounds.origin.y), size(px(1.0), px(b.height))),
-                            rgb(theme::color(theme::PaletteRole::Primary)),
+                            marker_color,
                         ));
-                        if active
-                            || (hitbox.is_hovered(window)
-                                && (f32::from(window.mouse_position().x - x)).abs() <= 7.0)
-                        {
+                        if active || hovered {
                             window.set_cursor_style(gpui::CursorStyle::ResizeLeftRight, &hitbox);
+                        } else if !start_marker_enabled {
+                            window.set_cursor_style(gpui::CursorStyle::IBeam, &hitbox);
                         }
                     }
+                    let hover_entity = entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let hovered = !window.is_pointer_dragging()
+                            && bounds.contains(&event.position)
+                            && marker
+                                .and_then(|at| at.checked_sub(start))
+                                .filter(|at| *at <= span)
+                                .is_some_and(|at| {
+                                    let x = bounds.left()
+                                        + bounds.size.width * (at as f64 / span as f64) as f32;
+                                    (f32::from(event.position.x - x)).abs() <= 7.0
+                                });
+                        hover_entity.update(cx, |view, cx| {
+                            let hovered = hovered && !view.time_selection_key_held;
+                            if view.midi_ruler.marker_hovered != hovered {
+                                view.midi_ruler.marker_hovered = hovered;
+                                cx.notify();
+                            }
+                        });
+                    });
                     entity
                         .read(cx)
                         .renew_midi_ruler_capture(b, entity.entity_id(), window);
