@@ -628,3 +628,168 @@ fn live_musical_outside_start_release_keeps_a_readable_source_quantum(cx: &mut T
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
     });
 }
+
+#[gpui::test]
+fn directed_frame_repeat_start_matches_processed_pcm_through_receipt_and_roundtrip(
+    cx: &mut TestAppContext,
+) {
+    for (trimmed, pitch, reversed) in [(false, 123, true), (true, 0, true), (true, 0, false)] {
+        let cx = &mut cx.new_app();
+        let (files, mut visual, editor, clip) = open(cx);
+        if pitch != 0 {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipPitch {
+                    clip,
+                    cents: pitch
+                })))
+            });
+            pump(&editor, &mut visual);
+        }
+        let source_pcm = editor.read_with(&visual, |v, _| render_accepted_event(v, clip));
+        for command in [
+            Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleRange {
+                    start: 12_000,
+                    end: 36_000,
+                    looping: true,
+                },
+            },
+            Command::ReverseClips(vec![clip]),
+        ] {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(command)))
+            });
+            pump(&editor, &mut visual);
+        }
+        if trimmed {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::TrimClipEdge {
+                    clip,
+                    edge: hex_project::TrimEdge::Left,
+                    frame: 5_000
+                })))
+            });
+            pump(&editor, &mut visual);
+        }
+        if !reversed {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::ReverseClips(vec![clip]))))
+            });
+            pump(&editor, &mut visual);
+        }
+        let (before, old, original) = editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.grid = super::super::SnapGrid::Off;
+            let state = v.state.as_ref().unwrap();
+            let source = state.project.clip(clip).unwrap();
+            let old = AudioViewProjection::new(source, state.project.tempo_map())
+                .unwrap()
+                .play_start_position()
+                .unwrap()
+                .unwrap();
+            cx.notify();
+            (state.project.snapshot(), old, source.clone())
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("audio-play-start-readonly").is_none());
+        let handle = visual.debug_bounds("audio-play-start-handle").unwrap();
+        let body = visual.debug_bounds("audio-events-waveform").unwrap();
+        let target = 24_000_u64;
+        let length = editor.read_with(&visual, |v, _| {
+            v.event_viewport(&original.audio_event_root()).length
+        });
+        let down = handle.center();
+        let up = point(
+            down.x + body.size.width * ((target as f64 - old as f64) / length as f64) as f32,
+            down.y,
+        );
+        visual.simulate_mouse_move(down, None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::ResizeLeftRight)
+        );
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            assert_eq!(v.audio_play_start_position(), Some(old));
+            assert!(v.audio_event_editor.gesture.is_none());
+            assert!(v.pending_clip_loop_audio(clip).is_none());
+        });
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.audio_play_start_position(), Some(target));
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        let event = terminal(&mut visual, &editor);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        for _ in 0..2 {
+            repaint(&mut visual, &editor);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.audio_play_start_position(), Some(target))
+            });
+        }
+        editor.update(&mut visual, |v, cx| {
+            v.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let after = editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let state = v.state.as_ref().unwrap();
+            let source = state.project.clip(clip).unwrap();
+            assert_eq!(
+                (source.start(), source.duration()),
+                (original.start(), original.duration())
+            );
+            assert_eq!(
+                source.audio_edit().unwrap().content_view.unwrap().window,
+                original.audio_edit().unwrap().content_view.unwrap().window
+            );
+            assert_eq!(v.audio_play_start_position(), Some(target));
+            let pcm = render_accepted_event(v, clip);
+            for (elapsed, frame) in pcm.iter().enumerate() {
+                let offset = elapsed as u64 % 24_000;
+                let root = 12_000
+                    + if reversed {
+                        (target - 12_000 + 24_000 - offset) % 24_000
+                    } else {
+                        (target - 12_000 + offset) % 24_000
+                    };
+                assert_eq!(
+                    frame, &source_pcm[root as usize],
+                    "prepared reverse repeat frame {elapsed}/{trimmed}/{pitch}"
+                );
+            }
+            state.project.snapshot()
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+        let path = files.root().join("directed-start.hex");
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::SaveNew(path.clone())))
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(path))));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
+        });
+    }
+}

@@ -134,9 +134,10 @@ scrolling change the visible window without moving playback.
 hover the saved play-start marker to highlight its grab target. drag the audio
 arrow or midi ruler triangle to choose where playback starts, keeping the clip's
 position, length and loop ends. hold cmd/control to invert snapping; escape
-cancels. holding **2** selects time even at the marker. audio with looping off
-falls silent after the remaining source ends. some audio views currently show a
-read-only marker while start editing for that audio view is unavailable.
+cancels. holding **2** selects time even at the marker. reversed repeats can keep
+the start editable when musical timing is off; moving it preserves their trim
+and loop bounds. audio with looping off falls silent after the remaining source
+ends. some audio views currently show a read-only marker while start editing for that audio view is unavailable.
 
 the audio editor's events and source tabs keep independent zoom and scroll
 positions. use the wheel vertically to zoom around the pointer, or horizontally
