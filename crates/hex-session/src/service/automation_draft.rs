@@ -251,7 +251,7 @@ pub fn start_with_playback_on_control(
     path: PathBuf,
     target: DraftTarget,
     provenance: DraftProvenance,
-    playback: &hex_engine::Playback,
+    playback: &hex_engine::playback::Playback,
 ) -> Result<(DraftInput, DraftWorker), String> {
     let source = recovery::project_for_save(session, document_base)?;
     let path = recovery::absolute_document_path(&path)?;

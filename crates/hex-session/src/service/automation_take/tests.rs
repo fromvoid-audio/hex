@@ -375,7 +375,7 @@ fn no_events_have_no_coverage_and_the_writer_retains_the_playback_clock() {
     let (project, target, provenance) = fixture();
     let session = crate::Session::from_loaded(project.clone(), 8, 0, Vec::new()).unwrap();
     let compiled = hex_engine::compile::project(&project, &BTreeMap::new()).unwrap();
-    let playback = hex_engine::Playback::new(compiled);
+    let playback = hex_engine::playback::Playback::new(compiled);
     assert_eq!(playback.automation_capture_loop(), project.loop_region());
     let path = files.path("empty");
     let (mut input, worker) =
