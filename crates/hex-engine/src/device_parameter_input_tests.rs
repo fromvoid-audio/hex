@@ -68,6 +68,14 @@ fn external_reading_union_keeps_live_arm_and_distinct_provider_and_host_slots() 
         prepare_with_registry_inputs_and_external(current, &registry, None, &[gain, gain]).is_err()
     );
     assert!(quote_with_inputs_and_external(current, None, &[gain, gain]).is_err());
+    let over_limit = vec![gain; MAX_EXTERNAL_PARAMETER_TARGETS + 1];
+    assert!(
+        prepare_with_registry_inputs_and_external(current, &registry, None, &over_limit).is_err()
+    );
+    assert_eq!(
+        quote_with_inputs_and_external(current, None, &over_limit),
+        Err(crate::AudioStorageError::Capacity)
+    );
 }
 #[test]
 fn canonical_input_target_resolves_each_effect_owner_and_exact_current_value_domains() {

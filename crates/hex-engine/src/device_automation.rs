@@ -7,6 +7,8 @@ use crate::{Invalid, NativeDeviceClass};
 use hex_lattice::{NativeTransientValue, ProcessorChainOwner, ProcessorInstanceIdentity};
 use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, NativeDeviceState, ParameterId};
 pub const DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED: &str = "device parameter automation playback is not prepared; use a compatible build or clear the envelope in a copy";
+/// Maximum recorded targets admitted into one prepared binding union.
+pub(crate) const MAX_EXTERNAL_PARAMETER_TARGETS: usize = 256;
 
 /// Canonical control-side arm description for one supported native effect.
 /// This Copy identity grants neither publication nor a runtime/source lease.
@@ -314,6 +316,9 @@ fn counts_with_external(
     input: Option<NativeParameterInputTarget>,
     external: &[NativeParameterInputTarget],
 ) -> Result<(usize, usize, usize, bool), crate::AudioStorageError> {
+    if external.len() > MAX_EXTERNAL_PARAMETER_TARGETS {
+        return Err(crate::AudioStorageError::Capacity);
+    }
     let (mut provider, mut host, points) = reading_counts(device)?;
     let live_fallback = input_needs_provider_fallback(device, input)?;
     provider = provider
@@ -423,6 +428,9 @@ pub(crate) fn prepare_with_registry_inputs_and_external(
     input: Option<NativeParameterInputTarget>,
     external: &[NativeParameterInputTarget],
 ) -> Result<hex_lattice::PreparedParameterAutomation, Invalid> {
+    if external.len() > MAX_EXTERNAL_PARAMETER_TARGETS {
+        return Err(Invalid("recorded parameter target limit exceeded"));
+    }
     let mut program = prepare_envelopes_with_registry(device, registry)?;
     if let Some(input) = input.filter(|input| input.device == device.id()) {
         if input.device_type != device.state().type_id()
