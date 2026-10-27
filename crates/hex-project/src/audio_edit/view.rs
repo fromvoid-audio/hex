@@ -646,6 +646,8 @@ impl<'a> AudioViewProjection<'a> {
 pub enum AudioViewResizeOperation {
     /// Move the first read cursor in the retained root clock without moving the
     /// outer placement or either cycle boundary. Once retains its silent tail.
+    /// A live musical request that rounds to an empty first read resolves to
+    /// the last complete destination-frame quantum in the retained cycle.
     PlayStart {
         position: u64,
     },
@@ -680,6 +682,38 @@ pub struct AudioViewResize {
     pub placement: AudioViewPlacement,
     pub frame_start: u64,
     pub frame_end: u64,
+}
+
+// A live phase changes the processing origin. The final source tick under
+// the old origin can round to an empty intro at the fixed destination clock.
+// Resolve only that unreadable case to a complete destination-frame quantum.
+fn readable_musical_start(
+    tempo: &TempoMap,
+    start: i128,
+    view: std::ops::Range<u64>,
+    position: u64,
+) -> Result<u64, Invalid> {
+    let remaining = view
+        .end
+        .checked_sub(position)
+        .filter(|length| *length > 0)
+        .ok_or(Invalid("play start must be inside the retained cycle"))?;
+    let end = start
+        .checked_add(i128::from(remaining))
+        .ok_or(Invalid("play start boundary overflow"))?;
+    let first_frame = audio_projection_frame(tempo, start)?;
+    if audio_projection_frame(tempo, end)? != first_frame {
+        return Ok(position);
+    }
+    let next_frame = first_frame
+        .checked_add(1)
+        .ok_or(Invalid("play start frame overflow"))?;
+    let quantum = audio_projection_beat(tempo, next_frame)?
+        .checked_sub(start)
+        .and_then(|length| u64::try_from(length).ok())
+        .filter(|length| *length > 0)
+        .ok_or(Invalid("play start frame has no positive beat quantum"))?;
+    Ok(position.min(view.end.saturating_sub(quantum).max(view.start)))
 }
 
 pub fn preview_view_resize(
@@ -732,6 +766,15 @@ pub fn preview_view_resize(
         if position < view_start || position >= view_end {
             return Err(Invalid("play start must be inside the retained cycle"));
         }
+        let position = if matches!(clock, AudioDomainClock::Beats(_))
+            && clip
+                .audio_edit()
+                .is_some_and(|edit| matches!(edit.timing, AudioClipTiming::Musical(_)))
+        {
+            readable_musical_start(tempo, start, view_start..view_end, position)?
+        } else {
+            position
+        };
         let mut outer_length = old.map_or(
             match clock {
                 AudioDomainClock::Frames(_) => AudioDomainClock::Frames(view_end - view_start),

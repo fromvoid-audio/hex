@@ -2171,3 +2171,100 @@ fn legacy_source_loop_start_refuses_without_inventing_an_outer_loop_or_changing_
         AudioViewMode::Repeat
     );
 }
+
+#[test]
+fn musical_play_start_at_the_last_tick_retains_a_readable_first_quantum() {
+    for sample_rate in [44_100, 48_000, 96_000] {
+        for repeat in [false, true] {
+            let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 16).unwrap();
+            let Created::Imported { clip: id, .. } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: "last musical sample".into(),
+                    path: "never-opened.wav".into(),
+                    sample_rate,
+                    frames: u64::from(sample_rate) * 2,
+                })
+                .unwrap()
+            else {
+                panic!("audio")
+            };
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: BeatTime::from_quarters(2).unwrap(),
+                    tempo: Tempo::new(40_000_000).unwrap(),
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip: id,
+                    enabled: true,
+                })
+                .unwrap();
+            if repeat {
+                let root = editor.project().clip(id).unwrap().audio_event_root();
+                editor
+                    .execute(Command::ResizeAudioClipView {
+                        clip: id,
+                        operation: AudioViewResizeOperation::CycleRange {
+                            start: root.view_start,
+                            end: root.view_end,
+                            looping: true,
+                        },
+                    })
+                    .unwrap();
+            }
+            let before = editor.project().snapshot();
+            let clip = editor.project().clip(id).unwrap().clone();
+            let root = clip.audio_event_root();
+            let operation = AudioViewResizeOperation::PlayStart {
+                position: root.view_end - 1,
+            };
+            let preview = preview_audio_view_resize(
+                &clip,
+                editor.project().tempo_map(),
+                u64::from(sample_rate) * 2,
+                operation,
+            )
+            .unwrap();
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: id,
+                    operation,
+                })
+                .unwrap();
+            let next = editor.project().clip(id).unwrap();
+            assert_eq!(next, &preview);
+            assert_eq!(
+                (next.start(), next.duration()),
+                (clip.start(), clip.duration())
+            );
+            let next_root = next.audio_event_root();
+            assert_eq!(
+                (next_root.view_start, next_root.view_end),
+                (root.view_start, root.view_end)
+            );
+            let projection = AudioViewProjection::new(next, editor.project().tempo_map()).unwrap();
+            assert!(
+                !projection.has_subframe_intro(),
+                "the requested start needs an actual first source quantum: {sample_rate}/{repeat}"
+            );
+            let start = projection.play_start_position().unwrap().unwrap();
+            assert_eq!(
+                projection.root_position_for_frame(next.start()).unwrap(),
+                Some(start)
+            );
+            let after = editor.project().snapshot();
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: id,
+                    operation,
+                })
+                .unwrap();
+            assert_eq!(editor.project().snapshot(), after);
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
+    }
+}

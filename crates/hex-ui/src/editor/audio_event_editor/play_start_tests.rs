@@ -523,3 +523,108 @@ fn live_musical_start_keeps_grabbed_marker_visible_through_ack_and_history(
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
     });
 }
+
+#[gpui::test]
+fn live_musical_outside_start_release_keeps_a_readable_source_quantum(cx: &mut TestAppContext) {
+    let (files, mut visual, editor, clip) = open(cx);
+    for command in [
+        Command::SetTempoPoint {
+            beat: hex_project::BeatTime::from_quarters(2).unwrap(),
+            tempo: hex_project::Tempo::new(40_000_000).unwrap(),
+        },
+        Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        },
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(command)))
+        });
+        pump(&editor, &mut visual);
+    }
+    let (before, span) = editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.grid = super::super::SnapGrid::Off;
+        let source = v.state.as_ref().unwrap().project.clip(clip).unwrap();
+        assert!(matches!(
+            source.audio_event_root().timing,
+            hex_project::AudioClipTiming::Musical { .. }
+        ));
+        cx.notify();
+        (
+            v.state.as_ref().unwrap().project.snapshot(),
+            (source.start(), source.duration()),
+        )
+    });
+    visual.run_until_parked();
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = visual
+        .debug_bounds("audio-play-start-handle")
+        .unwrap()
+        .center();
+    let up = point(body.right() + px(100.0), down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = editor.read_with(&visual, |v, _| v.audio_play_start_position().unwrap());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    let event = terminal(&mut visual, &editor);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    for _ in 0..2 {
+        repaint(&mut visual, &editor);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.audio_play_start_position(), Some(held))
+        });
+        assert!(visual.debug_bounds("audio-play-start-handle").is_some());
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let after = editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let state = v.state.as_ref().unwrap();
+        let source = state.project.clip(clip).unwrap();
+        assert_eq!((source.start(), source.duration()), span);
+        let projection = AudioViewProjection::new(source, state.project.tempo_map()).unwrap();
+        assert_eq!(projection.play_start_position().unwrap(), Some(held));
+        assert!(!projection.has_subframe_intro());
+        assert!(
+            projection
+                .root_position_for_frame(source.start())
+                .unwrap()
+                .is_some(),
+            "the first placed sample must remain readable"
+        );
+        let first_end = projection.occurrence(0).unwrap().destination_end;
+        assert_eq!(first_end - source.start(), 1);
+        let pcm = render_accepted_event(v, clip);
+        assert!(
+            pcm[1..].iter().all(|frame| *frame == [0.0; 2]),
+            "prepared once tail must remain silent"
+        );
+        state.project.snapshot()
+    });
+    assert!(visual.debug_bounds("audio-play-start-handle").is_some());
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+    });
+    let path = files.root().join("live-start-end.hex");
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(path))));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
+    });
+}
