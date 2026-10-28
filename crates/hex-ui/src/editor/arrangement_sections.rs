@@ -3249,6 +3249,7 @@ mod tests {
     fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
         cx: &mut TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use std::sync::Arc;
         let (handle, editor, ids) = fixture(cx);
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -3381,6 +3382,7 @@ mod tests {
         });
         editor.update(cx, |view, _| {
             view.cancel_section_pointer();
+            view.audio = None;
         });
     }
 
