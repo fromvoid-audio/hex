@@ -45,9 +45,6 @@ pub(crate) fn validate_constructor_project_with_effects(
     project: &hex_project::Project,
     effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
 ) -> Result<(), AudioStorageError> {
-    if project.has_group_tracks() {
-        return Err(AudioStorageError::UnsupportedGraph);
-    }
     let supported = |d: &hex_project::Device| {
         d.state().asset_references().is_empty()
             && (d.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID
@@ -1253,7 +1250,7 @@ impl AudioPreparationCustody {
             slots,
             capacity,
             next,
-            signal_graph: effects.is_some(),
+            signal_graph: effects.is_some() || project.has_group_tracks(),
         })
     }
     fn construct_reserved_on_control(
@@ -2075,7 +2072,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     #[test]
-    fn group_tracks_refuse_compilation_and_native_admission_until_submix_support() {
+    fn group_tracks_admit_compilation_and_supported_native_preparation() {
         use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
@@ -2094,16 +2091,12 @@ mod tests {
                 name: "group".into(),
             })
             .unwrap();
-        assert!(matches!(
-            validate_constructor_project(editor.project()),
-            Err(AudioStorageError::UnsupportedGraph)
-        ));
-        assert!(crate::compile::project(editor.project(), &Default::default()).is_err());
+        assert!(validate_constructor_project(editor.project()).is_ok());
+        assert!(crate::compile::project(editor.project(), &Default::default()).is_ok());
         let effects = hex_devices::native_registry().unwrap();
-        assert!(matches!(
-            validate_constructor_project_with_effects(editor.project(), Some(&effects)),
-            Err(AudioStorageError::UnsupportedGraph)
-        ));
+        assert!(
+            validate_constructor_project_with_effects(editor.project(), Some(&effects)).is_ok()
+        );
     }
     #[test]
     fn rooted_bank_reservation_refusal_preserves_exact_bank_then_success_transfers_once() {

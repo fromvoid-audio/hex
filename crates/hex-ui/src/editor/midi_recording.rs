@@ -713,6 +713,7 @@ mod lifecycle_tests {
     fn midi_recording_captures_input_quantization_before_worker_preparation(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         let (mut visual, editor, _environment, clip) = fixture(cx);
         editor.update(&mut visual, |view, _| {
             assert!(view.enqueue(Request::Edit(Command::InsertInstrument {
@@ -825,6 +826,7 @@ mod lifecycle_tests {
     fn midi_recording_waits_for_its_root_installation_and_retains_take_on_same_tick_output_replacement(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         for case in 0..3 {
             let (mut visual, editor, _environment, clip) = fixture(cx);
             editor.update(&mut visual, |view, _| {

@@ -7,6 +7,8 @@
 //! with independently verified control-worker stream pages for offline output.
 //! Reads hex-plugin-catalog's copied source metadata at hex-preferences' existing
 //! application-support location; neither grants native source admission.
+//! Uses fs2, sha2 and nix on control workers for local update custody, receipt identity
+//! and bounded owned-helper cancellation; none is used by an audio callback.
 //!
 //! # Does not own
 //! Does not implement project edits, codecs or musical DSP. Native source/publication adapters
@@ -19,8 +21,20 @@ mod native_audio;
 mod native_sources;
 mod streamed_export;
 mod time_selection_profile;
+mod update_lease;
+mod update_supervisor;
 
 fn main() {
+    // Keep shared publication custody until every desktop worker has shut
+    // down. Do not pass this file descriptor to any update helper.
+    let _update_lease = match update_lease::acquire_for_current_executable() {
+        Ok(lease) => lease,
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "{error}");
+            std::process::exit(1);
+        }
+    };
+
     let mut arguments = std::env::args_os().skip(1);
     if arguments
         .next()
@@ -68,7 +82,26 @@ fn main() {
     let midi_handle = midi_worker.as_ref().ok().map(hex_midi::Worker::handle);
     let mut mts_worker = hex_mts::Worker::start();
     let mts_handle = mts_worker.as_ref().ok().map(hex_mts::Worker::handle);
+    let update_client = if _update_lease.is_some() {
+        std::env::current_exe()
+            .ok()
+            .and_then(|executable| std::fs::canonicalize(executable).ok())
+            .and_then(|executable| {
+                let target = executable.ancestors().nth(3)?.to_path_buf();
+                let (client, worker) = hex_ui::update_channel();
+                if let Err(error) = update_supervisor::start(target, worker) {
+                    eprintln!("local update worker unavailable: {error}");
+                    return None;
+                }
+                Some(client)
+            })
+    } else {
+        None
+    };
     Application::new().run(move |cx: &mut App| {
+        if let Some(client) = &update_client {
+            hex_ui::install_update_client(cx, client.clone());
+        }
         if let Some(handle) = &midi_handle {
             hex_ui::install_controller_input(cx, handle.clone());
         }
