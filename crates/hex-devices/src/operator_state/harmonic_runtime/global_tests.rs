@@ -125,6 +125,35 @@ fn active(r: &Runtime) -> Vec<u64> {
 }
 
 #[test]
+fn uniform_ordinary_envelopes_match_independent_render_across_handoff_and_release() {
+    for global in [false, true] {
+        let mut s = settings();
+        s.global.active = global;
+        for i in 0..4 {
+            let base = CORE_FIELDS + i * ENVELOPE_FIELDS;
+            s.fields[base..base + 6].copy_from_slice(&[0.1, 1.0, 0.3, 0.001, 0.002, 0.003]);
+        }
+        let mut fast = runtime(s);
+        let mut reference = runtime(s);
+        assert!(fast.factory.uniform_envelopes);
+        assert!(!fast.factory.companion_active);
+        reference.factory.uniform_envelopes = false;
+        assert_eq!(
+            process(&mut fast, &[on(1, 60)], 128),
+            process(&mut reference, &[on(1, 60)], 128)
+        );
+        let mut handoff = runtime(s);
+        handoff.copy_history_from(&fast);
+        assert_eq!(
+            process(&mut handoff, &[off(1)], 512),
+            process(&mut reference, &[off(1)], 512)
+        );
+        s.fields[CORE_FIELDS + 3 * ENVELOPE_FIELDS + 2] = 0.5;
+        assert!(!runtime(s).factory.uniform_envelopes);
+    }
+}
+
+#[test]
 fn held_voice_preflight_rejects_frame_and_age_overflow() {
     for global in [false, true] {
         let mut s = settings();
