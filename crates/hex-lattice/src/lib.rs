@@ -2603,6 +2603,11 @@ mod tests {
                         .fold(0.0, f32::max),
                 ],
                 clipped: frames.iter().any(|frame| frame[0].abs() > 1.0),
+                post_input_peak: frames
+                    .iter()
+                    .flatten()
+                    .map(|sample| sample.abs())
+                    .fold(0.0, f32::max),
             };
         }
 
@@ -2671,6 +2676,7 @@ mod tests {
             DynamicsMeter {
                 reduction_db: [0.25, 0.75],
                 clipped: false,
+                post_input_peak: 0.75,
             }
         );
         assert_eq!(chain.entries[0].meter.take_peaks(), [0.75, 0.75]);

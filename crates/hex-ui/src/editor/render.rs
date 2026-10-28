@@ -202,6 +202,15 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        if let Some(label) = self.update_label() {
+            bar = bar.child(
+                div()
+                    .id("local-update-status")
+                    .px_1()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .child(theme::text(label)),
+            );
+        }
         if let Some(failure) = self.recovery_failure.as_ref().cloned() {
             let can_restart = failure.can_restart();
             bar = bar.child(
@@ -427,6 +436,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_update_ready(window, cx);
         #[cfg(all(test, feature = "ui-test-support"))]
         let _navigation_timer =
             super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::Editor);
@@ -629,6 +639,21 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.active_native_device_drag.as_ref().is_some_and(|drag| {
+                        matches!(
+                            drag.source,
+                            super::drag::NativeDeviceDragSource::Existing { .. }
+                        )
+                    }) {
+                        cx.set_active_drag_cursor_style(
+                            if event.modifiers.alt {
+                                gpui::CursorStyle::DragCopy
+                            } else {
+                                gpui::CursorStyle::ClosedHand
+                            },
+                            window,
+                        );
+                    }
                     if view.sections.held() {
                         let position = window.mouse_position();
                         if view.update_section_pointer(
@@ -1522,6 +1547,15 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &Quit, window, cx| {
                 view.request_quit(window, cx);
             }))
+            .on_action(cx.trace(|view, _: &super::InstallUpdateOnQuit, _, cx| {
+                view.select_update(crate::UpdateAction::InstallOnQuit, cx);
+            }))
+            .on_action(cx.trace(|view, _: &super::SaveAndRestartForUpdate, _, cx| {
+                view.select_update(crate::UpdateAction::SaveAndRestart, cx);
+            }))
+            .on_action(cx.trace(|view, _: &super::CancelUpdate, _, cx| {
+                view.cancel_requested_update(cx);
+            }))
             .child(self.title_bar(cx))
             .child(self.transport(window, cx))
             .child(self.project_spectrum_panel(window, cx))
@@ -1535,5 +1569,37 @@ impl Render for EditorView {
             .children(super::theme_settings::overlay(self, cx))
             .children(self.tuning_overlay(cx))
             .children(self.changelog_overlay(cx))
+            .when(self.update_preparing(), |root| {
+                root.child(
+                    div()
+                        .id("update-preparing-overlay")
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(rgb(theme::color(theme::PaletteRole::Background)))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(theme::text("preparing update"))
+                                .child(
+                                    div()
+                                        .id("cancel-update-preparation")
+                                        .cursor_pointer()
+                                        .child(theme::text("cancel"))
+                                        .on_click(cx.listener(|view, _, _, cx| {
+                                            view.cancel_requested_update(cx)
+                                        })),
+                                ),
+                        ),
+                )
+            })
     }
 }

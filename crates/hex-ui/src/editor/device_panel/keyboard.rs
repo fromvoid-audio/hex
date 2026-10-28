@@ -5,7 +5,10 @@ use super::*;
 use crate::diagnostics::ActionTraceContext as _;
 use gpui::{FocusHandle, KeyBinding};
 
-gpui::actions!(hex_device_selection, [RemoveSelectedDevice]);
+gpui::actions!(
+    hex_device_selection,
+    [RemoveSelectedDevice, CopyDevices, CutDevices, PasteDevices]
+);
 
 #[derive(Clone, Copy)]
 pub(super) struct RefusedDelete {
@@ -52,11 +55,90 @@ pub(super) fn after_pointer_removal(
 }
 
 pub(in crate::editor) fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new(
-        "backspace",
-        RemoveSelectedDevice,
-        Some("hex_device_selection"),
-    )]);
+    cx.bind_keys([
+        KeyBinding::new(
+            "backspace",
+            RemoveSelectedDevice,
+            Some("hex_device_selection"),
+        ),
+        KeyBinding::new("cmd-c", CopyDevices, Some("hex_device_selection")),
+        KeyBinding::new("cmd-x", CutDevices, Some("hex_device_selection")),
+        KeyBinding::new("cmd-v", PasteDevices, Some("hex_device_selection")),
+    ]);
+}
+
+#[derive(Clone, Copy)]
+enum ClipboardIntent {
+    Copy,
+    Cut,
+    Paste,
+}
+
+fn clipboard(
+    view: &mut EditorView,
+    intent: ClipboardIntent,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    use hex_session::service::DeviceClipboardAction as Action;
+    if view.edit_pending() || view.export_pending || view.device_panel.has_pending_draft(cx) {
+        view.error = Some("finish pending edits before copying devices".into());
+        cx.notify();
+        return;
+    }
+    let Some(owner) = view.device_panel.owner else {
+        return;
+    };
+    let Some(state) = view.state.as_ref() else {
+        return;
+    };
+    if selected_owner(view, state) != Some(owner) {
+        return;
+    }
+    let order = chain_ids(&state.project, owner);
+    let selected: Vec<_> = order
+        .iter()
+        .copied()
+        .filter(|id| view.device_panel.is_selected(*id))
+        .collect();
+    let before = order
+        .iter()
+        .rposition(|id| selected.contains(id))
+        .and_then(|index| order.get(index + 1).copied());
+    let action = match intent {
+        ClipboardIntent::Copy | ClipboardIntent::Cut => {
+            let Ok(selected) = hex_project::DeviceSelectionIds::new(&selected) else {
+                return;
+            };
+            match intent {
+                ClipboardIntent::Copy => Action::Copy {
+                    owner: project_owner(owner),
+                    selected,
+                },
+                ClipboardIntent::Cut => Action::Cut {
+                    owner: project_owner(owner),
+                    selected,
+                },
+                ClipboardIntent::Paste => return,
+            }
+        }
+        ClipboardIntent::Paste => Action::Paste {
+            owner: project_owner(owner),
+            before,
+        },
+    };
+    let request = Request::DeviceClipboard {
+        project_generation: view.project_generation,
+        revision: state.revision,
+        action,
+    };
+    if view.enqueue(request) && matches!(intent, ClipboardIntent::Cut) {
+        view.device_panel
+            .chain_window
+            .selection_focus(cx)
+            .focus(window);
+    }
+    cx.notify();
 }
 
 pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -> Div {
@@ -65,6 +147,42 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -
         .key_context("hex_device_selection")
         // Other actions, including Undo and transport, still reach the editor.
         .on_action(cx.trace(|_, _: &RemoveSelectedDevice, _, cx| cx.stop_propagation()))
+        .on_action(cx.trace(|view, _: &CopyDevices, window, cx| {
+            if view
+                .device_panel
+                .chain_window
+                .selection_focus(cx)
+                .is_focused(window)
+            {
+                clipboard(view, ClipboardIntent::Copy, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(|view, _: &CutDevices, window, cx| {
+            if view
+                .device_panel
+                .chain_window
+                .selection_focus(cx)
+                .is_focused(window)
+            {
+                clipboard(view, ClipboardIntent::Cut, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(|view, _: &PasteDevices, window, cx| {
+            if view
+                .device_panel
+                .chain_window
+                .selection_focus(cx)
+                .is_focused(window)
+            {
+                clipboard(view, ClipboardIntent::Paste, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
 }
 
 /// Observe release even after focus moved from the neutral rail into text.
@@ -165,7 +283,31 @@ pub(super) fn card(
     let type_id = view.state.as_ref().and_then(|state| {
         owned_device(&state.project, owner?, device).map(|item| item.state().type_id())
     });
+    let copy_focus = focus.clone();
+    let cut_focus = focus.clone();
+    let paste_focus = focus.clone();
     card.key_context("hex_device_selection")
+        .on_action(cx.trace(move |view, _: &CopyDevices, window, cx| {
+            if copy_focus.is_focused(window) {
+                clipboard(view, ClipboardIntent::Copy, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &CutDevices, window, cx| {
+            if cut_focus.is_focused(window) {
+                clipboard(view, ClipboardIntent::Cut, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &PasteDevices, window, cx| {
+            if paste_focus.is_focused(window) {
+                clipboard(view, ClipboardIntent::Paste, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
         // A character binding in the ancestor key context would swallow c/0 in
         // nested text editors. Handle only the card's own exact focus instead.
         .on_key_down(

@@ -335,7 +335,7 @@ fn compile_instrument_track_with_empty_bank(
     let volumes = if track
         .midi_clips()
         .iter()
-        .any(|clip| !clip.volume().points().is_empty())
+        .any(|clip| !clip.volume().is_unity())
     {
         let max =
             crate::PreparedTempoMap::validate_canonical(project.tempo_map(), project.sample_rate())

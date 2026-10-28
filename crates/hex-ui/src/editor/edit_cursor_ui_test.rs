@@ -1397,6 +1397,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        save_correlation: None,
         document_format_upgrade_required: false,
         save_confirmation_required: false,
         open_complete: false,
@@ -2379,4 +2380,36 @@ fn split_does_not_escape_a_held_tempo_control(cx: &mut TestAppContext) {
         )
     });
     visual.simulate_mouse_up(tempo.center(), MouseButton::Left, Modifiers::default());
+}
+
+#[gpui::test]
+fn transport_split_vector_dispatches_the_edit_cursor_command(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(format!("arrangement-lane-{}", source.value()).into_boxed_str());
+    let lane = visual.debug_bounds(selector).unwrap();
+    visual.simulate_click(
+        point(
+            lane.origin.x + lane.size.width * 0.125,
+            lane.origin.y + px(22.0),
+        ),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let frame = editor.read_with(cx, |view, _| view.edit_cursor.unwrap().frame);
+    let split = visual
+        .debug_bounds("split selection edges or edit cursor · e")
+        .unwrap();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("transport-split-icon")
+            .is_empty()
+    );
+    visual.simulate_click(split.center(), Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
+    });
 }

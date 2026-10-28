@@ -131,6 +131,9 @@ pub enum SessionPlaybackError {
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
     ForeignTailSourceBusy,
+    /// The retained group path is still processing an outgoing tail. The
+    /// publication owner can retry once the predecessor drains or stops.
+    GroupTailRoutingBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
@@ -170,6 +173,9 @@ impl SessionPlaybackError {
             }
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"
+            }
+            Self::GroupTailRoutingBusy => {
+                "group routing change is waiting for an outgoing tail · stop or wait for it to finish"
             }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"

@@ -65,6 +65,8 @@ pub use plugin_effect::{
 use request_cancellation::QueuedRequest;
 pub use request_cancellation::RequestCancellation;
 #[cfg(test)]
+mod correlated_save_tests;
+#[cfg(test)]
 mod effect_bus_tests;
 #[cfg(test)]
 mod format_upgrade_tests;
@@ -216,6 +218,16 @@ pub struct SamplerHistoryEdit {
     pub redo: bool,
     pub cancel: Arc<AtomicBool>,
 }
+/// Identifies one requested save against the exact canonical document revision.
+/// The caller supplies a unique nonzero request ID for its in-flight saves.
+/// The worker returns this identity for both successful and refused saves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SaveCorrelation {
+    pub request_id: u64,
+    pub project_generation: u64,
+    pub revision: u64,
+}
+
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
@@ -243,6 +255,8 @@ pub struct Event {
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
+    /// Exact identity of a correlated save terminal, including refusal.
+    pub save_correlation: Option<SaveCorrelation>,
     /// Replacing the current file changes its reader compatibility. Opening never writes.
     pub document_format_upgrade_required: bool,
     /// This save was refused pending reader-compatibility consent. The UI may
@@ -428,11 +442,39 @@ pub enum TrackClipboardAction {
     },
 }
 
+/// Device clipboard intents are revision-bound; the worker retains copied state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceClipboardAction {
+    Copy {
+        owner: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+    },
+    Cut {
+        owner: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+    },
+    Paste {
+        owner: hex_project::DeviceChainOwner,
+        before: Option<hex_project::DeviceId>,
+    },
+    Duplicate {
+        source: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+        destination: hex_project::DeviceChainOwner,
+        before: Option<hex_project::DeviceId>,
+    },
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 // Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    DeviceClipboard {
+        project_generation: u64,
+        revision: u64,
+        action: DeviceClipboardAction,
+    },
     TrackClipboard {
         project_generation: u64,
         revision: u64,
@@ -1286,6 +1328,33 @@ impl Service {
         result
     }
 
+    /// Submit one save bound to the current document generation and revision.
+    /// Rejection returns the original request; a delivered terminal echoes the
+    /// identity, including validation or persistence failure. A stopped worker
+    /// remains a separate disconnection, never a successful save terminal.
+    #[allow(clippy::result_large_err)]
+    pub fn submit_correlated_save(
+        &self,
+        request: Request,
+        correlation: SaveCorrelation,
+    ) -> Result<(), SubmitError> {
+        if !matches!(
+            request,
+            Request::SaveNew(_)
+                | Request::SaveCurrent
+                | Request::SaveCurrentWithFormatUpgrade { .. }
+        ) || correlation.request_id == 0
+        {
+            return Err(SubmitError::Busy(request));
+        }
+        let diagnostic = self.diagnostics.begin(&request);
+        let result = self
+            .requests
+            .submit_traced_save(request, diagnostic, Some(correlation));
+        self.diagnostics.returned(diagnostic, &result);
+        result
+    }
+
     /// Install one read-only control observer. Logging has no effect on request
     /// admission, canonical state, cancellation or publication authority.
     pub fn set_diagnostic_observer(
@@ -1833,6 +1902,7 @@ fn run_worker(
     let mut range_clipboard: Option<ArrangementClipboard> = None;
     // Typed clipboard contexts are independent; both expire with the document.
     let mut track_clipboard: Option<Arc<hex_project::TrackClipboard>> = None;
+    let mut device_clipboard: Option<Arc<hex_project::DeviceClipboard>> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
@@ -1936,6 +2006,7 @@ fn run_worker(
                 bounce_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
+                save_correlation: None,
                 document_format_upgrade_required: false,
                 save_confirmation_required: false,
                 open_complete: false,
@@ -1974,6 +2045,7 @@ fn run_worker(
             bounce_complete: None,
             audio_batch_complete: None,
             save_complete: false,
+            save_correlation: None,
             document_format_upgrade_required: false,
             save_confirmation_required: false,
             open_complete: false,
@@ -2135,6 +2207,7 @@ fn run_worker(
     ) {
         events.begin_diagnostics(&queued, project_generation, revision);
         events.begin_request(&document_intent, queued.document_intent);
+        let save_correlation = queued.save_correlation;
         let request = queued.request;
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
@@ -2215,6 +2288,7 @@ fn run_worker(
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
         let mut cut_clipboard = None;
+        let mut cut_device_clipboard = None;
         let automation_source_error = match &request {
             Request::DeviceAutomation {
                 project_generation: generation,
@@ -2267,6 +2341,67 @@ fn run_worker(
                 Some(reason) => Err(reason.into()),
                 None => device_automation_control::command(&session, edit),
             }),
+            Request::DeviceClipboard {
+                project_generation: generation,
+                revision: source_revision,
+                action,
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(Err("device clipboard canceled · project changed".into()))
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some(Err(
+                        "finish or cancel the active gesture before copying devices".into(),
+                    ))
+                } else {
+                    match action {
+                        DeviceClipboardAction::Copy { .. } => None,
+                        DeviceClipboardAction::Cut { owner, selected } => Some(
+                            session
+                                .project()
+                                .capture_devices(*owner, selected)
+                                .map(|captured| {
+                                    cut_device_clipboard = Some(Arc::new(captured));
+                                    Command::RemoveDevices {
+                                        owner: *owner,
+                                        selected: selected.clone(),
+                                    }
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                        DeviceClipboardAction::Paste { owner, before } => Some(
+                            device_clipboard
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    "device clipboard is empty · copy devices first".to_owned()
+                                })
+                                .map(|clipboard| Command::PasteDevices {
+                                    clipboard: Arc::clone(clipboard),
+                                    owner: *owner,
+                                    before: *before,
+                                }),
+                        ),
+                        DeviceClipboardAction::Duplicate {
+                            source,
+                            selected,
+                            destination,
+                            before,
+                        } => Some(
+                            session
+                                .project()
+                                .capture_devices(*source, selected)
+                                .map(|clipboard| Command::PasteDevices {
+                                    clipboard: Arc::new(clipboard),
+                                    owner: *destination,
+                                    before: *before,
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                    }
+                }
+            }
             Request::TrackClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -2677,6 +2812,11 @@ fn run_worker(
             .err(),
             _ => None,
         });
+        if save_correlation.is_some_and(|identity| {
+            identity.project_generation != project_generation || identity.revision != revision
+        }) {
+            barrier_failure = Some("save target changed · save cancelled".to_owned());
+        }
         if barrier && barrier_failure.is_none() {
             let device_finished = if events.resident_publication_enabled()
                 && session.audio_mode() == DocumentAudioMode::Resident
@@ -2878,6 +3018,12 @@ fn run_worker(
                     | Request::Edit(_)
                     | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
+                    | Request::DeviceClipboard {
+                        action: DeviceClipboardAction::Cut { .. }
+                            | DeviceClipboardAction::Paste { .. }
+                            | DeviceClipboardAction::Duplicate { .. },
+                        ..
+                    }
                     | Request::TrackClipboard {
                         action: TrackClipboardAction::Cut(_)
                             | TrackClipboardAction::Duplicate { .. }
@@ -2906,6 +3052,7 @@ fn run_worker(
                     | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
                     | Request::TrackClipboard { .. }
+                    | Request::DeviceClipboard { .. }
                     | Request::ReorderTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
@@ -2919,7 +3066,13 @@ fn run_worker(
                     | Request::OpenWith { .. }
                     | Request::OpenWithAudioMode { .. }
             );
-        if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command)) {
+        if save_correlation.is_some_and(|identity| {
+            identity.project_generation != project_generation || identity.revision != revision
+        }) {
+            save_complete = true;
+            error = Some("save target changed · save cancelled".into());
+        } else if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command))
+        {
             error = Some("section edits require a revision-bound section request".into());
         } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
@@ -4462,6 +4615,19 @@ fn run_worker(
                         }
                         Err(reason) => error = Some(reason),
                     }
+                }
+                Request::DeviceClipboard {
+                    action: DeviceClipboardAction::Copy { owner, selected },
+                    ..
+                } => match session.project().capture_devices(owner, &selected) {
+                    Ok(captured) => {
+                        device_clipboard = Some(Arc::new(captured));
+                        status = Some("devices copied".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                },
+                Request::DeviceClipboard { .. } => {
+                    error = Some("device clipboard request was not resolved".into())
                 }
                 Request::TrackClipboard {
                     action: TrackClipboardAction::Copy(tracks),
@@ -6438,7 +6604,13 @@ fn run_worker(
         {
             track_clipboard = Some(captured);
         }
+        if created.is_some()
+            && let Some(captured) = cut_device_clipboard
+        {
+            device_clipboard = Some(captured);
+        }
         if project_replaced {
+            device_clipboard = None;
             track_clipboard = None;
             if let Some(input) = audition_activation.take() {
                 input.cancel();
@@ -6883,6 +7055,11 @@ fn run_worker(
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
+                save_correlation: if save_complete {
+                    save_correlation
+                } else {
+                    None
+                },
                 save_confirmation_required,
                 document_format_upgrade_required: document
                     .as_ref()
@@ -7439,6 +7616,9 @@ mod clip_move_tests;
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
 
+#[cfg(test)]
+#[path = "service/device_clipboard_tests.rs"]
+mod device_clipboard_tests;
 #[cfg(test)]
 #[path = "service/track_clipboard_tests.rs"]
 mod track_clipboard_tests;
@@ -9703,6 +9883,22 @@ mod service_tests {
             }))
             .expect("preview parameter edit");
         next_event(&service);
+        let prior_file = std::fs::read(&path).unwrap();
+        let stale = SaveCorrelation {
+            request_id: 1,
+            project_generation: 0,
+            revision: saved.state.revision + 1,
+        };
+        service
+            .submit_correlated_save(Request::SaveCurrent, stale)
+            .expect("admit stale correlated save");
+        let refused = next_event(&service);
+        assert!(refused.save_complete && refused.error.is_some());
+        assert_eq!(refused.save_correlation, Some(stale));
+        assert!(!refused.gesture_protocol_ack);
+        assert!(refused.active_device_gesture.is_some());
+        assert_eq!(refused.state.revision, saved.state.revision);
+        assert_eq!(std::fs::read(&path).unwrap(), prior_file);
         service.submit(Request::SaveCurrent).expect("save barrier");
         let saved_gesture = next_event(&service);
         assert!(saved_gesture.error.is_none());

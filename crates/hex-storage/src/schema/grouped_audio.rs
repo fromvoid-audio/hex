@@ -388,6 +388,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                     .map(|e| {
                         Ok(AudioEvent {
                             active: true,
+                            gain: hex_project::ClipGain::UNITY,
                             id: e.id,
                             source: e.source,
                             start: e.start,

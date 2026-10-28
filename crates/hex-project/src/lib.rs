@@ -107,6 +107,8 @@ pub use device_automation::{
     MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
     validate_device_automation,
 };
+mod device_clipboard;
+pub use device_clipboard::{DeviceChainOwner, DeviceClipboard, DeviceSelectionIds};
 mod device_comparison;
 mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
@@ -354,7 +356,7 @@ pub enum TrimEdge {
     /// Trailing edge or section suffix.
     Right,
 }
-/// Saved audio-clip gain in integer millidecibels, before track processing.
+/// Saved clip-local gain in integer millidecibels, before track processing.
 /// The finite -60..=24 dB range does not imply normalization or output limiting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClipGain(i32);

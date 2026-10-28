@@ -397,6 +397,7 @@ mod ui_tests {
     fn compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces(
         cx: &mut TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use super::super::EditorMode;
         use hex_project::InputQuantization::{Adaptive, Off, Sixteenth};
         let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
@@ -546,6 +547,7 @@ mod ui_tests {
                 }
             }
         }
+        editor.update(&mut visual, |view, _| view.audio = None);
     }
     #[gpui::test]
     fn compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators(
