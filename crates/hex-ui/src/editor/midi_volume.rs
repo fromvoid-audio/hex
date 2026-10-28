@@ -144,7 +144,9 @@ fn moved(gesture: &Gesture, mut point: MidiClipVolumePoint) -> Option<MidiClipVo
     let delta = point.value.linear() - old.value.linear();
     point.incoming = MidiClipGain::new((old.incoming.linear() + delta).clamp(0.0, 4.0)).ok()?;
     points[gesture.point] = point;
-    MidiClipVolume::new(points, gesture.length).ok()
+    MidiClipVolume::new(points, gesture.length)
+        .ok()
+        .map(|volume| volume.with_clip_gain(gesture.original.clip_gain()))
 }
 
 impl EditorView {
@@ -203,6 +205,7 @@ impl EditorView {
         let Some(original) = self.state.as_ref().and_then(|s| curve(&s.project, clip)) else {
             return;
         };
+        let volume = volume.with_clip_gain(original.clip_gain());
         if original == &volume {
             return;
         }
@@ -430,7 +433,7 @@ impl EditorView {
                     self.error = Some("clip volume point limit reached".into());
                     return;
                 };
-                original = volume;
+                original = volume.with_clip_gain(original.clip_gain());
                 i
             } else {
                 let Some(index) = event
@@ -469,7 +472,7 @@ impl EditorView {
             let mut points = original.points().to_vec();
             points.remove(index);
             if let Ok(volume) = MidiClipVolume::new(points, length) {
-                self.volume_submit(clip, volume);
+                self.volume_submit(clip, volume.with_clip_gain(original.clip_gain()));
             }
         } else if matches!(event.phase, Phase::Change | Phase::Commit) {
             let current = self

@@ -5452,7 +5452,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let previous_frame = previous.performance_frame();
     assert_eq!(
         refused.try_inherit_state_from(&mut previous),
-        Err(SessionPlaybackError::MutableInstrumentChase)
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
     );
     assert_eq!(previous.performance_frame(), previous_frame);
     assert!(
@@ -10215,6 +10215,131 @@ fn session_audio_quantized_launch_begins_on_the_due_performance_frame() {
 }
 
 #[test]
+fn quantized_scene_launch_and_cancel_match_explicit_pcm_across_block_sizes() {
+    for sample_rate in [44_100_u32, 48_000, 96_000] {
+        let due = usize::try_from(sample_rate).unwrap() * 2;
+        let source: Vec<Frame> = (0..32)
+            .map(|index| [index as f32 + 0.25, -(index as f32 + 0.5)])
+            .collect();
+        let audio = crate::Audio::new(sample_rate, source.clone()).unwrap();
+        let other = crate::Audio::new(sample_rate, vec![[0.0; 2]; 32]).unwrap();
+        let mut snapshot = audio_project(5, 18, 4).snapshot();
+        snapshot.sample_rate = sample_rate;
+        for asset in &mut snapshot.assets {
+            asset.source_sample_rate = sample_rate;
+        }
+        let project = legacy_project_from_snapshot(snapshot).unwrap();
+        let scene = project.scenes()[0].id();
+        let media = audio_media(&project, &audio, &other);
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                &project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let clip = revision.session().audio_clips()[0].id;
+        let track = revision.session().audio_clips()[0].track;
+        for cancelled in [false, true] {
+            // An empty block at the exact due frame must not commit a launch;
+            // cancellation before the next nonempty block must still win.
+            let mut boundary = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            boundary.apply(SessionPlaybackCommand::Play).unwrap();
+            boundary.render(&mut [[0.0; 2]; 1]).unwrap();
+            boundary
+                .apply(SessionPlaybackCommand::LaunchScene {
+                    scene,
+                    quantization: LaunchQuantization::FourQuarter,
+                })
+                .unwrap();
+            boundary.render(&mut vec![[0.0; 2]; due - 1]).unwrap();
+            assert_eq!(boundary.performance_frame(), due as u64);
+            boundary.render(&mut []).unwrap();
+            assert_eq!(
+                boundary.owner(track),
+                Some(SessionPlaybackOwner::Arrangement)
+            );
+            assert!(boundary.route_status(0).unwrap().pending.is_some());
+            if cancelled {
+                boundary
+                    .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
+                    .unwrap();
+            }
+            let mut first_due = [[0.0; 2]; 1];
+            boundary.render(&mut first_due).unwrap();
+            assert_eq!(first_due[0], if cancelled { [0.0; 2] } else { source[5] });
+            assert_eq!(
+                boundary.owner(track),
+                Some(if cancelled {
+                    SessionPlaybackOwner::Arrangement
+                } else {
+                    SessionPlaybackOwner::Session { clip }
+                })
+            );
+            assert!(boundary.route_status(0).unwrap().pending.is_none());
+            for block in [1_usize, 17, 64, 128, 256, 512] {
+                let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                playback.render(&mut [[0.0; 2]; 1]).unwrap();
+                playback
+                    .apply(SessionPlaybackCommand::LaunchScene {
+                        scene,
+                        quantization: LaunchQuantization::FourQuarter,
+                    })
+                    .unwrap();
+                assert_eq!(
+                    playback
+                        .route_status(0)
+                        .unwrap()
+                        .pending
+                        .unwrap()
+                        .performance_frame,
+                    due as u64
+                );
+                if cancelled {
+                    playback
+                        .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
+                        .unwrap();
+                    assert!(playback.route_status(0).unwrap().pending.is_none());
+                }
+                playback.render(&mut []).unwrap();
+                assert_eq!(playback.performance_frame(), 1);
+                assert_eq!(
+                    playback.owner(track),
+                    Some(SessionPlaybackOwner::Arrangement)
+                );
+                let mut output = vec![[1.0; 2]; due + 20 - 1];
+                for chunk in output.chunks_mut(block) {
+                    playback.render(chunk).unwrap();
+                }
+                for (offset, actual) in output.iter().enumerate() {
+                    let frame = offset + 1;
+                    let expected = if !cancelled && (due..due + 13).contains(&frame) {
+                        source[5 + frame - due]
+                    } else {
+                        [0.0; 2]
+                    };
+                    assert_eq!(
+                        *actual, expected,
+                        "rate={sample_rate}, cancelled={cancelled}, block={block}, frame={frame}"
+                    );
+                }
+                let expected_owner = if cancelled {
+                    SessionPlaybackOwner::Arrangement
+                } else {
+                    SessionPlaybackOwner::Session { clip }
+                };
+                assert_eq!(playback.owner(track), Some(expected_owner));
+                assert!(playback.route_status(0).unwrap().pending.is_none());
+                assert_eq!(playback.performance_frame(), (due + 20) as u64);
+            }
+        }
+    }
+}
+
+#[test]
 fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reuses_shared_pcm() {
     let project = audio_project(1, 7, 4);
     let audio = crate::Audio::new(48_000, vec![[0.2, -0.3]; 32]).unwrap();
@@ -10422,6 +10547,17 @@ fn accepted_session_candidate_refuses_second_handoff_before_either_runtime_chang
     previous.render(&mut previous_output).unwrap();
     previous_twin.render(&mut twin_output).unwrap();
     assert_eq!(previous_output, twin_output);
+    // The previously accepted candidate is also an audible owner. Refusal of
+    // another handoff must not damage its inherited DSP continuation.
+    let mut accepted_output = [[0.0; 2]; 128];
+    accepted.render(&mut accepted_output).unwrap();
+    assert_eq!(accepted_output, twin_output);
+    assert!(
+        accepted_output
+            .iter()
+            .flatten()
+            .any(|sample| *sample != 0.0)
+    );
 }
 
 #[test]
@@ -10429,18 +10565,21 @@ fn release_bank_refusal_keeps_fresh_candidate_retryable_after_predecessor_drains
     let table = Arc::new(hex_devices::SineTable::new());
     let original = project(0.5, 0, 8 << 32);
     let original_revision = revision(&original, Arc::clone(&table));
-    let mut previous = SessionPlayback::new(original_revision).unwrap();
+    let mut previous = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+    let mut uninterrupted = SessionPlayback::new(original_revision).unwrap();
     let track = previous.routes[0].id;
     let clip = previous.revision.session().midi_clips()[0].id;
-    previous
-        .apply(SessionPlaybackCommand::LaunchClip {
-            clip,
-            quantization: LaunchQuantization::Immediate,
-        })
-        .unwrap();
-    previous.apply(SessionPlaybackCommand::Play).unwrap();
     let mut prefix = [[0.0; 2]; 64];
-    previous.render(&mut prefix).unwrap();
+    for playback in [&mut previous, &mut uninterrupted] {
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut prefix).unwrap();
+    }
 
     let removed_clip_revision = revision(&without_session_cells(&original), table);
     let mut candidate = SessionPlayback::new(removed_clip_revision).unwrap();
@@ -10451,7 +10590,16 @@ fn release_bank_refusal_keeps_fresh_candidate_retryable_after_predecessor_drains
     );
     assert!(candidate.candidate_admission_open);
 
-    let mut drain = vec![[0.0; 2]; 200_000];
+    let mut after_refusal = [[0.0; 2]; 256];
+    let mut expected = [[0.0; 2]; 256];
+    previous.render(&mut after_refusal).unwrap();
+    uninterrupted.render(&mut expected).unwrap();
+    assert_eq!(
+        after_refusal, expected,
+        "the donor remains audible after refusal"
+    );
+    assert!(after_refusal.iter().flatten().any(|sample| *sample != 0.0));
+    let mut drain = vec![[0.0; 2]; 200_000 - 256];
     previous.render(&mut drain).unwrap();
     assert_eq!(previous.release_voice_count(), 0);
     candidate.try_inherit_state_from(&mut previous).unwrap();
@@ -11146,7 +11294,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
     let mut successor = SessionPlayback::new(candidate).unwrap();
     assert_eq!(
         successor.try_inherit_state_from(&mut previous),
-        Err(SessionPlaybackError::DeviceRuntime)
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
     );
     assert!(previous.playing());
 
@@ -11171,7 +11319,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
     let mut successor = SessionPlayback::new(candidate).unwrap();
     assert_eq!(
         successor.try_inherit_state_from(&mut previous),
-        Err(SessionPlaybackError::DeviceRuntime)
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
     );
 
     // The same edit is admissible after the prior runtime has no active ledger
@@ -11326,7 +11474,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
     let mut from_applied_b = SessionPlayback::new(final_revision).unwrap();
     assert_eq!(
         from_applied_b.try_inherit_state_from(&mut applied_b),
-        Err(SessionPlaybackError::DeviceRuntime)
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
     );
     assert!(from_applied_b.candidate_admission_open);
 }

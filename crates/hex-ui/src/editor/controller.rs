@@ -1012,6 +1012,7 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        visible_change |= self.poll_update(cx);
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_midi_recording();
@@ -1026,6 +1027,13 @@ impl EditorView {
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
+                    let update_save = event.save_complete.then_some((
+                        event.save_correlation,
+                        event.error.is_none()
+                            && !event.save_confirmation_required
+                            && !event.state.unsaved,
+                        event.save_confirmation_required,
+                    ));
                     let open_save = (event.save_complete && !event.save_confirmation_required)
                         .then_some((
                             event.error.is_none() && !event.state.unsaved,
@@ -1044,6 +1052,9 @@ impl EditorView {
                     }
                     if let Some((success, revision)) = open_save {
                         self.complete_open_save(success, revision);
+                    }
+                    if let Some((correlation, success, confirmation_required)) = update_save {
+                        self.update_save_terminal(correlation, success, confirmation_required, cx);
                     }
                     visible_change = true;
                 }
@@ -3019,6 +3030,10 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        if self.update_preparing() {
+            self.error = Some("cancel update before editing".into());
+            return false;
+        }
         if matches!(
             &request,
             Request::Open(_)
@@ -3247,6 +3262,12 @@ impl EditorView {
                 | Request::DeviceAutomation { .. }
                 | Request::DeviceAutomationControl { .. }
                 | Request::EditArrangementSection { .. }
+                | Request::DeviceClipboard {
+                    action: hex_session::service::DeviceClipboardAction::Cut { .. }
+                        | hex_session::service::DeviceClipboardAction::Paste { .. }
+                        | hex_session::service::DeviceClipboardAction::Duplicate { .. },
+                    ..
+                }
                 | Request::TrackClipboard {
                     action: hex_session::service::TrackClipboardAction::Cut(_)
                         | hex_session::service::TrackClipboardAction::Duplicate { .. }
@@ -4131,7 +4152,7 @@ impl EditorView {
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
         self.status = "stopped · returned to start".into();
-        if restore && self.enqueue(Request::RestoreStoppedPlayback) {
+        if restore && !self.update_preparing() && self.enqueue(Request::RestoreStoppedPlayback) {
             self.stopped_playback_restore =
                 Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
             self.status = "stopped · restoring current sound".into();
@@ -5615,6 +5636,7 @@ mod sampler_native_ui_protocol_tests {
 
     #[cfg(feature = "ui-test-support")]
     fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use hex_audio::prepared::PublicationPolicy;
         use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
         let service = hex_session::service::Service::with_native_reservation(

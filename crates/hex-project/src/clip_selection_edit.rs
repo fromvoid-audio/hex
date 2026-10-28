@@ -456,6 +456,7 @@ impl Command {
             | Self::SetSessionMidiClipSource { clip, .. }
             | Self::SetMidiClipSource { clip, .. }
             | Self::ReplaceMidiClipVolume { clip, .. }
+            | Self::SetMidiClipGain { clip, .. }
             | Self::AddMidiNote { clip, .. }
             | Self::AddMidiNotes { clip, .. }
             | Self::SetMidiNotesActive { clip, .. }
@@ -592,6 +593,8 @@ impl Command {
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
+            | Self::PasteDevices { .. }
+            | Self::RemoveDevices { .. }
             | Self::ImportAudioTrack { .. }
             | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }

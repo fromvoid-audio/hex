@@ -20,7 +20,8 @@ mod sandbox;
 use gpui::{App, AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    let application = Application::new().with_assets(hex_ui::assets::HexAssets);
+    application.run(|cx: &mut App| {
         hex_widgets::bind_numeric_control_keys(cx);
         hex_widgets::bind_text_input_keys(cx);
         hex_widgets::bind_response_graph_keys(cx);

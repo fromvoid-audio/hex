@@ -555,6 +555,10 @@ pub(super) fn command(value: &Command) -> Description {
         Command::PasteTimeRange { track, frame, .. } => {
             describe!("paste_time_range"; ["track" => track.value(), "frame" => frame]; omitted="clipboard")
         }
+        Command::RemoveDevices { .. } => describe!("remove_devices"; []; omitted="owner,selected"),
+        Command::PasteDevices { .. } => {
+            describe!("paste_devices"; []; omitted="clipboard,owner,before")
+        }
         Command::PasteTracks { .. } => {
             describe!("paste_tracks"; []; omitted="clipboard,destination")
         }
@@ -1043,6 +1047,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::ReplaceMidiClipVolume { clip, .. } => {
             describe!("replace_midi_clip_volume"; ["clip" => clip.value()]; omitted="volume")
         }
+        Command::SetMidiClipGain { clip, gain } => {
+            describe!("set_midi_clip_gain"; ["clip" => clip.value(), "millidb" => gain.millidb()]; omitted="")
+        }
         Command::AddMidiNote {
             clip,
             start,
@@ -1135,6 +1142,13 @@ pub(super) fn command(value: &Command) -> Description {
 
 pub(super) fn request(value: &Request) -> Description {
     match value {
+        Request::DeviceClipboard {
+            project_generation,
+            revision,
+            ..
+        } => {
+            describe!("device_clipboard"; ["project_generation" => project_generation, "revision" => revision]; omitted="action")
+        }
         Request::TrackClipboard {
             project_generation,
             revision,

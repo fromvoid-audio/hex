@@ -1,0 +1,7 @@
+{
+  "writer_source": "091b3addf0107450d67b19219cddfdf75c572319",
+  "writer_schema": 61,
+  "writer": "schema61-writer.rs",
+  "fixture_sha256": "52424af4c9058bb97a699b01e5dc55e8ecb4d4f0b1c8a9f27e62041c376bf650",
+  "input": "Original synthetic project: one MIDI clip with a note and volume curve, a Session copy, and a metadata-only audio clip with event gain."
+}

@@ -61,6 +61,60 @@ impl DeliveredFixture {
         }
     }
 }
+fn open_gain_output() -> (
+    hex_audio::WorkerPreparedOutput,
+    hex_audio::worker_fixture::HeadlessBackend,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(pair) => return pair,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("headless output: {error}"),
+        }
+    }
+}
+
+#[test]
+fn competing_gain_fixture_waits_for_real_output_retirement() {
+    use std::sync::mpsc;
+    let guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let (output, mut backend) = open_gain_output();
+    assert!(matches!(
+        hex_audio::worker_fixture::open(48_000),
+        Err(error) if error == "audio output is open or still shutting down"
+    ));
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (acquired_tx, acquired_rx) = mpsc::channel();
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let _guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+        acquired_tx.send(()).unwrap();
+        let (output, mut backend) = open_gain_output();
+        opened_tx.send(()).unwrap();
+        backend.close();
+        drop(output);
+    });
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        acquired_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    backend.close();
+    drop(output);
+    drop(guard);
+    opened_rx.recv_timeout(Duration::from_secs(7)).unwrap();
+    waiter.join().unwrap();
+}
+
 fn delivered_fixture(cx: &mut TestAppContext, release: bool) -> DeliveredFixture {
     let service = Service::new(48_000, 16, 0).unwrap();
     next(&service);
@@ -81,19 +135,7 @@ fn delivered_fixture(cx: &mut TestAppContext, release: bool) -> DeliveredFixture
         )
         .unwrap(),
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let (mut output, mut backend) = loop {
-        match hex_audio::worker_fixture::open(48_000) {
-            Ok(pair) => break pair,
-            Err(error)
-                if error == "audio output is open or still shutting down"
-                    && Instant::now() < deadline =>
-            {
-                std::thread::yield_now()
-            }
-            Err(error) => panic!("headless output: {error}"),
-        }
-    };
+    let (mut output, mut backend) = open_gain_output();
     let control = output.publication.control().unwrap();
     control
         .configure_device_resource_publication_on_control(
@@ -180,6 +222,8 @@ fn delivered_fixture(cx: &mut TestAppContext, release: bool) -> DeliveredFixture
 }
 
 fn delivered_source_race(cx: &mut TestAppContext, install_source_first: bool) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let DeliveredFixture {
         mut visual,
         editor,
@@ -244,6 +288,7 @@ fn delivered_source_race(cx: &mut TestAppContext, install_source_first: bool) {
         assert_eq!(view.gain_recorder.events.len(), 1);
         view.discard_gain_take();
         assert!(view.gain_recorder.events.is_empty());
+        view.audio.take().unwrap().control.close();
     });
     backend.close();
     drop(output);
@@ -530,6 +575,8 @@ fn queued_gain_take_ignores_earlier_terminal_before_its_own_install(cx: &mut Tes
 
 #[gpui::test]
 fn finished_gain_receipts_survive_all_current_output_retirement_paths(cx: &mut TestAppContext) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     for retirement in ["recovery", "future generation", "project replacement"] {
         let mut fixture = delivered_fixture(cx, true);
         fixture.editor.update(&mut fixture.visual, |view, _| {
@@ -598,6 +645,8 @@ fn finished_gain_receipts_survive_all_current_output_retirement_paths(cx: &mut T
 fn interrupted_gain_capture_retains_incomplete_events_without_inventing_end_clock(
     cx: &mut TestAppContext,
 ) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let mut fixture = delivered_fixture(cx, false);
     fixture.editor.update(&mut fixture.visual, |view, _| {
         view.retire_audio_preserving_gain_take();
@@ -634,6 +683,8 @@ fn interrupted_gain_capture_retains_incomplete_events_without_inventing_end_cloc
 fn explicit_discard_can_release_unresolved_capture_receipts_without_committing(
     cx: &mut TestAppContext,
 ) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let mut fixture = delivered_fixture(cx, true);
     fixture.editor.update(&mut fixture.visual, |view, _| {
         view.retire_audio_preserving_gain_take();

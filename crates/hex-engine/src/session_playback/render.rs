@@ -1691,7 +1691,7 @@ impl SessionPlayback {
                 )?;
             }
         }
-        self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
+        self.render_detached_tails(performance_frame, output, frame_offset, capture, None)?;
         self.render_return_buses(
             output,
             frame_offset,
@@ -1847,9 +1847,13 @@ impl SessionPlayback {
         output: &mut [Frame],
         frame_offset: usize,
         capture: &mut Option<&mut dyn CaptureSink>,
+        mut routed: Option<&mut [Frame]>,
     ) -> Result<(), SessionPlaybackError> {
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let table = self.revision.session().sine_table().as_ref();
+        let graph = routed
+            .as_ref()
+            .and_then(|_| self.revision.arrangement().signal_graph.as_deref());
         // Removed stateless tracks retain their copied linear mix. Stateful
         // tails are grouped by their captured old runtime chain and old mix.
         let mut rendered_mutable_tails = [false; SESSION_TAIL_GROUP_CAPACITY];
@@ -1864,28 +1868,53 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             let Some(group) = release.location.tail_group() else {
                 let mut captured = [[0.0; 2]; 256];
-                render_release_captured(
-                    release,
-                    table,
-                    self.revision.arrangement().shared_contexts(),
-                    &self.retained_contexts,
-                    &self.analytic_continuations,
-                    performance_frame,
-                    self.playing,
-                    output,
-                    capture
-                        .as_ref()
-                        .is_some_and(|capture| {
-                            capture.selects(OutputCaptureId::Track(release.track_id))
-                        })
-                        .then_some(&mut captured[..output.len()]),
-                )?;
-                if let Some(capture) = capture.as_mut() {
-                    capture.add(
-                        OutputCaptureId::Track(release.track_id),
-                        frame_offset,
-                        &captured[..output.len()],
+                if let Some(destinations) = routed.as_deref_mut() {
+                    if output.len() != 1 {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    render_release_captured(
+                        release,
+                        table,
+                        self.revision.arrangement().shared_contexts(),
+                        &self.retained_contexts,
+                        &self.analytic_continuations,
+                        performance_frame,
+                        self.playing,
+                        &mut captured[..1],
+                        None,
                     )?;
+                    let index = graph
+                        .and_then(|graph| graph.track_index(release.track_id))
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    let destination = destinations
+                        .get_mut(index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    destination[0] += captured[0][0];
+                    destination[1] += captured[0][1];
+                } else {
+                    render_release_captured(
+                        release,
+                        table,
+                        self.revision.arrangement().shared_contexts(),
+                        &self.retained_contexts,
+                        &self.analytic_continuations,
+                        performance_frame,
+                        self.playing,
+                        output,
+                        capture
+                            .as_ref()
+                            .is_some_and(|capture| {
+                                capture.selects(OutputCaptureId::Track(release.track_id))
+                            })
+                            .then_some(&mut captured[..output.len()]),
+                    )?;
+                    if let Some(capture) = capture.as_mut() {
+                        capture.add(
+                            OutputCaptureId::Track(release.track_id),
+                            frame_offset,
+                            &captured[..output.len()],
+                        )?;
+                    }
                 }
                 tail_cursor += 1;
                 continue;
@@ -1971,17 +2000,16 @@ impl SessionPlayback {
                 .get(group_index)
                 .copied()
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
-                mix.add_frame(destination, source);
-            }
-            if let Some(capture) = capture.as_mut() {
-                let owner =
-                    self.tail_track_ids[group_index].ok_or(SessionPlaybackError::DeviceRuntime)?;
-                for frame in tail_output.iter_mut() {
-                    *frame = mix.apply_frame(*frame);
-                }
-                capture.add(OutputCaptureId::Track(owner), frame_offset, tail_output)?;
-            }
+            emit_detached_tail(
+                graph,
+                self.tail_track_ids[group_index],
+                mix,
+                tail_output,
+                output,
+                frame_offset,
+                capture,
+                &mut routed,
+            )?;
         }
         for group_index in 0..self.tail_mutable_instruments.len() {
             if rendered_mutable_tails
@@ -2049,17 +2077,16 @@ impl SessionPlayback {
                 .get(group_index)
                 .copied()
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
-                mix.add_frame(destination, source);
-            }
-            if let Some(capture) = capture.as_mut() {
-                let owner =
-                    self.tail_track_ids[group_index].ok_or(SessionPlaybackError::DeviceRuntime)?;
-                for frame in tail_output.iter_mut() {
-                    *frame = mix.apply_frame(*frame);
-                }
-                capture.add(OutputCaptureId::Track(owner), frame_offset, tail_output)?;
-            }
+            emit_detached_tail(
+                graph,
+                self.tail_track_ids[group_index],
+                mix,
+                tail_output,
+                output,
+                frame_offset,
+                capture,
+                &mut routed,
+            )?;
         }
         // Once an old source has stopped, its committed effect history still
         // owns output. Advance that suffix exactly once per render chunk using
@@ -2114,20 +2141,59 @@ impl SessionPlayback {
                 .get(group_index)
                 .copied()
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            for (destination, source) in output.iter_mut().zip(tail_output.iter().copied()) {
-                mix.add_frame(destination, source);
-            }
-            if let Some(capture) = capture.as_mut() {
-                let owner =
-                    self.tail_track_ids[group_index].ok_or(SessionPlaybackError::DeviceRuntime)?;
-                for frame in tail_output.iter_mut() {
-                    *frame = mix.apply_frame(*frame);
-                }
-                capture.add(OutputCaptureId::Track(owner), frame_offset, tail_output)?;
-            }
+            emit_detached_tail(
+                graph,
+                self.tail_track_ids[group_index],
+                mix,
+                tail_output,
+                output,
+                frame_offset,
+                capture,
+                &mut routed,
+            )?;
         }
         Ok(())
     }
+}
+
+/// A retained suffix is already post-fader. Grouped rendering adds it to its
+/// original track's default route once, without refeeding current sends.
+#[allow(clippy::too_many_arguments)]
+fn emit_detached_tail(
+    graph: Option<&crate::signal_graph::SignalGraph>,
+    owner: Option<TrackId>,
+    mix: crate::PreparedTrackMix,
+    tail: &mut [Frame],
+    output: &mut [Frame],
+    offset: usize,
+    capture: &mut Option<&mut dyn CaptureSink>,
+    routed: &mut Option<&mut [Frame]>,
+) -> Result<(), SessionPlaybackError> {
+    if let Some(destinations) = routed.as_deref_mut() {
+        if tail.len() != 1 {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        let owner = owner.ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let index = graph
+            .and_then(|graph| graph.track_index(owner))
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        let destination = destinations
+            .get_mut(index)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        mix.add_frame(destination, tail[0]);
+    } else {
+        for (destination, source) in output.iter_mut().zip(tail.iter().copied()) {
+            mix.add_frame(destination, source);
+        }
+        if let Some(capture) = capture.as_mut() {
+            let owner = owner.ok_or(SessionPlaybackError::DeviceRuntime)?;
+            for frame in tail.iter_mut() {
+                *frame = mix.apply_frame(*frame);
+            }
+            capture.add(OutputCaptureId::Track(owner), offset, tail)?;
+        }
+    }
+    Ok(())
 }
 
 fn process_mutable_tail<T: MidiTiming + ?Sized>(
