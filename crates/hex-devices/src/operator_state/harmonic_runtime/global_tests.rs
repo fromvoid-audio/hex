@@ -123,6 +123,34 @@ fn active(r: &Runtime) -> Vec<u64> {
     ids.sort_unstable();
     ids
 }
+
+#[test]
+fn held_voice_release_inside_block_matches_partitioned_render() {
+    for global in [false, true] {
+        let mut s = settings();
+        s.global.active = global;
+        let mut whole = runtime(s);
+        let mut partitioned = runtime(s);
+        assert_eq!(
+            process(&mut whole, &[on(1, 60)], 128),
+            process(&mut partitioned, &[on(1, 60)], 128)
+        );
+        let delayed_off = NativeInstrumentEvent::NoteOff {
+            frame_offset: 33,
+            occurrence_id: 1,
+        };
+        let actual = process(&mut whole, &[delayed_off], 256);
+        let mut expected = process(&mut partitioned, &[], 33);
+        expected.extend(process(&mut partitioned, &[off(1)], 223));
+        assert_eq!(actual, expected);
+        assert_eq!(
+            process(&mut whole, &[], 5000),
+            process(&mut partitioned, &[], 5000)
+        );
+        assert!(whole.is_quiescent());
+        assert!(partitioned.is_quiescent());
+    }
+}
 #[test]
 fn oldest_stealing_keeps_64_occurrence_admission_and_silent_noteoffs() {
     let mut s = settings();
