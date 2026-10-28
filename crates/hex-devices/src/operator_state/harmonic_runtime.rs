@@ -791,6 +791,25 @@ impl MutableInstrumentRuntime for Runtime {
         {
             return Err(Error::EventCapacityExceeded);
         }
+        // With no events and only held voices, no proof voice can expire or
+        // affect later admission in this block. Check the same frame and age
+        // overflow bounds without replaying each held voice sample by sample.
+        if events.is_empty()
+            && self.voices.iter().all(|voice| {
+                voice.id == 0 || (voice.gate.is_none() && voice.envelope_gate.is_none())
+            })
+        {
+            self.local_frame
+                .checked_add(frames as u64)
+                .ok_or(Error::InvalidEventBatch)?;
+            for voice in self.voices.iter().filter(|voice| voice.id != 0) {
+                voice
+                    .age
+                    .checked_add(frames as u64)
+                    .ok_or(Error::InvalidEventBatch)?;
+            }
+            return Ok(());
+        }
         let mut proof = EventProof::new(self);
         let mut offset = 0;
         for event in events {

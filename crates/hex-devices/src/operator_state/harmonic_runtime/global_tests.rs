@@ -125,6 +125,48 @@ fn active(r: &Runtime) -> Vec<u64> {
 }
 
 #[test]
+fn held_voice_preflight_rejects_frame_and_age_overflow() {
+    for global in [false, true] {
+        let mut s = settings();
+        s.global.active = global;
+        let mut r = runtime(s);
+        process(&mut r, &[on(1, 60)], 1);
+        let voice = r.voices.iter_mut().find(|voice| voice.id == 1).unwrap();
+        voice.age = u64::MAX - 1;
+        assert!(
+            r.preflight_events(&[], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .is_ok()
+        );
+        assert_eq!(
+            r.preflight_events(&[], 2, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            Err(Error::InvalidEventBatch)
+        );
+        r.voices.iter_mut().find(|voice| voice.id == 1).unwrap().age = 1;
+        r.local_frame = u64::MAX - 1;
+        assert_eq!(
+            r.preflight_events(&[], 2, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            Err(Error::InvalidEventBatch)
+        );
+    }
+}
+
+#[test]
+fn releasing_voice_can_retire_before_its_age_would_overflow() {
+    let mut r = runtime(settings());
+    process(&mut r, &[on(1, 60)], 1);
+    let voice = r.voices.iter_mut().find(|voice| voice.id == 1).unwrap();
+    voice.age = u64::MAX - 1;
+    voice.gate = Some(0);
+    voice.envelope_gate = Some(0);
+    voice.envelope_age = u64::MAX as f64;
+    voice.drain = quality::TAIL as u32 - 1;
+    assert!(
+        r.preflight_events(&[], 2, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_ok()
+    );
+}
+
+#[test]
 fn held_voice_release_inside_block_matches_partitioned_render() {
     for global in [false, true] {
         let mut s = settings();
