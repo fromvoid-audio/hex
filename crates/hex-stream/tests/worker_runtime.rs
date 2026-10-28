@@ -606,6 +606,58 @@ fn actual_worker_converts_and_recovers_after_a_full_unpinned_cache() {
 }
 
 #[test]
+fn identity_pages_preserve_exact_samples_and_partial_eof_after_cache_turnover() {
+    let page_frames = hex_engine::STREAM_PAGE_FRAMES;
+    let (wav, pcm) = TestWav::stereo_pcm16(48_000, page_frames * 2 + 17);
+    let key = StreamSourceKey::new(43, asset_id(pcm.len(), 48_000));
+    let reader =
+        VerifiedWavReader::open(wav.path(), reader_limits(pcm.len())).expect("verified source");
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        pcm.len() as u64,
+        pcm.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .expect("identity metadata");
+    let definition =
+        SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(pcm.len()));
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).expect("runtime");
+    runtime
+        .wait_until_ready(Duration::from_secs(3))
+        .expect("ready");
+
+    // Turn over the two cache slots and compare each exposed page directly
+    // with the fixture's decoded PCM, including the short final page.
+    for index in [0, 1, 2, 0, 2] {
+        let page = PageKey {
+            source: key,
+            page_index: index,
+        };
+        if runtime.page(key, index).is_none() {
+            runtime.request_page(key, index);
+        }
+        assert!(wait_for_pages(
+            &mut runtime,
+            &[page],
+            Duration::from_secs(3)
+        ));
+        let actual = runtime.page(key, index).expect("installed page");
+        let start = index as usize * page_frames;
+        let end = (start + page_frames).min(pcm.len());
+        assert_eq!(actual.page_index, index);
+        assert_eq!(actual.frames, &pcm[start..end]);
+    }
+
+    let report = runtime.shutdown().expect("balanced shutdown");
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 3);
+}
+
+#[test]
 fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_page() {
     let (wav, _) = TestWav::stereo_pcm16(48_000, 4096);
     let asset = asset_id(4096, 48_000);
