@@ -899,18 +899,20 @@ impl MutableInstrumentRuntime for Runtime {
         for (offset, frame) in frames.iter_mut().enumerate() {
             let beat = clock.and_then(|clock| clock.beat_at_offset(offset));
             let running = clock.and_then(|clock| clock.transport_is_running());
-            for voice in &mut self.voices {
-                if voice.id != 0 {
-                    for machine in voice.machines.iter_mut().flatten() {
-                        let _ = machine.observe(
-                            if self.factory.settings.global.active {
-                                voice.envelope_age as u64
-                            } else {
-                                voice.age
-                            },
-                            beat,
-                            running,
-                        );
+            if self.factory.companion_active {
+                for voice in &mut self.voices {
+                    if voice.id != 0 {
+                        for machine in voice.machines.iter_mut().flatten() {
+                            let _ = machine.observe(
+                                if self.factory.settings.global.active {
+                                    voice.envelope_age as u64
+                                } else {
+                                    voice.age
+                                },
+                                beat,
+                                running,
+                            );
+                        }
                     }
                 }
             }
