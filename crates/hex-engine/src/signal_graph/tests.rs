@@ -1585,6 +1585,75 @@ fn compiled_group_solo_selects_descendants_and_ancestors_without_changing_flags(
 }
 
 #[test]
+fn delayed_group_solo_and_mute_preserve_main_and_capture_across_blocks() {
+    let mut f = fixture(&[&[], &[], &[]], 8);
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&f.tracks[..2]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    f.editor
+        .execute(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap();
+    for (selected, muted, factor) in [
+        (group, false, 2.0),
+        (f.tracks[0], false, 1.0),
+        (f.tracks[0], true, 0.0),
+    ] {
+        if !muted {
+            f.editor
+                .execute(Command::ToggleSoloTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[selected]).unwrap(),
+                    exclusive: true,
+                })
+                .unwrap();
+        } else {
+            f.editor
+                .execute(Command::Mute {
+                    track: group,
+                    muted: true,
+                })
+                .unwrap();
+        }
+        let revision = prepare(&f).unwrap();
+        assert_eq!(revision.arrangement().main_latency_frames(), 3);
+        let mut expected = vec![[0.0; 2]; 11];
+        for (index, source) in f.samples.iter().enumerate() {
+            expected[index + 3] = [source[0] * factor, source[1] * factor];
+        }
+        for block in [1, 3, 7, 17] {
+            let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            let plan = runtime
+                .output_capture_plan(&[crate::OutputCaptureId::Track(group)], block)
+                .unwrap();
+            let mut main = vec![[0.0; 2]; 11];
+            let mut group_tap = main.clone();
+            for (main_chunk, tap_chunk) in main.chunks_mut(block).zip(group_tap.chunks_mut(block)) {
+                let mut outputs = [tap_chunk];
+                runtime
+                    .render_with_capture(
+                        main_chunk,
+                        &mut crate::OutputCapture::new(&plan, &mut outputs),
+                    )
+                    .unwrap();
+            }
+            assert_eq!(main, expected, "Main muted={muted}, block={block}");
+            assert_eq!(group_tap, expected, "group muted={muted}, block={block}");
+        }
+    }
+}
+
+#[test]
 fn group_gain_automation_tracks_delayed_content_across_render_partitions() {
     let mut f = fixture(&[&[]], 8);
     let Created::Track(group) = f
