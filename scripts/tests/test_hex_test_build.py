@@ -490,6 +490,12 @@ class DeliveryTests(unittest.TestCase):
     def test_build_only_source_drift_during_signing_preserves_installed_app(self):
         self.assert_production_build(build_only=True, drift="signing")
 
+    def test_full_ci_receipt_reaches_stable_app_publication(self):
+        self.assert_production_build(build_only=False, validate_ci_receipt=True)
+
+    def test_full_ci_receipt_refuses_source_drift_before_publication(self):
+        self.assert_production_build(build_only=False, validate_ci_receipt=True, drift="build")
+
     def test_supervisor_packaging_seals_fixed_runtime_and_rejects_changed_binary(self):
         self.stage.mkdir()
         policy = {"version": 1, "interpreter": "/fixed/python", "interpreter_sha256": "a" * 64,
@@ -610,7 +616,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse((self.root / ".hex-pending-update").exists())
 
     def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
-                                prepare_only=False, followup_failure=False):
+                                prepare_only=False, followup_failure=False, validate_ci_receipt=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -642,6 +648,20 @@ class DeliveryTests(unittest.TestCase):
         runner = delivery.ci.LocalCiRunner(source)
         runner.summary["start_tree"] = {"commit":candidate, "dirty":False, "dirty_files":[],
                                         "content_sha256":"d" * 64}
+        dependency_inputs = {"fixture": "guarded input identity"}
+        if validate_ci_receipt:
+            # Synthetic full-plan evidence exercises the real receipt consumer;
+            # it is not a claim that these fixture steps ran product CI.
+            tree = runner.summary["start_tree"]
+            report.write_text(json.dumps({
+                "schema_version": 2, "mode": "full", "status": "passed", "stale": False,
+                "exit_code": 0, "commit": candidate, "dirty": False,
+                "start_tree": tree, "end_tree": tree,
+                "target_cache": {"dependency_inputs": dependency_inputs},
+                "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                           "test_results": {"python_executions": [1]}}
+                          for step in delivery.ci.FULL_STEPS],
+            }))
         runner.summary["runtime_inputs"] = {"version": 1, "sha256": "d" * 64, "symlinks": []}
         runner.cargo_identity = {"target_directory":str(target.parent.parent)}
         runner.target_lock = None if rmdir_member else SimpleNamespace(release=Mock(return_value=None))
@@ -691,15 +711,18 @@ class DeliveryTests(unittest.TestCase):
         def capture(key):
             runner.summary[key] = dict(runner.summary["start_tree"])
             return True
+        ci_check = (patch.object(delivery, "validate_ci", wraps=delivery.validate_ci) if validate_ci_receipt else
+                    patch.object(delivery, "validate_ci", return_value={},
+                                 side_effect=AssertionError("CI required for build-only") if build_only else None))
         with patch.object(delivery, "ROOT", source), \
                 patch.object(delivery.sys, "platform", "darwin"), \
                 patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app)}), \
                 patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
-                patch.object(delivery, "validate_ci", return_value={},
-                             side_effect=AssertionError("CI required for build-only") if build_only else None), \
+                ci_check as checked_ci, \
                 patch.object(runner, "run", side_effect=AssertionError("tests during packaging")), \
                 patch.object(runner, "_capture_repository_state", side_effect=capture), \
-                patch.object(runner, "_resolve_cargo_identity", return_value=True), \
+                patch.multiple(runner, _resolve_cargo_identity=Mock(return_value=True),
+                               _dependency_context=Mock(return_value=dependency_inputs)), \
                 patch.object(runner, "_release_scope", return_value=scope), \
                 patch.object(delivery.ci.build_inputs, "workspace_snapshot", return_value={"packages": [], "observed_ns": 1}), \
                 patch.object(runner, "_path_dependency_inputs", return_value=[]), \
@@ -804,11 +827,16 @@ class DeliveryTests(unittest.TestCase):
                 self.assertFalse(delivery.install_workspace(self.app).exists())
                 return
             if drift == "build":
-                with self.assertRaisesRegex(delivery.DeliveryError, "source is dirty, changed"):
-                    delivery.build(args)
+                error = "full exact-source local CI evidence" if validate_ci_receipt else "source is dirty, changed"
+                with patch.object(delivery, "activate") as activate:
+                    with self.assertRaisesRegex(delivery.DeliveryError, error):
+                        delivery.build(args)
+                    activate.assert_not_called()
                 self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
                 self.assertFalse(self.workspace.exists())
                 runner.target_lock.release.assert_called_once()
+                if validate_ci_receipt:
+                    self.assertGreaterEqual(checked_ci.call_count, 3)
                 return
             if drift == "signing":
                 def change_source(*_args):
@@ -909,6 +937,10 @@ class DeliveryTests(unittest.TestCase):
                 receipt = delivery.build(args)
                 self.assertEqual(foreign.read_bytes(), b"user project")
             verified = delivery.verify(self.app)
+            if validate_ci_receipt:
+                self.assertGreaterEqual(checked_ci.call_count, 3)
+                self.assertEqual(json.loads((self.app / "Contents/Resources/local-ci-summary.json").read_text())["start_tree"],
+                                 tree)
             wrong = {**verified, "signing": {**SIGNING, "certificate_sha1": "0" * 40}}
             delivery.write_json(self.app / "Contents/Resources/test-build.json", wrong)
             with self.assertRaisesRegex(delivery.DeliveryError, "configured certificate"):
