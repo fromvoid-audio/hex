@@ -166,6 +166,7 @@ impl Spectrum {
             true,
         )
     }
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn sample_policy(
         &self,
