@@ -125,3 +125,53 @@ fn replacement_discards_pending_old_failure_and_correlates_new_result_under_back
     assert!(Arc::ptr_eq(sink.desired.as_ref().unwrap(), &current));
     assert!(receiver.try_recv().is_err());
 }
+
+#[test]
+fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let service = Service::new(48_000, 16, MAX_RESIDENT_FRAMES).unwrap();
+    let source = next_source(&service);
+    let (events, receiver) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (output, backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(opened) => break opened,
+            Err(error) if error == "audio output is open or still shutting down" => {
+                assert!(
+                    Instant::now() < deadline,
+                    "prior fixture output did not retire"
+                );
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let mut output = Some(output);
+    sink.output_factory = Some(Box::new(move |_| Ok(output.take())));
+    sink.lifecycle_status = Some(|| None);
+    sink.canonical_changed(source.clone());
+    sink.request_open(Some(48_000), Some(7));
+    sink.poll_open();
+    assert!(!sink.open_pending && sink.open_error.is_none());
+    sink.deliver_open();
+    sink.flush_events();
+    let EditorAudioEvent::Opened {
+        project_generation,
+        restart_request,
+        audio,
+    } = receiver.try_recv().unwrap()
+    else {
+        panic!("successful completion must produce opened");
+    };
+    assert_eq!(project_generation, source.context().project_generation);
+    assert_eq!(restart_request, Some(7));
+    sink.request_open(Some(48_000), Some(8));
+    sink.lifecycle_status = Some(|| Some(AudioLifecycleFailure::Retirement));
+    sink.poll_open();
+    assert!(sink.output.is_some()); // observation cannot release its retained output
+    assert!(!sink.open_pending);
+    drop(audio);
+    drop(backend);
+    sink.close();
+}
