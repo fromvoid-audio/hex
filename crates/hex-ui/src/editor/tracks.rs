@@ -1959,7 +1959,16 @@ impl EditorView {
             let Some(end) = clip.start().checked_add(clip.duration()) else {
                 continue;
             };
-            if clip.start() >= viewport_end || end <= viewport.start {
+            let display = self
+                .pending_trim
+                .as_ref()
+                .and_then(|_| self.audio_trim_display(track_id, Some(clip.id())));
+            let display_clip = display.as_ref().map_or(clip, |(_, preview)| preview);
+            let Some(display_end) = display_clip.start().checked_add(display_clip.duration())
+            else {
+                continue;
+            };
+            if display_clip.start() >= viewport_end || display_end <= viewport.start {
                 continue;
             }
             let selected_clip = self.clip_is_selected(clip.id());
@@ -2512,10 +2521,17 @@ impl EditorView {
         let Some(viewport_end) = viewport.end() else {
             return (div().id(("clip", clip_id.value())).into_any_element(), None);
         };
-        let Some(clip_end) = clip.start().checked_add(clip.duration()) else {
+        // Keep the interactive surface in the same place as the retained trim
+        // preview while its canonical edit is still in flight.
+        let display_clip = if self.pending_trim.is_some() {
+            trim_preview_clip.as_ref().unwrap_or(clip)
+        } else {
+            clip
+        };
+        let Some(clip_end) = display_clip.start().checked_add(display_clip.duration()) else {
             return (div().id(("clip", clip_id.value())).into_any_element(), None);
         };
-        let visible_start = clip.start().max(viewport.start);
+        let visible_start = display_clip.start().max(viewport.start);
         let visible_end = clip_end.min(viewport_end);
         if visible_start >= visible_end || viewport.length == 0 {
             return (div().id(("clip", clip_id.value())).into_any_element(), None);

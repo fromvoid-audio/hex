@@ -65,6 +65,8 @@ pub use plugin_effect::{
 use request_cancellation::QueuedRequest;
 pub use request_cancellation::RequestCancellation;
 #[cfg(test)]
+mod correlated_save_tests;
+#[cfg(test)]
 mod effect_bus_tests;
 #[cfg(test)]
 mod format_upgrade_tests;
@@ -216,6 +218,16 @@ pub struct SamplerHistoryEdit {
     pub redo: bool,
     pub cancel: Arc<AtomicBool>,
 }
+/// Identifies one requested save against the exact canonical document revision.
+/// The caller supplies a unique nonzero request ID for its in-flight saves.
+/// The worker returns this identity for both successful and refused saves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SaveCorrelation {
+    pub request_id: u64,
+    pub project_generation: u64,
+    pub revision: u64,
+}
+
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
@@ -243,6 +255,8 @@ pub struct Event {
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
+    /// Exact identity of a correlated save terminal, including refusal.
+    pub save_correlation: Option<SaveCorrelation>,
     /// Replacing the current file changes its reader compatibility. Opening never writes.
     pub document_format_upgrade_required: bool,
     /// This save was refused pending reader-compatibility consent. The UI may
@@ -1314,6 +1328,33 @@ impl Service {
         result
     }
 
+    /// Submit one save bound to the current document generation and revision.
+    /// Rejection returns the original request; a delivered terminal echoes the
+    /// identity, including validation or persistence failure. A stopped worker
+    /// remains a separate disconnection, never a successful save terminal.
+    #[allow(clippy::result_large_err)]
+    pub fn submit_correlated_save(
+        &self,
+        request: Request,
+        correlation: SaveCorrelation,
+    ) -> Result<(), SubmitError> {
+        if !matches!(
+            request,
+            Request::SaveNew(_)
+                | Request::SaveCurrent
+                | Request::SaveCurrentWithFormatUpgrade { .. }
+        ) || correlation.request_id == 0
+        {
+            return Err(SubmitError::Busy(request));
+        }
+        let diagnostic = self.diagnostics.begin(&request);
+        let result = self
+            .requests
+            .submit_traced_save(request, diagnostic, Some(correlation));
+        self.diagnostics.returned(diagnostic, &result);
+        result
+    }
+
     /// Install one read-only control observer. Logging has no effect on request
     /// admission, canonical state, cancellation or publication authority.
     pub fn set_diagnostic_observer(
@@ -1965,6 +2006,7 @@ fn run_worker(
                 bounce_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
+                save_correlation: None,
                 document_format_upgrade_required: false,
                 save_confirmation_required: false,
                 open_complete: false,
@@ -2003,6 +2045,7 @@ fn run_worker(
             bounce_complete: None,
             audio_batch_complete: None,
             save_complete: false,
+            save_correlation: None,
             document_format_upgrade_required: false,
             save_confirmation_required: false,
             open_complete: false,
@@ -2164,6 +2207,7 @@ fn run_worker(
     ) {
         events.begin_diagnostics(&queued, project_generation, revision);
         events.begin_request(&document_intent, queued.document_intent);
+        let save_correlation = queued.save_correlation;
         let request = queued.request;
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
@@ -2768,6 +2812,11 @@ fn run_worker(
             .err(),
             _ => None,
         });
+        if save_correlation.is_some_and(|identity| {
+            identity.project_generation != project_generation || identity.revision != revision
+        }) {
+            barrier_failure = Some("save target changed · save cancelled".to_owned());
+        }
         if barrier && barrier_failure.is_none() {
             let device_finished = if events.resident_publication_enabled()
                 && session.audio_mode() == DocumentAudioMode::Resident
@@ -3017,7 +3066,13 @@ fn run_worker(
                     | Request::OpenWith { .. }
                     | Request::OpenWithAudioMode { .. }
             );
-        if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command)) {
+        if save_correlation.is_some_and(|identity| {
+            identity.project_generation != project_generation || identity.revision != revision
+        }) {
+            save_complete = true;
+            error = Some("save target changed · save cancelled".into());
+        } else if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command))
+        {
             error = Some("section edits require a revision-bound section request".into());
         } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
@@ -7000,6 +7055,11 @@ fn run_worker(
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
+                save_correlation: if save_complete {
+                    save_correlation
+                } else {
+                    None
+                },
                 save_confirmation_required,
                 document_format_upgrade_required: document
                     .as_ref()
@@ -9823,6 +9883,22 @@ mod service_tests {
             }))
             .expect("preview parameter edit");
         next_event(&service);
+        let prior_file = std::fs::read(&path).unwrap();
+        let stale = SaveCorrelation {
+            request_id: 1,
+            project_generation: 0,
+            revision: saved.state.revision + 1,
+        };
+        service
+            .submit_correlated_save(Request::SaveCurrent, stale)
+            .expect("admit stale correlated save");
+        let refused = next_event(&service);
+        assert!(refused.save_complete && refused.error.is_some());
+        assert_eq!(refused.save_correlation, Some(stale));
+        assert!(!refused.gesture_protocol_ack);
+        assert!(refused.active_device_gesture.is_some());
+        assert_eq!(refused.state.revision, saved.state.revision);
+        assert_eq!(std::fs::read(&path).unwrap(), prior_file);
         service.submit(Request::SaveCurrent).expect("save barrier");
         let saved_gesture = next_event(&service);
         assert!(saved_gesture.error.is_none());

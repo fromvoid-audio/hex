@@ -167,6 +167,8 @@ impl WorkerAudioSink for Sink {
 fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
     cx: &mut gpui::TestAppContext,
 ) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let deadline = Instant::now() + Duration::from_secs(5);
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {

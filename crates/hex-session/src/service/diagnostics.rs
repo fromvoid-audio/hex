@@ -440,6 +440,76 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
+    fn action_projections_redact_unicode_names_and_paths_for_rename_import_and_save() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "fixture".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track fixture");
+        };
+        let name = "私的な曲名🎵";
+        let path = std::path::PathBuf::from("/private/秘密の録音🎵.wav");
+        let requests = [
+            Request::Edit(Command::RenameTrack {
+                track,
+                name: name.into(),
+            }),
+            Request::ImportToTrack {
+                path: path.clone(),
+                track,
+                start: 123,
+            },
+            Request::SaveNew(path.clone()),
+        ];
+        let hooks = Hooks::default();
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&records);
+        hooks
+            .install(Arc::new(DiagnosticObserver::new(move |event| {
+                sink.lock().unwrap().push((
+                    event.request,
+                    event.details.clone(),
+                    event.details_truncated,
+                ));
+            })))
+            .unwrap();
+        for request in &requests {
+            hooks.begin(request).expect("request identity");
+        }
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 3);
+        for (index, (stamp, text, truncated)) in records.iter().enumerate() {
+            assert!(!truncated);
+            assert!(!text.contains(name));
+            assert!(!text.contains("秘密"));
+            assert!(!text.contains("/private/"));
+            assert_eq!(stamp.unwrap().request_id, index as u64 + 1);
+        }
+        assert!(records[0].1.contains(&format!("track={}", track.value())));
+        assert!(
+            records[0]
+                .1
+                .contains(&format!("name_redacted_bytes={}", name.len()))
+        );
+        assert!(records[1].1.contains(&format!("track={}", track.value())));
+        assert!(records[1].1.contains("start=123"));
+        assert!(
+            records[1]
+                .1
+                .contains(&format!("path_redacted_bytes={}", path.as_os_str().len()))
+        );
+        assert!(
+            records[2]
+                .1
+                .contains(&format!("value0_redacted_bytes={}", path.as_os_str().len()))
+        );
+    }
+
+    #[test]
     fn real_service_preserves_outcomes_and_correlates_refused_edit_without_private_text() {
         let service = Service::new(48_000, 8, 0).unwrap();
         // Initial state predates observer installation and has no fabricated request.

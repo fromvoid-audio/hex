@@ -122,7 +122,7 @@ impl AudioCandidateReservationQuote {
             .compiler_workspace_bytes
             .checked_add(workspace)
             .ok_or(AudioStorageError::Overflow)?;
-        if effect_payloads {
+        if effect_payloads || project.has_group_tracks() {
             quote.metadata_data_bytes = quote
                 .metadata_data_bytes
                 .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
@@ -131,6 +131,8 @@ impl AudioCandidateReservationQuote {
                 .compiler_workspace_bytes
                 .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
                 .ok_or(AudioStorageError::Overflow)?;
+        }
+        if effect_payloads {
             let mut payloads = 0usize;
             let mut largest = 0;
             for device in project
@@ -222,6 +224,11 @@ impl AudioCandidateReservationQuote {
         quote.compiler_workspace_bytes = quote
             .compiler_workspace_bytes
             .checked_add(crate::audio_preparation::transformed::workspace_ceiling()?)
+            .and_then(|bytes| bytes.checked_add(crate::compensation::MAX_COMPENSATION_BYTES))
+            .ok_or(AudioStorageError::Overflow)?;
+        quote.metadata_data_bytes = quote
+            .metadata_data_bytes
+            .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
             .ok_or(AudioStorageError::Overflow)?;
         Ok(quote)
     }

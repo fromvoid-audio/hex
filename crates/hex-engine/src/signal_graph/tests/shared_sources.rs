@@ -440,3 +440,39 @@ fn mixed_arrangement_and_console_share_one_combined_voice_budget() {
         ))
     );
 }
+
+#[test]
+fn solo_shared_contributor_admits_receiver_group_without_receiver_local_content() {
+    let (mut f, _, _) = shared_fixture();
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[f.tracks[0]]).unwrap(),
+            name: "receiver group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    f.editor
+        .execute(Command::ToggleSolo {
+            track: f.tracks[1],
+            exclusive: false,
+        })
+        .unwrap();
+    let compiled = compile(&f);
+    let receiver = compiled
+        .tracks
+        .iter()
+        .find(|track| track.canonical_track_id() == Some(f.tracks[0]))
+        .unwrap();
+    let group = compiled
+        .tracks
+        .iter()
+        .find(|track| track.canonical_track_id() == Some(group))
+        .unwrap();
+    assert!(!group.mix.muted);
+    assert!(!receiver.mix.muted);
+    assert!(!receiver.source_input_enabled());
+    assert!(!receiver.audio_content_enabled());
+}

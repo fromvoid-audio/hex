@@ -74,6 +74,8 @@ pub(in crate::operator_state) struct Spectrum {
     pub(super) coefficients: [[f64; 64]; 4],
     pub(super) builtin: [[f64; BUILTIN_CHOICE_COUNT]; 4],
     pub(super) builtin_active: [u32; 4],
+    // Conservative across transitions: false guarantees every custom coefficient is zero.
+    pub(super) custom_active: [bool; 4],
 }
 impl Spectrum {
     pub(super) fn prepare(settings: &OperatorSettings) -> Self {
@@ -81,6 +83,7 @@ impl Spectrum {
             coefficients: [[0.0; 64]; 4],
             builtin: [[0.0; BUILTIN_CHOICE_COUNT]; 4],
             builtin_active: [0; 4],
+            custom_active: [false; 4],
         };
         for operator in 0..4 {
             if !settings.harmonics.custom[operator] {
@@ -101,6 +104,8 @@ impl Spectrum {
                     f64::from(settings.harmonics.amplitudes[operator][index % pattern])
                         / (index / pattern + 1) as f64;
             }
+            out.custom_active[operator] =
+                out.coefficients[operator].iter().any(|value| *value != 0.0);
             let normalization = out.coefficients[operator].iter().sum::<f64>().max(1.0);
             for value in &mut out.coefficients[operator] {
                 *value /= normalization;
@@ -130,6 +135,9 @@ impl Spectrum {
             builtin_active: std::array::from_fn(|i| {
                 source.builtin_active[i] | target.builtin_active[i]
             }),
+            custom_active: std::array::from_fn(|i| {
+                source.custom_active[i] || target.custom_active[i]
+            }),
         }
     }
     #[cfg(test)]
@@ -158,6 +166,7 @@ impl Spectrum {
             true,
         )
     }
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn sample_policy(
         &self,
@@ -171,6 +180,12 @@ impl Spectrum {
         phase_table: &HarmonicPhaseTable,
         interpolate: bool,
     ) -> f32 {
+        if self.builtin_active[operator] == 1
+            && self.builtin[operator][0] == 1.0
+            && !self.custom_active[operator]
+        {
+            return (0.0_f64 + f64::from(sine.sample_phase_policy(phase, interpolate))) as f32;
+        }
         let mut value = 0.0;
         // Keep the original full builtin bank, including its 512-partial caps.
         let mut active = self.builtin_active[operator];
@@ -194,6 +209,9 @@ impl Spectrum {
                 )
             };
             value += f64::from(sample) * weight;
+        }
+        if !self.custom_active[operator] {
+            return value as f32;
         }
         let cap = harmonic_cap(step);
         // Clenshaw's sine-series recurrence: two immutable basis lookups, no per-partial trig.
