@@ -1962,53 +1962,70 @@ fn fresh_project_and_shutdown_reclaim_graph_and_pcm_only_on_control() -> Result<
 }
 
 #[test]
-fn priority_stop_is_allocation_free_while_retirement_ring_is_full() -> Result<(), Box<dyn Error>> {
+fn priority_stop_is_allocation_free_under_command_and_retirement_pressure()
+-> Result<(), Box<dyn Error>> {
     let workload = fixture::fixture(false)?;
     let candidates = edited_candidates(&workload)?;
-    let (mut control, mut callback) = prepared::channel(RATE)?;
-    let initial = Playback::try_from_prepared_with_session(Arc::clone(&candidates[0].0))?;
-    control
-        .publish(initial)
-        .map_err(|_| "initial playback publication failed")?;
-    control
-        .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchScene {
-            scene: workload.scene_a,
-            quantization: LaunchQuantization::Immediate,
-        })
-        .map_err(|_| "initial launch admission failed")?;
-
-    let mut output = [[0.0; 2]; 128];
-    measured_block(&mut callback, &mut output);
-    for candidate in candidates.iter().skip(1).take(2) {
-        let playback = Playback::try_from_prepared_with_session(Arc::clone(&candidate.0))?;
+    for frames in [1, 17, 128] {
+        let (mut control, mut callback) = prepared::channel(RATE)?;
+        let initial = Playback::try_from_prepared_with_session(Arc::clone(&candidates[0].0))?;
         control
-            .publish(playback)
-            .map_err(|_| "retirement-filling publication failed")?;
-        measured_block(&mut callback, &mut output);
+            .publish(initial)
+            .map_err(|_| "initial playback publication failed")?;
+        control
+            .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchScene {
+                scene: workload.scene_a,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .map_err(|_| "initial launch admission failed")?;
+
+        let mut output = [[0.0; 2]; 128];
+        measured_block(&mut callback, &mut output[..frames]);
+        for candidate in candidates.iter().skip(1).take(2) {
+            let playback = Playback::try_from_prepared_with_session(Arc::clone(&candidate.0))?;
+            control
+                .publish(playback)
+                .map_err(|_| "retirement-filling publication failed")?;
+            measured_block(&mut callback, &mut output[..frames]);
+        }
+        let pending = Playback::try_from_prepared_with_session(Arc::clone(&candidates[3].0))?;
+        control
+            .publish(pending)
+            .map_err(|_| "pending candidate admission failed")?;
+        let mut last_ticket = 0;
+        for _ in 0..32 {
+            last_ticket = control
+                .command_with_ticket(PlaybackCommand::Play)
+                .map_err(|_| "command queue filled early")?;
+        }
+        assert!(control.command(PlaybackCommand::Play).is_err());
+
+        // Stop must suppress the entire full command prefix even when graph
+        // replacement is held behind a full retirement ring.
+        control.stop();
+        measured_block(&mut callback, &mut output[..frames]);
+        assert!(output[..frames].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(
+            !control
+                .status
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        assert_eq!(
+            control
+                .status
+                .consumed_command
+                .load(std::sync::atomic::Ordering::Acquire),
+            last_ticket
+        );
+
+        assert_eq!(control.reclaim(), 2);
+        measured_block(&mut callback, &mut output[..frames]);
+        assert!(output[..frames].iter().all(|frame| *frame == [0.0; 2]));
+        control.request_shutdown();
+        measured_shutdown(&mut callback, &mut output[..frames]);
+        control.reclaim();
     }
-    let pending = Playback::try_from_prepared_with_session(Arc::clone(&candidates[3].0))?;
-    control
-        .publish(pending)
-        .map_err(|_| "pending candidate admission failed")?;
-
-    // Stop is a priority path and remains effective even while publication is
-    // backpressured by a full callback-to-control retirement ring.
-    control.stop();
-    measured_block(&mut callback, &mut output);
-    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
-    assert!(
-        !control
-            .status
-            .playing
-            .load(std::sync::atomic::Ordering::Acquire)
-    );
-
-    assert_eq!(control.reclaim(), 2);
-    measured_block(&mut callback, &mut output);
-    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
-    control.request_shutdown();
-    measured_shutdown(&mut callback, &mut output);
-    control.reclaim();
     drop(candidates);
     drop(workload);
     Ok(())
