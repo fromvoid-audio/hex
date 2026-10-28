@@ -324,6 +324,152 @@ fn uniform_companion_matches_independent_machines_through_handoff_and_release() 
 }
 
 #[test]
+fn partial_companion_groups_match_independent_machines_across_lifecycle() {
+    struct Clock(u64);
+    impl NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+            let frame = self.0 + offset as u64;
+            Some(frame * (1 << 25) + if frame >= 40 { 1000 << 32 } else { 0 })
+        }
+        fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            Some(self.0 + offset as u64)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(true)
+        }
+    }
+    fn render(
+        r: &mut Runtime,
+        events: &[NativeInstrumentEvent],
+        frames: usize,
+        at: u64,
+    ) -> Vec<StereoFrame> {
+        let clock = Clock(at);
+        r.preflight_events(events, frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        r.preflight_clock(Some(&clock), frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        let mut output = vec![[0.0; 2]; frames];
+        r.process_block_with_clock(
+            events,
+            &mut output,
+            Some(&clock),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        output
+    }
+    let partitions = [
+        [0, 0, 0, 0],
+        [0, 0, 0, 1],
+        [0, 0, 1, 0],
+        [0, 0, 1, 1],
+        [0, 0, 1, 2],
+        [0, 1, 0, 0],
+        [0, 1, 0, 1],
+        [0, 1, 0, 2],
+        [0, 1, 1, 0],
+        [0, 1, 1, 1],
+        [0, 1, 1, 2],
+        [0, 1, 2, 0],
+        [0, 1, 2, 1],
+        [0, 1, 2, 2],
+        [0, 1, 2, 3],
+    ];
+    for (index, pattern) in partitions.into_iter().enumerate() {
+        for mode in 0..=if index == 1 || index == 6 { 4 } else { 1 } {
+            for global in [false, true] {
+                let mut s = settings();
+                s.global.active = global;
+                for (operator, group) in pattern.into_iter().enumerate() {
+                    s.fields[28 + operator] = 0.25;
+                    s.fields[CORE_FIELDS + operator * ENVELOPE_FIELDS + 2] =
+                        [0.2, 0.4, 0.6, 0.8][group];
+                    s.companion.words[operator][5] = mode;
+                    s.companion.words[operator][4] = 0.1_f32.to_bits();
+                    s.companion.words[operator][6] = 0.001_f32.to_bits();
+                    s.companion.words[operator][7] = 0;
+                }
+                let mut fast = runtime(s);
+                let mut reference = runtime(s);
+                if pattern == [0, 0, 0, 0] {
+                    assert!(fast.factory.uniform_companion);
+                } else if pattern == [0, 1, 2, 3] {
+                    assert!(!fast.factory.uniform_companion && !fast.factory.partial_companion);
+                } else {
+                    assert!(fast.factory.partial_companion);
+                }
+                reference.factory.uniform_companion = false;
+                reference.factory.partial_companion = false;
+                assert_eq!(
+                    render(&mut fast, &[on(1, 60)], 128, 0),
+                    render(&mut reference, &[on(1, 60)], 128, 0),
+                    "pattern={pattern:?} mode={mode} global={global}"
+                );
+                let mut fast_handoff = runtime(s);
+                let mut reference_handoff = runtime(s);
+                reference_handoff.factory.uniform_companion = false;
+                reference_handoff.factory.partial_companion = false;
+                assert!(fast_handoff.can_copy_history_from(&fast));
+                fast_handoff.copy_history_from(&fast);
+                reference_handoff.copy_history_from(&reference);
+                if index == 1 || index == 6 {
+                    let mut retargeted = runtime(s);
+                    let mut reference_retargeted = runtime(s);
+                    reference_retargeted.factory.uniform_companion = false;
+                    reference_retargeted.factory.partial_companion = false;
+                    let InstrumentHistoryRetargetPreparation::Prepared(proof) = retargeted
+                        .factory
+                        .prepare_history_retarget_target()
+                        .unwrap()
+                    else {
+                        panic!("prepared target")
+                    };
+                    let InstrumentHistoryRetargetPreparation::Prepared(reference_proof) =
+                        reference_retargeted
+                            .factory
+                            .prepare_history_retarget_target()
+                            .unwrap()
+                    else {
+                        panic!("prepared target")
+                    };
+                    assert!(retargeted.can_retarget_history_from(&fast, proof.as_ref()));
+                    assert!(
+                        reference_retargeted
+                            .can_retarget_history_from(&reference, reference_proof.as_ref())
+                    );
+                    retargeted.retarget_history_from(&fast, proof.as_ref());
+                    reference_retargeted
+                        .retarget_history_from(&reference, reference_proof.as_ref());
+                    assert_eq!(
+                        render(&mut retargeted, &[off(1)], 128, 128),
+                        render(&mut reference_retargeted, &[off(1)], 128, 128)
+                    );
+                }
+                assert_eq!(
+                    render(&mut fast_handoff, &[off(1)], 128, 128),
+                    render(&mut reference_handoff, &[off(1)], 128, 128),
+                    "pattern={pattern:?} mode={mode} global={global}"
+                );
+                let tail = if index == 1 || index == 6 || index == 14 {
+                    5000
+                } else {
+                    256
+                };
+                assert_eq!(
+                    render(&mut fast_handoff, &[], tail, 256),
+                    render(&mut reference_handoff, &[], tail, 256),
+                    "pattern={pattern:?} mode={mode} global={global}"
+                );
+                if tail == 5000 {
+                    assert!(fast_handoff.is_quiescent());
+                    assert!(reference_handoff.is_quiescent());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn uniform_companion_requires_bit_identical_authored_laws() {
     let mut s = settings();
     for row in &mut s.companion.words {
