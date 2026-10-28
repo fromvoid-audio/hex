@@ -41,7 +41,7 @@ impl PreparedArrangementVolumes {
         let mut points = 0usize;
         let mut metadata_bytes = 0usize;
         for clip in track.midi_clips() {
-            if clip.volume().points().is_empty() {
+            if clip.volume().is_unity() {
                 continue;
             }
             count = count
@@ -69,7 +69,7 @@ impl PreparedArrangementVolumes {
             .map_err(|_| Invalid("could not reserve arrangement clip volume rows"))?;
         check_budget(rows.capacity(), metadata_bytes)?;
         for clip in track.midi_clips() {
-            if clip.volume().points().is_empty() {
+            if clip.volume().is_unity() {
                 continue;
             }
             let program = PreparedMidiClipVolume::prepare(

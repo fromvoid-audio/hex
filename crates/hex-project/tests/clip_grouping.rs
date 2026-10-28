@@ -662,6 +662,77 @@ fn lower_audio_range_preserves_outer_fragments_and_is_one_undo() {
 }
 
 #[test]
+fn midi_group_preserves_independent_clip_gain_and_curve_through_seams() {
+    use hex_project::{ClipGain, MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let track = track(&mut editor);
+    let first = midi(&mut editor, track, 0);
+    let second = midi(&mut editor, track, 4);
+    for (clip, db) in [(first, -6_000), (second, 24_000)] {
+        let curve = MidiClipVolume::new(
+            vec![
+                MidiClipVolumePoint::linear(b(0), MidiClipGain::new(0.0).unwrap()),
+                MidiClipVolumePoint::linear(b(2), MidiClipGain::new(4.0).unwrap()),
+            ],
+            b(2),
+        )
+        .unwrap();
+        editor
+            .execute(Command::ReplaceMidiClipVolume {
+                clip,
+                volume: curve,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetMidiClipGain {
+                clip,
+                gain: ClipGain::new(db).unwrap(),
+            })
+            .unwrap();
+    }
+    let before_refusal = editor.project().snapshot();
+    let error = editor
+        .execute(Command::GroupClips(vec![first, second]))
+        .unwrap_err();
+    assert!(error.to_string().contains("different clip gains"));
+    assert_eq!(editor.project().snapshot(), before_refusal);
+    editor
+        .execute(Command::SetMidiClipGain {
+            clip: second,
+            gain: ClipGain::new(-6_000).unwrap(),
+        })
+        .unwrap();
+    let originals = [
+        editor.project().midi_clip(first).unwrap().clone(),
+        editor.project().midi_clip(second).unwrap().clone(),
+    ];
+    let before = editor.project().snapshot();
+    let Created::Clip(id) = editor
+        .execute(Command::GroupClips(vec![first, second]))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let grouped = editor.project().midi_clip(id).unwrap();
+    for original in originals {
+        for raw in [0, 1 << 30, 1 << 31, 1 << 32, (2 << 32) - 1] {
+            let source = original.volume().gain_at(BeatTime::from_raw(raw)).linear()
+                * f64::from(original.volume().clip_gain().linear());
+            let actual = grouped
+                .volume()
+                .gain_at(BeatTime::from_raw(original.start().raw() + raw))
+                .linear()
+                * f64::from(grouped.volume().clip_gain().linear());
+            assert!((source - actual).abs() < 1.0e-12, "{source} != {actual}");
+        }
+    }
+    assert!(editor.undo());
+    let mut restored = editor.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+}
+
+#[test]
 fn midi_group_preserves_volume_seams_and_refuses_unbounded_loop_expansion() {
     use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
     let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();

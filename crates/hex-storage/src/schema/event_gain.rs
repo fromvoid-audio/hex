@@ -171,6 +171,7 @@ pub(crate) fn require_unity(project: &Project) -> Result<(), StorageError> {
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
+    super::midi_clip_gain::require_unity(project)?;
     let mut snapshot = project.snapshot();
     let mut gains = Vec::new();
     let owners = alias_owners(&snapshot)?;

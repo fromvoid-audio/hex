@@ -137,6 +137,7 @@ fn fixture(
         "inactive_audio_events",
         "nested_audio",
         "audio_event_gains",
+        "midi_clip_gains",
     ] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),

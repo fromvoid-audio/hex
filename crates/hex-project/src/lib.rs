@@ -356,7 +356,7 @@ pub enum TrimEdge {
     /// Trailing edge or section suffix.
     Right,
 }
-/// Saved audio-clip gain in integer millidecibels, before track processing.
+/// Saved clip-local gain in integer millidecibels, before track processing.
 /// The finite -60..=24 dB range does not imply normalization or output limiting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClipGain(i32);

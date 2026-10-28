@@ -2288,6 +2288,16 @@ impl EditorView {
                     }));
                 midi = midi.children([move_surface]).children(trim_handles);
             }
+            if trim_preview.is_none() {
+                midi = midi.children(self.midi_clip_gain_handle(
+                    state,
+                    track_id,
+                    clip,
+                    pixel_width,
+                    viewport,
+                    cx,
+                ));
+            }
             let color = if selected_clip {
                 theme::color(theme::PaletteRole::Primary)
             } else {
