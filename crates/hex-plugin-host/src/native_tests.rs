@@ -1509,6 +1509,8 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
     assert!(other.stop_and_reap_on_control().unwrap().status.success());
 }
 
+#[path = "native_tests/controller.rs"]
+mod controller;
 #[path = "native_tests/epoch.rs"]
 mod epoch;
 #[path = "native_tests/live_capture.rs"]

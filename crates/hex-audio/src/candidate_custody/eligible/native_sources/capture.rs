@@ -1,7 +1,10 @@
 //! Current state follows original quiescent or active Root/worker custody.
 //! A copied envelope grants no resume, endpoint or graph publication authority.
 use super::*;
-use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+use crate::plugin_worker::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerControllerProgress,
+    NativeWorkerControllerQuery,
+};
 #[cfg(test)]
 mod tests;
 
@@ -103,6 +106,28 @@ impl Custody {
             Owner::Effect(owner) => owner.parameter_values(),
             Owner::Loaned(owner) => owner.parameter_values(),
             _ => Err("native parameter owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn begin_native_controller_query(
+        &self,
+        binding: Binding,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.begin_controller_query(query),
+            Owner::Loaned(owner) => owner.begin_controller_query(query),
+            _ => Err("native controller owner differs"),
+        })
+    }
+    pub(in crate::candidate_custody) fn poll_native_controller_query(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerControllerProgress, &'static str> {
+        self.with_live_capture(binding, |owner| match owner {
+            Owner::Effect(owner) => owner.poll_controller_query(request),
+            Owner::Loaned(owner) => owner.poll_controller_query(request),
+            _ => Err("native controller owner differs"),
         })
     }
     pub(in crate::candidate_custody) fn begin_live_native_capture(
@@ -260,6 +285,32 @@ impl CandidateRoot {
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
         self.require_native_source_control_open()?;
         let result = self.0.eligible.native_parameter_values(binding)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn begin_native_controller_query(
+        &self,
+        binding: Binding,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .begin_native_controller_query(binding, query)?;
+        self.require_native_source_control_open()?;
+        Ok(result)
+    }
+    pub(crate) fn poll_native_controller_query(
+        &self,
+        binding: Binding,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerControllerProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .poll_native_controller_query(binding, request)?;
         self.require_native_source_control_open()?;
         Ok(result)
     }
