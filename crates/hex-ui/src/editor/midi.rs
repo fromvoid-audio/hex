@@ -394,6 +394,7 @@ impl EditorView {
             if selected.binary_search(&note.id()).is_ok() {
                 originals.push(super::midi_group_drag::GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),
@@ -476,6 +477,7 @@ impl EditorView {
                 .iter()
                 .map(|note| super::midi_group_drag::GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),

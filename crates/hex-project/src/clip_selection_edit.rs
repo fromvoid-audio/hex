@@ -458,6 +458,7 @@ impl Command {
             | Self::ReplaceMidiClipVolume { clip, .. }
             | Self::AddMidiNote { clip, .. }
             | Self::AddMidiNotes { clip, .. }
+            | Self::SetMidiNotesActive { clip, .. }
             | Self::EditMidiNotes { clip, .. }
             | Self::EditMidiNotesWithSourceExtent { clip, .. }
             | Self::DuplicateMidiSourceRange { clip, .. }
@@ -566,6 +567,9 @@ impl Command {
             | Self::MoveTrackDevice { .. }
             | Self::ReplaceDeviceAutomationTarget { .. }
             | Self::ReplaceDeviceAutomation { .. }
+            | Self::ManualDeviceEdit { .. }
+            | Self::SetDeviceAutomationReadSelection { .. }
+            | Self::ReenableDeviceAutomation
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }
@@ -588,6 +592,8 @@ impl Command {
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
+            | Self::PasteDevices { .. }
+            | Self::RemoveDevices { .. }
             | Self::ImportAudioTrack { .. }
             | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
@@ -606,6 +612,7 @@ impl Command {
             | Self::SetMeterPoint { .. }
             | Self::Mute { .. }
             | Self::ToggleSolo { .. }
+            | Self::ToggleSoloTracks { .. }
             | Self::SetLoopRegion { .. }
             | Self::ToggleLoopRegion
             | Self::ClearLoopRegion

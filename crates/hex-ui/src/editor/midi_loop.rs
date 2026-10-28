@@ -125,17 +125,18 @@ impl EditorView {
             theme::PaletteRole::Muted
         });
         let entity = cx.entity();
-        let brace = div()
+        let brace = super::super::timeline_strip::loop_surface()
             .id("midi-loop-ruler")
             .debug_selector(|| "midi-loop-ruler".into())
-            .relative()
             .h_full()
             .flex_1()
             .min_w_0()
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .children(super::super::timeline_strip::loop_range(
+                ((i128::from(values.loop_start) - i128::from(start)) as f64) / span.max(1) as f64,
+                ((i128::from(values.loop_end) - i128::from(start)) as f64) / span.max(1) as f64,
+                values.looping,
+                ["midi-loop-start-marker", "midi-loop-end-marker"],
+            ))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
             .child(
@@ -156,26 +157,6 @@ impl EditorView {
                         let b = bounds_of(bounds);
                         if !b.is_valid() || span == 0 {
                             return;
-                        }
-                        if let Some((first, last)) = interval(start, span, b, values) {
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(px(first), bounds.origin.y + px(10.0)),
-                                    size(px(last - first), px(3.0)),
-                                ),
-                                rgb(color),
-                            ));
-                        }
-                        for marker in [values.loop_start, values.loop_end] {
-                            if let Some(x) = x_at(start, span, b, marker) {
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(px(x - 1.5), bounds.origin.y + px(4.0)),
-                                        size(px(3.0), px(9.0)),
-                                    ),
-                                    rgb(color),
-                                ));
-                            }
                         }
                         let target = active.map(|gesture| gesture.handle).or_else(|| {
                             hitbox
@@ -262,7 +243,7 @@ impl EditorView {
                 .size_full(),
             );
         div()
-            .h(px(16.0))
+            .h(px(super::super::timeline_strip::LOOP_HEIGHT))
             .flex_shrink_0()
             .flex()
             .child(

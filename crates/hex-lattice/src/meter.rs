@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 pub struct DynamicsMeter {
     pub reduction_db: [f32; 2],
     pub clipped: bool,
+    /// Peak after the processor's input gain, before dynamics processing.
+    pub post_input_peak: f32,
 }
 
 /// Scalar endpoint retained by charged playback observations. On 64-bit hosts,
@@ -18,8 +20,10 @@ pub struct DynamicsMeter {
 pub struct DeviceMeter {
     input: AtomicU32,
     output: AtomicU32,
+    track_output: AtomicU32,
     reduction: [AtomicU32; 2],
     clipped: AtomicU32,
+    post_input_peak: AtomicU32,
 }
 impl DeviceMeter {
     /// CONTROL ONLY: complete exclusive payload declaration for this value.
@@ -29,8 +33,10 @@ impl DeviceMeter {
         let Self {
             input: _,
             output: _,
+            track_output: _,
             reduction: _,
             clipped: _,
+            post_input_peak: _,
         } = self;
         crate::PreparedStorageDeclaration::ExclusiveOnly {
             bytes: std::mem::size_of::<Self>(),
@@ -48,6 +54,15 @@ impl DeviceMeter {
     }
     pub fn observe_output(&self, frames: &[[f32; 2]]) {
         Self::observe(&self.output, frames);
+    }
+    /// Accumulate the containing track's post-fader output independently of
+    /// the instrument's own input and output taps.
+    pub fn observe_track_output(&self, frames: &[[f32; 2]]) {
+        Self::observe(&self.track_output, frames);
+    }
+    /// Drain the track-output peak from its single display consumer.
+    pub fn take_track_output(&self) -> f32 {
+        f32::from_bits(self.track_output.swap(0, Relaxed))
     }
     /// Recover a device tap from an analytic source's already mixed lanes.
     /// Unity lanes are exact; fader normalization carries f32 rounding only.
@@ -89,6 +104,10 @@ impl DeviceMeter {
         ]
     }
     pub(crate) fn observe_dynamics(&self, reading: DynamicsMeter) {
+        if reading.post_input_peak.is_finite() && reading.post_input_peak > 0.0 {
+            self.post_input_peak
+                .fetch_max(reading.post_input_peak.to_bits(), Relaxed);
+        }
         for (target, value) in self.reduction.iter().zip(reading.reduction_db) {
             // Both signs of zero mean no attenuation. The -0 bit pattern
             // would otherwise outrank every positive finite reading.
@@ -107,6 +126,7 @@ impl DeviceMeter {
                 f32::from_bits(self.reduction[i].swap(0, Relaxed))
             }),
             clipped: self.clipped.swap(0, Relaxed) != 0,
+            post_input_peak: f32::from_bits(self.post_input_peak.swap(0, Relaxed)),
         }
     }
 }
@@ -135,11 +155,14 @@ mod tests {
         let meter = DeviceMeter::default();
         meter.observe_input(&[[0.1, -1.2]]);
         meter.observe_output(&[[0.4, -0.8]]);
+        meter.observe_track_output(&[[0.3, -0.6]]);
         for _ in 0..10 {
             meter.observe_input(&[[0.01; 2]]);
         }
         meter.observe_output(&[[f32::NAN, f32::INFINITY]]);
         assert_eq!(meter.take_peaks(), [1.2, 0.8]);
+        assert_eq!(meter.take_track_output(), 0.6);
+        assert_eq!(meter.take_track_output(), 0.0);
         assert_eq!(meter.take_peaks(), [0.0; 2]);
     }
 
@@ -149,10 +172,12 @@ mod tests {
         meter.observe_dynamics(DynamicsMeter {
             reduction_db: [-0.0, 0.0],
             clipped: false,
+            post_input_peak: 0.0,
         });
         meter.observe_dynamics(DynamicsMeter {
             reduction_db: [6.0, 3.0],
             clipped: false,
+            post_input_peak: 0.0,
         });
         assert_eq!(meter.take_dynamics().reduction_db, [6.0, 3.0]);
     }
@@ -165,14 +190,17 @@ mod tests {
         meter.observe_dynamics(DynamicsMeter {
             reduction_db: [3.0, 5.5],
             clipped: false,
+            post_input_peak: 1.25,
         });
         meter.observe_dynamics(DynamicsMeter {
             reduction_db: [f32::NAN, f32::INFINITY],
             clipped: true,
+            post_input_peak: f32::INFINITY,
         });
         meter.observe_dynamics(DynamicsMeter {
             reduction_db: [-2.0, f32::NEG_INFINITY],
             clipped: false,
+            post_input_peak: 0.0,
         });
 
         assert_eq!(meter.take_peaks(), [0.5, 1.0]);
@@ -181,6 +209,7 @@ mod tests {
             DynamicsMeter {
                 reduction_db: [3.0, 5.5],
                 clipped: true,
+                post_input_peak: 1.25,
             }
         );
         assert_eq!(meter.take_dynamics(), DynamicsMeter::default());

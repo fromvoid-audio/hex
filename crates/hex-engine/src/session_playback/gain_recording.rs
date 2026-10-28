@@ -44,6 +44,9 @@ impl SessionPlayback {
         {
             return None;
         }
+        // The graph's summing arrival excludes serial Main processors. Receipt
+        // delivery must wait through the complete final output path instead.
+        let final_arrival = self.revision.arrangement().main_latency_frames();
         if let Some(compensation) = &self.compensation {
             let target = compensation
                 .graph
@@ -56,7 +59,7 @@ impl SessionPlayback {
                 .nodes()
                 .get(target.fader)?
                 .output_arrival_frames;
-            let delay = compensation.graph.main_latency().checked_sub(arrival)?;
+            let delay = final_arrival.checked_sub(arrival)?;
             let (frame, pass) = if arrival == 0 {
                 (self.arrangement_frame, self.arrangement_loop_pass)
             } else {
@@ -65,7 +68,12 @@ impl SessionPlayback {
             };
             Some((frame, u64::from(delay), pass))
         } else {
-            Some((self.arrangement_frame, 0, self.arrangement_loop_pass))
+            // A Main-only delay does not require upstream compensation rings.
+            Some((
+                self.arrangement_frame,
+                u64::from(final_arrival),
+                self.arrangement_loop_pass,
+            ))
         }
     }
 }
@@ -151,6 +159,67 @@ mod tests {
         assert_eq!(capture.output(0).unwrap(), [[0.1, -0.4]; 8]);
         assert_eq!(capture.output(1).unwrap(), [[0.05, -0.2]; 8]);
         assert_eq!(main, [[0.1 + 0.05, -0.4 - 0.2]; 8]);
+    }
+    #[test]
+    fn group_gain_override_changes_only_its_submix_path() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "source".into(),
+                path: "memory.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 16,
+                playback_frames: 16,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack { name: "bus".into() })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            })
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare_for_gain_recording(
+                editor.project(),
+                &BTreeMap::from([(
+                    asset,
+                    crate::Audio::new(48_000, vec![[0.25, -0.5]; 16]).unwrap(),
+                )]),
+                Arc::new(crate::SineTable::new()),
+                None,
+                group,
+            )
+            .unwrap(),
+        );
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime
+            .set_gain_recording_override(group.value(), 0.5)
+            .unwrap();
+        let mut output = [[0.0; 2]; 8];
+        runtime.render(&mut output).unwrap();
+        assert_eq!(output, [[0.25, -0.5]; 8]); // 0.5 submix + independent 0.5 send.
+        assert_eq!(runtime.gain_recording_clock(group.value()), Some((8, 0, 0)));
     }
     #[test]
     fn gain_recording_fault_rolls_back_pcm_clock_and_stop_clears_override() {

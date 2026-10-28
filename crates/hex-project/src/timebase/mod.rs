@@ -1,4 +1,9 @@
+mod automation_projection;
 mod input_grid;
+pub use automation_projection::{
+    AUTOMATION_PROJECTION_VERSION, CapturedAutomationProjection,
+    visit_automation_projection_identity,
+};
 pub use input_grid::{InputQuantization, MusicalGridSegment, ResolvedInputGrid};
 mod meter;
 mod pulses;

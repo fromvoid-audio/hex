@@ -3,7 +3,7 @@ use hex_lattice_contract::{
     validated_parameter_semantics,
 };
 #[test]
-fn scalar_auto_pan_declares_control_semantics_without_claiming_generic_automation() {
+fn scalar_auto_pan_declares_implemented_smoothed_automation() {
     use hex_devices::auto_pan::{AUTO_PAN_DEFINITION as d, parameter};
     let state = d.default_state().unwrap();
     for (id, mapping) in [
@@ -15,7 +15,7 @@ fn scalar_auto_pan_declares_control_semantics_without_claiming_generic_automatio
             .unwrap()
             .unwrap();
         assert_eq!(s.normalization, mapping);
-        assert_eq!(s.automation, ParameterAutomation::Unsupported);
+        assert_eq!(s.automation, ParameterAutomation::DeviceArrangementEnvelope);
         let descriptor = *d.descriptors().iter().find(|v| v.id == id).unwrap();
         let value = d.read_parameter(&state, id).unwrap();
         let normalized = s.normalization.normalize(descriptor, value).unwrap();

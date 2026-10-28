@@ -452,6 +452,7 @@ where
         );
     }
     callback.finish_gain_recording_quantum(valid);
+    callback.finish_native_parameter_quantum(valid);
     valid
 }
 
@@ -748,6 +749,12 @@ mod tests {
     }
 
     fn recording_callback() -> (prepared::Control, prepared::Callback, Target) {
+        recording_callback_with_main_limiter(false)
+    }
+
+    fn recording_callback_with_main_limiter(
+        main_limiter: bool,
+    ) -> (prepared::Control, prepared::Callback, Target) {
         use hex_project::{Command, Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Imported { track, asset, .. } = editor
@@ -763,6 +770,23 @@ mod tests {
         else {
             panic!("expected imported track");
         };
+        if main_limiter {
+            use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+            let definition = &hex_devices::limiter::DEFINITION;
+            let state = definition
+                .patch_parameter(
+                    &definition.default_state().unwrap(),
+                    hex_devices::limiter::parameter::LOOKAHEAD,
+                    ParameterValue::Choice(2),
+                )
+                .unwrap();
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
         let revision = Arc::new(
             PreparedRevision::prepare_for_gain_recording(
                 editor.project(),
@@ -773,6 +797,9 @@ mod tests {
             )
             .unwrap(),
         );
+        if main_limiter {
+            assert_eq!(revision.arrangement().main_latency_frames(), 288);
+        }
         let playback = Playback::try_from_prepared_with_session(revision).unwrap();
         let (mut control, mut callback) = prepared::channel(48_000).unwrap();
         let revision = control.publish(playback).unwrap();
@@ -853,6 +880,127 @@ mod tests {
                 capture_start,
             )
         }
+    }
+
+    // Rendering and final conversion are independently instrumented. Construction,
+    // assertions, receipt collection and reclamation remain outside both scopes.
+    fn checked_recording_render(
+        callback: &mut prepared::Callback,
+        source: &mut [hex_engine::Frame],
+    ) -> Result<(), hex_engine::Invalid> {
+        #[cfg(feature = "allocation-probe")]
+        {
+            let mut result = Ok(());
+            let info = allocation_counter::measure(|| {
+                callback.begin_block();
+                result = callback.render(source);
+            });
+            assert_eq!(
+                (
+                    info.count_total,
+                    info.bytes_total,
+                    info.count_current,
+                    info.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            result
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            callback.begin_block();
+            callback.render(source)
+        }
+    }
+
+    #[test]
+    fn gain_recording_receipt_waits_for_serial_main_limiter_sample_to_be_written() {
+        const DELAY: usize = 288;
+        const TOUCH: usize = 16;
+        const FIRST_WRITTEN: usize = TOUCH + DELAY;
+        let (mut control, mut callback, target) = recording_callback_with_main_limiter(true);
+        // The fixture has actually written sixteen initial zero frames. The
+        // Limiter is transparent for this signal, with precisely 288 delay frames.
+        control.gain_recording.begin(target, 0.8).unwrap();
+        let mut source = [[0.0; 2]; 128];
+        let mut output = [0.0_f32; 256];
+        let mut frame = TOUCH;
+        for length in [16, 7, 63, 1, 31, 128].into_iter().cycle() {
+            if frame == FIRST_WRITTEN {
+                break;
+            }
+            let length = length.min(FIRST_WRITTEN - frame);
+            let rendered = checked_recording_render(&mut callback, &mut source[..length]);
+            assert!(rendered.is_ok());
+            assert!(
+                control.gain_recording.try_receipt().is_none(),
+                "rendering alone is not sink delivery"
+            );
+            assert!(checked_host_finish(
+                &mut callback,
+                &mut output[..length * 2],
+                &mut source[..length],
+                2,
+                &rendered,
+                frame as u64,
+                Instant::now()
+            ));
+            // Independent PCM oracle: Main retains every dry source frame for
+            // 288 frames. None of the touched content is in this delivered prefix.
+            for (offset, actual) in output[..length * 2].chunks_exact(2).enumerate() {
+                let expected = if frame + offset < DELAY {
+                    [0.0, 0.0]
+                } else {
+                    [0.25, -0.5]
+                };
+                assert_eq!(actual, expected);
+            }
+            assert!(
+                control.gain_recording.try_receipt().is_none(),
+                "gain must not be acknowledged before output frame 304 is written"
+            );
+            frame += length;
+        }
+        // The half-open delivered prefix ends at 304. Only this next successful
+        // native write contains source frame 16 with the new fader gain.
+        let rendered = checked_recording_render(&mut callback, &mut source[..1]);
+        assert!(rendered.is_ok());
+        assert!(control.gain_recording.try_receipt().is_none());
+        assert!(checked_host_finish(
+            &mut callback,
+            &mut output[..2],
+            &mut source[..1],
+            2,
+            &rendered,
+            FIRST_WRITTEN as u64,
+            Instant::now()
+        ));
+        assert_eq!(output[..2], [0.2, -0.4]);
+        assert_eq!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Applied {
+                target,
+                sequence: 1,
+                gain: 0.8,
+                performance_frame: TOUCH as u64,
+                content_frame: TOUCH as u64,
+                loop_pass: 0,
+            })
+        );
+        assert!(control.gain_recording.try_receipt().is_none());
+        control.request_shutdown();
+        let rendered = checked_recording_render(&mut callback, &mut source[..1]);
+        assert!(rendered.is_ok());
+        assert!(checked_host_finish(
+            &mut callback,
+            &mut output[..2],
+            &mut source[..1],
+            2,
+            &rendered,
+            (FIRST_WRITTEN + 1) as u64,
+            Instant::now()
+        ));
+        control.reclaim();
     }
 
     fn host_copy_receipt_regression<T: SizedSample + FromSample<f32> + std::fmt::Debug>()
@@ -1003,3 +1151,7 @@ mod tests {
 #[cfg(test)]
 #[path = "device_midi_recording_tests.rs"]
 mod midi_recording_tests;
+
+#[cfg(test)]
+#[path = "device_native_parameter_input_tests.rs"]
+pub(crate) mod native_parameter_input_tests;

@@ -140,6 +140,7 @@ fn edit_bounded(
         for (id, note) in (first..=last).zip(surviving) {
             target.notes.push(MidiNote {
                 id: NoteId(id),
+                active: note.active,
                 start: note.start,
                 duration: note.duration,
                 pitch: note.pitch,

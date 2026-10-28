@@ -225,6 +225,7 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         clip: midi_clip,
         remove: Vec::new(),
         insert: vec![hex_project::MidiNoteInsert {
+            active: true,
             start: BeatTime::ONE,
             duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
             pitch: 64,

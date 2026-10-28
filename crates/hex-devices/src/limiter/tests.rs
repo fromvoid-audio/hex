@@ -50,6 +50,67 @@ fn render(
     }
     output
 }
+
+#[test]
+fn meter_reports_committed_post_input_gain_in_both_modes() {
+    for settings in [
+        vec![(GAIN, ParameterValue::Float(6.0))],
+        vec![
+            (MAXIMIZE, ParameterValue::Bool(true)),
+            (THRESHOLD, ParameterValue::Float(-6.0)),
+        ],
+    ] {
+        let mut runtime = factory(48_000, &settings).create_runtime().unwrap();
+        let mut input = [[0.125, -0.25]; 16];
+        runtime.begin_block();
+        runtime.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+        runtime.rollback_block();
+        assert_eq!(runtime.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+
+        let mut input = [[0.125, -0.25]; 16];
+        runtime.begin_block();
+        runtime.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+        runtime.commit_block();
+        let peak = runtime.take_dynamics_meter().unwrap().post_input_peak;
+        assert!(
+            (peak - 0.25 * 10.0_f32.powf(6.0 / 20.0)).abs() < 1e-5,
+            "{peak}"
+        );
+        assert_eq!(runtime.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+    }
+}
+
+#[test]
+fn meter_tracks_the_actual_gain_ramp_and_silence() {
+    let mut changed = factory(
+        48_000,
+        &[
+            (GAIN, ParameterValue::Float(6.0)),
+            (ROUTING, ParameterValue::Choice(1)),
+        ],
+    )
+    .create_runtime()
+    .unwrap();
+    let old_ms = factory(48_000, &[(ROUTING, ParameterValue::Choice(1))])
+        .create_runtime()
+        .unwrap();
+    assert!(changed.can_inherit_from(old_ms.as_ref()));
+    changed.inherit_from(old_ms.as_ref());
+    let mut frame = [[0.25, -0.5]];
+    changed.begin_block();
+    changed.process_block(&mut frame, &EMPTY_DEVICE_RESOURCES);
+    changed.commit_block();
+    let peak = changed.take_dynamics_meter().unwrap().post_input_peak;
+    let target = 10.0_f32.powf(6.0 / 20.0);
+    let expected = 0.5 * (1.0 + (target - 1.0) / 240.0);
+    assert!((peak - expected).abs() < 1e-6, "{peak} != {expected}");
+
+    let mut silence = [[0.0; 2]; 16];
+    changed.begin_block();
+    changed.process_block(&mut silence, &EMPTY_DEVICE_RESOURCES);
+    changed.commit_block();
+    assert_eq!(changed.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+}
 #[test]
 fn state_is_strict_and_inactive_values_survive_mode_switching() {
     for descriptor in state::DESCRIPTORS {
@@ -195,6 +256,115 @@ fn declared_latency_storage_and_impulse_are_exact_for_all_configurations() {
         }
     }
 }
+#[test]
+fn standard_anticipates_a_transient_without_a_large_background_step() {
+    let mut runtime = factory(48_000, &[(CEILING, ParameterValue::Float(0.0))])
+        .create_runtime()
+        .unwrap();
+    let mut input = vec![[0.25; 2]; 2_400];
+    input[2_000] = [4.0; 2];
+    let output = render(runtime.as_mut(), &input, &[31, 64, 7]);
+    let max_step = output[1_000..2_070]
+        .windows(2)
+        .map(|pair| (pair[1][0] - pair[0][0]).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(max_step < 0.01, "background step {max_step}");
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .all(|sample| sample.abs() <= 1.000_001)
+    );
+}
+
+#[test]
+fn standard_attack_respects_link_and_sample_ceiling_across_rates() {
+    for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+        for link in [0.0, 1.0] {
+            let f = factory(
+                rate,
+                &[
+                    (CEILING, ParameterValue::Float(0.0)),
+                    (LINK, ParameterValue::Float(link)),
+                ],
+            );
+            let latency = f.algorithmic_latency_frames().unwrap() as usize;
+            let transient = 2 * latency + 500;
+            let mut input = vec![[0.25; 2]; transient + latency + 100];
+            input[transient] = [4.0, 0.25];
+            let mut runtime = f.create_runtime().unwrap();
+            let output = render(runtime.as_mut(), &input, &[1, 63, 257, 17]);
+            let preceding = output[transient - 1..transient + latency]
+                .windows(2)
+                .map(|pair| (pair[1][0] - pair[0][0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(preceding < 0.02, "rate={rate} link={link} step={preceding}");
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() <= 1.000_001),
+                "rate={rate} link={link}"
+            );
+            if link == 0.0 {
+                assert_eq!(output[transient + latency][1], 0.25);
+            } else {
+                assert!(output[transient + latency][1] < 0.07);
+            }
+        }
+    }
+}
+
+#[test]
+fn standard_attack_keeps_earlier_deadlines_when_stronger_peaks_arrive() {
+    let f = factory(
+        8_000,
+        &[
+            (CEILING, ParameterValue::Float(0.0)),
+            (LINK, ParameterValue::Float(1.0)),
+        ],
+    );
+    let latency = f.algorithmic_latency_frames().unwrap() as usize;
+    let mut input = vec![[0.25; 2]; 200];
+    input[100][0] = 2.0;
+    input[110][0] = 8.0;
+    let mut runtime = f.create_runtime().unwrap();
+    let output = render(runtime.as_mut(), &input, &[3, 17, 1]);
+    assert!(output[100 + latency][0] <= 1.0);
+    assert!(output[110 + latency][0] <= 1.0);
+    let max_step = output[99..=110 + latency]
+        .windows(2)
+        .map(|pair| (pair[1][1] - pair[0][1]).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(max_step < 0.025, "linked background step {max_step}");
+}
+
+#[test]
+fn standard_attack_rollback_and_compatible_handoff_preserve_envelope() {
+    let f = factory(48_000, &[(CEILING, ParameterValue::Float(0.0))]);
+    let mut original = f.create_runtime().unwrap();
+    let mut reference = f.create_runtime().unwrap();
+    let mut input = vec![[0.25; 2]; 1_010];
+    input[1_000] = [4.0; 2];
+    assert_eq!(
+        render(original.as_mut(), &input, &[1010]),
+        render(reference.as_mut(), &input, &[1010])
+    );
+    original.begin_block();
+    let mut abandoned = [[0.25; 2]; 20];
+    original.process_block(&mut abandoned, &EMPTY_DEVICE_RESOURCES);
+    original.rollback_block();
+
+    let mut successor = f.create_runtime().unwrap();
+    assert!(successor.can_inherit_from(original.as_ref()));
+    successor.inherit_from(original.as_ref());
+    let continuation = [[0.25; 2]; 200];
+    assert_eq!(
+        render(successor.as_mut(), &continuation, &[7, 53]),
+        render(reference.as_mut(), &continuation, &[200])
+    );
+}
+
 #[test]
 fn sample_ceiling_and_partition_independence_with_extreme_stereo_transients() {
     for mode in 0..3 {

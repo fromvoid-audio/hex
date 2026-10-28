@@ -4,6 +4,13 @@ use hex_stream::StreamConfig;
 
 #[test]
 fn verified_export_reopens_exact_sources_offline_without_resident_pcm_or_project_edits() {
+    output_unavailable_export(false);
+}
+#[test]
+fn grouped_verified_export_works_without_native_output() {
+    output_unavailable_export(true);
+}
+fn output_unavailable_export(grouped: bool) {
     let files = Files::new();
     let original = files.wav(24_000, 8192);
     let original_bytes = fs::read(&original).unwrap();
@@ -36,8 +43,19 @@ fn verified_export_reopens_exact_sources_offline_without_resident_pcm_or_project
         .unwrap();
     assert!(next().error.is_none());
     service.submit(Request::Import(original.clone())).unwrap();
-    let imported = next();
+    let mut imported = next();
     assert!(imported.error.is_none(), "{:?}", imported.error);
+    if grouped {
+        let track = imported.state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(hex_project::Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            }))
+            .unwrap();
+        imported = next();
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+    }
     assert!(imported.playback.is_none(), "no resident fallback");
     let snapshot = imported.state.canonical_audio_source.as_ref().unwrap();
     assert!(
@@ -201,7 +219,7 @@ fn verified_export_turns_over_a_two_page_cache_and_refuses_overlapping_demand_wi
 fn verified_export_range_captures_and_stems_match_resident_mixed_rate_loop_and_return_oracle() {
     use hex_project::{Command, Created, TrimEdge};
     use hex_session::service::{ExportControl, ExportSignal, Stem};
-    for rate in [44100, 48000] {
+    for (rate, grouped) in [(44100, false), (48000, false), (44100, true), (48000, true)] {
         let files = Files::new();
         let a = varied(&files, "a.wav", 24000, 8192);
         let b = varied(&files, "b.wav", 48000, 12288);
@@ -278,6 +296,42 @@ fn verified_export_range_captures_and_stems_match_resident_mixed_rate_loop_and_r
                     before: None,
                 },
             );
+            if grouped {
+                let group = run(
+                    service,
+                    Request::Edit(Command::GroupTracks {
+                        tracks: hex_project::TrackSelectionIds::new(&tracks).unwrap(),
+                        name: "group".into(),
+                    }),
+                );
+                let Created::Track(inner) = group.created.unwrap() else {
+                    panic!("group")
+                };
+                run(
+                    service,
+                    Request::Edit(Command::Gain {
+                        track: inner,
+                        gain: 0.5,
+                    }),
+                );
+                let group = run(
+                    service,
+                    Request::Edit(Command::GroupTracks {
+                        tracks: hex_project::TrackSelectionIds::new(&[inner]).unwrap(),
+                        name: "outer".into(),
+                    }),
+                );
+                let Created::Track(outer) = group.created.unwrap() else {
+                    panic!("outer group")
+                };
+                run(
+                    service,
+                    Request::Edit(Command::Gain {
+                        track: outer,
+                        gain: 0.75,
+                    }),
+                );
+            }
             let state = run(service, Request::Edit(Command::MasterGain { gain: 0.5 }));
             scenes.push((tracks[0], bus, state));
         }
@@ -361,12 +415,29 @@ fn verified_export_range_captures_and_stems_match_resident_mixed_rate_loop_and_r
 fn verified_export_refuses_missing_changed_and_short_sources_preserving_existing_output_and_retry()
 {
     use hex_session::service::{ExportControl, ExportSignal};
-    for failure in 0..3 {
+    for (failure, grouped) in [
+        (0, false),
+        (1, false),
+        (2, false),
+        (0, true),
+        (1, true),
+        (2, true),
+    ] {
         let files = Files::new();
         let source = varied(&files, "source.wav", 48000, 12288);
         let original = fs::read(&source).unwrap();
         let service = offline(48000, crate::streamed_export::render);
-        let imported = run(&service, Request::Import(source.clone()));
+        let mut imported = run(&service, Request::Import(source.clone()));
+        if grouped {
+            let track = imported.state.project.tracks()[0].id();
+            imported = run(
+                &service,
+                Request::Edit(hex_project::Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                    name: "group".into(),
+                }),
+            );
+        }
         match failure {
             0 => fs::remove_file(&source).unwrap(),
             1 => {

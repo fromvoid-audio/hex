@@ -147,8 +147,9 @@ impl SessionPlayback {
                     offset,
                     observer,
                     capture,
-                    None,
+                    sources,
                     foreign,
+                    None,
                 )?;
                 if drain_edit_tails {
                     self.return_effect_tails
@@ -163,6 +164,8 @@ impl SessionPlayback {
                         offset,
                         foreign,
                         observer,
+                        None,
+                        None,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 let tail_clock = crate::effect_clock::ArrangementEffectClock::session(
@@ -324,12 +327,13 @@ impl SessionPlayback {
                 observer,
                 capture,
                 &mut hex_lattice::RefuseForeign,
+                None,
             )?;
             if drain_edit_tails {
                 self.return_effect_tails
                     .render_chunk(chunk, offset, capture, foreign)?;
             }
-            self.render_detached_tails(self.performance_frame, chunk, offset, capture)?;
+            self.render_detached_tails(self.performance_frame, chunk, offset, capture, None)?;
             self.advance_paused_analytic_releases(count)?;
             offset = end;
         }
