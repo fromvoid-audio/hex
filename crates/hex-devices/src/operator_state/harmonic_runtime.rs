@@ -995,6 +995,8 @@ impl MutableInstrumentRuntime for Runtime {
                 } else {
                     PreparedOperatorConfiguration::lfo_steps(&voice.note)
                 };
+                // Envelope age and machines advance only after both quality
+                // subframes, so one evaluation serves the whole output frame.
                 let age = if quality {
                     voice.envelope_frame()
                 } else {
