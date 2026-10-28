@@ -121,9 +121,33 @@ mod tests {
         visit(&mut snapshot, |_, volume| {
             assert_eq!(volume.clip_gain(), ClipGain::UNITY);
             assert_eq!(volume.points().len(), 1);
+            assert_eq!(volume.points()[0].value.linear(), 0.5);
+            assert_eq!(volume.points()[0].incoming.linear(), 0.5);
             owners += 1;
         });
         assert_eq!(owners, 2);
+        let midi_notes: Vec<_> = project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.midi_clips())
+            .flat_map(|clip| clip.notes())
+            .collect();
+        assert_eq!(midi_notes.len(), 1);
+        assert_eq!(midi_notes[0].velocity(), 90);
+        let SessionCellContentSnapshot::Midi(session_clip) = &snapshot.session.cells[0].content
+        else {
+            panic!("expected historical session midi clip");
+        };
+        assert_eq!(session_clip.source.notes[0].velocity, 90);
+        let audio_clips: Vec<_> = project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .collect();
+        assert_eq!(audio_clips.len(), 1);
+        let events = audio_clips[0].audio_events();
+        assert_eq!(events.events.len(), 1);
+        assert_eq!(events.events[0].gain.millidb(), -6_000);
         let reloaded = crate::decode(&crate::encode(&project).unwrap()).unwrap();
         assert_eq!(reloaded.snapshot(), project.snapshot());
     }
