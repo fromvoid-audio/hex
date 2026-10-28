@@ -32,3 +32,7 @@ other transport glyphs have not yet moved to the vector library.
 Browser folder disclosure arrows use `assets/icons/browser-disclosure/` for
 collapsed and expanded folders. Loading and error indicators remain text so
 those states stay distinct from the artwork.
+
+The split, undo, and redo transport actions use `split.svg`, `undo.svg`, and
+`redo.svg` in the same transport asset directory. Their hit targets and disabled
+state continue to be owned by the transport controls.

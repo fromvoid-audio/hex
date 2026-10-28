@@ -6,18 +6,24 @@ use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
 #[derive(Clone, Copy)]
-enum PlaybackIcon {
+enum TransportIcon {
     Play,
     Pause,
     Stop,
+    Split,
+    Undo,
+    Redo,
 }
 
-impl PlaybackIcon {
+impl TransportIcon {
     fn asset(self) -> (&'static str, &'static str) {
         match self {
             Self::Play => ("icons/transport/play.svg", "transport-play-icon"),
             Self::Pause => ("icons/transport/pause.svg", "transport-pause-icon"),
             Self::Stop => ("icons/transport/stop.svg", "transport-stop-icon"),
+            Self::Split => ("icons/transport/split.svg", "transport-split-icon"),
+            Self::Undo => ("icons/transport/undo.svg", "transport-undo-icon"),
+            Self::Redo => ("icons/transport/redo.svg", "transport-redo-icon"),
         }
     }
 }
@@ -73,9 +79,9 @@ impl EditorView {
             .child(
                 self.vector_icon(
                     if playing {
-                        PlaybackIcon::Pause
+                        TransportIcon::Pause
                     } else {
-                        PlaybackIcon::Play
+                        TransportIcon::Play
                     },
                     "play or pause · space",
                     TogglePlay,
@@ -84,7 +90,7 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
-                self.vector_icon(PlaybackIcon::Stop, "stop · escape", Stop, cx)
+                self.vector_icon(TransportIcon::Stop, "stop · escape", Stop, cx)
                     .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
@@ -186,18 +192,18 @@ impl EditorView {
                     },
                 )),
             )
-            .child(self.icon(
-                "✂",
+            .child(self.vector_icon(
+                TransportIcon::Split,
                 "split selection edges or edit cursor · e",
                 SplitClip,
                 cx,
             ))
             .child(
-                self.icon("↶", "undo · cmd+z", Undo, cx)
+                self.vector_icon(TransportIcon::Undo, "undo · cmd+z", Undo, cx)
                     .opacity(if can_undo { 1.0 } else { 0.45 }),
             )
             .child(
-                self.icon("↷", "redo · cmd+shift+z", Redo, cx)
+                self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", Redo, cx)
                     .opacity(if can_redo { 1.0 } else { 0.45 }),
             )
             .child(self.icon("+", "add track", AddTrack, cx))
@@ -414,7 +420,7 @@ impl EditorView {
 
     fn vector_icon(
         &self,
-        icon: PlaybackIcon,
+        icon: TransportIcon,
         description: &'static str,
         action: impl gpui::Action,
         cx: &mut Context<Self>,
