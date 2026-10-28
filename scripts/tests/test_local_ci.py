@@ -157,6 +157,85 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.release_attempt("recovered", adopt=True)
         self.assertIsNone(runner.target_lock)
 
+    def test_release_fresh_target_accepts_only_metadata_created_during_locked_preflight(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        runner = self.runner("fresh-metadata")
+        scope = runner._release_scope
+
+        def metadata():
+            result = scope()
+            (target / ".rustc_info.json").write_text("cargo metadata cache")
+            return result
+
+        with patch.object(runner, "_release_scope", side_effect=metadata):
+            with runner.guarded_release() as report:
+                self.assertEqual(report["cleanup_status"], "not_needed")
+                artifact = target / "release-fixture"
+                artifact.write_bytes(b"optimized fixture")
+                argv = ["cargo", "build", "--release"]
+                report.update(build_argv=argv, build_exit_code=0,
+                              artifact=runner.identify_release_artifact(artifact, argv))
+
+    def test_release_preserves_existing_or_new_unowned_preflight_files(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        cache = target / ".rustc_info.json"
+        cache.write_text("preexisting")
+        runner = self.runner("existing-metadata")
+        with patch.object(runner, "_release_scope") as scope:
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "ownership is unknown"):
+                with runner.guarded_release():
+                    self.fail("preexisting metadata must not acquire release custody")
+            scope.assert_not_called()
+        self.assertEqual(cache.read_text(), "preexisting")
+        cache.unlink()
+
+        runner = self.runner("concurrent-content")
+        scope = runner._release_scope
+        def metadata():
+            result = scope()
+            (target / "foreign").write_text("preserve")
+            return result
+        with patch.object(runner, "_release_scope", side_effect=metadata):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "changed during preflight"):
+                with runner.guarded_release():
+                    self.fail("foreign content must not acquire release custody")
+        self.assertEqual((target / "foreign").read_text(), "preserve")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
+
+    def test_release_refuses_target_replacement_or_metadata_symlink_during_preflight(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        runner = self.runner("replaced-target")
+        scope = runner._release_scope
+        def replace_target():
+            result = scope()
+            target.rename(self.repo / "original-target")
+            target.mkdir()
+            return result
+        with patch.object(runner, "_release_scope", side_effect=replace_target):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                with runner.guarded_release():
+                    self.fail("replaced target must not acquire release custody")
+        target.rmdir()
+        (self.repo / "original-target").rename(target)
+
+        runner = self.runner("symlink-metadata")
+        scope = runner._release_scope
+        foreign = self.repo / "foreign"
+        foreign.write_text("preserve")
+        def link_metadata():
+            result = scope()
+            (target / ".rustc_info.json").symlink_to(foreign)
+            return result
+        with patch.object(runner, "_release_scope", side_effect=link_metadata):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "changed during preflight"):
+                with runner.guarded_release():
+                    self.fail("metadata symlink must not acquire release custody")
+        self.assertEqual(foreign.read_text(), "preserve")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
+
     def test_release_cleanup_failure_and_interruption_keep_pending(self):
         _, report = self.release_attempt("first")
         owner = Path(report["owner_path"])
