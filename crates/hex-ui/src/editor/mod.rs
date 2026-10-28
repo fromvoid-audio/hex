@@ -1202,6 +1202,8 @@ impl EditorView {
         #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        cx.use_test_assets(crate::assets::HexAssets);
         crate::diagnostics::attach_service(cx, &service);
         #[cfg(test)]
         let test_environment = test_paths.existing_environment.unwrap_or_else(|| {

@@ -98,7 +98,8 @@ fn main() {
     } else {
         None
     };
-    Application::new().run(move |cx: &mut App| {
+    let application = Application::new().with_assets(hex_ui::assets::HexAssets);
+    application.run(move |cx: &mut App| {
         if let Some(client) = &update_client {
             hex_ui::install_update_client(cx, client.clone());
         }

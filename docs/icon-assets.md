@@ -1,0 +1,24 @@
+# editing browser place icons
+
+The seven browser place icons live in `assets/icons/browser-place/`. Their file
+names correspond to the stable preference IDs `folder`, `samples`, `devices`,
+`projects`, `collection`, `waveform`, and `search`. The place rows, icon grid,
+and browser section choices use this same embedded catalog. Unknown saved IDs
+keep their stored value and display the folder fallback until changed.
+
+Edit the SVG for the desired ID, keeping a 16 by 16 viewBox and transparent
+background. The renderer uses the vector as a mask in the current theme text
+color; use shape opacity rather than relying on SVG colors for contrast. Rebuild
+and relaunch hex to see edits; the artwork is compiled in, not live reloaded.
+Run `cargo test -p hex-ui --test browser_place_assets --locked` to check the
+catalog and 1×/2× raster output. Native appearance and interaction still need a
+visual check in the optimized app.
+
+Hosts embedding hex-ui install `hex_ui::assets::HexAssets` with GPUI's
+`Application::with_assets` before opening an editor. Editor entry points refuse
+to open when the expected embedded catalog is missing or altered.
+
+These original Hex vectors replace only the browser place catalog. Other app
+icons and font glyphs are not yet covered; system-owned cursor artwork remains
+outside this library. See [cursor artwork](cursor-assets.md) for the custom
+macOS cursor sources.
