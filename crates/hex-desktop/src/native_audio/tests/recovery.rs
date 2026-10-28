@@ -125,3 +125,52 @@ fn replacement_discards_pending_old_failure_and_correlates_new_result_under_back
     assert!(Arc::ptr_eq(sink.desired.as_ref().unwrap(), &current));
     assert!(receiver.try_recv().is_err());
 }
+
+#[test]
+fn pending_lifecycle_status_allows_actual_successful_open() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let service = Service::new(48000, 16, 0).unwrap();
+    let source = next_source(&service);
+    let (events, receiver) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    sink.lifecycle_status = Some(|| None);
+    sink.canonical_changed(source.clone());
+    sink.request_open(Some(48000), Some(19));
+    let backend = Arc::new(Mutex::new(None));
+    let callback = backend.clone();
+    sink.output_factory = Some(Box::new(move |_| {
+        match hex_audio::worker_fixture::open(48000) {
+            Ok((output, owner)) => {
+                *callback.lock().unwrap() = Some(owner);
+                Ok(Some(output))
+            }
+            Err(error) if error == "audio output is open or still shutting down" => Ok(None),
+            Err(error) => Err(error),
+        }
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let audio = loop {
+        sink.poll();
+        match receiver.try_recv() {
+            Ok(EditorAudioEvent::Opened {
+                project_generation,
+                restart_request,
+                audio,
+            }) => {
+                assert_eq!(project_generation, source.context().project_generation);
+                assert_eq!(restart_request, Some(19));
+                break audio;
+            }
+            Ok(EditorAudioEvent::Unavailable { error, .. }) => panic!("{error}"),
+            Ok(_) | Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => panic!("result lane disconnected"),
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert!(!sink.open_pending);
+    assert!(sink.open_error.is_none());
+    drop(audio);
+    sink.close();
+    backend.lock().unwrap().take();
+}
