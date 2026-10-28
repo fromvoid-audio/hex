@@ -1,7 +1,8 @@
 //! Arrangement audio and MIDI gain input. The Window lease owns held input only; the
 //! ordinary FIFO receipt retains the released value until canonical installation.
 //! Release freezes the ordinary clip-property scope: selected audio clips retain
-//! their relative gains in one EditClips command; other clips use SetAudioClipGain.
+//! their relative gains in one EditClips command; a single audio or MIDI clip
+//! uses its corresponding typed gain command.
 //! No pointer update prepares audio.
 use super::{
     EditorView, ViewState,
