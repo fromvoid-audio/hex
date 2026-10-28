@@ -2232,10 +2232,10 @@ impl EditorView {
         entry: LibraryEntry,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let icon = match entry.kind {
-            EntryKind::Directory => self.browser.tree.icon(&entry.path),
-            EntryKind::WaveAudio => "♫",
-            EntryKind::Project => "▤",
+        let (disclosure, icon) = match entry.kind {
+            EntryKind::Directory => (Some(self.browser.tree.icon(&entry.path)), None),
+            EntryKind::WaveAudio => (None, Some("icons/browser-place/samples.svg")),
+            EntryKind::Project => (None, Some("icons/browser-place/projects.svg")),
         };
         let path = entry.path.clone();
         let name = entry.name.clone();
@@ -2467,7 +2467,16 @@ impl EditorView {
             .flex_shrink_0()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-            .child(theme::text(icon));
+            .children(disclosure.map(theme::text))
+            .children(icon.map(|path| {
+                gpui::svg()
+                    .path(path)
+                    .size(px(14.0))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            }));
+        if icon.is_some() {
+            control = control.debug_selector(move || format!("browser-file-icon-{index}"));
+        }
         if entry.kind == EntryKind::Directory {
             let folder = path.clone();
             control = control

@@ -3,7 +3,8 @@
 The seven browser place icons live in `assets/icons/browser-place/`. Their file
 names correspond to the stable preference IDs `folder`, `samples`, `devices`,
 `projects`, `collection`, `waveform`, and `search`. The place rows, icon grid,
-and browser section choices use this same embedded catalog. Unknown saved IDs
+browser section choices, and sample and project result rows use this same
+embedded catalog. Unknown saved IDs
 keep their stored value and display the folder fallback until changed.
 
 Edit the SVG for the desired ID, keeping a 16 by 16 viewBox and transparent
