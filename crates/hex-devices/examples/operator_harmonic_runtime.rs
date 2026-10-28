@@ -3,6 +3,7 @@
 //! Active occurrences include the held ledger and are not a physical deadline.
 //! `--companion` enables looping shaped envelopes; `--envelope-reference`
 //! keeps the same envelope shape without looping for an audible comparison.
+//! `--sparse` uses four and eight voices instead of sixteen and thirty-two.
 use hex_devices::operator_state::{OPERATOR_METADATA, harmonic_parameter, parameter};
 use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentEvent};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
@@ -32,10 +33,11 @@ fn main() {
     let fm = std::env::args().any(|arg| arg == "--fm");
     let builtin = std::env::args().any(|arg| arg == "--builtin");
     let companion = std::env::args().any(|arg| arg == "--companion");
+    let sparse = std::env::args().any(|arg| arg == "--sparse");
     let shaped_envelope = companion || std::env::args().any(|arg| arg == "--envelope-reference");
     let blocks = if cpu_handshake { 512 } else { 128 };
     for rate in [44100, 48000, 96000] {
-        for voices in [16, 32] {
+        for voices in if sparse { [4, 8] } else { [16, 32] } {
             let mut state = OPERATOR_METADATA.default_state().unwrap();
             for operator in 1..=4 {
                 if companion {
@@ -291,7 +293,11 @@ mod tests {
         }
         let sixteen = render(16);
         let thirty_two = render(32);
+        let four = render(4);
+        let eight = render(8);
         assert!(sixteen.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
         assert_ne!(sixteen, thirty_two);
+        assert!(four.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        assert_ne!(four, eight);
     }
 }
