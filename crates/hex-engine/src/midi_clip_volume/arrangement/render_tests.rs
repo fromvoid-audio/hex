@@ -135,4 +135,31 @@ fn real_finite_voices_keep_independent_gain_endpoint_tails_and_partition_identit
             .any(|sample| sample[0].abs() > 1.0e-4),
         "fixture must expose another clip on the same track"
     );
+
+    let scalar = hex_project::ClipGain::new(-6_000).unwrap();
+    editor
+        .execute(Command::SetMidiClipGain {
+            clip: clips[0],
+            gain: scalar,
+        })
+        .unwrap();
+    let compiled = crate::compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let scaled = render(&compiled, &[1, 17, 63, 511, 7], 8500);
+    for (frame, sample) in scaled.iter().enumerate() {
+        let curve = if frame < 4000 {
+            0.5 * frame as f64 / 4000.0
+        } else {
+            0.5
+        };
+        for (channel, value) in sample.iter().enumerate() {
+            let expected = (f64::from(isolated[0][frame][channel])
+                * curve
+                * f64::from(scalar.linear())) as f32
+                + isolated[1][frame][channel];
+            assert!(
+                (*value - expected).abs() < 1.0e-7,
+                "frame {frame}, channel {channel}: {value} vs {expected}"
+            );
+        }
+    }
 }

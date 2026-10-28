@@ -189,7 +189,8 @@ pub(crate) fn apply(
             })
             .collect::<Result<Vec<_>, Invalid>>()?,
         preview.source_length,
-    )?;
+    )?
+    .with_clip_gain(original.volume().clip_gain());
     let mut target = original.clone();
     let source = Arc::make_mut(&mut target.source);
     source.source_start = preview.source_start;

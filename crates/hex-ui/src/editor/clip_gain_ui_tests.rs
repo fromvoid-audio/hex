@@ -4,6 +4,92 @@ use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px}
 use std::sync::Arc;
 
 #[gpui::test]
+fn midi_top_edge_gain_commits_one_clip_without_changing_curve(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, clip) = midi_canvas::creation_tests::fixture(cx);
+    let before = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_clip(clip)
+            .unwrap()
+            .volume()
+            .clone()
+    });
+    let selector = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
+    let down = visual
+        .debug_bounds(selector)
+        .expect("midi gain handle")
+        .center();
+    let up = point(down.x, down.y + px(60.0));
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.clip_gain.held());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_clip(clip)
+                .unwrap()
+                .volume(),
+            &before
+        );
+    });
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.clip_gain.held());
+        assert_eq!(view.displayed_clip_gain(clip).unwrap().millidb(), -6_000);
+    });
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(view.last_enqueued_edit, Some(Command::SetMidiClipGain { clip: id, gain }) if id == clip && gain.millidb() == -6_000));
+    });
+    let event = terminal(&editor, &mut visual);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    for _ in 0..2 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.displayed_clip_gain(clip).unwrap().millidb(), -6_000);
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .midi_clip(clip)
+                    .unwrap()
+                    .volume(),
+                &before
+            );
+        });
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let volume = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_clip(clip)
+            .unwrap()
+            .volume();
+        assert_eq!(volume.clip_gain().millidb(), -6_000);
+        assert_eq!(volume.points(), before.points());
+    });
+}
+
+#[gpui::test]
 fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestAppContext) {
     let (project, _, _, clip) = clip_drag_ui_test::audio_project();
     let original = project.clip(clip).unwrap().clone();

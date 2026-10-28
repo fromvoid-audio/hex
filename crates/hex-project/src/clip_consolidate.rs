@@ -117,7 +117,16 @@ fn group(
         .try_reserve_exact(count)
         .map_err(|_| Invalid("could not reserve grouped midi notes"))?;
     let mut points = Vec::new();
-    let has_volume = clips.iter().any(|clip| !clip.volume().points().is_empty());
+    // Factor out the largest clip scalar so every relative multiplier is at
+    // most unity and remains representable by the existing 0..4 curve domain.
+    let merged_gain = clips
+        .iter()
+        .map(|clip| clip.volume().clip_gain())
+        .max_by_key(|gain| gain.millidb())
+        .unwrap_or(crate::ClipGain::UNITY);
+    let has_volume = clips
+        .iter()
+        .any(|clip| !clip.volume().points().is_empty() || clip.volume().clip_gain() != merged_gain);
     for clip in &clips {
         let offset = clip.start().raw() - start;
         let playback = clip.source_playback()?;
@@ -154,6 +163,10 @@ fn group(
             ]);
         }
         for mut point in local {
+            let relative =
+                f64::from(clip.volume().clip_gain().linear()) / f64::from(merged_gain.linear());
+            point.incoming = MidiClipGain::new(point.incoming.linear() * relative)?;
+            point.value = MidiClipGain::new(point.value.linear() * relative)?;
             point.beat = BeatTime::from_raw(
                 offset
                     .checked_add(point.beat.raw())
@@ -184,7 +197,7 @@ fn group(
         id: ClipId(0),
         start: BeatTime::from_raw(start),
         length,
-        volume: MidiClipVolume::new(points, length)?,
+        volume: MidiClipVolume::new(points, length)?.with_clip_gain(merged_gain),
         source: Arc::new(MidiSource::defaults(length)),
     };
     // Preserve unrelated material exactly; the canonical occupancy validator
