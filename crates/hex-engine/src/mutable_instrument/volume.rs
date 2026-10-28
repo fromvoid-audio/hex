@@ -3,33 +3,119 @@
 //! reference can become a final drop when a source becomes an outgoing tail.
 use super::*;
 use crate::midi_clip_volume::VolumeRamp;
-use hex_lattice::{NativeInstrumentClock, NativeInstrumentOccurrenceGain};
+use hex_lattice::{
+    NativeInstrumentClock, NativeInstrumentGainFactor, NativeInstrumentOccurrenceGain,
+};
+
+#[derive(Clone, Copy)]
+struct VolumeFactor {
+    at: u64,
+    ramp: VolumeRamp,
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct VolumeSlice {
     pub(crate) at: u64,
     pub(crate) ramp: VolumeRamp,
     pub(crate) terminal: Option<u64>,
+    extra: [Option<VolumeFactor>; hex_lattice::MAX_INSTRUMENT_GAIN_FACTORS - 1],
+    extra_len: u8,
 }
 pub(crate) type VolumeLookup<'a> = dyn FnMut(
         MutableOccurrenceSignature,
         u64,
         usize,
+        bool,
     ) -> Result<Option<VolumeSlice>, MutableInstrumentRuntimeError>
     + 'a;
 impl VolumeSlice {
+    pub(crate) fn single(at: u64, ramp: VolumeRamp, terminal: Option<u64>) -> Self {
+        Self {
+            at,
+            ramp,
+            terminal,
+            extra: [None; hex_lattice::MAX_INSTRUMENT_GAIN_FACTORS - 1],
+            extra_len: 0,
+        }
+    }
+    /// Add an independently positioned factor; source preparation owns the
+    /// factor-count bound, and a refusal leaves the slice unchanged.
+    pub(crate) fn push_factor(
+        &mut self,
+        ramp: VolumeRamp,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.push_factor_at(self.at, ramp)
+    }
+    /// Add a factor whose source clock differs from the enclosing slice clock.
+    /// Original endpoints and the source-frame offset remain unchanged.
+    pub(crate) fn push_factor_at(
+        &mut self,
+        at: u64,
+        ramp: VolumeRamp,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        let slot = self
+            .extra
+            .get_mut(usize::from(self.extra_len))
+            .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?;
+        *slot = Some(VolumeFactor { at, ramp });
+        self.extra_len += 1;
+        Ok(())
+    }
+    /// Preserve the product of up to seven held source factors alongside the
+    /// independent outer factor. Division by 64 is exact in binary floating
+    /// point and never exceeds the host's per-factor gain limit.
+    fn push_held_product(&mut self, mut gain: f64) -> Result<(), MutableInstrumentRuntimeError> {
+        if !gain.is_finite() || gain < 0.0 {
+            return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
+        }
+        let limit = hex_lattice::MAX_INSTRUMENT_OCCURRENCE_GAIN;
+        while gain > limit {
+            self.push_factor(VolumeRamp {
+                start_frame: 0,
+                end_frame: u64::MAX,
+                start_gain: limit,
+                end_gain: limit,
+                next_boundary: None,
+            })?;
+            gain /= limit;
+        }
+        self.push_factor(VolumeRamp {
+            start_frame: 0,
+            end_frame: u64::MAX,
+            start_gain: gain,
+            end_gain: gain,
+            next_boundary: None,
+        })
+    }
     fn remaining(self, frames: usize) -> Result<usize, MutableInstrumentRuntimeError> {
-        let end = self
-            .at
-            .checked_add(frames as u64)
-            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-        let next = self.ramp.next_boundary.unwrap_or(end).min(end);
-        usize::try_from(
-            next.checked_sub(self.at)
-                .filter(|n| *n > 0)
-                .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?,
-        )
-        .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)
+        if frames == 0 {
+            return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
+        }
+        let remaining = |at: u64, ramp: VolumeRamp| {
+            at.checked_add(frames as u64)
+                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+            match ramp.next_boundary {
+                Some(boundary) => usize::try_from(
+                    boundary
+                        .checked_sub(at)
+                        .filter(|n| *n > 0)
+                        .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)?,
+                )
+                .map(|n| n.min(frames))
+                .map_err(|_| MutableInstrumentRuntimeError::Arithmetic),
+                None => Ok(frames),
+            }
+        };
+        let mut limit = remaining(self.at, self.ramp)?;
+        for factor in self
+            .extra
+            .iter()
+            .take(usize::from(self.extra_len))
+            .flatten()
+        {
+            limit = limit.min(remaining(factor.at, factor.ramp)?);
+        }
+        Ok(limit)
     }
     fn gain(
         self,
@@ -43,25 +129,38 @@ impl VolumeSlice {
             .at
             .checked_add(frames as u64)
             .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
-        let gain = NativeInstrumentOccurrenceGain::new(
-            id,
-            self.ramp.start_gain,
-            self.ramp.end_gain,
-            self.ramp
-                .end_frame
-                .checked_sub(self.ramp.start_frame)
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?,
-            self.at
-                .checked_sub(self.ramp.start_frame)
-                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?,
-        )
-        .map_err(map_runtime_error)?;
-        let last = self
-            .ramp
-            .gain_at(end)
-            .map_err(|_| MutableInstrumentRuntimeError::InvalidSourceSpan)?;
-        if !last.is_finite() || !(0.0..=hex_lattice::MAX_INSTRUMENT_OCCURRENCE_GAIN).contains(&last)
+        let factor = |at: u64, ramp: VolumeRamp| {
+            NativeInstrumentGainFactor::new(
+                ramp.start_gain,
+                ramp.end_gain,
+                ramp.end_frame
+                    .checked_sub(ramp.start_frame)
+                    .ok_or(MutableInstrumentRuntimeError::Arithmetic)?,
+                at.checked_sub(ramp.start_frame)
+                    .ok_or(MutableInstrumentRuntimeError::Arithmetic)?,
+            )
+            .map_err(map_runtime_error)
+        };
+        let first = factor(self.at, self.ramp)?;
+        let mut factors = [first; hex_lattice::MAX_INSTRUMENT_GAIN_FACTORS];
+        let mut count = 1;
+        for value in self
+            .extra
+            .iter()
+            .take(usize::from(self.extra_len))
+            .flatten()
+            .copied()
         {
+            *factors
+                .get_mut(count)
+                .ok_or(MutableInstrumentRuntimeError::InvalidSourceSpan)? =
+                factor(value.at, value.ramp)?;
+            count += 1;
+        }
+        let gain = NativeInstrumentOccurrenceGain::product(id, &factors[..count])
+            .map_err(map_runtime_error)?;
+        let last = gain.value_at_offset(frames as u64);
+        if !last.is_finite() || !(0.0..=hex_lattice::MAX_INSTRUMENT_GAIN_PRODUCT).contains(&last) {
             return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
         }
         Ok((
@@ -149,11 +248,20 @@ pub(super) fn gains_for_segment(
             None
         } else {
             match lookup.as_mut() {
-                Some(f) => f(proof.signature, start, frames)?,
+                Some(f) => f(
+                    proof.signature,
+                    start,
+                    frames,
+                    proof.held_voice_gain_bits.is_some(),
+                )?,
                 None => None,
             }
         };
-        let gain = if let Some(slice) = slice {
+        let gain = if let Some(mut slice) = slice {
+            if let Some(bits) = proof.held_voice_gain_bits {
+                let held = f64::from_bits(bits);
+                slice.push_held_product(held)?;
+            }
             let (gain, last, terminal) = slice.gain(proof.id, frames)?;
             proof.gain_at_end_bits = last;
             proof.gain_frozen |= terminal;
@@ -161,7 +269,7 @@ pub(super) fn gains_for_segment(
         } else {
             proof.gain_frozen = true;
             let last = f64::from_bits(proof.gain_at_end_bits);
-            NativeInstrumentOccurrenceGain::new(proof.id, last, last, frames as u64, 0)
+            NativeInstrumentOccurrenceGain::held(proof.id, last, frames as u64)
                 .map_err(map_runtime_error)?
         };
         result.values[result.len] = gain;
@@ -300,9 +408,12 @@ impl MutableInstrumentTrackRuntime {
                 let delta = onset.source_start - source;
                 if delta > 0 {
                     count = count.min(usize::try_from(delta).unwrap_or(usize::MAX));
-                } else if let Some(slice) =
-                    lookup(MutableOccurrenceSignature::new(onset), performance, count)?
-                {
+                } else if let Some(slice) = lookup(
+                    MutableOccurrenceSignature::new(onset),
+                    performance,
+                    count,
+                    false,
+                )? {
                     count = count.min(slice.remaining(count)?);
                 }
             }
@@ -310,7 +421,12 @@ impl MutableInstrumentTrackRuntime {
                 if proof.gain_frozen {
                     continue;
                 }
-                if let Some(slice) = lookup(proof.signature, performance, count)? {
+                if let Some(slice) = lookup(
+                    proof.signature,
+                    performance,
+                    count,
+                    proof.held_voice_gain_bits.is_some(),
+                )? {
                     count = count.min(slice.remaining(count)?);
                 }
             }

@@ -24,6 +24,7 @@ fn notes(next: &mut u64, track: usize, transposition: u8) -> Vec<MidiNoteSnapsho
                 pitch: 36 + ((track + voice) % 24) as u8 + transposition,
                 channel: 0,
                 velocity: 80 + (track % 21) as u8,
+                voice_gain: Default::default(),
             }
         })
         .collect()

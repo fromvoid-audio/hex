@@ -115,6 +115,7 @@ fn inventory_shape(
                         pitch: 60,
                         channel: 0,
                         velocity: 100,
+                        voice_gain: Default::default(),
                     }],
                 }],
             };

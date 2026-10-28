@@ -6,7 +6,10 @@ use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MidiClip, MidiClipGain,
     MidiClipVolume, MidiClipVolumePoint, MidiSource, NoteId, Project,
 };
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 pub(crate) mod render;
 
 // A flattened curve belongs to the new clip, not to each outgoing voice. Only
@@ -20,6 +23,71 @@ fn constant_clip_volume(clip: &MidiClip) -> Option<MidiClipGain> {
         .iter()
         .all(|point| point.incoming == gain && point.value == gain)
         .then_some(gain)
+}
+
+// A source can share one immutable law across many notes. Project it once per
+// clip view, retaining its original owner so the identity cannot be reused.
+struct VoiceProjectionCache {
+    playback: crate::MidiSourcePlayback,
+    offset: BeatTime,
+    length: BeatTime,
+    clip_owner: Option<crate::MidiVoiceGainLayer>,
+    empty_projection: Option<crate::MidiVoiceGain>,
+    entries: HashMap<crate::MidiVoiceGainIdentity, crate::MidiVoiceGain>,
+}
+impl VoiceProjectionCache {
+    fn new(
+        playback: crate::MidiSourcePlayback,
+        offset: BeatTime,
+        length: BeatTime,
+        clip_volume: Option<&MidiClipVolume>,
+    ) -> Result<Self, Invalid> {
+        let clip_owner = if let Some(volume) = clip_volume.filter(|volume| !volume.is_unity()) {
+            let duration = playback.arrangement_duration();
+            let end = offset
+                .raw()
+                .checked_add(duration.raw())
+                .map(BeatTime::from_raw)
+                .ok_or(Invalid("grouped voice gain end overflow"))?;
+            let volume = volume.materialized(playback, BeatTime::ZERO, duration)?;
+            Some(crate::MidiVoiceGainLayer::new(offset, end, length, volume)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            playback,
+            offset,
+            length,
+            clip_owner,
+            empty_projection: None,
+            entries: HashMap::new(),
+        })
+    }
+    fn project(&mut self, gain: &crate::MidiVoiceGain) -> Result<crate::MidiVoiceGain, Invalid> {
+        let Some(identity) = gain.identity() else {
+            let Some(layer) = &self.clip_owner else {
+                return Ok(gain.clone());
+            };
+            if let Some(projected) = &self.empty_projection {
+                return Ok(projected.clone());
+            }
+            let projected = gain.with_layer(layer.clone())?;
+            self.empty_projection = Some(projected.clone());
+            return Ok(projected);
+        };
+        if let Some(projected) = self.entries.get(&identity) {
+            return Ok(projected.clone());
+        }
+        let mut projected = gain.materialized(self.playback, self.offset, self.length)?;
+        if let Some(layer) = &self.clip_owner {
+            projected = projected.with_layer(layer.clone())?;
+        }
+        self.entries
+            .try_reserve(1)
+            .map_err(|_| Invalid("could not reserve grouped voice gain identities"))?;
+        self.entries.insert(identity, projected.clone());
+        Ok(projected)
+    }
 }
 
 pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, Invalid> {
@@ -156,7 +224,12 @@ fn group(
     for clip in &clips {
         let offset = clip.start().raw() - start;
         let playback = clip.source_playback()?;
+        // The current admission guard only permits the shared-volume path.
+        // Per-voice capture is enabled after all playback consumers support it.
+        let mut projected_gains =
+            VoiceProjectionCache::new(playback, BeatTime::from_raw(offset), length, None)?;
         for note in clip.notes() {
+            let voice_gain = projected_gains.project(&note.voice_gain)?;
             for occurrence in playback
                 .note_occurrences(note.start(), note.duration())?
                 .iter()
@@ -170,6 +243,7 @@ fn group(
                         .ok_or(Invalid("grouped note start overflow"))?,
                 );
                 copy.duration = occurrence.gate_duration();
+                copy.voice_gain = voice_gain.clone();
                 notes.push(copy);
             }
         }
@@ -232,7 +306,7 @@ fn group(
     for note in &mut notes {
         note.id = NoteId(project.allocate_id()?);
     }
-    Arc::make_mut(&mut merged.source).notes = notes;
+    Arc::make_mut(&mut merged.source).replace_notes(notes);
     let result = merged.id;
     project.track_mut(track)?.content.midi_clips.push(merged);
     project.validate_arrangement_occupancy()?;
@@ -595,4 +669,146 @@ pub(crate) fn time_range(
     let result = result.ok_or(Invalid("selected time range contains no clips"))?;
     *project = candidate;
     Ok(result)
+}
+
+#[cfg(test)]
+mod voice_projection_tests {
+    use super::*;
+
+    #[test]
+    fn captured_clip_curve_follows_repeated_and_reversed_source_windows() {
+        let q = |n: u64| BeatTime::from_raw(n << 32);
+        let volume = MidiClipVolume::new(
+            vec![
+                MidiClipVolumePoint::linear(q(0), MidiClipGain::new(0.25).unwrap()),
+                MidiClipVolumePoint::linear(q(8), MidiClipGain::new(2.0).unwrap()),
+            ],
+            q(8),
+        )
+        .unwrap();
+        for reversed in [false, true] {
+            let playback = crate::MidiSourcePlayback::new(q(8), q(0), Some((q(2), q(6))), q(12))
+                .unwrap()
+                .with_content_window(crate::ContentWindow::new(0, q(12).raw(), reversed).unwrap())
+                .unwrap();
+            let mut cache =
+                VoiceProjectionCache::new(playback, q(2), q(14), Some(&volume)).unwrap();
+            let owner = cache.project(&crate::MidiVoiceGain::default()).unwrap();
+            let layer = &owner.layers()[0];
+            for quarter in 0..12 {
+                let elapsed = BeatTime::from_raw(q(quarter).raw() + (1_u64 << 31));
+                let phase = playback.source_phase_at_elapsed(elapsed).unwrap();
+                let destination = BeatTime::from_raw(q(2).raw() + elapsed.raw());
+                let expected = volume.gain_at(phase).linear();
+                let actual = layer.curve_gain_at(destination).linear();
+                assert!(
+                    (expected - actual).abs() < 1e-9,
+                    "reverse={reversed}, quarter={quarter}: {actual} != {expected}"
+                );
+            }
+            if !reversed {
+                // The seam jumps from source beat six back to beat two.
+                assert_eq!(layer.volume().gain_before(q(6)), volume.gain_before(q(6)));
+                assert_eq!(layer.curve_gain_at(q(8)), volume.gain_at(q(2)));
+            }
+        }
+    }
+
+    #[test]
+    fn capture_keeps_independent_clip_curves_and_release_endpoints_on_each_note() {
+        let b = BeatTime::from_raw;
+        let make_volume = |start, end, scalar| {
+            MidiClipVolume::new(
+                vec![
+                    MidiClipVolumePoint::linear(b(0), MidiClipGain::new(start).unwrap()),
+                    MidiClipVolumePoint {
+                        beat: b(4),
+                        incoming: MidiClipGain::new(end).unwrap(),
+                        value: MidiClipGain::new(3.5).unwrap(),
+                    },
+                ],
+                b(4),
+            )
+            .unwrap()
+            .with_clip_gain(crate::ClipGain::new(scalar).unwrap())
+        };
+        let first_volume = make_volume(0.5, 1.0, -6_000);
+        let second_volume = make_volume(2.0, 3.0, 6_000);
+        let playback = crate::MidiSourcePlayback::one_shot(b(4)).unwrap();
+        let mut first =
+            VoiceProjectionCache::new(playback, b(0), b(8), Some(&first_volume)).unwrap();
+        let mut second =
+            VoiceProjectionCache::new(playback, b(4), b(8), Some(&second_volume)).unwrap();
+        let unity = crate::MidiVoiceGain::default();
+        let old = first.project(&unity).unwrap();
+        let old_again = first.project(&unity).unwrap();
+        let next = second.project(&unity).unwrap();
+        assert_eq!(old.owner_identity(), old_again.owner_identity());
+        assert_ne!(old.owner_identity(), next.owner_identity());
+        assert_eq!(
+            old.layers()[0].volume().clip_gain(),
+            first_volume.clip_gain()
+        );
+        assert_eq!(
+            next.layers()[0].volume().clip_gain(),
+            second_volume.clip_gain()
+        );
+        assert_eq!(old.layers()[0].curve_gain_at(b(2)).linear(), 0.75);
+        assert_eq!(old.layers()[0].curve_gain_at(b(4)).linear(), 1.0);
+        assert_eq!(old.layers()[0].curve_gain_at(b(6)).linear(), 1.0);
+        assert_eq!(next.layers()[0].curve_gain_at(b(6)).linear(), 2.5);
+        assert_eq!(next.layers()[0].curve_gain_at(b(8)).linear(), 3.0);
+        let nested = first.project(&old).unwrap();
+        assert_eq!(nested.layers().len(), 2);
+        assert_eq!(
+            nested.layers()[1].volume().clip_gain(),
+            first_volume.clip_gain()
+        );
+        let full = crate::MidiVoiceGain::new(vec![
+            old.layers()[0].clone();
+            crate::MAX_MIDI_VOICE_GAIN_LAYERS
+        ])
+        .unwrap();
+        assert!(first.project(&full).is_err());
+    }
+
+    #[test]
+    fn shared_source_law_keeps_one_projected_owner_and_its_phase() {
+        let b = BeatTime::from_raw;
+        let curve = MidiClipVolume::new(
+            vec![
+                MidiClipVolumePoint::linear(b(0), MidiClipGain::new(0.25).unwrap()),
+                MidiClipVolumePoint::linear(b(8), MidiClipGain::new(1.0).unwrap()),
+            ],
+            b(8),
+        )
+        .unwrap();
+        let layer = crate::MidiVoiceGainLayer::new(b(0), b(8), b(8), curve).unwrap();
+        let gain = crate::MidiVoiceGain::new(vec![layer.clone()]).unwrap();
+        let mut cache = VoiceProjectionCache::new(
+            crate::MidiSourcePlayback::one_shot(b(8)).unwrap(),
+            b(2),
+            b(10),
+            None,
+        )
+        .unwrap();
+        assert!(
+            cache
+                .project(&crate::MidiVoiceGain::default())
+                .unwrap()
+                .layers()
+                .is_empty()
+        );
+        assert!(cache.entries.is_empty());
+        let first = cache.project(&gain).unwrap();
+        let second = cache.project(&gain.clone()).unwrap();
+        assert_eq!(first.owner_identity(), second.owner_identity());
+        assert_eq!(cache.entries.len(), 1);
+        for at in 0..=8 {
+            assert_eq!(
+                first.layers()[0].curve_gain_at(b(at + 2)),
+                layer.curve_gain_at(b(at))
+            );
+        }
+    }
 }

@@ -1203,6 +1203,166 @@ impl PreparedMidiInstrumentTemplate {
         self.render_additive_spans(context, mix, start_frame, output, buffer, gains.as_ref())
     }
 
+    /// Per-note source factors are prepared separately from the shared clip
+    /// gain. Validate every required segment before touching the output.
+    #[allow(clippy::too_many_arguments)] // Existing render contract plus the per-note owner.
+    pub(crate) fn render_additive_with_voice_volume<
+        T: crate::prepared_tempo::MidiTempoBreaks + ?Sized,
+    >(
+        &self,
+        context: MidiInstrumentRenderContext<'_, T>,
+        mix: PreparedTrackMix,
+        start_frame: u64,
+        output: &mut [[f32; 2]],
+        buffer: &mut MidiSpanBuffer,
+        program: Option<&crate::midi_clip_volume::PreparedMidiClipVolume>,
+        voices: &crate::midi_clip_volume::voice::PreparedSessionVoiceGains,
+    ) -> Result<(), MidiTemplateError> {
+        self.prepare_additive_spans(context, start_frame, output.len(), buffer)?;
+        if mix.muted() {
+            return Ok(());
+        }
+        let gains = match program
+            .map(|program| {
+                volume::prepare_gains(
+                    program,
+                    context.origin,
+                    context.timing,
+                    start_frame,
+                    output.len(),
+                    buffer,
+                )
+            })
+            .transpose()
+        {
+            Ok(gains) => gains.flatten(),
+            Err(error) => {
+                buffer.len = 0;
+                return Err(error);
+            }
+        };
+        let end_frame = start_frame
+            .checked_add(output.len() as u64)
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let placement = crate::midi_clip_volume::VolumePlacement::Session {
+            origin: context.origin,
+        };
+        // No output is changed until every source law and boundary is valid.
+        let validation = (|| -> Result<(), MidiTemplateError> {
+            for span in buffer.spans().filter(|span| span.voice.is_some()) {
+                let Some((program, pass_end)) = voices
+                    .voice(span.note, span.onset_beat, context.origin, context.timing)
+                    .map_err(|error| MidiTemplateError::InvalidSource(error.0))?
+                else {
+                    continue;
+                };
+                let mut frame = span.start_frame.max(start_frame);
+                let end = span.end_frame.min(end_frame);
+                while frame < end {
+                    let ramps = program
+                        .segments(
+                            context.timing,
+                            placement,
+                            frame,
+                            (end - frame) as usize,
+                            pass_end,
+                        )
+                        .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+                    let mut next = end;
+                    for ramp in ramps.into_iter().flatten() {
+                        ramp.gain_at(frame)
+                            .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+                        if let Some(boundary) = ramp.next_boundary {
+                            next = next.min(boundary);
+                        }
+                    }
+                    if next <= frame {
+                        return Err(MidiTemplateError::InvalidSource(
+                            "voice gain boundary makes no frame progress",
+                        ));
+                    }
+                    frame = next;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = validation {
+            buffer.len = 0;
+            return Err(error);
+        }
+        for span in buffer.spans() {
+            let Some(voice) = span.voice else {
+                continue;
+            };
+            let owner = voices
+                .voice(span.note, span.onset_beat, context.origin, context.timing)
+                .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+            let start = span.start_frame.max(start_frame);
+            let end = span.end_frame.min(end_frame);
+            let mut ramps = None;
+            for frame in start..end {
+                let mut gain = gains
+                    .as_ref()
+                    .map_or(1.0, |gains| gains[(frame - start_frame) as usize]);
+                if let Some((program, pass_end)) = owner {
+                    if ramps.as_ref().is_none_or(
+                        |ramps: &[Option<crate::midi_clip_volume::VolumeRamp>;
+                              hex_project::MAX_MIDI_VOICE_GAIN_LAYERS]| {
+                            ramps
+                                .iter()
+                                .flatten()
+                                .any(|ramp| ramp.next_boundary.is_some_and(|next| frame >= next))
+                        },
+                    ) {
+                        ramps = Some(
+                            program
+                                .segments(
+                                    context.timing,
+                                    placement,
+                                    frame,
+                                    (end - frame) as usize,
+                                    pass_end,
+                                )
+                                .map_err(|error| MidiTemplateError::InvalidSource(error.0))?,
+                        );
+                    }
+                    let Some(factors) = &ramps else {
+                        return Err(MidiTemplateError::InvalidSource(
+                            "voice gain ramps unavailable",
+                        ));
+                    };
+                    for ramp in factors.iter().flatten() {
+                        gain *= ramp
+                            .gain_at(frame)
+                            .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+                    }
+                }
+                let contribution = voice
+                    .sample_at(
+                        &self.shared_contexts,
+                        &[],
+                        context.continuations,
+                        frame,
+                        frame - span.start_frame,
+                        span.gate_end_frame - span.start_frame,
+                    )
+                    .map_err(|_| {
+                        MidiTemplateError::InvalidSource("analytic continuation sample was refused")
+                    })?;
+                let contribution = if gain == 1.0 {
+                    contribution
+                } else {
+                    [
+                        (f64::from(contribution[0]) * gain) as f32,
+                        (f64::from(contribution[1]) * gain) as f32,
+                    ]
+                };
+                mix.add_frame(&mut output[(frame - start_frame) as usize], contribution);
+            }
+        }
+        Ok(())
+    }
+
     fn prepare_additive_spans<T: MidiTiming + ?Sized>(
         &self,
         context: MidiInstrumentRenderContext<'_, T>,

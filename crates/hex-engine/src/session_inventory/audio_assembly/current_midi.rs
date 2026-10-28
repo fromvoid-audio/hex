@@ -17,6 +17,7 @@ pub(super) struct MidiTarget {
     tuning: crate::shared_analytic::TuningIdentity,
     source_identity: MidiSourceIdentity,
     volume_identity: Option<crate::midi_clip_volume::VolumePreparationIdentity>,
+    voice_identity: Option<crate::midi_clip_volume::voice::PreparedSessionVoiceGainIdentity>,
     active: bool,
     playback_offset: hex_project::BeatTime,
     limits: crate::midi_compile::MutableInstrumentLimits,
@@ -66,6 +67,8 @@ pub(crate) fn compiler_quote(project: &Project) -> Result<(usize, usize), AudioS
         let SessionCellContent::Midi(clip) = cell.content() else {
             continue;
         };
+        let voice = crate::midi_clip_volume::voice::SessionVoicePreparationQuote::for_clip(clip)
+            .map_err(|_| AudioStorageError::UnsupportedGraph)?;
         let (sr, ss) = PreparedMidiSourceTemplate::current_sampler_quote(if clip.active() {
             clip.source().notes().len()
         } else {
@@ -80,8 +83,13 @@ pub(crate) fn compiler_quote(project: &Project) -> Result<(usize, usize), AudioS
             .checked_add(sr)
             .and_then(|n| n.checked_add(ir))
             .and_then(|n| n.checked_add(clip.name().len()))
+            .and_then(|n| n.checked_add(voice.retained))
             .ok_or(AudioStorageError::Overflow)?;
-        scratch = scratch.max(ss.checked_add(is).ok_or(AudioStorageError::Overflow)?);
+        scratch = scratch.max(
+            ss.checked_add(is)
+                .and_then(|n| n.checked_add(voice.workspace))
+                .ok_or(AudioStorageError::Overflow)?,
+        );
     }
     Ok((retained, scratch))
 }
@@ -150,6 +158,23 @@ impl SessionAssembly {
             let SessionCellContent::Midi(clip) = cell.content() else {
                 continue;
             };
+            let voice_gains =
+                crate::midi_clip_volume::voice::PreparedSessionVoiceGains::prepare(clip, &timing)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let voice_identity = voice_gains
+                .as_ref()
+                .map(|gains| gains.preparation_identity())
+                .transpose()
+                .map_err(|_| AudioStorageError::Allocation)?;
+            if clip.source().may_have_voice_gains()
+                && clip
+                    .source()
+                    .notes()
+                    .iter()
+                    .any(|note| !note.voice_gain().layers().is_empty())
+            {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
             if self.unused_midi.len() == self.unused_midi.capacity()
                 || self.sampler_midi.len() == self.sampler_midi.capacity()
             {
@@ -211,8 +236,8 @@ impl SessionAssembly {
                 )?;
             let (instrument, instrument_declaration) =
                 OwnedShared::new_owned(instrument).into_paired_parts_on_control();
-            let work =
-                work_for(&source, &instrument).map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let work = work_for(&source, &instrument, voice_gains.as_ref())
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             let volume =
                 crate::midi_clip_volume::PreparedMidiClipVolume::prepare_session(clip, &timing)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
@@ -226,6 +251,7 @@ impl SessionAssembly {
                 tuning: contexts.tuning_identity(),
                 source_identity: clip.source_identity(),
                 volume_identity,
+                voice_identity,
                 active: clip.active(),
                 playback_offset: clip.playback_offset(),
                 limits,
@@ -251,6 +277,7 @@ impl SessionAssembly {
                 playback_offset: clip.playback_offset(),
                 source,
                 volume,
+                voice_gains,
                 instrument,
                 instrument_id: Some(device.id()),
                 instrument_state: None,
@@ -290,6 +317,11 @@ impl SessionAssembly {
             match (clip.volume.as_ref(), row.volume_identity.as_ref()) {
                 (None, None) => {}
                 (Some(program), Some(identity)) if identity.matches(program) => {}
+                _ => return Err(AudioStorageError::SourceMismatch),
+            }
+            match (clip.voice_gains.as_ref(), row.voice_identity.as_ref()) {
+                (None, None) => {}
+                (Some(gains), Some(identity)) if identity.matches(gains) => {}
                 _ => return Err(AudioStorageError::SourceMismatch),
             }
             if Some(row.scope) != self.sampler_midi_scope
@@ -410,6 +442,20 @@ impl SessionAssembly {
                             .map_or(0, |p| p.retained_control_metadata_bytes()),
                     )
                 })
+                .and_then(|n| {
+                    n.checked_add(
+                        clip.voice_gains
+                            .as_ref()
+                            .map_or(Some(0), |gains| gains.retained_bytes())?,
+                    )
+                })
+                .and_then(|n| {
+                    n.checked_add(
+                        row.voice_identity
+                            .as_ref()
+                            .map_or(Some(0), |identity| identity.retained_bytes())?,
+                    )
+                })
                 .and_then(|n| n.checked_add(clip.name.capacity()))
                 .and_then(|n| n.checked_add(clip.source.current_sampler_bytes().ok()?))
                 .and_then(|n| {
@@ -460,6 +506,12 @@ impl SessionAssembly {
                     ),
                     identity.retained_control_metadata_bytes(),
                 )?;
+            }
+            if let Some(gains) = &clip.voice_gains {
+                gains.visit_storage(ledger)?;
+            }
+            if let Some(identity) = &row.voice_identity {
+                identity.visit_storage(ledger)?;
             }
             ledger.shared(
                 &clip.source,

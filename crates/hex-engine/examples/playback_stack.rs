@@ -12,8 +12,8 @@ use hex_engine::{PreparedRevision, SessionPlayback};
 use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentRegistry};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterValue};
 use hex_project::{
-    BeatTime, DeviceSnapshot, MidiClipSnapshot, MidiNoteSnapshot, Project, ReturnTrackSnapshot,
-    SendLevelSnapshot, TrackContentSnapshot, TrackSnapshot,
+    BeatTime, DeviceSnapshot, MidiClipSnapshot, MidiNoteSnapshot, NativeSourceSnapshot, Project,
+    ReturnTrackSnapshot, SendLevelSnapshot, TrackContentSnapshot, TrackSnapshot,
 };
 use std::{
     collections::BTreeMap,
@@ -310,6 +310,7 @@ fn project_fixture(
     )?;
     let mut next_id = 1_u64;
     let mut tracks = Vec::with_capacity(track_count);
+    let mut native_sources = Vec::with_capacity(track_count);
     for track_index in 0..track_count {
         let track_id = next_id;
         next_id += 1;
@@ -319,6 +320,22 @@ fn project_fixture(
         next_id += 1;
         let clip_id = next_id;
         next_id += 1;
+        let source_id = next_id;
+        next_id += 1;
+        let instrument = DeviceSnapshot {
+            automation: Vec::new(),
+            comparison: None,
+            id: instrument_id,
+            bypassed: false,
+            state: NativeDeviceState::new(instrument_type, 1, Vec::new())?,
+        };
+        native_sources.push(NativeSourceSnapshot {
+            id: source_id,
+            name: format!("stack source {track_index:03}"),
+            devices: vec![instrument.clone()],
+            instrument_index: 0,
+            receiver: Some(track_id),
+        });
         let mut notes = Vec::new();
         if fixture == Fixture::DenseMutable {
             notes.reserve(NOTES_PER_TRACK);
@@ -331,6 +348,7 @@ fn project_fixture(
                     pitch: 36 + (note_index % 48) as u8,
                     channel: 0,
                     velocity: 100,
+                    voice_gain: Default::default(),
                 });
                 next_id += 1;
             }
@@ -343,6 +361,7 @@ fn project_fixture(
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             });
             next_id += 1;
         }
@@ -366,13 +385,7 @@ fn project_fixture(
                 bypassed: false,
                 state: utility_state.clone(),
             }],
-            instrument: Some(DeviceSnapshot {
-                automation: Vec::new(),
-                comparison: None,
-                id: instrument_id,
-                bypassed: false,
-                state: NativeDeviceState::new(instrument_type, 1, Vec::new())?,
-            }),
+            instrument: Some(instrument),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
@@ -411,6 +424,7 @@ fn project_fixture(
     let mut snapshot = Project::new(RATE)?.snapshot();
     snapshot.next_id = next_id;
     snapshot.tracks = tracks;
+    snapshot.native_sources = native_sources;
     snapshot.return_tracks = vec![ReturnTrackSnapshot {
         id: return_id,
         name: "stack probe return".to_owned(),

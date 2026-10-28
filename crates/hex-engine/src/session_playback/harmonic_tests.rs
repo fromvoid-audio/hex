@@ -68,6 +68,7 @@ fn fixture(notes: usize, duration: u64) -> Project {
                 pitch: 36 + index as u8,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             })
             .collect::<Vec<_>>()
     };
@@ -605,6 +606,163 @@ fn first_paint_keeps_active_clean_filter_integrators_for_64_voices_and_feedback_
 
 #[path = "harmonic_tests/cue.rs"]
 mod cue;
+
+fn analytic_handoff_with_old_session_voice_gain(changing: bool) -> SessionPlayback {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint, SessionCellContent};
+    let original = fixture(1, 8 << 32);
+    let mut revision = prepared(&original, None);
+    let clip_id = revision.session().midi_clips()[0].id;
+    let clip = original
+        .session_cells()
+        .iter()
+        .find_map(|cell| match cell.content() {
+            SessionCellContent::Midi(clip) if clip.id() == clip_id => Some(clip),
+            _ => None,
+        })
+        .unwrap();
+    let note = clip.source().notes()[0].id();
+    let length = clip.source().source_length();
+    let source = clip.source().playback_for_duration(length).unwrap();
+    let mut points = vec![MidiClipVolumePoint::linear(
+        BeatTime::ZERO,
+        MidiClipGain::new(0.5).unwrap(),
+    )];
+    if changing {
+        points.push(MidiClipVolumePoint::linear(
+            BeatTime::ONE,
+            MidiClipGain::new(1.0).unwrap(),
+        ));
+    }
+    let curve = MidiClipVolume::new(points, length).unwrap();
+    let gain = hex_project::MidiVoiceGain::new(vec![
+        hex_project::MidiVoiceGainLayer::new(BeatTime::ZERO, length, length, curve).unwrap(),
+    ])
+    .unwrap();
+    let voice = crate::midi_clip_volume::voice::PreparedSessionVoiceGains::test_voice(
+        note,
+        source,
+        &gain,
+        revision.session().timing(),
+    )
+    .unwrap();
+    Arc::get_mut(&mut revision)
+        .unwrap()
+        .test_session_mut()
+        .unwrap()
+        .test_install_voice_gains(clip_id, voice)
+        .unwrap();
+    let mut old = SessionPlayback::new(revision).unwrap();
+    let scene = old.revision.session().scenes()[0].id;
+    old.apply(SessionPlaybackCommand::LaunchScene {
+        scene,
+        quantization: LaunchQuantization::Immediate,
+    })
+    .unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 64]).unwrap();
+    let custom = edit(
+        &original,
+        &[
+            (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+            (harmonic_parameter(1, 2), ParameterValue::Float(1.0)),
+        ],
+    );
+    let mut next = SessionPlayback::new(prepared(&custom, Some(old.revision.session()))).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    next
+}
+
+#[test]
+fn analytic_handoff_captures_old_session_voice_gain_at_the_cut() {
+    let mut next = analytic_handoff_with_old_session_voice_gain(false);
+    let proof = next.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .next()
+        .unwrap();
+    assert_eq!(f64::from_bits(proof.gain_at_end_bits), 0.5);
+    // The old occurrence keeps its source law even when the new revision has
+    // no law for that note. Rendering is required to catch a later lookup
+    // overwriting the correctly captured cut value with candidate unity.
+    next.render(&mut [[0.0; 2]; 1]).unwrap();
+    let proof = next.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .next()
+        .unwrap();
+    assert_eq!(f64::from_bits(proof.gain_at_end_bits), 0.5);
+}
+
+#[test]
+fn analytic_handoff_preserves_changing_old_session_voice_law() {
+    let mut next = analytic_handoff_with_old_session_voice_gain(true);
+    let mut constant = analytic_handoff_with_old_session_voice_gain(false);
+    let before = f64::from_bits(
+        next.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .next()
+            .unwrap()
+            .gain_at_end_bits,
+    );
+    let mut actual = [[0.0; 2]; 32];
+    let mut reference = [[0.0; 2]; 32];
+    next.render(&mut actual).unwrap();
+    constant.render(&mut reference).unwrap();
+    let after = f64::from_bits(
+        next.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .next()
+            .unwrap()
+            .gain_at_end_bits,
+    );
+    let expected = 0.5 + 0.5 * 96.0 / 24_000.0;
+    assert!(after > before, "old curve should continue after the cut");
+    assert!(
+        (after - expected).abs() < 1e-9,
+        "expected {expected}, got {after}"
+    );
+    assert!(reference.iter().flatten().any(|sample| sample.abs() > 1e-4));
+    for (index, (actual, reference)) in actual.iter().zip(reference).enumerate() {
+        let ratio = 1.0 + (64 + index) as f64 / 24_000.0;
+        for channel in 0..2 {
+            assert!(
+                (f64::from(actual[channel]) - f64::from(reference[channel]) * ratio).abs() < 1e-6,
+                "frame {index}, channel {channel}"
+            );
+        }
+    }
+}
+
+#[test]
+fn held_old_session_voice_gain_survives_a_second_handoff() {
+    let mut previous = analytic_handoff_with_old_session_voice_gain(false);
+    previous.render(&mut [[0.0; 2]; 32]).unwrap();
+    let replacement = edit(
+        &fixture(1, 8 << 32),
+        &[
+            (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+            (harmonic_parameter(1, 2), ParameterValue::Float(0.5)),
+        ],
+    );
+    let mut next =
+        SessionPlayback::new(prepared(&replacement, Some(previous.revision.session()))).unwrap();
+    next.try_inherit_state_from(&mut previous).unwrap();
+    next.render(&mut [[0.0; 2]; 32]).unwrap();
+    let proof = next.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .next()
+        .unwrap();
+    assert_eq!(proof.held_voice_gain_bits, Some(0.5_f64.to_bits()));
+    assert_eq!(f64::from_bits(proof.gain_at_end_bits), 0.5);
+}
 
 #[test]
 fn clip_gain_handoff_keeps_active_native_voice_in_both_domains() {

@@ -665,6 +665,12 @@ impl MidiHistoryEffect {
                                 .is_some_and(|(a, b)| {
                                     source_shell_with_extent(a, b, source_length)
                                         && notes_match(a, b, edit)
+                                        && match volume_range {
+                                            Some((start, end)) => {
+                                                range_gain_proof(a, b, edit, start, end)
+                                            }
+                                            None => authored_gains_are_empty(b, edit),
+                                        }
                                 })
                     }
                     Kind::Source { location } => {
@@ -746,6 +752,7 @@ fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
                     || old.pitch != new.pitch
                     || old.channel != new.channel
                     || old.velocity != new.velocity
+                    || old.voice_gain != new.voice_gain
                 {
                     return false;
                 }
@@ -792,6 +799,9 @@ fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
             let mut current = b.notes.iter().peekable();
             for (index, old) in a.notes.iter().enumerate() {
                 if let Some(new) = current.peek().filter(|new| new.id == old.id) {
+                    if old.voice_gain != new.voice_gain {
+                        return false;
+                    }
                     if let Some(id) = only
                         && old.id != id
                         && !prefix_matches(
@@ -853,6 +863,113 @@ fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
             exact_prefixes(a, &b.notes[..split], &b.notes[split..], removed)
         }
     }
+}
+
+fn authored_start(edit: Notes) -> Option<u64> {
+    match edit {
+        Notes::AuthorEdit { first, .. } | Notes::Edit { first, .. } => Some(first),
+        Notes::Activation { .. } | Notes::OverwriteUpdate { .. } => None,
+    }
+}
+
+fn authored_gains_are_empty(target: &MidiSource, edit: Notes) -> bool {
+    authored_start(edit).is_none_or(|first| {
+        target
+            .notes
+            .iter()
+            .filter(|note| note.id.value() >= first)
+            .all(|note| note.voice_gain.layers().is_empty())
+    })
+}
+
+/// Reconstruct only the bounded duplicated range and its overwrite plan. The
+/// normal unity-only path avoids this extra control-side allocation entirely.
+fn range_gain_proof(
+    source: &MidiSource,
+    target: &MidiSource,
+    edit: Notes,
+    start: BeatTime,
+    end: BeatTime,
+) -> bool {
+    let Some(first) = authored_start(edit) else {
+        return false;
+    };
+    let targets = &target.notes[target.notes.partition_point(|note| note.id.value() < first)..];
+    if source
+        .notes
+        .iter()
+        .all(|note| note.voice_gain.layers().is_empty())
+        && targets
+            .iter()
+            .all(|note| note.voice_gain.layers().is_empty())
+    {
+        return true;
+    }
+    fn prove(
+        source: &MidiSource,
+        targets: &[crate::MidiNote],
+        start: BeatTime,
+        end: BeatTime,
+    ) -> Result<bool, Invalid> {
+        let range = crate::midi_source_range::Range::capture(source, start, end)?;
+        let playback =
+            crate::MidiSourcePlayback::new(source.source_length(), BeatTime::ZERO, None, end)?;
+        let mut authored = Vec::new();
+        let mut gains = Vec::new();
+        authored
+            .try_reserve_exact(range.count)
+            .map_err(|_| Invalid("could not reserve midi history authors"))?;
+        gains
+            .try_reserve_exact(range.count)
+            .map_err(|_| Invalid("could not reserve midi history gains"))?;
+        for note in source.notes() {
+            if let Some(copy) = range.copy(note)? {
+                let gain = if note.voice_gain().layers().is_empty() {
+                    note.voice_gain().clone()
+                } else {
+                    note.voice_gain().materialized_range(
+                        playback,
+                        start,
+                        end,
+                        end,
+                        range.source_length,
+                    )?
+                };
+                authored.push(copy);
+                gains.push(gain);
+            }
+        }
+        let plan = source.preview_note_overwrite(&[], &authored)?;
+        let mut actual = targets.iter();
+        for ((note, gate), gain) in authored.into_iter().zip(plan.authored).zip(gains) {
+            let Some(duration) = gate else {
+                continue;
+            };
+            let Some(found) = actual.next() else {
+                return Ok(false);
+            };
+            if (
+                found.start,
+                found.duration,
+                found.pitch,
+                found.channel,
+                found.velocity,
+                found.active,
+            ) != (
+                note.start,
+                duration,
+                note.pitch,
+                note.channel,
+                note.velocity,
+                note.active,
+            ) || found.voice_gain != gain
+            {
+                return Ok(false);
+            }
+        }
+        Ok(actual.next().is_none())
+    }
+    prove(source, targets, start, end).unwrap_or(false)
 }
 fn author_counts(
     a: &MidiSource,
@@ -917,6 +1034,7 @@ fn prefix_matches(old: &crate::MidiNote, new: &crate::MidiNote, gate: Option<Bea
         && old.channel == new.channel
         && old.velocity == new.velocity
         && old.active == new.active
+        && old.voice_gain == new.voice_gain
 }
 fn birth_source(
     project: &Project,
@@ -947,6 +1065,7 @@ fn birth_source(
                         ) == (
                             b.start, b.duration, b.pitch, b.channel, b.velocity, b.active,
                         )
+                        && a.voice_gain == b.voice_gain
                 })
     } else {
         copied.is_none()

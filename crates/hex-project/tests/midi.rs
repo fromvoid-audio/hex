@@ -1417,6 +1417,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    voice_gain: Default::default(),
                 })
                 .collect(),
         }]),
@@ -1861,6 +1862,7 @@ fn snapshot_rejects_bad_global_ids_and_note_cap() {
         pitch: 60,
         channel: 0,
         velocity: 1,
+        voice_gain: Default::default(),
     });
     assert!(Project::from_snapshot(duplicate_id).is_err());
 
@@ -1880,6 +1882,7 @@ fn snapshot_rejects_bad_global_ids_and_note_cap() {
             pitch: 60,
             channel: 0,
             velocity: 1,
+            voice_gain: Default::default(),
         })
         .collect();
     over_limit.next_id = 100 + MAX_NOTES as u64 + 1;

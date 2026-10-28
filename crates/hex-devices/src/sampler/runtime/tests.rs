@@ -386,6 +386,70 @@ fn absolute_project_retune_moves_authored_root_but_not_slice_selection() {
 }
 
 #[test]
+fn occurrence_gain_product_preserves_nonlinear_pcm_across_partitions() {
+    use hex_lattice::NativeInstrumentGainFactor;
+    let pcm = [1.0; 32];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(
+        views[0],
+        Mode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        4,
+    );
+    let factors = [
+        NativeInstrumentGainFactor::new(0.0, 1.0, 8, 0).unwrap(),
+        NativeInstrumentGainFactor::new(1.0, 0.0, 12, 2).unwrap(),
+    ];
+    let product = NativeInstrumentOccurrenceGain::product(1, &factors).unwrap();
+    let mut whole = pair(&prepared);
+    let mut output = [[0.0; 2]; 8];
+    whole.begin_block();
+    whole
+        .process_block_with_clock_and_occurrence_gains(
+            &[on(0, 1, 60)],
+            &mut output,
+            None,
+            &[product],
+            &resources,
+        )
+        .unwrap();
+    whole.commit_block();
+    for (index, frame) in output.iter().enumerate() {
+        let expected = (index as f64 / 8.0) * (1.0 - (index + 2) as f64 / 12.0);
+        for sample in frame {
+            assert!((f64::from(*sample) - expected).abs() < 1e-6);
+        }
+    }
+    let mut split = pair(&prepared);
+    let mut actual = [[0.0; 2]; 8];
+    split.begin_block();
+    split
+        .process_block_with_clock_and_occurrence_gains(
+            &[on(0, 1, 60)],
+            &mut actual[..3],
+            None,
+            &[product],
+            &resources,
+        )
+        .unwrap();
+    split.commit_block();
+    split.begin_block();
+    split
+        .process_block_with_clock_and_occurrence_gains(
+            &[],
+            &mut actual[3..],
+            None,
+            &[product.with_offset_frames(3).unwrap()],
+            &resources,
+        )
+        .unwrap();
+    split.commit_block();
+    assert_eq!(actual, output);
+}
+
+#[test]
 fn occurrence_ramp_preserves_midway_onset_release_other_voice_and_arbitrary_partitions() {
     let pcm = [1.0; 32];
     let views = [view(&pcm)];

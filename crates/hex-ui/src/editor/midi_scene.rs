@@ -492,6 +492,7 @@ mod tests {
                 pitch: 48 + (index % 24) as u8,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             })
             .collect();
         snapshot.next_id = first_note_id + count as u64;

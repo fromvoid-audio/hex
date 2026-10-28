@@ -279,6 +279,12 @@ fn shift_midi_source_exact(
         .checked_add(original.length.raw())
         .ok_or(Invalid("shifted midi end overflow"))?;
     for note in original.notes() {
+        // Matching note onsets and gates alone does not prove that all retained
+        // gain boundaries have the same frame mapping at the destination.
+        // Materialize them through the existing frame/tempo projection instead.
+        if !note.voice_gain().layers().is_empty() {
+            return Ok(None);
+        }
         let occurrences = playback.note_occurrences(note.start(), note.duration())?;
         let count = usize::try_from(occurrences.count())
             .map_err(|_| Invalid("midi insert expansion overflow"))?;
@@ -360,6 +366,7 @@ fn materialize_shifted_midi(
         .ok_or(Invalid("midi clip end overflow"))?;
     for note in original.notes() {
         let occurrences = playback.note_occurrences(note.start(), note.duration())?;
+        let mut voice_gain = None;
         for occurrence in occurrences.iter() {
             let onset = original
                 .start
@@ -398,6 +405,22 @@ fn materialize_shifted_midi(
                 .checked_sub(note_start.raw())
                 .filter(|duration| *duration > 0)
                 .ok_or(Invalid("shifted midi note collapsed"))?;
+            if voice_gain.is_none() {
+                voice_gain = Some(
+                    super::midi_volume::FrameVoiceGain::capture(
+                        note.voice_gain(),
+                        original,
+                        project.tempo_map(),
+                        source_start_frame,
+                        source_end_frame,
+                    )?
+                    .paste(
+                        project.tempo_map(),
+                        destination_start_frame,
+                        destination_end_frame,
+                    )?,
+                );
+            }
             notes.push(MidiNote {
                 id: NoteId(project.allocate_id()?),
                 active: note.active(),
@@ -406,6 +429,10 @@ fn materialize_shifted_midi(
                 pitch: note.pitch(),
                 channel: note.channel(),
                 velocity: note.velocity(),
+                voice_gain: voice_gain
+                    .as_ref()
+                    .ok_or(Invalid("shifted voice gain is unavailable"))?
+                    .clone(),
             });
         }
     }
@@ -431,10 +458,7 @@ fn materialize_shifted_midi(
         start,
         length,
         source: Arc::new(MidiSource {
-            content: std::sync::Arc::new(crate::MidiContent {
-                source_length: length,
-                notes,
-            }),
+            content: std::sync::Arc::new(crate::MidiContent::new(length, notes)),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
@@ -442,4 +466,158 @@ fn materialize_shifted_midi(
             looping: false,
         }),
     })
+}
+
+#[cfg(test)]
+mod voice_gain_tests {
+    use super::*;
+    use crate::{Command, MidiClipVolume, MidiVoiceGain, MidiVoiceGainLayer};
+
+    #[test]
+    fn source_reuse_requires_gain_boundary_proof() {
+        let q = |n| BeatTime::from_quarters(n).unwrap();
+        let mut project = Project::new(48_000).unwrap();
+        let Created::Track(track) = project
+            .apply(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = project
+            .apply(Command::PlaceMidiClip {
+                track,
+                start: q(0),
+                length: q(4),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        project
+            .apply(Command::AddMidiNote {
+                clip,
+                start: q(0),
+                duration: q(1),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let original = project.midi_clip(clip).unwrap().clone();
+        let mut expanded = 0;
+        assert!(
+            shift_midi_source_exact(
+                &mut project,
+                &original,
+                0,
+                96_000,
+                96_000,
+                192_000,
+                96_000,
+                &mut expanded
+            )
+            .unwrap()
+            .is_some()
+        );
+        let layer = MidiVoiceGainLayer::new(q(0), q(4), q(4), MidiClipVolume::default()).unwrap();
+        project
+            .midi_source_mut(clip)
+            .unwrap()
+            .set_test_voice_gain(0, MidiVoiceGain::new(vec![layer]).unwrap());
+        let original = project.midi_clip(clip).unwrap().clone();
+        let before = project.snapshot();
+        expanded = 0;
+        assert!(
+            shift_midi_source_exact(
+                &mut project,
+                &original,
+                0,
+                96_000,
+                96_000,
+                192_000,
+                96_000,
+                &mut expanded
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(expanded, 0);
+        assert_eq!(project.snapshot(), before);
+    }
+    #[test]
+    fn materialized_insert_keeps_voice_gain_at_shifted_frames() {
+        use crate::{MidiClipGain, MidiClipVolumePoint, Tempo};
+        let q = |n| BeatTime::from_quarters(n).unwrap();
+        let mut project = Project::new(48_000).unwrap();
+        let Created::Track(track) = project
+            .apply(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = project
+            .apply(Command::PlaceMidiClip {
+                track,
+                start: q(0),
+                length: q(4),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        project
+            .apply(Command::AddMidiNote {
+                clip,
+                start: q(0),
+                duration: q(4),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        project
+            .apply(Command::SetTempoPoint {
+                beat: q(4),
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        let curve = MidiClipVolume::new(
+            vec![
+                MidiClipVolumePoint::linear(q(0), MidiClipGain::new(0.25).unwrap()),
+                MidiClipVolumePoint::linear(q(4), MidiClipGain::new(1.0).unwrap()),
+            ],
+            q(4),
+        )
+        .unwrap();
+        let layer = MidiVoiceGainLayer::new(q(0), q(4), q(4), curve).unwrap();
+        project
+            .midi_source_mut(clip)
+            .unwrap()
+            .set_test_voice_gain(0, MidiVoiceGain::new(vec![layer]).unwrap());
+        let original = project.midi_clip(clip).unwrap().clone();
+        let shifted = materialize_shifted_midi(
+            &mut project,
+            &original,
+            24_000,
+            72_000,
+            96_000,
+            72_000,
+            clip,
+        )
+        .unwrap();
+        let note = &shifted.notes()[0];
+        let layer = &note.voice_gain().layers()[0];
+        assert_eq!(layer.curve_gain_at(BeatTime::ZERO).linear(), 0.4375);
+        assert_eq!(
+            layer
+                .curve_gain_at(BeatTime::from_raw(q(1).raw() / 2))
+                .linear(),
+            0.625
+        );
+        assert_eq!(layer.curve_gain_at(q(1)).linear(), 0.8125);
+    }
 }

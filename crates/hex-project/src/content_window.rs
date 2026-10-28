@@ -20,6 +20,17 @@ impl RepeatBoundaryPlan {
         (index < self.count).then_some(())?;
         self.first.checked_add(index.checked_mul(self.period)?)
     }
+    /// First internal seam strictly after a position, in constant time.
+    pub fn first_after(self, position: u64) -> Option<u64> {
+        let index = if position < self.first {
+            0
+        } else {
+            (position - self.first)
+                .checked_div(self.period)?
+                .checked_add(1)?
+        };
+        self.boundary(index)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +163,30 @@ impl ContentWindow {
 mod tests {
     use super::*;
     #[test]
+    fn first_after_matches_a_small_exhaustive_boundary_walk() {
+        for first in 1..=8 {
+            for period in 1..=8 {
+                for count in 1..=8 {
+                    let plan = RepeatBoundaryPlan {
+                        first,
+                        period,
+                        count,
+                    };
+                    let boundaries: Vec<_> = (0..count)
+                        .map(|index| plan.boundary(index).unwrap())
+                        .collect();
+                    for position in 0..=80 {
+                        let expected = boundaries
+                            .iter()
+                            .copied()
+                            .find(|boundary| *boundary > position);
+                        assert_eq!(plan.first_after(position), expected);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn finite_reflection_preserves_gates_and_composes_with_crops() {
         let view = ContentWindow::new(7, 19, true).unwrap();
         assert_eq!(view.read_range(2..5).unwrap(), 14..17);
@@ -184,6 +219,9 @@ mod tests {
                 expected
             );
             assert_eq!(plan.boundary(2), None);
+            assert_eq!(plan.first_after(0), Some(expected[0]));
+            assert_eq!(plan.first_after(expected[0]), Some(expected[1]));
+            assert_eq!(plan.first_after(expected[1]), None);
         }
         let plan = ContentWindow::new(3, 11, true)
             .unwrap()
@@ -202,6 +240,9 @@ mod tests {
         let dense = window.repeat_boundaries(1, 1).unwrap().unwrap();
         assert_eq!(dense.count(), u64::MAX - 1);
         assert_eq!(dense.boundary(dense.count() - 1), Some(u64::MAX - 1));
+        assert_eq!(dense.first_after(u64::MAX - 2), Some(u64::MAX - 1));
+        assert_eq!(dense.first_after(u64::MAX - 1), None);
+        assert_eq!(dense.first_after(u64::MAX), None);
         assert!(window.repeat_boundaries(1, 0).is_err());
     }
 }

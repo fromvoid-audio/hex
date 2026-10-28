@@ -104,6 +104,7 @@ struct FrameNote {
     pitch: u8,
     channel: u8,
     velocity: u8,
+    voice_gain: midi_volume::FrameVoiceGain,
 }
 
 fn reserve<T>(items: &mut Vec<T>, count: usize) -> Result<(), Invalid> {
@@ -191,6 +192,7 @@ impl Project {
                 let mut notes = Vec::new();
                 let playback = clip.source_playback()?;
                 for note in clip.notes() {
+                    let mut voice_gain = None;
                     let occurrences = playback.note_occurrences(note.start(), note.duration())?;
                     let count = usize::try_from(occurrences.count())
                         .map_err(|_| Invalid("midi range expansion overflow"))?;
@@ -219,6 +221,15 @@ impl Project {
                             .beat_to_frame(BeatTime::from_raw(gate_end))?
                             .min(end);
                         if note_start < note_end {
+                            if voice_gain.is_none() {
+                                voice_gain = Some(midi_volume::FrameVoiceGain::capture(
+                                    note.voice_gain(),
+                                    clip,
+                                    self.tempo_map(),
+                                    start,
+                                    end,
+                                )?);
+                            }
                             reserve(&mut notes, 1)?;
                             notes.push(FrameNote {
                                 active: note.active(),
@@ -227,6 +238,10 @@ impl Project {
                                 pitch: note.pitch(),
                                 channel: note.channel(),
                                 velocity: note.velocity(),
+                                voice_gain: voice_gain
+                                    .as_ref()
+                                    .ok_or(Invalid("captured voice gain is unavailable"))?
+                                    .clone(),
                             });
                         }
                     }
@@ -460,13 +475,15 @@ fn paste_rows_with_source(
                 pitch: original.pitch,
                 channel: original.channel,
                 velocity: original.velocity,
+                voice_gain: original.voice_gain.paste(
+                    project.tempo_map(),
+                    start_frame,
+                    end_frame,
+                )?,
             });
         }
         let source = MidiSource {
-            content: std::sync::Arc::new(crate::MidiContent {
-                source_length: length,
-                notes,
-            }),
+            content: std::sync::Arc::new(crate::MidiContent::new(length, notes)),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
@@ -548,4 +565,83 @@ pub(crate) fn insert_empty(
         midi: Vec::new(),
     };
     insert_on_source_tracks(project, &clipboard, first, frame)
+}
+
+#[cfg(test)]
+mod voice_gain_tests {
+    use super::*;
+    use crate::{
+        Command, MidiClipGain, MidiClipVolume, MidiClipVolumePoint, MidiVoiceGain,
+        MidiVoiceGainLayer, Tempo,
+    };
+    #[test]
+    fn captured_note_retains_gain_shape_when_pasted_across_tempo() {
+        let q = |n| BeatTime::from_quarters(n).unwrap();
+        let mut project = Project::new(48_000).unwrap();
+        let Created::Track(track) = project
+            .apply(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = project
+            .apply(Command::PlaceMidiClip {
+                track,
+                start: q(0),
+                length: q(4),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        project
+            .apply(Command::AddMidiNote {
+                clip,
+                start: q(0),
+                duration: q(4),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        project
+            .apply(Command::SetTempoPoint {
+                beat: q(4),
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        let curve = MidiClipVolume::new(
+            vec![
+                MidiClipVolumePoint::linear(q(0), MidiClipGain::new(0.25).unwrap()),
+                MidiClipVolumePoint::linear(q(4), MidiClipGain::new(1.0).unwrap()),
+            ],
+            q(4),
+        )
+        .unwrap();
+        let layer = MidiVoiceGainLayer::new(q(0), q(4), q(4), curve).unwrap();
+        project
+            .midi_source_mut(clip)
+            .unwrap()
+            .set_test_voice_gain(0, MidiVoiceGain::new(vec![layer]).unwrap());
+        let clipboard = project
+            .capture_time_range(&TimeRange::new(vec![track], 24_000, 72_000).unwrap())
+            .unwrap();
+        assert_eq!(clipboard.midi.len(), 1);
+        assert_eq!(clipboard.midi[0].notes.len(), 1);
+        let projected = clipboard.midi[0].notes[0]
+            .voice_gain
+            .paste(project.tempo_map(), 96_000, 144_000)
+            .unwrap();
+        let layer = &projected.layers()[0];
+        assert_eq!(layer.curve_gain_at(BeatTime::ZERO).linear(), 0.4375);
+        assert_eq!(
+            layer
+                .curve_gain_at(BeatTime::from_raw(q(1).raw() / 2))
+                .linear(),
+            0.625
+        );
+        assert_eq!(layer.curve_gain_at(q(1)).linear(), 0.8125);
+    }
 }

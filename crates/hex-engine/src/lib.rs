@@ -2094,8 +2094,33 @@ impl Track {
                         };
                         let volume = instrument.volumes.as_ref().and_then(|v| v.clip(span.clip));
                         let mut volume_ramp: Option<midi_clip_volume::VolumeRamp> = None;
+                        let voice_volume = instrument
+                            .volumes
+                            .as_ref()
+                            .filter(|volumes| volumes.has_voice_gains())
+                            .and_then(|volumes| volumes.voice(span.clip, span.note));
+                        let voice_pass = if let Some((row, program)) = voice_volume {
+                            let Some(timing) = timing else {
+                                failure =
+                                    Some(Invalid("voice gain requires project rendering timing"));
+                                return;
+                            };
+                            match row.pass_end(timing, span.onset_beat) {
+                                Ok(end) => Some((program, end, row.start())),
+                                Err(error) => {
+                                    failure = Some(error);
+                                    return;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        let mut voice_ramps: Option<
+                            [Option<midi_clip_volume::VolumeRamp>;
+                                hex_project::MAX_MIDI_VOICE_GAIN_LAYERS],
+                        > = None;
                         for frame_position in start..end {
-                            let gain = if let Some(volume) = volume {
+                            let mut gain = if let Some(volume) = volume {
                                 if volume_ramp.is_none_or(|ramp| {
                                     ramp.next_boundary
                                         .is_some_and(|next| frame_position >= next)
@@ -2132,6 +2157,49 @@ impl Track {
                             } else {
                                 1.0
                             };
+                            if let Some((program, pass_end, clip_start)) = voice_pass {
+                                let Some(timing) = timing else {
+                                    failure = Some(Invalid(
+                                        "voice gain requires project rendering timing",
+                                    ));
+                                    return;
+                                };
+                                if voice_ramps.as_ref().is_none_or(|ramps| {
+                                    ramps.iter().flatten().any(|ramp| {
+                                        ramp.next_boundary
+                                            .is_some_and(|next| frame_position >= next)
+                                    })
+                                }) {
+                                    match program.segments(
+                                        timing,
+                                        midi_clip_volume::VolumePlacement::Arrangement {
+                                            start: clip_start,
+                                        },
+                                        frame_position,
+                                        (end - frame_position) as usize,
+                                        pass_end,
+                                    ) {
+                                        Ok(ramps) => voice_ramps = Some(ramps),
+                                        Err(error) => {
+                                            failure = Some(error);
+                                            return;
+                                        }
+                                    }
+                                }
+                                let Some(ramps) = &voice_ramps else {
+                                    failure = Some(Invalid("voice gain ramps are unavailable"));
+                                    return;
+                                };
+                                for ramp in ramps.iter().flatten() {
+                                    match ramp.gain_at(frame_position) {
+                                        Ok(factor) => gain *= factor,
+                                        Err(error) => {
+                                            failure = Some(error);
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
                             let relative = frame_position - span.start;
                             let Some(absolute) =
                                 chunk_performance_frame.checked_add(frame_position - chunk_start)

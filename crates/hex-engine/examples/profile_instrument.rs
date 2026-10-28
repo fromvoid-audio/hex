@@ -81,6 +81,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
                     pitch: 48 + ((track_index + note_index) % 36) as u8,
                     channel: 0,
                     velocity: 100,
+                    voice_gain: Default::default(),
                 }
             })
             .collect();

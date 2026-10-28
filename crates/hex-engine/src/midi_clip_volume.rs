@@ -7,6 +7,7 @@ use crate::{Invalid, SessionMidiOrigin};
 use hex_project::{BeatTime, MidiClipVolume, MidiSourcePlayback};
 
 pub(crate) mod arrangement;
+pub(crate) mod voice;
 
 pub(crate) const VOLUME_QUERY_FRAMES: usize = crate::MIDI_TEMPLATE_QUERY_FRAMES as usize;
 // Conservative pre-collapse source density plus effective distinct-frame tempo

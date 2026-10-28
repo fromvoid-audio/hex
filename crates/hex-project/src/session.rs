@@ -708,10 +708,10 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     name,
                     volume: clip.volume.clone(),
                     source: Arc::new(MidiSource {
-                        content: std::sync::Arc::new(crate::MidiContent {
-                            source_length: source.source_length,
+                        content: std::sync::Arc::new(crate::MidiContent::new(
+                            source.source_length,
                             notes,
-                        }),
+                        )),
                         one_shot_boundary: source.one_shot_boundary,
                         source_start: source.source_start,
                         loop_start: source.loop_start,

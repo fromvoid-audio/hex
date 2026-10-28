@@ -87,6 +87,85 @@ fn fixture(looping: bool) -> (Project, ClipId, TrackId) {
 }
 
 #[test]
+fn retained_voice_gain_scales_with_source_and_prevents_lossy_shrink() {
+    let (mut project, clip, _) = fixture(false);
+    let layer =
+        crate::MidiVoiceGainLayer::new(beat(2), beat(8), beat(8), MidiClipVolume::default())
+            .unwrap();
+    let gain = crate::MidiVoiceGain::new(vec![layer]).unwrap();
+    project
+        .midi_source_mut(clip)
+        .unwrap()
+        .set_test_voice_gain(0, gain.clone());
+    let before = project.snapshot();
+    assert!(
+        project
+            .apply(Command::SetMidiClipSource {
+                clip,
+                source_length: beat(7),
+                source_start: beat(1),
+                loop_start: beat(2),
+                loop_end: beat(6),
+                looping: false,
+                length: beat(4),
+            })
+            .is_err()
+    );
+    assert_eq!(project.snapshot(), before);
+    project
+        .apply(Command::StretchMidiClipEdge {
+            clip,
+            edge: TrimEdge::Right,
+            beat: beat(12),
+        })
+        .unwrap();
+    let note = &project.midi_clip(clip).unwrap().notes()[0];
+    assert_eq!(note.start(), beat(4));
+    assert_eq!(note.voice_gain().layers()[0].start(), beat(4));
+    assert_eq!(note.voice_gain().layers()[0].end(), beat(16));
+    assert_eq!(gain.layers()[0].start(), beat(2));
+    assert_eq!(gain.layers()[0].end(), beat(8));
+}
+
+#[test]
+fn extending_left_edge_shifts_retained_voice_owner_with_source() {
+    let (mut project, clip, _) = fixture(false);
+    let layer =
+        crate::MidiVoiceGainLayer::new(beat(2), beat(8), beat(8), MidiClipVolume::default())
+            .unwrap();
+    project
+        .midi_source_mut(clip)
+        .unwrap()
+        .set_test_voice_gain(0, crate::MidiVoiceGain::new(vec![layer]).unwrap());
+    let preview = project
+        .midi_clip(clip)
+        .unwrap()
+        .preview_edge_trim(TrimEdge::Left, BeatTime::ZERO)
+        .unwrap();
+    assert_ne!(preview.source_prefix(), BeatTime::ZERO);
+    project
+        .apply(Command::TrimMidiClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            beat: BeatTime::ZERO,
+        })
+        .unwrap();
+    let note = &project.midi_clip(clip).unwrap().notes()[0];
+    assert_eq!(
+        note.start().raw(),
+        beat(2).raw() + preview.source_prefix().raw()
+    );
+    assert_eq!(
+        note.voice_gain().layers()[0].start().raw(),
+        beat(2).raw() + preview.source_prefix().raw()
+    );
+    assert_eq!(
+        note.voice_gain().layers()[0].end().raw(),
+        beat(8).raw() + preview.source_prefix().raw()
+    );
+}
+
+#[test]
 fn both_edges_expand_and_compress_all_retained_source_coordinates() {
     for looping in [false, true] {
         for (edge, destination) in [

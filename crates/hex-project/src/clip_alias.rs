@@ -93,6 +93,7 @@ impl ClipAliases {
                                     pitch: note.pitch,
                                     channel: note.channel,
                                     velocity: note.velocity,
+                                    voice_gain: note.voice_gain.clone(),
                                 })
                                 .collect(),
                         },
@@ -168,13 +169,11 @@ impl ClipAliases {
                             pitch: note.pitch,
                             channel: note.channel,
                             velocity: note.velocity,
+                            voice_gain: note.voice_gain.clone(),
                         });
                     }
                     crate::midi_note_overwrite::validate_occupancy(&compiled)?;
-                    Content::Midi(Arc::new(MidiContent {
-                        source_length: length,
-                        notes: compiled,
-                    }))
+                    Content::Midi(Arc::new(MidiContent::new(length, compiled)))
                 }
             };
             if result

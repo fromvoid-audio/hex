@@ -18,6 +18,7 @@ fn cue_project() -> Project {
             pitch: 64,
             channel: 0,
             velocity: 93,
+            voice_gain: Default::default(),
         },
         MidiNoteSnapshot {
             active: true,
@@ -27,6 +28,7 @@ fn cue_project() -> Project {
             pitch: 67,
             channel: 0,
             velocity: 37,
+            voice_gain: Default::default(),
         },
     ]);
     snapshot.next_id = 1_000_010;

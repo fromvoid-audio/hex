@@ -58,6 +58,7 @@ pub(super) fn content(
                             duration_raw: n.duration().raw(),
                             pitch: n.pitch(),
                             velocity: n.velocity(),
+                            voice_gain: n.voice_gain().clone(),
                             channel: n.channel(),
                         })
                         .collect(),

@@ -154,6 +154,8 @@ pub(crate) struct MutableOccurrence {
     /// Fixed left-limit gain survives source/graph retirement without a curve owner.
     pub(crate) gain_at_end_bits: u64,
     pub(crate) gain_frozen: bool,
+    /// An old voice law that is known to remain constant after its handoff.
+    pub(crate) held_voice_gain_bits: Option<u64>,
 }
 
 /// One source query's maximum admitted sounding intervals. This is shared by
@@ -998,6 +1000,7 @@ impl MutableInstrumentTrackRuntime {
                 note_off_sent,
                 gain_at_end_bits: 1.0_f64.to_bits(),
                 gain_frozen: false,
+                held_voice_gain_bits: None,
             });
         }
 

@@ -119,7 +119,13 @@ mod tests {
         )
         .unwrap()
     }
-    fn render(pair: &mut Pair, partition: usize, gain: bool) -> Vec<[f32; 2]> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum GainCase {
+        Unity,
+        Ramp,
+        Product,
+    }
+    fn render(pair: &mut Pair, partition: usize, gain: GainCase) -> Vec<[f32; 2]> {
         let all = [
             NativeInstrumentEvent::NoteOn {
                 frame_offset: 0,
@@ -183,9 +189,23 @@ mod tests {
             ids.dedup();
             let gains: Vec<_> = ids
                 .iter()
-                .map(|id| Gain::new(*id, 0.125, 0.875, 2048, start as u64).unwrap())
+                .map(|id| {
+                    if gain == GainCase::Product {
+                        use hex_lattice::NativeInstrumentGainFactor as Factor;
+                        Gain::product(
+                            *id,
+                            &[
+                                Factor::new(0.125, 0.875, 2048, start as u64).unwrap(),
+                                Factor::new(0.875, 0.375, 2048, start as u64).unwrap(),
+                            ],
+                        )
+                        .unwrap()
+                    } else {
+                        Gain::new(*id, 0.125, 0.875, 2048, start as u64).unwrap()
+                    }
+                })
                 .collect();
-            if gain {
+            if gain != GainCase::Unity {
                 pair.process_block_with_clock_and_occurrence_gains(
                     &events,
                     &mut output[start..end],
@@ -211,9 +231,9 @@ mod tests {
         for factory in factories() {
             assert!(factory.supports_occurrence_gain());
             assert!(factory.supports_active_occurrence_ids());
-            let baseline = render(&mut pair(factory.as_ref()), 2048, false);
-            let whole = render(&mut pair(factory.as_ref()), 2048, true);
-            let split = render(&mut pair(factory.as_ref()), 7, true);
+            let baseline = render(&mut pair(factory.as_ref()), 2048, GainCase::Unity);
+            let whole = render(&mut pair(factory.as_ref()), 2048, GainCase::Ramp);
+            let split = render(&mut pair(factory.as_ref()), 7, GainCase::Ramp);
             assert_eq!(whole, split);
             assert!(baseline.iter().any(|v| v[0].abs() > 1e-5));
             for (i, (original, scaled)) in baseline.iter().zip(&whole).enumerate() {
@@ -221,6 +241,27 @@ mod tests {
                 for c in 0..2 {
                     assert!(
                         (f64::from(original[c]) * gain - f64::from(scaled[c])).abs() < 2e-7,
+                        "frame {i}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn operator_runtime_classes_apply_nonlinear_products_per_occurrence() {
+        for factory in factories() {
+            let baseline = render(&mut pair(factory.as_ref()), 2048, GainCase::Unity);
+            let whole = render(&mut pair(factory.as_ref()), 2048, GainCase::Product);
+            let split = render(&mut pair(factory.as_ref()), 7, GainCase::Product);
+            assert_eq!(whole, split);
+            assert!(baseline.iter().any(|v| v[0].abs() > 1e-5));
+            for (i, (original, scaled)) in baseline.iter().zip(&whole).enumerate() {
+                let t = i as f64 / 2048.0;
+                let gain = (0.125 + 0.75 * t) * (0.875 - 0.5 * t);
+                for channel in 0..2 {
+                    assert!(
+                        (f64::from(original[channel]) * gain - f64::from(scaled[channel])).abs()
+                            < 2e-7,
                         "frame {i}"
                     );
                 }

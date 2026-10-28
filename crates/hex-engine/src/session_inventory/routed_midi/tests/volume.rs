@@ -304,3 +304,179 @@ fn changed_effective_tempo_density_is_readmitted_even_with_same_curve_and_source
     assert!(first.source_content_matches(old));
     assert!(Arc::ptr_eq(&first.instrument, &old.instrument));
 }
+
+#[test]
+fn voice_gain_preparation_rechecks_effective_tempo_density() {
+    let (mut editor, _, id, _) = fixture();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: hex_project::Tempo::new(175_781_250).unwrap(),
+        })
+        .unwrap();
+    let loop_end = BeatTime::from_raw(BeatTime::ONE.raw() / 64);
+    editor
+        .execute(Command::SetSessionMidiClipSource {
+            clip: id,
+            source_length: beat(4),
+            source_start: beat(0),
+            loop_start: beat(0),
+            loop_end,
+            looping: true,
+        })
+        .unwrap();
+    let mut inventory =
+        PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None)
+            .unwrap();
+    let cell = editor
+        .project()
+        .session_cells()
+        .iter()
+        .find(|cell| matches!(cell.content(), SessionCellContent::Midi(clip) if clip.id() == id))
+        .unwrap();
+    let SessionCellContent::Midi(clip) = cell.content() else {
+        panic!("MIDI fixture")
+    };
+    let source = clip
+        .source()
+        .playback_for_duration(beat(16))
+        .unwrap()
+        .with_playback_offset(clip.playback_offset())
+        .unwrap();
+    let curve = MidiClipVolume::new(
+        (0..1023)
+            .map(|index| {
+                MidiClipVolumePoint::linear(
+                    BeatTime::from_raw(loop_end.raw() * index as u64 / (2 * 1023)),
+                    MidiClipGain::new((index % 2) as f64).unwrap(),
+                )
+            })
+            .collect(),
+        beat(4),
+    )
+    .unwrap();
+    let gain = hex_project::MidiVoiceGain::new(vec![
+        hex_project::MidiVoiceGainLayer::new(
+            beat(0),
+            BeatTime::from_raw(loop_end.raw() / 2),
+            beat(4),
+            curve,
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    let note = clip.source().notes()[0].id();
+    let voice = crate::midi_clip_volume::voice::PreparedSessionVoiceGains::test_voice(
+        note,
+        source,
+        &gain,
+        inventory.timing(),
+    )
+    .unwrap();
+    inventory
+        .midi_clips
+        .iter_mut()
+        .find(|clip| clip.id == id)
+        .unwrap()
+        .voice_gains = Some(voice);
+    let canonical = SessionTimingView::Canonical(inventory.timing());
+    let first = crate::midi_clip_volume::voice::PreparedVoiceGain::prepare_layers(
+        gain.layers(),
+        source,
+        &canonical,
+    )
+    .unwrap();
+    let witness = first.preparation_identity().unwrap();
+    let periodic = PreparedPeriodicSessionTempo::prepare(
+        inventory.timing(),
+        hex_project::LoopRegion::new(0, 1, true).unwrap(),
+    )
+    .unwrap();
+    let timing = SessionTimingView::Periodic(periodic.view(inventory.timing()));
+    assert_eq!(timing.max_micro_bpm(), canonical.max_micro_bpm());
+    assert!(matches!(
+        crate::midi_clip_volume::voice::PreparedVoiceGain::prepare_layers(
+            gain.layers(),
+            source,
+            &timing,
+        ),
+        Err(crate::Invalid("clip volume density exceeds capacity"))
+    ));
+    assert!(witness.matches(&first));
+    let old = inventory.midi_clip(id).unwrap().voice_gains().unwrap();
+    let old_identity = old.preparation_identity().unwrap();
+    let quote = inventory
+        .section_admission_quote(timing.max_micro_bpm())
+        .unwrap();
+    assert!(matches!(
+        inventory.prepare_section_admission(&timing, quote.0 + quote.1),
+        Err(crate::Invalid("clip volume density exceeds capacity"))
+    ));
+    assert!(old_identity.matches(inventory.midi_clip(id).unwrap().voice_gains().unwrap()));
+}
+
+#[test]
+fn section_readmission_selects_a_new_voice_owner_even_at_the_same_maximum_tempo() {
+    let (editor, _, id, _) = fixture();
+    let mut inventory =
+        PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None)
+            .unwrap();
+    let cell = editor
+        .project()
+        .session_cells()
+        .iter()
+        .find(|cell| matches!(cell.content(), SessionCellContent::Midi(clip) if clip.id() == id))
+        .unwrap();
+    let SessionCellContent::Midi(clip) = cell.content() else {
+        panic!("MIDI fixture")
+    };
+    let note = clip.source().notes()[0].id();
+    let source = clip.source().playback_for_duration(beat(16)).unwrap();
+    let gain = hex_project::MidiVoiceGain::new(vec![
+        hex_project::MidiVoiceGainLayer::new(beat(0), beat(4), beat(4), curve()).unwrap(),
+    ])
+    .unwrap();
+    let voice = crate::midi_clip_volume::voice::PreparedSessionVoiceGains::test_voice(
+        note,
+        source,
+        &gain,
+        inventory.timing(),
+    )
+    .unwrap();
+    inventory
+        .midi_clips
+        .iter_mut()
+        .find(|clip| clip.id == id)
+        .unwrap()
+        .voice_gains = Some(voice);
+    let periodic = PreparedPeriodicSessionTempo::prepare(
+        inventory.timing(),
+        hex_project::LoopRegion::new(0, 12000, true).unwrap(),
+    )
+    .unwrap();
+    let timing = SessionTimingView::Periodic(periodic.view(inventory.timing()));
+    assert_eq!(
+        timing.max_micro_bpm(),
+        inventory.source_admission_max_micro_bpm
+    );
+    let quote = inventory
+        .section_admission_quote(timing.max_micro_bpm())
+        .unwrap();
+    assert!(quote.0 > 0);
+    let admission = inventory
+        .prepare_section_admission(&timing, quote.0 + quote.1)
+        .unwrap()
+        .unwrap();
+    assert!(admission.retained_bytes().unwrap() <= quote.0);
+    let base = inventory.midi_clip(id).unwrap().voice_gains().unwrap();
+    let effective =
+        super::super::super::readmission::EffectiveSessionMidi::new(&inventory, Some(&admission))
+            .midi_clip(id)
+            .unwrap();
+    assert!(!std::ptr::eq(base, effective.voice_gains().unwrap()));
+    assert!(effective.work().voice_gain_factor_work > 0);
+    assert_eq!(
+        effective.work().voice_gain_factor_work,
+        effective.work().span_hits * crate::midi_clip_volume::VOLUME_QUERY_FRAMES * 6
+    );
+}

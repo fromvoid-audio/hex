@@ -262,6 +262,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
                 pitch,
                 channel: 0,
                 velocity,
+                voice_gain: Default::default(),
             });
             next_id += 1;
         }

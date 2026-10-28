@@ -26,6 +26,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
                     pitch: 48 + (index % 36) as u8,
                     channel: 0,
                     velocity: 100,
+                    voice_gain: Default::default(),
                 }
             })
             .collect();

@@ -45,7 +45,7 @@ impl Range {
         }
         Ok(range)
     }
-    fn copy(self, note: &MidiNote) -> Result<Option<MidiNoteInsert>, Invalid> {
+    pub(crate) fn copy(self, note: &MidiNote) -> Result<Option<MidiNoteInsert>, Invalid> {
         let end = note
             .start()
             .raw()
@@ -85,15 +85,40 @@ pub(crate) fn duplicate(
         .ok_or(Invalid("midi clip no longer exists"))?
         .duplicated_range(start, end, range.source_length)?;
     let mut insert = Vec::new();
+    let mut gains: Option<Vec<crate::MidiVoiceGain>> = None;
     insert
         .try_reserve_exact(range.count)
         .map_err(|_| Invalid("could not reserve midi range notes"))?;
+    let playback =
+        crate::MidiSourcePlayback::new(source.source_length(), BeatTime::ZERO, None, end)?;
     for note in source.notes() {
-        if let Some(note) = range.copy(note)? {
-            insert.push(note);
+        if let Some(copy) = range.copy(note)? {
+            if !note.voice_gain().layers().is_empty() && gains.is_none() {
+                let mut owners = Vec::new();
+                owners
+                    .try_reserve_exact(range.count)
+                    .map_err(|_| Invalid("could not reserve midi range gains"))?;
+                owners.resize_with(insert.len(), crate::MidiVoiceGain::default);
+                gains = Some(owners);
+            }
+            if let Some(gains) = &mut gains {
+                let gain = if note.voice_gain().layers().is_empty() {
+                    note.voice_gain().clone()
+                } else {
+                    note.voice_gain().materialized_range(
+                        playback,
+                        start,
+                        end,
+                        end,
+                        range.source_length,
+                    )?
+                };
+                gains.push(gain);
+            }
+            insert.push(copy);
         }
     }
-    let created = crate::midi_batch::edit_range(project, clip, insert, range.source_length)?;
+    let created = crate::midi_batch::edit_range(project, clip, insert, range.source_length, gains)?;
     project.replace_midi_clip_volume(clip, volume)?;
     Ok(created)
 }

@@ -2442,9 +2442,9 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
     };
     let has_program = match midi_route.owner {
         RouteOwner::Arrangement => arrangement_volumes.is_some(),
-        RouteOwner::Session { .. } => console
-            .as_ref()
-            .is_some_and(|(_, _, prepared)| prepared.volume_program().is_some()),
+        RouteOwner::Session { .. } => console.as_ref().is_some_and(|(_, _, prepared)| {
+            prepared.volume_program().is_some() || prepared.voice_gains().is_some()
+        }),
         _ => false,
     };
     let clock = InstrumentClock {
@@ -2497,20 +2497,23 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
     };
     let mut lookup = |signature: crate::mutable_instrument::MutableOccurrenceSignature,
                       performance: u64,
-                      frames: usize| {
+                      frames: usize,
+                      has_held_voice: bool| {
         use crate::midi_clip_volume::{VolumePlacement, VolumeRamp};
         use crate::mutable_instrument::{MutableInstrumentRuntimeError as Error, VolumeSlice};
         let key = signature.key();
-        let unity = |at| VolumeSlice {
-            at,
-            terminal: None,
-            ramp: VolumeRamp {
-                start_frame: 0,
-                end_frame: u64::MAX,
-                start_gain: 1.0,
-                end_gain: 1.0,
-                next_boundary: None,
-            },
+        let unity = |at| {
+            VolumeSlice::single(
+                at,
+                VolumeRamp {
+                    start_frame: 0,
+                    end_frame: u64::MAX,
+                    start_gain: 1.0,
+                    end_gain: 1.0,
+                    next_boundary: None,
+                },
+                None,
+            )
         };
         match midi_route.owner {
             RouteOwner::Arrangement => {
@@ -2550,7 +2553,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                     .checked_sub(performance_frame)
                     .and_then(|offset| arrangement_frame.checked_add(offset))
                     .ok_or(Error::Arithmetic)?;
-                arrangement_volumes.and_then(|v| v.clip(key.clip)).map_or(
+                let slice = arrangement_volumes.and_then(|v| v.clip(key.clip)).map_or(
                     Ok(Some(unity(at))),
                     |row| {
                         let Some(endpoint) = row.endpoint else {
@@ -2562,45 +2565,71 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                         // Arrangement coordinates are content frames. The Console
                         // clock may have an absolute rebase floor after a wrap.
                         row.segment_or_hold(revision.session().timing(), at, frames)
-                            .map(|ramp| {
-                                Some(VolumeSlice {
-                                    at,
-                                    ramp,
-                                    terminal: Some(endpoint.frame),
-                                })
-                            })
+                            .map(|ramp| Some(VolumeSlice::single(at, ramp, Some(endpoint.frame))))
                             .map_err(|_| Error::InvalidSourceSpan)
                     },
+                )?;
+                let Some(slice) = slice else {
+                    return Ok(None);
+                };
+                if has_held_voice {
+                    return Ok(Some(slice));
+                }
+                append_arrangement_voice_gain(
+                    arrangement_volumes,
+                    key.clip,
+                    key.note,
+                    onset,
+                    revision.session().timing(),
+                    at,
+                    frames,
+                    slice,
                 )
+                .map(Some)
             }
             RouteOwner::Session { clip, origin } => {
                 if key.clip != clip || key.loop_pass != routes[index].current_incarnation {
                     return Ok(None);
                 }
-                let Some(program) = console
+                let program = console
                     .as_ref()
-                    .and_then(|(_, _, prepared)| prepared.volume_program())
-                else {
-                    return Ok(Some(unity(performance)));
+                    .and_then(|(_, _, prepared)| prepared.volume_program());
+                let slice = if let Some(program) = program {
+                    if console_historical
+                        || console_endpoint.is_some_and(|e| performance >= e.frame)
+                    {
+                        return Ok(None);
+                    }
+                    let ramp = program
+                        .segment_at(
+                            timing,
+                            VolumePlacement::Session { origin },
+                            performance,
+                            frames,
+                        )
+                        .map_err(|_| Error::InvalidSourceSpan)?
+                        .ok_or(Error::InvalidSourceSpan)?;
+                    VolumeSlice::single(performance, ramp, console_endpoint.map(|e| e.frame))
+                } else {
+                    unity(performance)
                 };
-                if console_historical || console_endpoint.is_some_and(|e| performance >= e.frame) {
-                    return Ok(None);
+                let voice_gains = console
+                    .as_ref()
+                    .and_then(|(_, _, prepared)| prepared.voice_gains());
+                if has_held_voice {
+                    return Ok(Some(slice));
                 }
-                program
-                    .segment_at(
-                        timing,
-                        VolumePlacement::Session { origin },
-                        performance,
-                        frames,
-                    )
-                    .map_err(|_| Error::InvalidSourceSpan)?
-                    .map(|ramp| VolumeSlice {
-                        at: performance,
-                        ramp,
-                        terminal: console_endpoint.map(|e| e.frame),
-                    })
-                    .map(Some)
-                    .ok_or(Error::InvalidSourceSpan)
+                append_session_voice_gain(
+                    voice_gains,
+                    key.note,
+                    signature.details().0,
+                    origin,
+                    timing,
+                    performance,
+                    frames,
+                    slice,
+                )
+                .map(Some)
             }
             RouteOwner::SessionAudio { .. } | RouteOwner::Silence => Ok(None),
         }
@@ -2619,6 +2648,81 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
             &mut lookup,
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
+}
+
+#[allow(clippy::too_many_arguments)] // Explicit borrowed clock and occurrence coordinates.
+pub(crate) fn append_arrangement_voice_gain<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
+    volumes: Option<&crate::midi_clip_volume::arrangement::PreparedArrangementVolumes>,
+    clip: hex_project::ClipId,
+    note: hex_project::NoteId,
+    onset: hex_project::BeatTime,
+    timing: &T,
+    frame: u64,
+    frames: usize,
+    mut slice: crate::mutable_instrument::VolumeSlice,
+) -> Result<
+    crate::mutable_instrument::VolumeSlice,
+    crate::mutable_instrument::MutableInstrumentRuntimeError,
+> {
+    use crate::mutable_instrument::MutableInstrumentRuntimeError as Error;
+    let Some((row, program)) = volumes.and_then(|volumes| volumes.voice(clip, note)) else {
+        return Ok(slice);
+    };
+    let pass_end = row
+        .pass_end(timing, onset)
+        .map_err(|_| Error::InvalidSourceSpan)?;
+    let ramps = program
+        .segments(
+            timing,
+            crate::midi_clip_volume::VolumePlacement::Arrangement { start: row.start() },
+            frame,
+            frames,
+            pass_end,
+        )
+        .map_err(|_| Error::InvalidSourceSpan)?;
+    for ramp in ramps.into_iter().flatten() {
+        slice.push_factor(ramp)?;
+    }
+    Ok(slice)
+}
+
+#[allow(clippy::too_many_arguments)] // Explicit borrowed clock and occurrence coordinates.
+pub(crate) fn append_session_voice_gain<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
+    gains: Option<&crate::midi_clip_volume::voice::PreparedSessionVoiceGains>,
+    note: hex_project::NoteId,
+    onset: hex_project::BeatTime,
+    origin: crate::SessionMidiOrigin,
+    timing: &T,
+    frame: u64,
+    frames: usize,
+    mut slice: crate::mutable_instrument::VolumeSlice,
+) -> Result<
+    crate::mutable_instrument::VolumeSlice,
+    crate::mutable_instrument::MutableInstrumentRuntimeError,
+> {
+    use crate::mutable_instrument::MutableInstrumentRuntimeError as Error;
+    let Some(gains) = gains else {
+        return Ok(slice);
+    };
+    let Some((program, pass_end)) = gains
+        .voice(note, onset, origin, timing)
+        .map_err(|_| Error::InvalidSourceSpan)?
+    else {
+        return Ok(slice);
+    };
+    let ramps = program
+        .segments(
+            timing,
+            crate::midi_clip_volume::VolumePlacement::Session { origin },
+            frame,
+            frames,
+            pass_end,
+        )
+        .map_err(|_| Error::InvalidSourceSpan)?;
+    for ramp in ramps.into_iter().flatten() {
+        slice.push_factor(ramp)?;
+    }
+    Ok(slice)
 }
 
 struct RouteSourceContext<'a, T> {
@@ -2768,9 +2872,20 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
                 let context = context
                     .with_suppressions(suppressions)
                     .with_continuations(continuations);
-                prepared
-                    .instrument_template()
-                    .render_additive_with_volume(
+                let result = if let Some(voices) = prepared.voice_gains() {
+                    prepared
+                        .instrument_template()
+                        .render_additive_with_voice_volume(
+                            context,
+                            source_mix,
+                            performance_frame,
+                            output,
+                            spans,
+                            prepared.volume_program(),
+                            voices,
+                        )
+                } else {
+                    prepared.instrument_template().render_additive_with_volume(
                         context,
                         source_mix,
                         performance_frame,
@@ -2778,7 +2893,8 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
                         spans,
                         prepared.volume_program(),
                     )
-                    .map_err(SessionPlaybackError::Midi)?;
+                };
+                result.map_err(SessionPlaybackError::Midi)?;
             }
         }
         RouteOwner::SessionAudio { clip, launch_frame } => {

@@ -196,6 +196,22 @@ impl SessionPlayback {
                 previous.arrangement_frame,
                 previous.performance_frame,
             )?;
+            let voice = super::clip_gain::voice_at_cut(
+                previous,
+                old_index,
+                old_route.owner,
+                signature.key().clip,
+                signature.key().note,
+                signature.details().0,
+                previous.arrangement_frame,
+                previous.performance_frame,
+            )?;
+            let gain = gain * voice.map_or(1.0, |(gain, _)| gain);
+            if !gain.is_finite()
+                || !(0.0..=hex_lattice::MAX_INSTRUMENT_GAIN_PRODUCT).contains(&gain)
+            {
+                return Err(SessionPlaybackError::MutableInstrumentEvents);
+            }
             plan.proofs[plan.len] = Some(MutableOccurrence {
                 signature,
                 id,
@@ -215,6 +231,7 @@ impl SessionPlayback {
                 note_off_sent: gate <= cut,
                 gain_at_end_bits: gain.to_bits(),
                 gain_frozen,
+                held_voice_gain_bits: voice.and_then(|(gain, held)| held.then_some(gain.to_bits())),
             });
             plan.len += 1;
             Ok(())

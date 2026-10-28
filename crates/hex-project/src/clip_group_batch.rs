@@ -111,10 +111,7 @@ fn private_copy_source(clip: &mut MidiClip) -> Result<(), Invalid> {
         .map_err(|_| Invalid("could not reserve copied midi notes"))?;
     notes.extend_from_slice(&old.notes);
     clip.source = Arc::new(crate::midi::MidiSource {
-        content: std::sync::Arc::new(crate::MidiContent {
-            source_length: old.source_length,
-            notes,
-        }),
+        content: std::sync::Arc::new(crate::MidiContent::new(old.source_length, notes)),
         one_shot_boundary: old.one_shot_boundary,
         source_start: old.source_start,
         loop_start: old.loop_start,

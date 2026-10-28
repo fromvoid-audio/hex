@@ -58,6 +58,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
                     pitch: 48 + (note % 12) as u8,
                     channel: 0,
                     velocity: 100,
+                    voice_gain: Default::default(),
                 });
             }
             midi_clips.push(MidiClipSnapshot {

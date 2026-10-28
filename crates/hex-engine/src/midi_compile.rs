@@ -335,7 +335,7 @@ fn compile_instrument_track_with_empty_bank(
     let volumes = if track
         .midi_clips()
         .iter()
-        .any(|clip| !clip.volume().is_unity())
+        .any(|clip| !clip.volume().is_unity() || clip.source().may_have_voice_gains())
     {
         let max =
             crate::PreparedTempoMap::validate_canonical(project.tempo_map(), project.sample_rate())
@@ -348,6 +348,14 @@ fn compile_instrument_track_with_empty_bank(
     } else {
         None
     };
+    if volumes
+        .as_ref()
+        .is_some_and(|volumes| volumes.has_voice_gains())
+    {
+        return Err(Invalid(
+            "retained midi voice gain playback is not yet fully supported",
+        ));
+    }
     if volumes.is_some() && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume) {
         return Err(Invalid(
             "clip volume is unsupported by this mutable instrument mode",

@@ -169,14 +169,46 @@ impl AudioCandidateReservationQuote {
         // Actual authored curve backings and the two sealed Arrangement row
         // families are separate from note/cardinality allowances. No media or
         // prepared owner is allocated to obtain this conservative control quote.
+        // Voice-law deduplication uses bounded temporary control-side scratch.
         for track in project.tracks() {
+            let voice_quote = crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::voice_preparation_quote(track)
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            quote.compiler_workspace_bytes = quote
+                .compiler_workspace_bytes
+                .checked_add(voice_quote.workspace)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.data_rows = quote
+                .data_rows
+                .checked_add(voice_quote.data_rows)
+                .ok_or(AudioStorageError::Overflow)?;
             quote.metadata_data_bytes = quote
                 .metadata_data_bytes
                 .checked_add(
                     crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::closed_quote(
                         track,
+                        &voice_quote,
                     )?,
                 )
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        for cell in project.session_cells() {
+            let hex_project::SessionCellContent::Midi(clip) = cell.content() else {
+                continue;
+            };
+            let voice =
+                crate::midi_clip_volume::voice::SessionVoicePreparationQuote::for_clip(clip)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(voice.retained)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.compiler_workspace_bytes = quote
+                .compiler_workspace_bytes
+                .checked_add(voice.workspace)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.data_rows = quote
+                .data_rows
+                .checked_add(voice.data_rows)
                 .ok_or(AudioStorageError::Overflow)?;
         }
         Ok(quote)

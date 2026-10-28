@@ -43,6 +43,7 @@ fn session_loop_project() -> Project {
                 pitch: 72,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             },
             MidiNoteSnapshot {
                 active: true,
@@ -52,6 +53,7 @@ fn session_loop_project() -> Project {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             },
             MidiNoteSnapshot {
                 active: true,
@@ -61,6 +63,7 @@ fn session_loop_project() -> Project {
                 pitch: 64,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             },
         ],
     };
@@ -101,6 +104,7 @@ fn session_expanded_oracle_project() -> Project {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         },
         MidiNoteSnapshot {
             active: true,
@@ -110,6 +114,7 @@ fn session_expanded_oracle_project() -> Project {
             pitch: 64,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         },
         MidiNoteSnapshot {
             active: true,
@@ -119,6 +124,7 @@ fn session_expanded_oracle_project() -> Project {
             pitch: 64,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         },
         MidiNoteSnapshot {
             active: true,
@@ -128,6 +134,7 @@ fn session_expanded_oracle_project() -> Project {
             pitch: 64,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         },
     ];
     snapshot.next_id = NOTE_REPEATED + 3;
@@ -164,6 +171,7 @@ pub(super) fn arrangement_loop_project() -> Project {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        voice_gain: Default::default(),
     }];
     legacy_project_from_snapshot(snapshot).expect("valid Arrangement source-loop project")
 }
@@ -193,6 +201,7 @@ fn arrangement_expanded_oracle_project() -> Project {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         })
         .collect();
     snapshot.next_id = first_note_id + 4;
@@ -562,6 +571,7 @@ fn mutable_source_loop_admission_keeps_period_and_density_bounds() {
             pitch: u8::try_from(index % 128).expect("bounded pitch"),
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         })
         .collect();
     dense.next_id = 2_000_129;
@@ -605,6 +615,7 @@ fn once_boundary_renders_the_original_source_window_in_both_views_across_blocks(
             pitch: 67,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         });
         snapshot.next_id = NOTE_REPEATED + 2;
         let candidate = legacy_project_from_snapshot(snapshot.clone()).unwrap();

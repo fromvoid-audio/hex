@@ -144,6 +144,175 @@ fn render(
     }
     output
 }
+
+#[test]
+fn analytic_session_loop_keeps_outgoing_and_new_voice_gains_independent() {
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "track".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip_id) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: b(2, 1),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: clip_id,
+            start: BeatTime::ZERO,
+            duration: b(1, 2),
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip: clip_id,
+            source_length: b(1, 1),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: b(1, 1),
+            looping: true,
+            length: b(2, 1),
+        })
+        .unwrap();
+    let clip = editor.project().midi_clip(clip_id).unwrap();
+    let timing = PreparedTempoMap::prepare(editor.project().tempo_map().clone(), 8000).unwrap();
+    let source = PreparedMidiSourceTemplate::prepare(track, clip, &timing).unwrap();
+    let instrument =
+        PreparedMidiInstrumentTemplate::prepare_with_instrument(&source, &LiteralVoice).unwrap();
+    let curve = MidiClipVolume::new(
+        vec![
+            MidiClipVolumePoint::linear(b(0, 1), MidiClipGain::new(0.5).unwrap()),
+            MidiClipVolumePoint::linear(b(1, 1), MidiClipGain::new(2.0).unwrap()),
+        ],
+        b(1, 1),
+    )
+    .unwrap();
+    let layer = hex_project::MidiVoiceGainLayer::new(b(0, 1), b(1, 1), b(1, 1), curve).unwrap();
+    let law = hex_project::MidiVoiceGain::new(vec![layer]).unwrap();
+    let voices = crate::midi_clip_volume::voice::PreparedSessionVoiceGains::test_voice(
+        clip.notes()[0].id(),
+        clip.source_playback().unwrap(),
+        &law,
+        &timing,
+    )
+    .unwrap();
+    let table = SineTable::new();
+    let context = MidiInstrumentRenderContext::with_origin(
+        SessionMidiOrigin::launch(BeatTime::ZERO),
+        &timing,
+        &table,
+    );
+    let mix = PreparedTrackMix::new(1.0, 0.0, false).unwrap();
+    let run = |parts: &[usize], shared: Option<&PreparedMidiClipVolume>| {
+        let mut output = vec![[0.0; 2]; 8000];
+        let mut spans = MidiSpanBuffer::default();
+        let mut offset = 0;
+        for width in parts.iter().cycle() {
+            let end = (offset + width).min(output.len());
+            instrument
+                .render_additive_with_voice_volume(
+                    context,
+                    mix,
+                    offset as u64,
+                    &mut output[offset..end],
+                    &mut spans,
+                    shared,
+                    &voices,
+                )
+                .unwrap();
+            offset = end;
+            if offset == output.len() {
+                break;
+            }
+        }
+        output
+    };
+    let output = run(&[256], None);
+    assert_eq!(output, run(&[1, 17, 63, 127], None));
+    let shared_curve = MidiClipVolume::new(
+        vec![MidiClipVolumePoint::linear(
+            BeatTime::ZERO,
+            MidiClipGain::new(0.25).unwrap(),
+        )],
+        b(1, 1),
+    )
+    .unwrap();
+    let shared =
+        PreparedMidiClipVolume::prepare(&shared_curve, clip.source_playback().unwrap(), &timing)
+            .unwrap();
+    let scaled = run(&[17, 256], Some(&shared));
+    for (actual, original) in scaled.iter().zip(&output) {
+        assert_eq!(*actual, [original[0] * 0.25, original[1] * 0.25]);
+    }
+    for (frame, sample) in output.iter().enumerate() {
+        let mut expected = [0.0; 2];
+        for start in [0, 4000] {
+            if frame >= start && frame < start + 6000 {
+                let age = frame - start;
+                let gain = 0.5 + 1.5 * (age.min(4000) as f64 / 4000.0);
+                mix.add_frame(
+                    &mut expected,
+                    [gain as f32, (-gain * (60.0 / 128.0)) as f32],
+                );
+            }
+        }
+        for channel in 0..2 {
+            assert!(
+                (sample[channel] - expected[channel]).abs() < 1e-6,
+                "frame {frame}, channel {channel}: {} vs {}",
+                sample[channel],
+                expected[channel]
+            );
+        }
+    }
+    assert!(
+        output[4000][0] > output[3999][0],
+        "new voice must overlap the old release"
+    );
+    let other_timing = PreparedTempoMap::prepare(
+        hex_project::TempoMap::constant(16_000, hex_project::Tempo::new(120_000_000).unwrap())
+            .unwrap(),
+        16_000,
+    )
+    .unwrap();
+    let incompatible = crate::midi_clip_volume::voice::PreparedSessionVoiceGains::test_voice(
+        clip.notes()[0].id(),
+        clip.source_playback().unwrap(),
+        &law,
+        &other_timing,
+    )
+    .unwrap();
+    let mut preserved = [[0.25, -0.25]; 16];
+    let mut spans = MidiSpanBuffer::default();
+    assert!(
+        instrument
+            .render_additive_with_voice_volume(
+                context,
+                mix,
+                0,
+                &mut preserved,
+                &mut spans,
+                None,
+                &incompatible,
+            )
+            .is_err()
+    );
+    assert_eq!(preserved, [[0.25, -0.25]; 16]);
+    assert!(spans.is_empty());
+}
 #[test]
 fn analytic_chord_volume_matches_literal_per_voice_golden_and_uneven_partitions() {
     let (timing, table, instrument, program) = fixture();

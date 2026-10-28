@@ -1119,6 +1119,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
                 pitch: 69,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             }],
         }]),
         sends: Vec::new(),
@@ -1177,6 +1178,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         pitch: 69,
         channel: 0,
         velocity: 100,
+        voice_gain: Default::default(),
     });
     snapshot.tracks.push(TrackSnapshot {
         kind: hex_project::TrackKind::Ordinary,
@@ -1270,6 +1272,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    voice_gain: Default::default(),
                 }],
             }]),
             sends: Vec::new(),
@@ -1304,6 +1307,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                             pitch: 60,
                             channel: 0,
                             velocity: 100,
+                            voice_gain: Default::default(),
                         }],
                     },
                 }),
@@ -2892,6 +2896,7 @@ fn with_second_session_note(project: &Project) -> Project {
         pitch: 64,
         channel: 0,
         velocity: 100,
+        voice_gain: Default::default(),
     });
     legacy_project_from_snapshot(snapshot).unwrap()
 }
@@ -2915,6 +2920,7 @@ fn with_second_arrangement_note(project: &Project) -> Project {
         pitch: 64,
         channel: 0,
         velocity: 100,
+        voice_gain: Default::default(),
     });
     Project::from_legacy_snapshot(snapshot).unwrap()
 }
@@ -2939,6 +2945,7 @@ fn with_session_note_at(project: &Project, start_raw: u64) -> Project {
         pitch: 64,
         channel: 0,
         velocity: 100,
+        voice_gain: Default::default(),
     });
     legacy_project_from_snapshot(snapshot).unwrap()
 }
@@ -5260,6 +5267,7 @@ fn profile_mutable_occurrence_suppression_handoff() {
             pitch: u8::try_from(40 + index).unwrap(),
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         });
     }
     let dense_source = legacy_project_from_snapshot(dense_snapshot).unwrap();
@@ -6639,6 +6647,7 @@ fn reenabled_loop_source_skips_old_occurrences_and_plays_future_iteration() {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        voice_gain: Default::default(),
     }];
     let looping = legacy_project_from_snapshot(snapshot).unwrap();
     let disabled = with_instrument_bypassed(&looping, true);
@@ -7344,6 +7353,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                     pitch: 64,
                     channel: 0,
                     velocity: 100,
+                    voice_gain: Default::default(),
                 }],
             }]),
             sends: Vec::new(),
@@ -7373,6 +7383,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                         pitch: 64,
                         channel: 0,
                         velocity: 100,
+                        voice_gain: Default::default(),
                     }],
                 },
             }),
@@ -8131,6 +8142,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
             pitch: 67,
             channel: 0,
             velocity: 90,
+            voice_gain: Default::default(),
         }];
     }
     let original = legacy_project_from_snapshot(snapshot).unwrap();
@@ -8980,6 +8992,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
             pitch: 67,
             channel: 0,
             velocity: 90,
+            voice_gain: Default::default(),
         });
     }
     // Keep the Arrangement-only note outside the handoff window so launching
@@ -9098,6 +9111,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         pitch: 60,
         channel: 0,
         velocity: 100,
+        voice_gain: Default::default(),
     });
     original_snapshot.next_id += 1;
     if let TrackContentSnapshot::Hybrid {
@@ -9198,6 +9212,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         pitch: 67,
         channel: 0,
         velocity: 90,
+        voice_gain: Default::default(),
     });
     changed_snapshot.next_id += 1;
     if let TrackContentSnapshot::Hybrid {
@@ -9363,6 +9378,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
                     pitch: 60 + track_id as u8,
                     channel: 0,
                     velocity: 90,
+                    voice_gain: Default::default(),
                 }],
             }]),
             sends: Vec::new(),
@@ -9437,6 +9453,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             },
             MidiNoteSnapshot {
                 active: true,
@@ -9446,6 +9463,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 pitch: 67,
                 channel: 0,
                 velocity: 90,
+                voice_gain: Default::default(),
             },
         ];
     }
@@ -9463,6 +9481,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             },
             MidiNoteSnapshot {
                 active: true,
@@ -9472,6 +9491,7 @@ fn source_start_and_loop_edit_releases_active_intro_occurrence_without_reusing_p
                 pitch: 67,
                 channel: 0,
                 velocity: 90,
+                voice_gain: Default::default(),
             },
         ];
     }
@@ -11024,6 +11044,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             pitch: 67,
             channel: 0,
             velocity: 88,
+            voice_gain: Default::default(),
         });
         let Some(session_cell) = snapshot.session.cells.first_mut() else {
             panic!("fixture has Session MIDI content");
@@ -11039,6 +11060,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             pitch: 67,
             channel: 0,
             velocity: 88,
+            voice_gain: Default::default(),
         });
         snapshot.next_id += 1;
         let source_project = Project::from_legacy_snapshot(snapshot).unwrap();
@@ -11198,6 +11220,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
                 pitch: 61,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             });
             snapshot.next_id += 1;
         }
@@ -11215,6 +11238,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             pitch: 61,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         });
         snapshot.next_id += 1;
         Project::from_legacy_snapshot(snapshot).unwrap()
@@ -11361,6 +11385,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             pitch: 61,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         });
         snapshot.next_id += 1;
         let SessionCellContentSnapshot::Midi(session_clip) = &mut snapshot.session.cells[0].content
@@ -11375,6 +11400,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             pitch: 61,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         });
         snapshot.next_id += 1;
         Project::from_legacy_snapshot(snapshot).unwrap()

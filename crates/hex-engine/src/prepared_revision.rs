@@ -128,6 +128,10 @@ impl std::fmt::Debug for PreparedRevision {
 
 impl PreparedRevision {
     #[cfg(test)]
+    pub(crate) fn test_session_mut(&mut self) -> Option<&mut PreparedSessionInventory> {
+        self.session.test_get_mut()
+    }
+    #[cfg(test)]
     pub(crate) fn test_install_group_graph(&mut self, canonical: &Project) {
         let mut arrangement = self.arrangement().as_ref().clone();
         arrangement.signal_graph =

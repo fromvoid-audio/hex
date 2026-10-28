@@ -164,6 +164,37 @@ impl MidiSourcePlayback {
         crate::ContentWindow::new(self.playback_offset.raw(), end_of_window, self.reversed)?
             .repeat_boundaries(end.raw() - self.source_start.raw(), end.raw() - start.raw())
     }
+    /// Exclusive elapsed beat at which an occurrence leaves its current
+    /// finite source pass. Retained per-note gain layers hold their left limit
+    /// from this boundary while their release continues; an occurrence at the
+    /// seam belongs to the next pass. This does not end the enclosing clip's
+    /// independently editable volume or alter MIDI gate scheduling.
+    pub fn occurrence_gain_pass_end(self, onset: BeatTime) -> Result<BeatTime, Invalid> {
+        if onset >= self.arrangement_duration || self.source_phase_at_elapsed(onset).is_none() {
+            return Err(Invalid(
+                "midi gain occurrence starts outside finite playback",
+            ));
+        }
+        let mut end = self.arrangement_duration.raw();
+        if self.loop_range.is_none() && !self.reversed {
+            let available = self.initial_end.raw() - self.source_start.raw();
+            end = end.min(
+                available
+                    .checked_sub(self.playback_offset.raw())
+                    .ok_or(Invalid("midi gain occurrence starts beyond its source"))?,
+            );
+        }
+        if let Some(seam) = self
+            .repeat_boundaries()?
+            .and_then(|plan| plan.first_after(onset.raw()))
+        {
+            end = end.min(seam);
+        }
+        if end <= onset.raw() {
+            return Err(Invalid("midi gain occurrence has no remaining source pass"));
+        }
+        Ok(BeatTime::from_raw(end))
+    }
     /// Source phase at an elapsed clip beat, independent of note content. An
     /// ongoing Session loop can repeat beyond `arrangement_duration`; finite
     /// placement consumers must check their placement duration separately.
@@ -457,6 +488,53 @@ impl Iterator for MidiNoteOccurrenceIter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_gain_pass_ends_at_the_next_seam_in_each_direction() {
+        use super::*;
+        let b = BeatTime::from_raw;
+        for (reversed, seams) in [
+            (false, vec![3, 7, 11, 15, 19]),
+            (true, vec![1, 5, 9, 13, 17]),
+        ] {
+            let playback = MidiSourcePlayback::new(b(8), b(0), Some((b(2), b(6))), b(20))
+                .unwrap()
+                .with_content_window(crate::ContentWindow::new(3, 23, reversed).unwrap())
+                .unwrap();
+            for onset in 0..20 {
+                let expected = seams
+                    .iter()
+                    .copied()
+                    .find(|seam| *seam > onset)
+                    .unwrap_or(20);
+                assert_eq!(
+                    playback.occurrence_gain_pass_end(b(onset)).unwrap(),
+                    b(expected),
+                    "reversed={reversed}, onset={onset}"
+                );
+            }
+            assert!(playback.occurrence_gain_pass_end(b(20)).is_err());
+        }
+    }
+
+    #[test]
+    fn retained_gain_pass_respects_one_shot_end_and_a_reversed_window() {
+        use super::*;
+        let b = BeatTime::from_raw;
+        let forward = MidiSourcePlayback::new(b(8), b(1), None, b(10))
+            .unwrap()
+            .with_playback_offset(b(2))
+            .unwrap();
+        assert_eq!(forward.occurrence_gain_pass_end(b(0)).unwrap(), b(5));
+        assert_eq!(forward.occurrence_gain_pass_end(b(4)).unwrap(), b(5));
+        assert!(forward.occurrence_gain_pass_end(b(5)).is_err());
+        let reversed = MidiSourcePlayback::new(b(8), b(1), None, b(10))
+            .unwrap()
+            .with_content_window(crate::ContentWindow::new(0, 10, true).unwrap())
+            .unwrap();
+        assert!(reversed.occurrence_gain_pass_end(b(0)).is_err());
+        assert_eq!(reversed.occurrence_gain_pass_end(b(3)).unwrap(), b(10));
+        assert_eq!(reversed.occurrence_gain_pass_end(b(9)).unwrap(), b(10));
+    }
     use super::*;
 
     fn beat(raw: u64) -> BeatTime {

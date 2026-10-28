@@ -51,6 +51,63 @@ fn session(origin: SessionMidiOrigin) -> VolumePlacement {
 }
 
 #[test]
+fn voice_layer_prepares_on_source_clock_with_its_own_held_end() {
+    let timing = clock();
+    let layer = hex_project::MidiVoiceGainLayer::new(
+        b(1),
+        b(3),
+        b(4),
+        curve(&[(b(0), 0.25, 0.25), (b(2), 1.0, 3.0)], b(2)),
+    )
+    .unwrap();
+    let expanded = layer.source_volume(b(4)).unwrap();
+    let program = PreparedMidiClipVolume::prepare(
+        &expanded,
+        MidiSourcePlayback::one_shot(b(4)).unwrap(),
+        &timing,
+    )
+    .unwrap();
+    for (frame, expected) in [
+        (0, 0.25),
+        (4000, 0.25),
+        (8000, 0.625),
+        (12000, 1.0),
+        (15000, 1.0),
+    ] {
+        let ramp = program
+            .segment_at(&timing, arrangement(), frame, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ramp.gain_at(frame).unwrap(), expected, "frame {frame}");
+    }
+    assert_eq!(
+        program
+            .finite_endpoint(&timing, arrangement())
+            .unwrap()
+            .unwrap()
+            .gain,
+        1.0
+    );
+    let reversed = MidiSourcePlayback::one_shot(b(4))
+        .unwrap()
+        .with_content_window(hex_project::ContentWindow::new(0, b(4).raw(), true).unwrap())
+        .unwrap();
+    let reversed = PreparedMidiClipVolume::prepare(&expanded, reversed, &timing).unwrap();
+    for (frame, expected) in [(2000, 1.0), (6000, 0.8125), (10000, 0.4375), (14000, 0.25)] {
+        let ramp = reversed
+            .segment_at(&timing, arrangement(), frame, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ramp.gain_at(frame).unwrap(),
+            expected,
+            "reversed frame {frame}"
+        );
+    }
+    assert!(layer.source_volume(b(2)).is_err());
+}
+
+#[test]
 fn clip_gain_multiplies_curve_and_implicit_unity_without_editing_points() {
     let timing = clock();
     let gain = hex_project::ClipGain::new(-6_000).unwrap();

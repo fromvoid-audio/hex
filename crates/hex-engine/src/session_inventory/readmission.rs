@@ -14,6 +14,7 @@ struct Entry {
     events: usize,
     source: PreparedMidiSourceTemplate,
     instrument: PreparedMidiInstrumentTemplate,
+    voice_gains: Option<crate::midi_clip_volume::voice::PreparedSessionVoiceGains>,
     work: SessionWorkEnvelope,
 }
 
@@ -53,6 +54,14 @@ impl<'a> EffectiveSessionMidiClip<'a> {
     }
     pub(crate) fn work(self) -> SessionWorkEnvelope {
         self.admitted.map_or(self.base.work, |entry| entry.work)
+    }
+    pub(crate) fn voice_gains(
+        self,
+    ) -> Option<&'a crate::midi_clip_volume::voice::PreparedSessionVoiceGains> {
+        match self.admitted {
+            Some(entry) => entry.voice_gains.as_ref(),
+            None => self.base.voice_gains(),
+        }
     }
 }
 
@@ -101,7 +110,11 @@ impl PreparedSessionInventory {
         &self,
         max_micro_bpm: u64,
     ) -> Result<(usize, usize), crate::Invalid> {
-        if max_micro_bpm <= self.source_admission_max_micro_bpm {
+        if max_micro_bpm <= self.source_admission_max_micro_bpm
+            && !self
+                .activity_midi_clips()
+                .any(|clip| clip.voice_gains().is_some())
+        {
             return Ok((0, 0));
         }
         let clips = self.activity_midi_clips().count();
@@ -142,16 +155,26 @@ impl PreparedSessionInventory {
                     )
                 })
                 .ok_or(crate::Invalid("section midi admission quote overflow"))?;
+            if let Some(voices) = clip.voice_gains() {
+                retained = retained
+                    .checked_add(
+                        voices
+                            .retained_bytes()
+                            .ok_or(crate::Invalid("section voice gain quote overflow"))?,
+                    )
+                    .ok_or(crate::Invalid("section voice gain quote overflow"))?;
+            }
             scratch = scratch.max(source.1).max(instrument.1);
         }
         Ok((retained, scratch))
     }
 
-    pub(crate) fn prepare_section_admission(
+    pub(crate) fn prepare_section_admission<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
         &self,
-        max_micro_bpm: u64,
+        timing: &T,
         storage_limit: usize,
     ) -> Result<Option<PreparedSessionMidiAdmission>, crate::Invalid> {
+        let max_micro_bpm = timing.max_micro_bpm();
         let quote = self.section_admission_quote(max_micro_bpm)?;
         if quote == (0, 0) {
             return Ok(None);
@@ -187,8 +210,12 @@ impl PreparedSessionInventory {
                 .instrument
                 .reprepare_for_source_on_control(&source, clip.mutable_limits)
                 .map_err(|error| crate::Invalid(error.diagnostic_message()))?;
+            let voice_gains = clip
+                .voice_gains()
+                .map(|voices| voices.reprepare_for_timing(timing))
+                .transpose()?;
             let work = if clip.instrument_enabled {
-                work_for(&source, &instrument)?
+                work_for(&source, &instrument, voice_gains.as_ref())?
             } else {
                 SessionWorkEnvelope::default()
             };
@@ -206,6 +233,7 @@ impl PreparedSessionInventory {
                 events: source.max_query_edges(),
                 source,
                 instrument,
+                voice_gains,
                 work,
             });
         }
@@ -262,6 +290,9 @@ impl PreparedSessionMidiAdmission {
                         .retained_readmission_bytes()?
                         .checked_sub(size_of::<PreparedMidiInstrumentTemplate>())?,
                 )?;
+            if let Some(voices) = &entry.voice_gains {
+                bytes = bytes.checked_add(voices.retained_bytes()?)?;
+            }
         }
         Some(bytes)
     }
@@ -386,6 +417,39 @@ mod tests {
             max_release_tail_frames: 0,
             supports_clip_volume: false,
         }
+    }
+
+    #[test]
+    fn gain_work_uses_the_largest_clip_per_track_and_sums_tracks() {
+        let first = SessionWorkEnvelope {
+            voice_gain_factor_work: 100,
+            ..Default::default()
+        };
+        let other_clip = SessionWorkEnvelope {
+            voice_gain_factor_work: 200,
+            ..Default::default()
+        };
+        let other_track = SessionWorkEnvelope {
+            voice_gain_factor_work: 300,
+            ..Default::default()
+        };
+        let selected = first.component_max(other_clip);
+        assert_eq!(selected.voice_gain_factor_work, 200);
+        assert_eq!(
+            selected
+                .checked_sum(other_track)
+                .unwrap()
+                .voice_gain_factor_work,
+            500
+        );
+        let overflow = SessionWorkEnvelope {
+            voice_gain_factor_work: usize::MAX,
+            ..Default::default()
+        };
+        assert_eq!(
+            overflow.checked_sum(first),
+            Err(Invalid("session voice gain work envelope overflow"))
+        );
     }
 
     #[test]

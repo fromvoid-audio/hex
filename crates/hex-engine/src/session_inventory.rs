@@ -74,6 +74,10 @@ pub struct SessionWorkEnvelope {
     pub span_hits: usize,
     pub query_visit_ceiling: usize,
     pub period_window_ceiling: usize,
+    /// Upper bound on voice-gain factor operations for one analytic query
+    /// window, including validation, segment preparation and per-frame gain.
+    /// This is a work count, not a timing or physical deadline guarantee.
+    pub voice_gain_factor_work: usize,
 }
 
 impl SessionWorkEnvelope {
@@ -84,6 +88,9 @@ impl SessionWorkEnvelope {
             span_hits: self.span_hits.max(other.span_hits),
             query_visit_ceiling: self.query_visit_ceiling.max(other.query_visit_ceiling),
             period_window_ceiling: self.period_window_ceiling.max(other.period_window_ceiling),
+            voice_gain_factor_work: self
+                .voice_gain_factor_work
+                .max(other.voice_gain_factor_work),
         }
     }
 
@@ -109,6 +116,10 @@ impl SessionWorkEnvelope {
                 .period_window_ceiling
                 .checked_add(other.period_window_ceiling)
                 .ok_or(crate::Invalid("session period envelope overflow"))?,
+            voice_gain_factor_work: self
+                .voice_gain_factor_work
+                .checked_add(other.voice_gain_factor_work)
+                .ok_or(crate::Invalid("session voice gain work envelope overflow"))?,
         })
     }
 }
@@ -164,6 +175,7 @@ pub struct PreparedSessionMidiClip {
     // Empty canonical curves are unity and retain no metadata. A nonempty
     // program has its own revision identity, separate from sounding notes.
     volume: Option<crate::midi_clip_volume::PreparedMidiClipVolume>,
+    voice_gains: Option<crate::midi_clip_volume::voice::PreparedSessionVoiceGains>,
     instrument: Arc<PreparedMidiInstrumentTemplate>,
     instrument_id: Option<DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -292,6 +304,11 @@ impl PreparedSessionMidiClip {
     ) -> Option<&crate::midi_clip_volume::PreparedMidiClipVolume> {
         self.volume.as_ref()
     }
+    pub(crate) fn voice_gains(
+        &self,
+    ) -> Option<&crate::midi_clip_volume::voice::PreparedSessionVoiceGains> {
+        self.voice_gains.as_ref()
+    }
 
     pub fn instrument_template(&self) -> &PreparedMidiInstrumentTemplate {
         &self.instrument
@@ -384,6 +401,20 @@ impl std::fmt::Debug for PreparedSessionInventory {
 }
 
 impl PreparedSessionInventory {
+    #[cfg(test)]
+    pub(crate) fn test_install_voice_gains(
+        &mut self,
+        clip: ClipId,
+        gains: crate::midi_clip_volume::voice::PreparedSessionVoiceGains,
+    ) -> Result<(), crate::Invalid> {
+        let owner = self
+            .midi_clips
+            .iter_mut()
+            .find(|owner| owner.id == clip)
+            .ok_or(crate::Invalid("test clip not found"))?;
+        owner.voice_gains = Some(gains);
+        Ok(())
+    }
     pub fn prepare(
         project: &Project,
         sine_table: Arc<SineTable>,
@@ -1718,6 +1749,7 @@ fn arrangement_midi_envelope(
 fn work_for(
     source: &PreparedMidiSourceTemplate,
     instrument: &PreparedMidiInstrumentTemplate,
+    voices: Option<&crate::midi_clip_volume::voice::PreparedSessionVoiceGains>,
 ) -> Result<SessionWorkEnvelope, crate::Invalid> {
     let active_voices = instrument.max_active_voices();
     let query_onsets = source.max_query_onsets();
@@ -1733,6 +1765,13 @@ fn work_for(
         span_hits,
         query_visit_ceiling: instrument.query_visit_ceiling(),
         period_window_ceiling: instrument.period_window_ceiling(),
+        voice_gain_factor_work: span_hits
+            .checked_mul(crate::midi_clip_volume::VOLUME_QUERY_FRAMES)
+            .and_then(|n| n.checked_mul(voices.map_or(0, |voice| voice.max_factors())))
+            // Each of validation and rendering may query a segment and evaluate
+            // its held pass endpoint, then evaluate the returned ramp.
+            .and_then(|n| n.checked_mul(6))
+            .ok_or(crate::Invalid("session voice gain work envelope overflow"))?,
     })
 }
 

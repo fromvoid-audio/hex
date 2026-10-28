@@ -385,6 +385,7 @@ fn malformed_overflow_failed_prepare_and_note_capacity_are_atomic() {
             pitch: 60,
             channel: 0,
             velocity: 37,
+            voice_gain: Default::default(),
         })
         .collect();
     snapshot.next_id = first + MAX_NOTES as u64;

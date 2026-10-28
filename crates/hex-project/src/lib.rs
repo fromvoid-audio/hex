@@ -147,10 +147,14 @@ mod midi_playback;
 mod midi_source_range;
 mod midi_stretch;
 pub use midi_stretch::MidiClipStretch;
+mod midi_voice_gain;
 mod midi_volume;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
     MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope,
+};
+pub use midi_voice_gain::{
+    MAX_MIDI_VOICE_GAIN_LAYERS, MidiVoiceGain, MidiVoiceGainIdentity, MidiVoiceGainLayer,
 };
 pub use midi_volume::{
     MAX_MIDI_VOLUME_POINTS, MAX_MIDI_VOLUME_POINTS_PER_CLIP, MidiClipGain, MidiClipVolume,

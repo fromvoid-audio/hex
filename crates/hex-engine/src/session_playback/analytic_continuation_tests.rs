@@ -539,6 +539,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
                 pitch: 67,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             });
         }
         let SessionCellContentSnapshot::Midi(clip) = &mut on.session.cells[0].content else {
@@ -552,6 +553,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
             pitch: 67,
             channel: 0,
             velocity: 100,
+            voice_gain: Default::default(),
         });
         on.next_id += 2;
         let on = Project::from_legacy_snapshot(on).unwrap();
@@ -611,6 +613,7 @@ fn analytic_polyphony_above_mutable_limit_and_capture_single_sample_order_are_pr
                 pitch: 61 + offset as u8,
                 channel: 0,
                 velocity: 100,
+                voice_gain: Default::default(),
             });
         }
     }

@@ -162,6 +162,13 @@ pub(super) fn prepare_clip(
     // can change break density without changing the canonical map/max BPM.
     let volume =
         crate::midi_clip_volume::PreparedMidiClipVolume::prepare_session(clip, source_timing)?;
+    let voice_gains =
+        crate::midi_clip_volume::voice::PreparedSessionVoiceGains::prepare(clip, source_timing)?;
+    if voice_gains.is_some() {
+        return Err(crate::Invalid(
+            "session voice gain playback is not yet fully supported",
+        ));
+    }
     let bank = config
         .note_bank
         .as_ref()
@@ -188,11 +195,8 @@ pub(super) fn prepare_clip(
             .map_err(template_error)?,
         )
     };
-    let work = if let Some(old) = cached_instrument {
-        old.work
-    } else {
-        work_for(&source, &instrument)?
-    };
+    // Gain ownership can change even when the note/instrument owners are reused.
+    let work = work_for(&source, &instrument, voice_gains.as_ref())?;
     Ok(PreparedSessionMidiClip {
         active: clip.active(),
         playback_offset: clip.playback_offset(),
@@ -203,6 +207,7 @@ pub(super) fn prepare_clip(
         source_identity,
         source,
         volume,
+        voice_gains,
         instrument,
         instrument_id,
         instrument_state,
@@ -246,6 +251,15 @@ pub(super) fn account_template(
         .ok_or(crate::Invalid(
             "session midi clip volume byte count overflow",
         ))?;
+    if let Some(gains) = &clip.voice_gains {
+        *bytes = bytes
+            .checked_add(
+                gains
+                    .retained_bytes()
+                    .ok_or(crate::Invalid("session voice gain byte count overflow"))?,
+            )
+            .ok_or(crate::Invalid("session voice gain byte count overflow"))?;
+    }
     crate::midi_note_bank::PreparedMidiNoteBank::validate_project_budget(
         *bytes,
         *references,

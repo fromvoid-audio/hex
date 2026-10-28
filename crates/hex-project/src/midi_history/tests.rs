@@ -37,6 +37,70 @@ fn note(pitch: u8) -> MidiNoteInsert {
 }
 
 #[test]
+fn retained_note_gain_cannot_change_under_a_prefix_or_activation_proof() {
+    let (mut editor, _, _, clip) = fixture();
+    editor
+        .execute(Command::AddMidiNotes {
+            clip,
+            notes: vec![note(60)],
+        })
+        .unwrap();
+    let old = editor.project().midi_source(clip).unwrap().clone();
+    let mut changed = old.clone();
+    let layer = crate::MidiVoiceGainLayer::new(
+        BeatTime::ZERO,
+        BeatTime::ONE,
+        BeatTime::from_raw(4 << 32),
+        crate::MidiClipVolume::default(),
+    )
+    .unwrap();
+    changed.set_test_voice_gain(0, crate::MidiVoiceGain::new(vec![layer]).unwrap());
+    assert!(!prefix_matches(
+        &old.notes[0],
+        &changed.notes[0],
+        Some(old.notes[0].duration)
+    ));
+    changed.notes[0].active = false;
+    assert!(!notes_match(
+        &old,
+        &changed,
+        Notes::Activation {
+            active: false,
+            changed: 1
+        }
+    ));
+}
+
+#[test]
+fn ordinary_new_note_proof_rejects_a_forged_inherited_gain() {
+    let (mut editor, _, _, clip) = fixture();
+    let source = editor.project().clone();
+    editor
+        .execute_midi_prepared_transition::<(), Invalid>(
+            Command::AddMidiNotes {
+                clip,
+                notes: vec![note(60)],
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let effect = editor.next_midi_history_effect(false).unwrap();
+    let mut tampered = editor.project().clone();
+    let layer = crate::MidiVoiceGainLayer::new(
+        BeatTime::ZERO,
+        BeatTime::ONE,
+        BeatTime::from_raw(4 << 32),
+        crate::MidiClipVolume::default(),
+    )
+    .unwrap();
+    tampered
+        .midi_source_mut(clip)
+        .unwrap()
+        .set_test_voice_gain(0, crate::MidiVoiceGain::new(vec![layer]).unwrap());
+    assert!(!effect.validates_forward(&source, &tampered));
+}
+
+#[test]
 fn clip_gain_is_independent_of_curve_and_has_valid_history() {
     let (mut editor, _, _, clip) = fixture();
     let length = BeatTime::from_raw(4 << 32);

@@ -42,7 +42,14 @@ pub(crate) fn compiler_quote(
                         .ok_or(AudioStorageError::UnsupportedGraph)
                 })
         })?;
-    let workspace = compiler_workspace_quote(notes, track.midi_clips().len())?;
+    let voice_quote =
+        crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::voice_preparation_quote(
+            track,
+        )
+        .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+    let workspace = compiler_workspace_quote(notes, track.midi_clips().len())?
+        .checked_add(voice_quote.workspace)
+        .ok_or(AudioStorageError::Overflow)?;
     let (payload, overhead) = crate::owned_shared::OwnedShared::<
         crate::midi_note_bank::PreparedMidiNoteBank,
     >::declared_parts()
@@ -63,7 +70,10 @@ pub(crate) fn compiler_quote(
         .ok_or(AudioStorageError::Overflow)?;
     let retained = retained
         .checked_add(
-            crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::closed_quote(track)?,
+            crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::closed_quote(
+                track,
+                &voice_quote,
+            )?,
         )
         .ok_or(AudioStorageError::Overflow)?;
     Ok((retained, workspace))

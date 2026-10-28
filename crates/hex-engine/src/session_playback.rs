@@ -1504,10 +1504,7 @@ impl SessionPlayback {
             revision
                 .session()
                 .prepare_section_admission(
-                    crate::MidiTiming::max_micro_bpm(&base_timing_for(
-                        revision.session(),
-                        periodic_tempo,
-                    )),
+                    &base_timing_for(revision.session(), periodic_tempo),
                     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
                         .checked_sub(base)
                         .ok_or(SessionPlaybackError::Allocation)?,
@@ -2387,7 +2384,7 @@ mod current_sampler_routes;
 mod handoff;
 mod harmonic_import;
 mod preroll;
-mod render;
+pub(crate) mod render;
 mod stream_actions;
 mod stream_demand;
 pub use capture::{

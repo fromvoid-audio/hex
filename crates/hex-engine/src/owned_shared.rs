@@ -23,6 +23,10 @@ pub(crate) struct OwnedShared<T: ?Sized> {
     receipt: usize,
 }
 impl<T> OwnedShared<T> {
+    #[cfg(test)]
+    pub(crate) fn test_get_mut(&mut self) -> Option<&mut T> {
+        Arc::get_mut(&mut self.arc)
+    }
     pub(crate) fn declared_parts() -> Option<(usize, usize)> {
         Some((
             std::mem::size_of::<T>(),

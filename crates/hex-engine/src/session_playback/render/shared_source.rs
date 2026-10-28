@@ -281,7 +281,8 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                     return Err(SessionPlaybackError::ClipTrackMismatch);
                 }
                 if prepared.instrument_enabled() {
-                    has_program |= prepared.volume_program().is_some();
+                    has_program |=
+                        prepared.volume_program().is_some() || prepared.voice_gains().is_some();
                     prepared
                         .instrument_template()
                         .query_with_origin(
@@ -357,7 +358,8 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
     }
     let mut lookup = |signature: crate::mutable_instrument::MutableOccurrenceSignature,
                       performance: u64,
-                      frames: usize| {
+                      frames: usize,
+                      has_held_voice: bool| {
         use crate::midi_clip_volume::{VolumePlacement, VolumeRamp};
         use crate::mutable_instrument::{MutableInstrumentRuntimeError as Error, VolumeSlice};
         let key = signature.key();
@@ -410,16 +412,18 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                 .map_err(|_| Error::InvalidSourceSpan)?
                 .flatten()
         };
-        let unity = |at| VolumeSlice {
-            at,
-            terminal: None,
-            ramp: VolumeRamp {
-                start_frame: 0,
-                end_frame: u64::MAX,
-                start_gain: 1.0,
-                end_gain: 1.0,
-                next_boundary: None,
-            },
+        let unity = |at| {
+            VolumeSlice::single(
+                at,
+                VolumeRamp {
+                    start_frame: 0,
+                    end_frame: u64::MAX,
+                    start_gain: 1.0,
+                    end_gain: 1.0,
+                    next_boundary: None,
+                },
+                None,
+            )
         };
         match midi_route.owner {
             RouteOwner::Arrangement => {
@@ -459,7 +463,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                     .checked_sub(performance_frame)
                     .and_then(|offset| arrangement_frame.checked_add(offset))
                     .ok_or(Error::Arithmetic)?;
-                arrangement_volumes.and_then(|v| v.clip(key.clip)).map_or(
+                let slice = arrangement_volumes.and_then(|v| v.clip(key.clip)).map_or(
                     Ok(Some(unity(at))),
                     |row| {
                         let Some(endpoint) = row.endpoint else {
@@ -471,45 +475,71 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                         // Arrangement coordinates are content frames. The Console
                         // clock may have an absolute rebase floor after a wrap.
                         row.segment_or_hold(revision.session().timing(), at, frames)
-                            .map(|ramp| {
-                                Some(VolumeSlice {
-                                    at,
-                                    ramp,
-                                    terminal: Some(endpoint.frame),
-                                })
-                            })
+                            .map(|ramp| Some(VolumeSlice::single(at, ramp, Some(endpoint.frame))))
                             .map_err(|_| Error::InvalidSourceSpan)
                     },
+                )?;
+                let Some(slice) = slice else {
+                    return Ok(None);
+                };
+                if has_held_voice {
+                    return Ok(Some(slice));
+                }
+                append_arrangement_voice_gain(
+                    arrangement_volumes,
+                    key.clip,
+                    key.note,
+                    onset,
+                    revision.session().timing(),
+                    at,
+                    frames,
+                    slice,
                 )
+                .map(Some)
             }
             RouteOwner::Session { clip, origin } => {
                 if key.clip != clip || key.loop_pass != routes[index].current_incarnation {
                     return Ok(None);
                 }
-                let Some(program) = console
+                let program = console
                     .as_ref()
-                    .and_then(|(_, _, prepared)| prepared.volume_program())
-                else {
-                    return Ok(Some(unity(performance)));
+                    .and_then(|(_, _, prepared)| prepared.volume_program());
+                let slice = if let Some(program) = program {
+                    if console_historical
+                        || console_endpoint.is_some_and(|e| performance >= e.frame)
+                    {
+                        return Ok(None);
+                    }
+                    let ramp = program
+                        .segment_at(
+                            timing,
+                            VolumePlacement::Session { origin },
+                            performance,
+                            frames,
+                        )
+                        .map_err(|_| Error::InvalidSourceSpan)?
+                        .ok_or(Error::InvalidSourceSpan)?;
+                    VolumeSlice::single(performance, ramp, console_endpoint.map(|e| e.frame))
+                } else {
+                    unity(performance)
                 };
-                if console_historical || console_endpoint.is_some_and(|e| performance >= e.frame) {
-                    return Ok(None);
+                let voice_gains = console
+                    .as_ref()
+                    .and_then(|(_, _, prepared)| prepared.voice_gains());
+                if has_held_voice {
+                    return Ok(Some(slice));
                 }
-                program
-                    .segment_at(
-                        timing,
-                        VolumePlacement::Session { origin },
-                        performance,
-                        frames,
-                    )
-                    .map_err(|_| Error::InvalidSourceSpan)?
-                    .map(|ramp| VolumeSlice {
-                        at: performance,
-                        ramp,
-                        terminal: console_endpoint.map(|e| e.frame),
-                    })
-                    .map(Some)
-                    .ok_or(Error::InvalidSourceSpan)
+                append_session_voice_gain(
+                    voice_gains,
+                    key.note,
+                    signature.details().0,
+                    origin,
+                    timing,
+                    performance,
+                    frames,
+                    slice,
+                )
+                .map(Some)
             }
             RouteOwner::SessionAudio { .. } | RouteOwner::Silence => Ok(None),
         }

@@ -91,6 +91,7 @@ impl From<Note> for MidiNoteSnapshot {
             pitch: note.pitch,
             channel: note.channel,
             velocity: note.velocity,
+            voice_gain: Default::default(),
         }
     }
 }

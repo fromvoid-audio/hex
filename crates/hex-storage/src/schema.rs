@@ -27,6 +27,7 @@ pub(crate) mod legacy_early;
 pub(crate) mod midi_clip_gain;
 mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
+pub(crate) mod midi_voice_gain;
 mod migrations;
 pub(crate) mod musical_audio;
 pub(crate) mod native_sources;
@@ -1913,6 +1914,7 @@ impl DocumentV12 {
                                             pitch: note.pitch,
                                             channel: note.channel,
                                             velocity: note.velocity,
+                                            voice_gain: Default::default(),
                                         })
                                         .collect(),
                                 },
@@ -2315,6 +2317,7 @@ impl DocumentV11 {
                                             pitch: note.pitch,
                                             channel: note.channel,
                                             velocity: note.velocity,
+                                            voice_gain: Default::default(),
                                         })
                                         .collect(),
                                 },
@@ -2406,6 +2409,7 @@ impl DocumentV10 {
                                                 pitch: n.pitch,
                                                 channel: n.channel,
                                                 velocity: n.velocity,
+                                                voice_gain: Default::default(),
                                             })
                                             .collect(),
                                     })
@@ -2555,6 +2559,7 @@ impl DocumentV9 {
                                             pitch: n.pitch,
                                             channel: n.channel,
                                             velocity: n.velocity,
+                                            voice_gain: Default::default(),
                                         })
                                         .collect(),
                                 })
@@ -2673,6 +2678,7 @@ fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
                 pitch: note.pitch,
                 channel: note.channel,
                 velocity: note.velocity,
+                voice_gain: Default::default(),
             })
             .collect(),
     }
@@ -2795,6 +2801,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                                         pitch: note.pitch,
                                         channel: note.channel,
                                         velocity: note.velocity,
+                                        voice_gain: Default::default(),
                                     })
                                     .collect(),
                             },

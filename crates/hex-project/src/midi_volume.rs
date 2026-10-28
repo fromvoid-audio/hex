@@ -436,23 +436,55 @@ impl crate::Project {
             .tracks()
             .iter()
             .flat_map(|track| track.midi_clips())
-            .map(|clip| (clip.volume(), clip.source_length()));
+            .map(|clip| (clip.volume(), clip.source()));
         let console = self
             .session
             .cells
             .iter()
             .filter_map(|cell| match cell.content() {
-                crate::SessionCellContent::Midi(clip) => {
-                    Some((clip.volume(), clip.source().source_length()))
-                }
+                crate::SessionCellContent::Midi(clip) => Some((clip.volume(), clip.source())),
                 _ => None,
             });
-        for (volume, length) in arrangement.chain(console) {
-            volume.validate_source_length(length)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut seen_content = std::collections::HashSet::new();
+        for (volume, source) in arrangement.chain(console) {
+            volume.validate_source_length(source.source_length())?;
             count = count
                 .checked_add(volume.points().len())
                 .filter(|n| *n <= MAX_MIDI_VOLUME_POINTS)
                 .ok_or(Invalid("project clip volume point limit reached"))?;
+            if !source.content.may_have_voice_gains {
+                continue;
+            }
+            // Aliased clips may use distinct playback windows over the same
+            // immutable notes and source length. Validate that backing once.
+            let content = std::sync::Arc::as_ptr(&source.content);
+            if seen_content.contains(&content) {
+                continue;
+            }
+            seen_content
+                .try_reserve(1)
+                .map_err(|_| Invalid("could not reserve midi source validation identities"))?;
+            seen_content.insert(content);
+            for note in source.notes() {
+                let gain = note.voice_gain();
+                gain.validate_source_length(source.source_length())?;
+                let Some(identity) = gain.owner_identity() else {
+                    continue;
+                };
+                if seen.contains(&identity) {
+                    continue;
+                }
+                seen.try_reserve(1)
+                    .map_err(|_| Invalid("could not reserve voice gain validation identities"))?;
+                seen.insert(identity);
+                for layer in gain.layers() {
+                    count = count
+                        .checked_add(layer.volume().points().len())
+                        .filter(|n| *n <= MAX_MIDI_VOLUME_POINTS)
+                        .ok_or(Invalid("project midi volume point limit reached"))?;
+                }
+            }
         }
         Ok(())
     }

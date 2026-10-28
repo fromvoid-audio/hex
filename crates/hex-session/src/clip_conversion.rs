@@ -206,6 +206,7 @@ fn isolated_source(
                     duration_raw: note.duration().raw(),
                     pitch: note.pitch(),
                     velocity: note.velocity(),
+                    voice_gain: note.voice_gain().clone(),
                     channel: note.channel(),
                 })
                 .collect(),

@@ -90,6 +90,11 @@ impl MidiClipStretch {
                 note.channel(),
                 note.velocity(),
             )?;
+            note.voice_gain().scaled(
+                self.length.raw(),
+                self.original_length.raw(),
+                self.source_length,
+            )?;
         }
         let mut previous = None;
         for point in clip.volume().points() {
@@ -199,6 +204,11 @@ pub(crate) fn apply(
     source.loop_end = preview.loop_end;
     for note in &mut source.notes {
         let (start, duration) = preview.note_interval(note)?;
+        note.voice_gain = note.voice_gain.scaled(
+            preview.length.raw(),
+            preview.original_length.raw(),
+            preview.source_length,
+        )?;
         note.start = start;
         note.duration = duration;
     }

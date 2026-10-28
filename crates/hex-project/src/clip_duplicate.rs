@@ -141,11 +141,9 @@ fn apply_mode(project: &mut Project, ids: Vec<ClipId>, alias: bool) -> Result<Cr
             crate::clip_alias_commands::source(project, original)?;
             match &mut member.content {
                 ClipGroupContent::Midi(clip) => {
-                    std::sync::Arc::make_mut(&mut clip.source).content =
-                        std::sync::Arc::new(crate::MidiContent {
-                            source_length: clip.source_length(),
-                            notes: Vec::new(),
-                        });
+                    std::sync::Arc::make_mut(&mut clip.source).content = std::sync::Arc::new(
+                        crate::MidiContent::new(clip.source_length(), Vec::new()),
+                    );
                 }
                 ClipGroupContent::Audio(clip) => {
                     if clip.edit.is_none() {

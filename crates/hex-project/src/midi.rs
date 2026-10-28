@@ -34,17 +34,52 @@ pub enum MidiOneShotBoundary {
 
 /// Authored notes and their finite source extent. Playback windows belong to
 /// `MidiSource`, so changing a window can retain this immutable content backing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct MidiContent {
     pub(crate) source_length: BeatTime,
     pub(crate) notes: Vec<MidiNote>,
+    // Conservative cache: false proves every note has no retained gain. True
+    // may remain after deletion, avoiding rescans on the ordinary no-gain path.
+    pub(crate) may_have_voice_gains: bool,
 }
+impl PartialEq for MidiContent {
+    fn eq(&self, other: &Self) -> bool {
+        self.source_length == other.source_length && self.notes == other.notes
+    }
+}
+impl Eq for MidiContent {}
 impl MidiContent {
+    pub(crate) fn new(source_length: BeatTime, notes: Vec<MidiNote>) -> Self {
+        let may_have_voice_gains = notes
+            .iter()
+            .any(|note| !note.voice_gain.layers().is_empty());
+        Self {
+            source_length,
+            notes,
+            may_have_voice_gains,
+        }
+    }
+    pub(crate) fn replace_notes(&mut self, notes: Vec<MidiNote>) {
+        self.may_have_voice_gains = notes
+            .iter()
+            .any(|note| !note.voice_gain.layers().is_empty());
+        self.notes = notes;
+    }
+    #[cfg(test)]
+    pub(crate) fn set_test_voice_gain(&mut self, index: usize, gain: crate::MidiVoiceGain) {
+        self.may_have_voice_gains |= !gain.layers().is_empty();
+        self.notes[index].voice_gain = gain;
+    }
     pub fn source_length(&self) -> BeatTime {
         self.source_length
     }
     pub fn notes(&self) -> &[MidiNote] {
         &self.notes
+    }
+    /// False proves that every note uses the implicit unity law. True can be
+    /// conservative after deletion; consumers must still inspect the notes.
+    pub fn may_have_voice_gains(&self) -> bool {
+        self.may_have_voice_gains
     }
 }
 
@@ -83,7 +118,7 @@ impl MidiSourceIdentity {
     /// capacity and Arc header/alignment. Shared clones may be charged repeatedly. This is not
     /// PCM, allocation identity, exclusive ownership, or a closed-storage proof.
     pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
-        std::mem::size_of::<MidiSource>()
+        let bytes = std::mem::size_of::<MidiSource>()
             .checked_add(std::mem::size_of::<MidiContent>())?
             .checked_add(
                 self.0
@@ -103,7 +138,24 @@ impl MidiSourceIdentity {
                         .max(std::mem::align_of::<MidiContent>())
                         .checked_sub(1)?,
                 )
-            })
+            })?;
+        if !self.0.content.may_have_voice_gains {
+            return Some(bytes);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut total = bytes;
+        for note in &self.0.notes {
+            let Some(identity) = note.voice_gain.owner_identity() else {
+                continue;
+            };
+            if seen.contains(&identity) {
+                continue;
+            }
+            seen.try_reserve(1).ok()?;
+            seen.insert(identity);
+            total = total.checked_add(note.voice_gain.retained_control_metadata_bytes()?)?;
+        }
+        Some(total)
     }
 }
 impl PartialEq for MidiSourceIdentity {
@@ -168,10 +220,7 @@ impl MidiSource {
     }
     pub(crate) fn defaults(length: BeatTime) -> Self {
         Self {
-            content: Arc::new(MidiContent {
-                source_length: length,
-                notes: Vec::new(),
-            }),
+            content: Arc::new(MidiContent::new(length, Vec::new())),
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
@@ -507,6 +556,7 @@ pub struct MidiNote {
     pub(crate) pitch: u8,
     pub(crate) channel: u8,
     pub(crate) velocity: u8,
+    pub(crate) voice_gain: crate::MidiVoiceGain,
 }
 impl MidiNote {
     pub fn id(&self) -> NoteId {
@@ -529,6 +579,10 @@ impl MidiNote {
     }
     pub fn velocity(&self) -> u8 {
         self.velocity
+    }
+    /// Gain layers retained with this note's shared MIDI source.
+    pub fn voice_gain(&self) -> &crate::MidiVoiceGain {
+        &self.voice_gain
     }
 }
 
@@ -710,8 +764,12 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     .shifted(preview.source_prefix, source.source_length)?;
                 source.loop_start = shifted(source.loop_start)?;
                 source.loop_end = shifted(source.loop_end)?;
+                let source_length = source.source_length;
                 for note in &mut source.notes {
                     note.start = shifted(note.start)?;
+                    note.voice_gain = note
+                        .voice_gain
+                        .shifted(preview.source_prefix, source_length)?;
                 }
             }
             target.content_view = preview.content_view;
@@ -791,6 +849,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .map_err(|_| Invalid("could not reserve split midi notes"))?;
             for note in original.notes() {
                 let occurrences = playback.note_occurrences(note.start, note.duration)?;
+                let mut right_gain = None;
                 for occurrence in occurrences.iter() {
                     let absolute_start = original
                         .start
@@ -803,6 +862,23 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     let kept_start = absolute_start.max(beat.raw());
                     let kept_end = absolute_end.min(end);
                     if kept_start < kept_end {
+                        if right_gain.is_none() {
+                            right_gain = Some(if note.voice_gain.layers().is_empty() {
+                                note.voice_gain.clone()
+                            } else {
+                                note.voice_gain.materialized_range(
+                                    playback,
+                                    left_length,
+                                    original.length,
+                                    BeatTime::ZERO,
+                                    right_length,
+                                )?
+                            });
+                        }
+                        let voice_gain = right_gain
+                            .as_ref()
+                            .ok_or(Invalid("split voice gain is unavailable"))?
+                            .clone();
                         notes.push(MidiNote {
                             id: NoteId(0),
                             active: note.active,
@@ -811,6 +887,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                             pitch: note.pitch,
                             channel: note.channel,
                             velocity: note.velocity,
+                            voice_gain,
                         });
                     }
                 }
@@ -861,10 +938,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 length: right_length,
                 volume: right_volume,
                 source: Arc::new(MidiSource {
-                    content: std::sync::Arc::new(crate::MidiContent {
-                        source_length: right_length,
-                        notes,
-                    }),
+                    content: std::sync::Arc::new(crate::MidiContent::new(right_length, notes)),
                     one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                     source_start: BeatTime::ZERO,
                     loop_start: BeatTime::ZERO,
@@ -900,6 +974,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             target.volume.validate_source_length(source_length)?;
             validate_clip(target.start, length)?;
             for note in &target.notes {
+                note.voice_gain.validate_source_length(source_length)?;
                 validate_note(
                     note.start,
                     note.duration,
@@ -1359,10 +1434,7 @@ fn materialize_overwrite_ranges_inner(
                 ),
             )?,
             source: Arc::new(MidiSource {
-                content: std::sync::Arc::new(crate::MidiContent {
-                    source_length: length,
-                    notes: Vec::new(),
-                }),
+                content: std::sync::Arc::new(crate::MidiContent::new(length, Vec::new())),
                 one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                 source_start: BeatTime::ZERO,
                 loop_start: BeatTime::ZERO,
@@ -1402,12 +1474,33 @@ fn materialize_overwrite_ranges_inner(
                         .checked_add(1)
                         .filter(|n| *n <= MAX_NOTES)
                         .ok_or(Invalid("midi note limit reached"))?;
+                    let voice_gain = if note.voice_gain.layers().is_empty() {
+                        note.voice_gain.clone()
+                    } else {
+                        let local_start = BeatTime::from_raw(
+                            start
+                                .checked_sub(original.start.raw())
+                                .ok_or(Invalid("midi voice fragment precedes clip"))?,
+                        );
+                        let local_end = BeatTime::from_raw(
+                            end.checked_sub(original.start.raw())
+                                .ok_or(Invalid("midi voice fragment precedes clip"))?,
+                        );
+                        note.voice_gain.materialized_range(
+                            playback,
+                            local_start,
+                            local_end,
+                            BeatTime::ZERO,
+                            fragment.length,
+                        )?
+                    };
                     let source = Arc::get_mut(&mut fragment.source)
                         .ok_or(Invalid("midi overwrite source was unexpectedly shared"))?;
                     source
                         .notes
                         .try_reserve(1)
                         .map_err(|_| Invalid("could not reserve midi overwrite notes"))?;
+                    source.may_have_voice_gains |= !voice_gain.layers().is_empty();
                     source.notes.push(MidiNote {
                         id: NoteId(0),
                         active: note.active,
@@ -1416,6 +1509,7 @@ fn materialize_overwrite_ranges_inner(
                         pitch: note.pitch,
                         channel: note.channel,
                         velocity: note.velocity,
+                        voice_gain,
                     });
                 }
             }
@@ -1455,6 +1549,52 @@ pub(crate) fn find_note_source(project: &Project, note: NoteId) -> Option<(ClipI
 #[cfg(test)]
 mod retained_metadata_tests {
     use super::*;
+    #[test]
+    fn source_quote_counts_a_shared_voice_gain_once_and_cache_is_not_content() {
+        let note = MidiNote {
+            id: NoteId(1),
+            active: true,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+            voice_gain: crate::MidiVoiceGain::default(),
+        };
+        let mut source = MidiSource::defaults(BeatTime::ONE);
+        source.replace_notes(vec![note.clone(), note]);
+        assert!(!source.may_have_voice_gains);
+        let base = MidiSourceIdentity(Arc::new(source.clone()))
+            .retained_control_metadata_bytes()
+            .unwrap();
+        let layer = crate::MidiVoiceGainLayer::new(
+            BeatTime::ZERO,
+            BeatTime::ONE,
+            BeatTime::ONE,
+            crate::MidiClipVolume::default(),
+        )
+        .unwrap();
+        let gain = crate::MidiVoiceGain::new(vec![layer]).unwrap();
+        source.set_test_voice_gain(0, gain.clone());
+        source.set_test_voice_gain(1, gain.clone());
+        assert!(source.may_have_voice_gains);
+        let quote = MidiSourceIdentity(Arc::new(source.clone()))
+            .retained_control_metadata_bytes()
+            .unwrap();
+        assert_eq!(
+            quote - base,
+            gain.retained_control_metadata_bytes().unwrap()
+        );
+        source.set_test_voice_gain(0, crate::MidiVoiceGain::default());
+        source.set_test_voice_gain(1, crate::MidiVoiceGain::default());
+        let mut exact = source.clone();
+        Arc::make_mut(&mut exact.content).may_have_voice_gains = false;
+        assert_eq!(source, exact);
+        assert_eq!(
+            MidiSourceIdentity(Arc::new(source)).retained_control_metadata_bytes(),
+            Some(base)
+        );
+    }
     #[test]
     fn source_quote_keeps_unused_note_capacity_and_shared_clone_backing() {
         let mut source = MidiSource::defaults(BeatTime::ONE);

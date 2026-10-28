@@ -419,6 +419,10 @@ fn strict_schema51_writer_migrates_complete_state_and_original_bytes_are_unchang
         current.as_object_mut().unwrap().remove("midi_clip_gains"),
         Some(json!([]))
     );
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("midi_voice_gains"),
+        Some(json!([]))
+    );
     current["version"] = 51.into();
     assert_eq!(current, prior, "every predecessor field survives");
     assert_eq!(bytes(&prior), original);

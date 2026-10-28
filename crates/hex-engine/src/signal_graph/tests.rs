@@ -629,6 +629,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
                 duration_raw: hex_project::BeatTime::ONE.raw(),
                 pitch: 69,
                 velocity: 127,
+                voice_gain: Default::default(),
                 channel: 0,
             }],
         }],

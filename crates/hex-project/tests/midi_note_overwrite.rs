@@ -457,6 +457,7 @@ fn overwrite_at_full_note_capacity_charges_only_the_actual_final_set() {
             pitch: 60,
             channel: 3,
             velocity: 91,
+            voice_gain: Default::default(),
         })
         .collect();
     snapshot.next_id = first + MAX_NOTES as u64;

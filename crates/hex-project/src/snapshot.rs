@@ -216,6 +216,7 @@ pub struct MidiNoteSnapshot {
     pub pitch: u8,
     pub channel: u8,
     pub velocity: u8,
+    pub voice_gain: crate::MidiVoiceGain,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -387,6 +388,7 @@ impl Project {
                                         pitch: note.pitch,
                                         channel: note.channel,
                                         velocity: note.velocity,
+                                        voice_gain: note.voice_gain.clone(),
                                     })
                                     .collect(),
                             })
@@ -470,6 +472,7 @@ impl Project {
                                                 pitch: note.pitch,
                                                 channel: note.channel,
                                                 velocity: note.velocity,
+                                                voice_gain: note.voice_gain.clone(),
                                             })
                                             .collect(),
                                     },
@@ -669,6 +672,43 @@ impl Project {
     }
 
     pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        // Until save, edit and playback consumers all retain these owners, do
+        // not admit them and risk silently discarding an authored gain law.
+        let has_gain = |notes: &[MidiNoteSnapshot]| {
+            notes
+                .iter()
+                .any(|note| !note.voice_gain.layers().is_empty())
+        };
+        let arrangement_has_gain = snapshot.tracks.iter().any(|track| match &track.content {
+            TrackContentSnapshot::Audio(_) => false,
+            TrackContentSnapshot::Instrument(clips) => {
+                clips.iter().any(|clip| has_gain(&clip.notes))
+            }
+            TrackContentSnapshot::Hybrid { midi_clips, .. } => {
+                midi_clips.iter().any(|clip| has_gain(&clip.notes))
+            }
+        });
+        let session_has_gain = snapshot
+            .session
+            .cells
+            .iter()
+            .any(|cell| match &cell.content {
+                SessionCellContentSnapshot::Midi(clip) => has_gain(&clip.source.notes),
+                _ => false,
+            });
+        let alias_has_gain = snapshot
+            .aliases
+            .sources
+            .iter()
+            .any(|source| match &source.content {
+                crate::AliasContentSnapshot::Midi { notes, .. } => has_gain(notes),
+                _ => false,
+            });
+        if arrangement_has_gain || session_has_gain || alias_has_gain {
+            return Err(Invalid(
+                "midi voice gains are not yet supported by all project operations",
+            ));
+        }
         if snapshot.audio_feeds.len() > crate::MAX_AUDIO_FEEDS
             || snapshot.midi_routes.len() > crate::MAX_MIDI_ROUTES
         {
@@ -1005,6 +1045,7 @@ impl Project {
                         pitch: note.pitch,
                         channel: note.channel,
                         velocity: note.velocity,
+                        voice_gain: note.voice_gain.clone(),
                     });
                 }
                 crate::midi_note_overwrite::validate_occupancy(&notes)?;
@@ -1029,10 +1070,7 @@ impl Project {
                     length,
                     source: std::sync::Arc::new(crate::MidiSource {
                         content: alias_content.unwrap_or_else(|| {
-                            std::sync::Arc::new(crate::MidiContent {
-                                source_length,
-                                notes,
-                            })
+                            std::sync::Arc::new(crate::MidiContent::new(source_length, notes))
                         }),
                         one_shot_boundary: clip.one_shot_boundary,
                         source_start,
@@ -1178,6 +1216,7 @@ impl Project {
                             pitch: note.pitch,
                             channel: note.channel,
                             velocity: note.velocity,
+                            voice_gain: note.voice_gain.clone(),
                         });
                     }
                     crate::midi_note_overwrite::validate_occupancy(&notes)?;
@@ -1191,10 +1230,7 @@ impl Project {
                         name: clip.name,
                         source: std::sync::Arc::new(crate::MidiSource {
                             content: alias_content.unwrap_or_else(|| {
-                                std::sync::Arc::new(crate::MidiContent {
-                                    source_length,
-                                    notes,
-                                })
+                                std::sync::Arc::new(crate::MidiContent::new(source_length, notes))
                             }),
                             one_shot_boundary: clip.source.one_shot_boundary,
                             source_start,

@@ -46,6 +46,7 @@ pub(crate) fn require_unity(project: &Project) -> Result<(), StorageError> {
 }
 
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
+    super::midi_voice_gain::require_empty(project)?;
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
     visit(&mut snapshot, |clip, volume| {

@@ -10,7 +10,7 @@ pub(crate) fn edit(
     remove: Vec<NoteId>,
     insert: Vec<MidiNoteInsert>,
 ) -> Result<Created, Invalid> {
-    edit_bounded(project, clip_id, remove, insert, None)
+    edit_bounded(project, clip_id, remove, insert, None, None)
 }
 
 pub(crate) fn edit_with_source_extent(
@@ -23,7 +23,7 @@ pub(crate) fn edit_with_source_extent(
         .midi_source(clip_id)
         .ok_or(Invalid("midi clip no longer exists"))?;
     let length = extended_source_length(target.source_length(), &insert)?;
-    edit_bounded(project, clip_id, remove, insert, Some(length))
+    edit_bounded(project, clip_id, remove, insert, Some(length), None)
 }
 
 /// Range authoring retains silent destination time as well as note ends. The
@@ -34,7 +34,14 @@ pub(crate) fn edit_range(
     clip_id: ClipId,
     insert: Vec<MidiNoteInsert>,
     length: BeatTime,
+    gains: Option<Vec<crate::MidiVoiceGain>>,
 ) -> Result<Created, Invalid> {
+    if gains
+        .as_ref()
+        .is_some_and(|gains| insert.len() != gains.len())
+    {
+        return Err(Invalid("midi range note gain count mismatch"));
+    }
     let old = project
         .midi_source(clip_id)
         .ok_or(Invalid("midi clip no longer exists"))?;
@@ -47,7 +54,7 @@ pub(crate) fn edit_range(
         }
         return Ok(Created::None);
     }
-    edit_bounded(project, clip_id, Vec::new(), insert, Some(length))
+    edit_bounded(project, clip_id, Vec::new(), insert, Some(length), gains)
 }
 
 /// Checked extent calculation shared with the closed MIDI history proof.
@@ -74,6 +81,7 @@ fn edit_bounded(
     remove: Vec<NoteId>,
     insert: Vec<MidiNoteInsert>,
     source_length: Option<BeatTime>,
+    gains: Option<Vec<crate::MidiVoiceGain>>,
 ) -> Result<Created, Invalid> {
     if remove.is_empty() && insert.is_empty() {
         return Err(Invalid("midi note edit batch must not be empty"));
@@ -86,6 +94,14 @@ fn edit_bounded(
         .midi_source(clip_id)
         .ok_or(Invalid("midi clip no longer exists"))?;
     let length = source_length.unwrap_or_else(|| target.source_length());
+    if let Some(gains) = &gains {
+        if gains.len() != insert.len() {
+            return Err(Invalid("midi note gain count mismatch"));
+        }
+        for gain in gains {
+            gain.validate_source_length(length)?;
+        }
+    }
     for note in &insert {
         validate_note(
             note.start,
@@ -136,8 +152,17 @@ fn edit_bounded(
         let surviving = insert
             .into_iter()
             .zip(plan.authored)
-            .filter_map(|(note, gate)| gate.map(|duration| MidiNoteInsert { duration, ..note }));
-        for (id, note) in (first..=last).zip(surviving) {
+            .enumerate()
+            .filter_map(|(index, (note, gate))| {
+                gate.map(|duration| (index, MidiNoteInsert { duration, ..note }))
+            });
+        for (id, (index, note)) in (first..=last).zip(surviving) {
+            let voice_gain = gains
+                .as_ref()
+                .and_then(|gains| gains.get(index))
+                .cloned()
+                .unwrap_or_default();
+            target.may_have_voice_gains |= !voice_gain.layers().is_empty();
             target.notes.push(MidiNote {
                 id: NoteId(id),
                 active: note.active,
@@ -146,6 +171,7 @@ fn edit_bounded(
                 pitch: note.pitch,
                 channel: note.channel,
                 velocity: note.velocity,
+                voice_gain,
             });
         }
         Ok(Created::Notes {

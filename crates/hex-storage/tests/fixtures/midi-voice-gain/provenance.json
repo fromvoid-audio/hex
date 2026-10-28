@@ -1,0 +1,10 @@
+{
+  "writer_source": "97558f10427a95da093c5982f8200f37063ce5da",
+  "writer_schema": 62,
+  "writer": "schema62-writer.rs",
+  "writer_toolchain": "rustc 1.94.0 (4a4ef493e 2026-03-02), macOS arm64",
+  "writer_lock": "schema62-writer.Cargo.lock",
+  "writer_lock_sha256": "b5483e9d6b9b37f1cea8fda514e1dd8c46fd14fab10f9344d1fac8ac57304eb3",
+  "fixture_sha256": "035c1bbb8b1fcbc213784ed3d71421393c2b7d076c1b0de4b4417f57efb2ee73",
+  "input": "Original synthetic project with an Arrangement MIDI note, authored volume curve and -6 dB clip scalar, copied into Session. The schema62 writer independently decoded the bytes and compared its complete snapshot before publication."
+}

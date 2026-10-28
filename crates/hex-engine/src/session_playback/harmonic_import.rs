@@ -123,16 +123,39 @@ impl Import {
             .iter()
             .position(|r| r.id == route.id)
             .ok_or(SessionPlaybackError::UnknownTrack)?;
-        let (gain, gain_frozen) = match gain_override {
-            Some(gain) => (gain, true),
-            None => super::clip_gain::at_cut(
-                previous,
-                index,
-                route.owner,
-                clip,
-                previous.arrangement_frame,
-                previous.performance_frame,
-            )?,
+        let (gain, gain_frozen, held_voice_gain_bits) = match gain_override {
+            Some(gain) => (gain, true, None),
+            None => {
+                let (outer, frozen) = super::clip_gain::at_cut(
+                    previous,
+                    index,
+                    route.owner,
+                    clip,
+                    previous.arrangement_frame,
+                    previous.performance_frame,
+                )?;
+                let voice = super::clip_gain::voice_at_cut(
+                    previous,
+                    index,
+                    route.owner,
+                    clip,
+                    note,
+                    onset_beat,
+                    previous.arrangement_frame,
+                    previous.performance_frame,
+                )?;
+                let combined = outer * voice.map_or(1.0, |(gain, _)| gain);
+                if !combined.is_finite()
+                    || !(0.0..=hex_lattice::MAX_INSTRUMENT_GAIN_PRODUCT).contains(&combined)
+                {
+                    return Err(SessionPlaybackError::MutableInstrumentEvents);
+                }
+                (
+                    combined,
+                    frozen,
+                    voice.and_then(|(gain, held)| held.then_some(gain.to_bits())),
+                )
+            }
         };
         self.occurrences[self.len] = Some(MutableOccurrence {
             signature: MutableOccurrenceSignature::from_parts(
@@ -151,6 +174,7 @@ impl Import {
             note_off_sent: gate <= cut,
             gain_at_end_bits: gain.to_bits(),
             gain_frozen,
+            held_voice_gain_bits,
         });
         self.len += 1;
         Ok(())

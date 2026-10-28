@@ -140,7 +140,8 @@ pub use instrument::{
     PreparedStorageDeclaration, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
 pub use instrument_gain::{
-    INSTRUMENT_GAIN_UNITY, MAX_INSTRUMENT_OCCURRENCE_GAIN, NativeInstrumentOccurrenceGain,
+    INSTRUMENT_GAIN_UNITY, MAX_INSTRUMENT_GAIN_FACTORS, MAX_INSTRUMENT_GAIN_PRODUCT,
+    MAX_INSTRUMENT_OCCURRENCE_GAIN, NativeInstrumentGainFactor, NativeInstrumentOccurrenceGain,
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,

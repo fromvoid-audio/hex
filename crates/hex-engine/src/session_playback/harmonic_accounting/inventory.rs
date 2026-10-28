@@ -155,6 +155,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
                         pitch: 60,
                         channel: 0,
                         velocity: 100,
+                        voice_gain: Default::default(),
                     }],
                 }],
             };

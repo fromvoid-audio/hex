@@ -124,10 +124,7 @@ fn clone_midi(project: &mut Project, clip: &MidiClip) -> Result<MidiClip, Invali
     }
     let source = clip.source();
     copy.source = Arc::new(MidiSource {
-        content: std::sync::Arc::new(crate::MidiContent {
-            source_length: source.source_length,
-            notes,
-        }),
+        content: std::sync::Arc::new(crate::MidiContent::new(source.source_length, notes)),
         one_shot_boundary: source.one_shot_boundary,
         source_start: source.source_start,
         loop_start: source.loop_start,
