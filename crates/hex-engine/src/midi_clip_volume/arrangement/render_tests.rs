@@ -25,7 +25,7 @@ fn render(project: &crate::Project, partitions: &[usize], frames: usize) -> Vec<
 }
 
 #[test]
-fn grouping_differently_gained_clips_refuses_without_changing_release_tails() {
+fn grouping_differently_gained_clips_uses_one_curve_for_release_tails() {
     let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -73,10 +73,7 @@ fn grouping_differently_gained_clips_refuses_without_changing_release_tails() {
         &[17, 256],
         8500,
     );
-    let snapshot = editor.project().snapshot();
-    let error = editor.execute(Command::GroupClips(clips)).unwrap_err();
-    assert!(error.to_string().contains("different clip gains"));
-    assert_eq!(editor.project().snapshot(), snapshot);
+    editor.execute(Command::GroupClips(clips)).unwrap();
     let after = render(
         &crate::compile::project(editor.project(), &BTreeMap::new()).unwrap(),
         &[17, 256],
@@ -87,20 +84,32 @@ fn grouping_differently_gained_clips_refuses_without_changing_release_tails() {
             .iter()
             .any(|sample| sample[0].abs() > 1e-4)
     );
-    for (frame, (left, right)) in before.iter().zip(after).enumerate() {
+    for (frame, (left, right)) in before.iter().zip(&after).take(4000).enumerate() {
         for channel in 0..2 {
             assert!(
                 (left[channel] - right[channel]).abs() < 1e-6,
-                "frame {frame}, channel {channel}: {} vs {}",
-                left[channel],
-                right[channel]
+                "frame {frame}"
+            );
+        }
+    }
+    assert!((before[4000][0] - after[4000][0]).abs() > 1e-4);
+    let partitioned = render(
+        &crate::compile::project(editor.project(), &BTreeMap::new()).unwrap(),
+        &[64, 1, 127],
+        8500,
+    );
+    for (frame, (left, right)) in after.iter().zip(partitioned).enumerate() {
+        for channel in 0..2 {
+            assert!(
+                (left[channel] - right[channel]).abs() < 1e-6,
+                "frame {frame}"
             );
         }
     }
 }
 
 #[test]
-fn grouping_different_curves_refuses_without_changing_release_tails() {
+fn grouping_different_curves_uses_one_curve_for_release_tails() {
     use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
     let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
@@ -156,23 +165,61 @@ fn grouping_different_curves_refuses_without_changing_release_tails() {
         &[17, 256],
         8500,
     );
-    let snapshot = editor.project().snapshot();
-    let error = editor.execute(Command::GroupClips(clips)).unwrap_err();
-    assert!(error.to_string().contains("clip volume curves"));
-    assert_eq!(editor.project().snapshot(), snapshot);
+    // An independent project with both clips at the second level supplies
+    // the expected shared-curve output once the second clip starts.
+    let mut uniform = Editor::new(editor.project().clone(), 1).unwrap();
+    uniform
+        .execute(Command::ReplaceMidiClipVolume {
+            clip: clips[0],
+            volume: MidiClipVolume::new(
+                vec![MidiClipVolumePoint::linear(
+                    beat(0),
+                    MidiClipGain::new(2.0).unwrap(),
+                )],
+                beat(1),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let expected_tail = render(
+        &crate::compile::project(uniform.project(), &BTreeMap::new()).unwrap(),
+        &[31, 97],
+        8500,
+    );
+    editor.execute(Command::GroupClips(clips)).unwrap();
     let after = render(
+        &crate::compile::project(editor.project(), &BTreeMap::new()).unwrap(),
+        &[17, 256],
+        8500,
+    );
+    assert!(before[4000..4100].iter().any(|frame| frame[0].abs() > 1e-4));
+    for (frame, (left, right)) in before.iter().zip(&after).take(4000).enumerate() {
+        for channel in 0..2 {
+            assert!(
+                (left[channel] - right[channel]).abs() < 1e-6,
+                "frame {frame}"
+            );
+        }
+    }
+    assert!((before[4000][0] - after[4000][0]).abs() > 1e-4);
+    for (frame, (actual, expected)) in after.iter().zip(&expected_tail).enumerate().skip(4000) {
+        for channel in 0..2 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 1e-6,
+                "frame {frame}"
+            );
+        }
+    }
+    let partitioned = render(
         &crate::compile::project(editor.project(), &BTreeMap::new()).unwrap(),
         &[64, 1, 127],
         8500,
     );
-    assert!(before[4000..4100].iter().any(|frame| frame[0].abs() > 1e-4));
-    for (frame, (left, right)) in before.iter().zip(after).enumerate() {
+    for (frame, (left, right)) in after.iter().zip(partitioned).enumerate() {
         for channel in 0..2 {
             assert!(
                 (left[channel] - right[channel]).abs() < 1e-6,
-                "frame {frame}, channel {channel}: {} vs {}",
-                left[channel],
-                right[channel]
+                "frame {frame}"
             );
         }
     }

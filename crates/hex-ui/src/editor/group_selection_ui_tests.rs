@@ -5,7 +5,7 @@ use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
 #[gpui::test]
-fn g_refuses_unsafe_midi_curves_without_changing_selection_or_project(cx: &mut TestAppContext) {
+fn g_groups_midi_clips_with_different_legacy_curves(cx: &mut TestAppContext) {
     use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
     let (_files, handle, editor, _) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -60,26 +60,19 @@ fn g_refuses_unsafe_midi_curves_without_changing_selection_or_project(cx: &mut T
     }
     click(&mut visual, clips[0], false);
     click(&mut visual, clips[1], true);
-    let (before, can_undo, can_redo) = editor.read_with(&visual, |view, _| {
-        assert_eq!(view.selected_clip_ids(), clips);
-        let state = view.state.as_ref().unwrap();
-        (state.project.snapshot(), state.can_undo, state.can_redo)
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_clip_ids(), clips)
     });
     visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
     visual.simulate_keystrokes("g");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
-        let state = view.state.as_ref().unwrap();
-        assert_eq!(state.project.snapshot(), before);
-        assert_eq!((state.can_undo, state.can_redo), (can_undo, can_redo));
-        assert_eq!(view.selected_clip_ids(), clips);
-        assert!(
-            view.error
-                .as_deref()
-                .is_some_and(|error| error.contains("clip volume curves")),
-            "{:?}",
-            view.error
-        );
+        let row = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert_eq!(row.midi_clips().len(), 1);
+        let volume = row.midi_clips()[0].volume();
+        assert_eq!(volume.gain_at(BeatTime::ZERO).linear(), 0.5);
+        assert_eq!(volume.gain_at(BeatTime::from_raw(3 << 32)).linear(), 2.0);
+        assert!(view.error.is_none(), "{:?}", view.error);
     });
 }
 

@@ -9,19 +9,6 @@ use crate::{
 use std::{collections::BTreeSet, sync::Arc};
 pub(crate) mod render;
 
-// A flattened curve belongs to the new clip, not to each outgoing voice. Only
-// a shared constant is known to preserve every source's overlapping tail.
-fn constant_clip_volume(clip: &MidiClip) -> Option<MidiClipGain> {
-    let points = clip.volume().points();
-    let gain = points
-        .first()
-        .map_or(MidiClipGain::UNITY, |point| point.value);
-    points
-        .iter()
-        .all(|point| point.incoming == gain && point.value == gain)
-        .then_some(gain)
-}
-
 pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, Invalid> {
     group(project, ids, None)
 }
@@ -90,28 +77,12 @@ fn group(
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no midi clips selected"))?;
-    let merged_gain = first.volume().clip_gain();
-    // One consolidated MIDI clip cannot give overlapping release tails
-    // different clip scalars without changing their audio.
-    if clips
+    // Use the largest scalar, keeping each scaled curve within its 0..=4 domain.
+    let merged_gain = clips
         .iter()
-        .any(|clip| clip.volume().clip_gain() != merged_gain)
-    {
-        return Err(Invalid(
-            "cannot group midi clips with different clip gains; release tails would change",
-        ));
-    }
-    if clips.len() > 1
-        && constant_clip_volume(first).is_none_or(|gain| {
-            clips
-                .iter()
-                .any(|clip| constant_clip_volume(clip) != Some(gain))
-        })
-    {
-        return Err(Invalid(
-            "cannot group midi clip volume curves without changing release tails",
-        ));
-    }
+        .map(|clip| clip.volume().clip_gain())
+        .max_by_key(|gain| gain.millidb())
+        .ok_or(Invalid("no midi clips selected"))?;
     let start = match range {
         Some(range) => project.tempo_map().frame_to_beat(range.start())?.raw(),
         None => first.start().raw(),
@@ -152,7 +123,9 @@ fn group(
         .try_reserve_exact(count)
         .map_err(|_| Invalid("could not reserve grouped midi notes"))?;
     let mut points = Vec::new();
-    let has_volume = clips.iter().any(|clip| !clip.volume().points().is_empty());
+    let has_volume = clips
+        .iter()
+        .any(|clip| !clip.volume().points().is_empty() || clip.volume().clip_gain() != merged_gain);
     for clip in &clips {
         let offset = clip.start().raw() - start;
         let playback = clip.source_playback()?;
@@ -188,7 +161,15 @@ fn group(
                 MidiClipVolumePoint::linear(clip.length(), MidiClipGain::UNITY),
             ]);
         }
-        for mut point in local {
+        let scale = f64::from(clip.volume().clip_gain().linear()) / f64::from(merged_gain.linear());
+        let last = local.len() - 1;
+        for (index, mut point) in local.into_iter().enumerate() {
+            point.incoming = MidiClipGain::new(point.incoming.linear() * scale)?;
+            point.value = MidiClipGain::new(point.value.linear() * scale)?;
+            // The right side of the source's exclusive end is inaudible.
+            if index == last {
+                point.value = point.incoming;
+            }
             point.beat = BeatTime::from_raw(
                 offset
                     .checked_add(point.beat.raw())
@@ -199,6 +180,10 @@ fn group(
                 if previous.beat == point.beat {
                     previous.value = point.value;
                     continue;
+                }
+                // Hold the outgoing level across silence and jump at the next start.
+                if index == 0 {
+                    point.incoming = previous.value;
                 }
             }
             if points.len() == crate::MAX_MIDI_VOLUME_POINTS_PER_CLIP {

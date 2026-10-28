@@ -1,8 +1,8 @@
-//! Arrangement audio and MIDI gain input. The Window lease owns held input only; the
+//! Arrangement audio gain input. The Window lease owns held input only; the
 //! ordinary FIFO receipt retains the released value until canonical installation.
 //! Release freezes the ordinary clip-property scope: selected audio clips retain
-//! their relative gains in one EditClips command; a single audio or MIDI clip
-//! uses its corresponding typed gain command.
+//! their relative gains in one EditClips command; a single audio clip
+//! uses its typed gain command.
 //! No pointer update prepares audio.
 use super::{
     EditorView, ViewState,
@@ -15,7 +15,7 @@ use gpui::{
     Context, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, Window, div, prelude::*, px,
     rgb,
 };
-use hex_project::{Clip, ClipGain, ClipId, Command, MidiClip, TrackId};
+use hex_project::{Clip, ClipGain, ClipId, Command, TrackId};
 use hex_session::service::{Event, Request};
 use std::rc::Rc;
 
@@ -38,28 +38,16 @@ struct Drag {
     preview: ClipGain,
 }
 #[derive(Clone)]
-enum GainTarget {
-    Audio(Rc<Clip>),
-    Midi(Rc<MidiClip>),
-}
+struct GainTarget(Rc<Clip>);
 impl GainTarget {
     fn id(&self) -> ClipId {
-        match self {
-            Self::Audio(clip) => clip.id(),
-            Self::Midi(clip) => clip.id(),
-        }
+        self.0.id()
     }
     fn gain(&self) -> ClipGain {
-        match self {
-            Self::Audio(clip) => clip.gain(),
-            Self::Midi(clip) => clip.volume().clip_gain(),
-        }
+        self.0.gain()
     }
     fn matches(&self, project: &hex_project::Project) -> bool {
-        match self {
-            Self::Audio(clip) => project.clip(clip.id()) == Some(clip.as_ref()),
-            Self::Midi(clip) => project.midi_clip(clip.id()) == Some(clip.as_ref()),
-        }
+        project.clip(self.0.id()) == Some(self.0.as_ref())
     }
 }
 struct Pending {
@@ -105,15 +93,9 @@ impl Drag {
             })
     }
     fn command(&self) -> Command {
-        match self.clip {
-            GainTarget::Audio(_) => Command::SetAudioClipGain {
-                clip: self.clip.id(),
-                millidb: self.preview.millidb(),
-            },
-            GainTarget::Midi(_) => Command::SetMidiClipGain {
-                clip: self.clip.id(),
-                gain: self.preview,
-            },
+        Command::SetAudioClipGain {
+            clip: self.clip.id(),
+            millidb: self.preview.millidb(),
         }
     }
 }
@@ -212,10 +194,7 @@ impl EditorView {
             && drag.preview != drag.clip.gain()
         {
             let selected = self.selected_clip_ids();
-            let command = if matches!(drag.clip, GainTarget::Audio(_))
-                && selected.len() > 1
-                && selected.contains(&drag.clip.id())
-            {
+            let command = if selected.len() > 1 && selected.contains(&drag.clip.id()) {
                 Command::EditClips {
                     clips: selected,
                     edit: hex_project::ClipEdit::GainBy {
@@ -249,25 +228,7 @@ impl EditorView {
         self.gain_handle(
             state,
             track,
-            GainTarget::Audio(Rc::new(clip.clone())),
-            width,
-            viewport,
-            cx,
-        )
-    }
-    pub(super) fn midi_clip_gain_handle(
-        &self,
-        state: &ViewState,
-        track: TrackId,
-        clip: &MidiClip,
-        width: f32,
-        viewport: Viewport,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        self.gain_handle(
-            state,
-            track,
-            GainTarget::Midi(Rc::new(clip.clone())),
+            GainTarget(Rc::new(clip.clone())),
             width,
             viewport,
             cx,
@@ -422,10 +383,6 @@ impl EditorView {
                             clip: b,
                             millidb: bv,
                         }),
-                    ) => (a, av) == (b, bv),
-                    (
-                        Command::SetMidiClipGain { clip: a, gain: av },
-                        Request::Edit(Command::SetMidiClipGain { clip: b, gain: bv }),
                     ) => (a, av) == (b, bv),
                     (
                         Command::EditClips { clips: a, edit: av },
