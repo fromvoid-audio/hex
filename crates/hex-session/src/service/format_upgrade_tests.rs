@@ -94,6 +94,7 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         "inactive_audio_events",
         "nested_audio",
         "audio_event_gains",
+        "midi_clip_gains",
     ] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),
@@ -283,30 +284,41 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
 }
 
 #[test]
-fn schema60_save_requires_consent_or_save_as_for_current_schema() {
-    let files = Files::new();
-    let path = files.0.join("schema60.hex");
-    let service = Service::new(48_000, 16, 8_000_000).unwrap();
-    let initial = next(&service);
-    let mut prior: serde_json::Value =
-        serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
-    // Empty schema60 has the same envelope without schema61's gain inventory.
-    prior.as_object_mut().unwrap().remove("audio_event_gains");
-    prior["version"] = 60.into();
-    let original = serde_json::to_vec(&prior).unwrap();
-    fs::write(&path, &original).unwrap();
-    let opened = request(&service, Request::Open(path.clone()));
-    assert!(opened.error.is_none(), "{:?}", opened.error);
-    assert!(opened.document_format_upgrade_required);
-    assert_eq!(fs::read(&path).unwrap(), original);
-    let refused = request(&service, Request::SaveCurrent);
-    assert!(refused.save_confirmation_required && refused.error.is_some());
-    assert_eq!(fs::read(&path).unwrap(), original);
-    let copy = files.0.join("upgraded.hex");
-    let saved = request(&service, Request::SaveNew(copy.clone()));
-    assert!(saved.error.is_none(), "{:?}", saved.error);
-    assert!(!saved.document_format_upgrade_required);
-    assert_eq!(fs::read(&path).unwrap(), original);
-    let upgraded: serde_json::Value = serde_json::from_slice(&fs::read(copy).unwrap()).unwrap();
-    assert_eq!(upgraded["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+fn schema60_and_schema61_save_require_consent_or_save_as_for_current_schema() {
+    for version in [60, 61] {
+        let files = Files::new();
+        let path = files.0.join(format!("schema{version}.hex"));
+        let service = Service::new(48_000, 16, 8_000_000).unwrap();
+        let initial = next(&service);
+        let mut prior: serde_json::Value =
+            serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
+        // Empty prior formats omit fields introduced by later schemas.
+        assert_eq!(
+            prior.as_object_mut().unwrap().remove("midi_clip_gains"),
+            Some(serde_json::json!([]))
+        );
+        if version == 60 {
+            assert_eq!(
+                prior.as_object_mut().unwrap().remove("audio_event_gains"),
+                Some(serde_json::json!([]))
+            );
+        }
+        prior["version"] = version.into();
+        let original = serde_json::to_vec(&prior).unwrap();
+        fs::write(&path, &original).unwrap();
+        let opened = request(&service, Request::Open(path.clone()));
+        assert!(opened.error.is_none(), "{:?}", opened.error);
+        assert!(opened.document_format_upgrade_required);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let refused = request(&service, Request::SaveCurrent);
+        assert!(refused.save_confirmation_required && refused.error.is_some());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let copy = files.0.join("upgraded.hex");
+        let saved = request(&service, Request::SaveNew(copy.clone()));
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        assert!(!saved.document_format_upgrade_required);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let upgraded: serde_json::Value = serde_json::from_slice(&fs::read(copy).unwrap()).unwrap();
+        assert_eq!(upgraded["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    }
 }

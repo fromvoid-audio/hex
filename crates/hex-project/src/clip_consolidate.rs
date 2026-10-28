@@ -77,6 +77,17 @@ fn group(
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no midi clips selected"))?;
+    let merged_gain = first.volume().clip_gain();
+    // One consolidated MIDI clip cannot give overlapping release tails
+    // different clip scalars without changing their audio.
+    if clips
+        .iter()
+        .any(|clip| clip.volume().clip_gain() != merged_gain)
+    {
+        return Err(Invalid(
+            "cannot group midi clips with different clip gains; release tails would change",
+        ));
+    }
     let start = match range {
         Some(range) => project.tempo_map().frame_to_beat(range.start())?.raw(),
         None => first.start().raw(),
@@ -184,7 +195,7 @@ fn group(
         id: ClipId(0),
         start: BeatTime::from_raw(start),
         length,
-        volume: MidiClipVolume::new(points, length)?,
+        volume: MidiClipVolume::new(points, length)?.with_clip_gain(merged_gain),
         source: Arc::new(MidiSource::defaults(length)),
     };
     // Preserve unrelated material exactly; the canonical occupancy validator

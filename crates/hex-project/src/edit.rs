@@ -995,6 +995,11 @@ pub enum Command {
         clip: ClipId,
         volume: crate::MidiClipVolume,
     },
+    /// Replace the clip-local scalar independently of its source-beat curve.
+    SetMidiClipGain {
+        clip: ClipId,
+        gain: crate::ClipGain,
+    },
     /// Author one note using the same source/pitch overwrite rule as `AddMidiNotes`.
     AddMidiNote {
         clip: ClipId,
@@ -1905,6 +1910,7 @@ impl Project {
             Command::ReplaceMidiClipVolume { clip, volume } => {
                 self.replace_midi_clip_volume(clip, volume)
             }
+            Command::SetMidiClipGain { clip, gain } => self.set_midi_clip_gain(clip, gain),
             Command::SetRouting(edges) => self.adopt_routing(edges),
             Command::SetAudioFeed {
                 source,

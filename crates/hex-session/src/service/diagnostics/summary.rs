@@ -1047,6 +1047,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::ReplaceMidiClipVolume { clip, .. } => {
             describe!("replace_midi_clip_volume"; ["clip" => clip.value()]; omitted="volume")
         }
+        Command::SetMidiClipGain { clip, gain } => {
+            describe!("set_midi_clip_gain"; ["clip" => clip.value(), "millidb" => gain.millidb()]; omitted="")
+        }
         Command::AddMidiNote {
             clip,
             start,
