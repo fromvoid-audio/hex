@@ -9,7 +9,8 @@ use hex_project::Project;
 use std::{error::Error, hint::black_box, sync::Arc, time::Instant};
 
 const RATE: usize = 48_000;
-const WARMUP: usize = 100;
+// Equal source position at each supported block size for cross-block oracles.
+const WARMUP_FRAMES: usize = 51_200;
 const TOLERANCE: f32 = 2.0e-6;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -37,7 +38,7 @@ fn compare(actual: &[[f32; 2]], reference: &[[f32; 2]]) -> Result<f32> {
     Ok(max_error)
 }
 
-fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()> {
+fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<u64> {
     if !(1..=100).contains(&tracks)
         || ![1, 4, 16].contains(&devices)
         || ![128, 512].contains(&block)
@@ -78,8 +79,9 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
     let mut windows = 0;
     let mut frame = 0;
     let mut next_handoff = RATE * 10;
-    for iteration in 0..WARMUP + total.div_ceil(block) {
-        let warmup = iteration < WARMUP;
+    let warmup_blocks = WARMUP_FRAMES / block;
+    for iteration in 0..warmup_blocks + total.div_ceil(block) {
+        let warmup = iteration < warmup_blocks;
         let frames = if warmup {
             block
         } else {
@@ -165,7 +167,7 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
     timings.sort_unstable_by_key(|&(_, ns)| ns);
     let percentile = |p: usize| timings[(timings.len() - 1) * p / 100].1 as f64 / 1000.0;
     println!(
-        "isolated_owners={tracks} audio_tracks={} operator_tracks={} effects_per_owner={devices} total_effects={} rate={RATE} block={block} seconds={seconds} warmup_blocks={WARMUP} measured_blocks={} activity_windows={windows} handoff_rounds={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late} max_reference_error={max_error:e} digest={digest:016x} p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_period={late}; separate owners and continuity reference, preparation/retirement outside timing, no unified admission or native deadline",
+        "isolated_owners={tracks} audio_tracks={} operator_tracks={} effects_per_owner={devices} total_effects={} rate={RATE} block={block} seconds={seconds} warmup_blocks={warmup_blocks} warmup_frames={WARMUP_FRAMES} measured_blocks={} activity_windows={windows} handoff_rounds={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late} max_reference_error={max_error:e} digest={digest:016x} p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_period={late}; separate owners and continuity reference, preparation/retirement outside timing, no unified admission or native deadline",
         tracks.div_ceil(2),
         tracks / 2,
         tracks * devices,
@@ -178,7 +180,7 @@ fn run(tracks: usize, devices: usize, block: usize, seconds: usize) -> Result<()
         percentile(99),
         percentile(100)
     );
-    Ok(())
+    Ok(digest)
 }
 
 fn main() -> Result<()> {
@@ -188,7 +190,7 @@ fn main() -> Result<()> {
             "usage: profile_isolated_mixed <effects:1|4|16> <block:128|512> <seconds:1..60>".into(),
         );
     }
-    run(100, args[0].parse()?, args[1].parse()?, args[2].parse()?)
+    run(100, args[0].parse()?, args[1].parse()?, args[2].parse()?).map(|_| ())
 }
 
 #[cfg(test)]
@@ -196,9 +198,9 @@ mod tests {
     use super::*;
     #[test]
     fn mixed_owners_retain_output_at_both_block_sizes() -> Result<()> {
-        run(2, 4, 128, 1)?;
-        run(2, 4, 512, 1)?;
-        run(2, 4, 128, 11)
+        assert_eq!(run(2, 4, 128, 1)?, run(2, 4, 512, 1)?);
+        assert_eq!(run(2, 4, 128, 11)?, run(2, 4, 512, 11)?);
+        Ok(())
     }
 
     #[test]
