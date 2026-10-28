@@ -13,7 +13,18 @@ use std::path::Path;
 
 const MAX_RECEIPT_BYTES: u64 = 8 * 1024 * 1024;
 
-pub(super) fn acquire_for_current_executable() -> Result<Option<File>, String> {
+// Unlock the shared open-file description explicitly before closing it. A
+// transient descriptor duplicate (for example during process creation) must
+// not extend this process's custody beyond the lifetime of its lease.
+pub(super) struct UpdateLease(File);
+
+impl Drop for UpdateLease {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+pub(super) fn acquire_for_current_executable() -> Result<Option<UpdateLease>, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not identify executable for update custody: {error}"))?;
     acquire_for_reported_executable(&executable, hex_ui::diagnostic_build_identity()).map_err(
@@ -23,7 +34,10 @@ pub(super) fn acquire_for_current_executable() -> Result<Option<File>, String> {
     )
 }
 
-fn acquire_for_reported_executable(executable: &Path, build: &str) -> io::Result<Option<File>> {
+fn acquire_for_reported_executable(
+    executable: &Path,
+    build: &str,
+) -> io::Result<Option<UpdateLease>> {
     // macOS can report an invocation symlink. Resolve before deciding whether
     // this is a bundle; an unavailable or removed executable fails closed.
     acquire_for_executable(&fs::canonicalize(executable)?, build)
@@ -33,7 +47,7 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message)
 }
 
-fn acquire_for_executable(executable: &Path, build: &str) -> io::Result<Option<File>> {
+fn acquire_for_executable(executable: &Path, build: &str) -> io::Result<Option<UpdateLease>> {
     if executable.file_name().is_none_or(|name| name != "hex") {
         return Ok(None);
     }
@@ -93,10 +107,11 @@ fn acquire_for_executable(executable: &Path, build: &str) -> io::Result<Option<F
         }
     }
     fs2::FileExt::try_lock_shared(&file)?;
+    let lease = UpdateLease(file);
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let locked = file.metadata()?;
+        let locked = lease.0.metadata()?;
         let current = fs::symlink_metadata(&path)?;
         if !current.is_file()
             || current.file_type().is_symlink()
@@ -156,7 +171,7 @@ fn acquire_for_executable(executable: &Path, build: &str) -> io::Result<Option<F
             "running build does not match the installed test bundle",
         ));
     }
-    Ok(Some(file))
+    Ok(Some(lease))
 }
 
 #[cfg(test)]
@@ -230,6 +245,77 @@ mod tests {
             acquire_for_executable(&executable, &Fixture::build())
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropped_lease_releases_custody_even_if_its_descriptor_was_duplicated() {
+        let fixture = Fixture::new();
+        let executable = fixture.executable();
+        let lease = acquire_for_executable(&executable, &Fixture::build())
+            .unwrap()
+            .unwrap();
+        let second = acquire_for_executable(&executable, &Fixture::build())
+            .unwrap()
+            .unwrap();
+        let inherited = lease.0.try_clone().unwrap();
+        let installer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(fixture.0.join(".hex-test-build.lock"))
+            .unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&installer).is_err());
+        drop(lease);
+        assert!(fs2::FileExt::try_lock_exclusive(&installer).is_err());
+        drop(second);
+        fs2::FileExt::try_lock_exclusive(&installer).unwrap();
+        drop(inherited);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropped_lease_releases_custody_while_child_holds_duplicate() {
+        use nix::spawn::{PosixSpawnAttr, PosixSpawnFileActions, posix_spawn};
+        use nix::sys::signal::{Signal, kill};
+        use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+        use std::os::fd::AsRawFd;
+
+        let fixture = Fixture::new();
+        let executable = fixture.executable();
+        let lease = acquire_for_executable(&executable, &Fixture::build())
+            .unwrap()
+            .unwrap();
+        let installer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(fixture.0.join(".hex-test-build.lock"))
+            .unwrap();
+        let mut actions = PosixSpawnFileActions::init().unwrap();
+        actions.add_dup2(lease.0.as_raw_fd(), 198).unwrap();
+        let attributes = PosixSpawnAttr::init().unwrap();
+        let child = posix_spawn(
+            c"/bin/sleep",
+            &actions,
+            &attributes,
+            &[c"sleep", c"5"],
+            &[] as &[&std::ffi::CStr],
+        )
+        .unwrap();
+        let held_while_live = fs2::FileExt::try_lock_exclusive(&installer).is_err();
+        drop(lease);
+        let released_while_child_lives = fs2::FileExt::try_lock_exclusive(&installer);
+        let child_alive = matches!(
+            waitpid(child, Some(WaitPidFlag::WNOHANG)),
+            Ok(WaitStatus::StillAlive)
+        );
+        let _ = kill(child, Signal::SIGKILL);
+        let _ = waitpid(child, None);
+        assert!(held_while_live);
+        assert!(child_alive);
+        assert!(
+            released_while_child_lives.is_ok(),
+            "child duplicate prolonged custody"
         );
     }
 
