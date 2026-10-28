@@ -179,6 +179,12 @@ impl Spectrum {
         phase_table: &HarmonicPhaseTable,
         interpolate: bool,
     ) -> f32 {
+        if self.builtin_active[operator] == 1
+            && self.builtin[operator][0] == 1.0
+            && !self.custom_active[operator]
+        {
+            return (0.0_f64 + f64::from(sine.sample_phase_policy(phase, interpolate))) as f32;
+        }
         let mut value = 0.0;
         // Keep the original full builtin bank, including its 512-partial caps.
         let mut active = self.builtin_active[operator];
