@@ -7,7 +7,17 @@ use std::collections::BTreeSet;
 fn transport_vectors_decode_and_render_at_one_and_two_times() {
     let assets = HexAssets;
     let mut unique = BTreeSet::new();
-    for id in ["play", "pause", "stop", "split", "undo", "redo"] {
+    for id in [
+        "play",
+        "pause",
+        "stop",
+        "split",
+        "undo",
+        "redo",
+        "add-track",
+        "add-midi-clip",
+        "remove-track",
+    ] {
         let path = format!("icons/transport/{id}.svg");
         let bytes = assets.load(&path).unwrap().expect("known transport icon");
         assert!(unique.insert(bytes.to_vec()));
@@ -24,5 +34,5 @@ fn transport_vectors_decode_and_render_at_one_and_two_times() {
             assert!(pixmap.data().chunks_exact(4).any(|pixel| pixel[3] == 0));
         }
     }
-    assert_eq!(assets.list("icons/transport/").unwrap().len(), 6);
+    assert_eq!(assets.list("icons/transport/").unwrap().len(), 9);
 }

@@ -36,3 +36,6 @@ those states stay distinct from the artwork.
 The split, undo, and redo transport actions use `split.svg`, `undo.svg`, and
 `redo.svg` in the same transport asset directory. Their hit targets and disabled
 state continue to be owned by the transport controls.
+
+The transport add track, add MIDI clip and remove track artwork is in
+`add-track.svg`, `add-midi-clip.svg` and `remove-track.svg` beside these icons.

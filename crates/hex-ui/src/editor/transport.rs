@@ -13,6 +13,9 @@ enum TransportIcon {
     Split,
     Undo,
     Redo,
+    AddTrack,
+    AddMidiClip,
+    RemoveTrack,
 }
 
 impl TransportIcon {
@@ -24,6 +27,15 @@ impl TransportIcon {
             Self::Split => ("icons/transport/split.svg", "transport-split-icon"),
             Self::Undo => ("icons/transport/undo.svg", "transport-undo-icon"),
             Self::Redo => ("icons/transport/redo.svg", "transport-redo-icon"),
+            Self::AddTrack => ("icons/transport/add-track.svg", "transport-add-track-icon"),
+            Self::AddMidiClip => (
+                "icons/transport/add-midi-clip.svg",
+                "transport-add-midi-icon",
+            ),
+            Self::RemoveTrack => (
+                "icons/transport/remove-track.svg",
+                "transport-remove-track-icon",
+            ),
         }
     }
 }
@@ -206,14 +218,19 @@ impl EditorView {
                 self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", Redo, cx)
                     .opacity(if can_redo { 1.0 } else { 0.45 }),
             )
-            .child(self.icon("+", "add track", AddTrack, cx))
-            .child(self.icon(
-                "♪",
+            .child(self.vector_icon(TransportIcon::AddTrack, "add track", AddTrack, cx))
+            .child(self.vector_icon(
+                TransportIcon::AddMidiClip,
                 "add four-beat midi clip · cmd+shift+m",
                 AddMidiClip,
                 cx,
             ))
-            .child(self.icon("−", "remove selected track", RemoveTrack, cx))
+            .child(self.vector_icon(
+                TransportIcon::RemoveTrack,
+                "remove selected track",
+                RemoveTrack,
+                cx,
+            ))
             .child(
                 div()
                     .w(px(1.0))
