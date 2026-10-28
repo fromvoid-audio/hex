@@ -395,11 +395,13 @@ fn partial_companion_groups_match_independent_machines_across_lifecycle() {
                     assert!(fast.factory.uniform_companion);
                 } else if pattern == [0, 1, 2, 3] {
                     assert!(!fast.factory.uniform_companion && !fast.factory.partial_companion);
+                    assert_eq!(fast.factory.shared_loop_timing, mode == 1);
                 } else {
                     assert!(fast.factory.partial_companion);
                 }
                 reference.factory.uniform_companion = false;
                 reference.factory.partial_companion = false;
+                reference.factory.shared_loop_timing = false;
                 assert_eq!(
                     render(&mut fast, &[on(1, 60)], 128, 0),
                     render(&mut reference, &[on(1, 60)], 128, 0),
@@ -409,14 +411,16 @@ fn partial_companion_groups_match_independent_machines_across_lifecycle() {
                 let mut reference_handoff = runtime(s);
                 reference_handoff.factory.uniform_companion = false;
                 reference_handoff.factory.partial_companion = false;
+                reference_handoff.factory.shared_loop_timing = false;
                 assert!(fast_handoff.can_copy_history_from(&fast));
                 fast_handoff.copy_history_from(&fast);
                 reference_handoff.copy_history_from(&reference);
-                if index == 1 || index == 6 {
+                if index == 1 || index == 6 || index == 14 {
                     let mut retargeted = runtime(s);
                     let mut reference_retargeted = runtime(s);
                     reference_retargeted.factory.uniform_companion = false;
                     reference_retargeted.factory.partial_companion = false;
+                    reference_retargeted.factory.shared_loop_timing = false;
                     let InstrumentHistoryRetargetPreparation::Prepared(proof) = retargeted
                         .factory
                         .prepare_history_retarget_target()
@@ -466,6 +470,26 @@ fn partial_companion_groups_match_independent_machines_across_lifecycle() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn shared_loop_timing_requires_matching_prepared_timing_inputs() {
+    let mut s = settings();
+    for i in 0..4 {
+        s.companion.words[i][5] = 1;
+        s.fields[CORE_FIELDS + i * ENVELOPE_FIELDS + 2] = 0.1 + i as f32 * 0.2;
+    }
+    assert!(runtime(s).factory.shared_loop_timing);
+    for word in [3, 5, 6] {
+        let mut different = s;
+        different.companion.words[3][word] ^= 1;
+        assert!(!runtime(different).factory.shared_loop_timing);
+    }
+    for field in [3, 4] {
+        let mut different = s;
+        different.fields[CORE_FIELDS + 3 * ENVELOPE_FIELDS + field] = 0.1;
+        assert!(!runtime(different).factory.shared_loop_timing);
     }
 }
 

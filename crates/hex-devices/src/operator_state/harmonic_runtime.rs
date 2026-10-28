@@ -44,6 +44,7 @@ pub(super) struct Factory {
     uniform_companion: bool,
     companion_sources: [u8; 4],
     partial_companion: bool,
+    shared_loop_timing: bool,
 }
 impl Factory {
     #[cfg(test)]
@@ -86,6 +87,20 @@ impl Factory {
         }
         let uniform_companion = companion_sources == [0, 0, 0, 0];
         let partial_companion = !uniform_companion && companion_sources != [0, 1, 2, 3];
+        // Matching mode, velocity time scaling, loop return, attack and decay
+        // imply equal prepared timing for every note velocity at this rate.
+        let shared_loop_timing = !uniform_companion
+            && !partial_companion
+            && (0..4).all(|i| {
+                settings.companion.words[i][5] == 1
+                    && [3, 6]
+                        .into_iter()
+                        .all(|j| settings.companion.words[i][j] == settings.companion.words[0][j])
+                    && [3, 4].into_iter().all(|j| {
+                        settings.fields[CORE_FIELDS + i * ENVELOPE_FIELDS + j].to_bits()
+                            == settings.fields[CORE_FIELDS + j].to_bits()
+                    })
+            });
         Ok(Self {
             configuration,
             tuning,
@@ -102,6 +117,7 @@ impl Factory {
             uniform_companion,
             companion_sources,
             partial_companion,
+            shared_loop_timing,
             settings,
             table,
             phase_table: harmonic_phase_table()?,
@@ -1105,11 +1121,19 @@ impl MutableInstrumentRuntime for Runtime {
                     } else if self.factory.partial_companion {
                         partial_levels(&voice.machines, self.factory.companion_sources, age)
                     } else {
-                        std::array::from_fn(|i| {
-                            voice.machines[i]
-                                .as_ref()
-                                .map_or(0.0, |machine| machine.level(age))
-                        })
+                        let independent = || {
+                            std::array::from_fn(|i| {
+                                voice.machines[i]
+                                    .as_ref()
+                                    .map_or(0.0, |machine| machine.level(age))
+                            })
+                        };
+                        if self.factory.shared_loop_timing {
+                            companion::Machine::shared_loop_levels(&voice.machines, age)
+                                .unwrap_or_else(independent)
+                        } else {
+                            independent()
+                        }
                     }
                 } else {
                     self.factory.configuration.envelope_levels(age, gate)

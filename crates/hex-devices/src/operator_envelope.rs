@@ -152,6 +152,27 @@ impl PreparedOperatorEnvelope {
         self.sustain
     }
 
+    // Callers prove that attack and decay frame counts and rates are equal.
+    pub(crate) fn shared_held_levels(envelopes: [&Self; 4], age: u64) -> [f64; 4] {
+        let first = envelopes[0];
+        if age < first.attack {
+            return envelopes
+                .map(|e| e.initial + (e.peak - e.initial) * age as f64 * e.attack_inverse);
+        }
+        let decay_age = age - first.attack;
+        if decay_age < first.decay {
+            let factor = (-(decay_age as f64) * first.decay_rate).exp();
+            return envelopes.map(|e| {
+                if e.peak != e.sustain {
+                    e.sustain + (e.peak - e.sustain) * factor
+                } else {
+                    e.sustain
+                }
+            });
+        }
+        envelopes.map(|e| e.sustain)
+    }
+
     /// NoteOff at `gate_frames` releases from that instant's held level.
     /// Zero-duration stages transition immediately. A zero gate and nonzero
     /// release emits the held level at age zero, then releases; zero release
