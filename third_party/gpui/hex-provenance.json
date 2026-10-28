@@ -206,7 +206,7 @@
     "src/platform/linux/wayland/client.rs": "602eda28dee3df1c77a3074e678e10928168a3e1ec650e218c7faaca6685bb16",
     "src/platform/linux/x11/client.rs": "df5110245cfaec8dcf9df3eec2c11b10d36c9ba365be6f46e238912d27f46ae8",
     "src/platform/mac/events.rs": "e4f972d4353c7352d106aa396754206c6891448685a766ab750687b601070f07",
-    "src/platform/mac/platform.rs": "bfa9f34b9debf3041af53493d4bffa3b8c855b411d89c3260414969fda358d41",
+    "src/platform/mac/platform.rs": "aca950bf14eb2292dece8578795f4b741097bbd8316440f2cb33718d8fde26f0",
     "src/platform/mac/window.rs": "93f86e8a31f7753c3363921eacb9addda72e2bf16ae989898dd51f8ff048f598",
     "src/platform/test/platform.rs": "c297f4f1f4c77c77c708bcdc19be8d5be7c72e5c38129ee11a9e0af70dfe0daf",
     "src/platform/windows/events.rs": "57ec8c2a9b6ceda1e25d88ce45334423feec499b995919f3fa92a60e265adf15",

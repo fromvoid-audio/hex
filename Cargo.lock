@@ -2844,7 +2844,9 @@ dependencies = [
  "hex-session",
  "hex-tuning",
  "hex-widgets",
+ "resvg",
  "serde_json",
+ "usvg",
 ]
 
 [[package]]
