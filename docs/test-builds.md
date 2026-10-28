@@ -96,3 +96,13 @@ cover a merge only when its complete tree is identical. Disk installation,
 launch and native acceptance are separate facts. A cleanup failure is incomplete
 delivery even if the new app is present; preserve diagnostics and retry only via
 the supported installer. Do not fabricate a successful receipt or collect old apps.
+
+After an interrupted installation, save and quit hex normally before retrying
+the same `scripts/bundle-macos.sh` command. The installer checks its temporary
+custody first: it restores the previous app if publication did not complete or
+the new app fails verification, and finishes cleanup if the published app verifies.
+It refuses ambiguous custody, a legacy journal, unexpected files, or a running
+app; preserve those paths and the diagnostic for inspection rather than moving
+or deleting them. Recovery alone does not publish a new adjacent receipt. Check
+the final command result, installed app identity, and receipt before reporting
+delivery; obtain fresh exact-source CI if the candidate or its inputs changed.
