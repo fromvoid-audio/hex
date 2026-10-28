@@ -293,9 +293,15 @@ fn schema60_and_schema61_save_require_consent_or_save_as_for_current_schema() {
         let mut prior: serde_json::Value =
             serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
         // Empty prior formats omit fields introduced by later schemas.
-        prior.as_object_mut().unwrap().remove("midi_clip_gains");
+        assert_eq!(
+            prior.as_object_mut().unwrap().remove("midi_clip_gains"),
+            Some(serde_json::json!([]))
+        );
         if version == 60 {
-            prior.as_object_mut().unwrap().remove("audio_event_gains");
+            assert_eq!(
+                prior.as_object_mut().unwrap().remove("audio_event_gains"),
+                Some(serde_json::json!([]))
+            );
         }
         prior["version"] = version.into();
         let original = serde_json::to_vec(&prior).unwrap();

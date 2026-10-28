@@ -647,14 +647,14 @@ fn clip_gain_handoff_keeps_active_native_voice_in_both_domains() {
 fn native_occurrence_gain_accepts_clip_and_curve_product_in_both_domains() {
     use hex_project::{ClipGain, MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
     for session in [false, true] {
-        let render = |scaled: bool| {
+        let render = |mode: u8| {
             let mut editor = Editor::new(fixture(1, 8 << 32), 8).unwrap();
             let clip = if session {
                 prepared(editor.project(), None).session().midi_clips()[0].id
             } else {
                 editor.project().tracks()[0].midi_clips()[0].id()
             };
-            if scaled {
+            if mode == 2 {
                 let length = editor.project().midi_source(clip).unwrap().source_length();
                 editor
                     .execute(Command::ReplaceMidiClipVolume {
@@ -669,6 +669,8 @@ fn native_occurrence_gain_accepts_clip_and_curve_product_in_both_domains() {
                         .unwrap(),
                     })
                     .unwrap();
+            }
+            if mode != 0 {
                 editor
                     .execute(Command::SetMidiClipGain {
                         clip,
@@ -683,17 +685,21 @@ fn native_occurrence_gain_accepts_clip_and_curve_product_in_both_domains() {
             }
             output
         };
-        let unity = render(false);
-        let gained = render(true);
-        let multiplier = 4.0 * f64::from(ClipGain::new(24_000).unwrap().linear());
+        let unity = render(0);
         assert!(unity.iter().flatten().any(|v| v.abs() > 1.0e-4));
-        for (index, (actual, reference)) in gained.iter().zip(unity).enumerate() {
-            for channel in 0..2 {
-                assert!(
-                    (f64::from(actual[channel]) - f64::from(reference[channel]) * multiplier).abs()
-                        < 1.0e-5,
-                    "session={session} frame={index} channel={channel}"
-                );
+        for mode in [1, 2] {
+            let gained = render(mode);
+            let multiplier = f64::from(ClipGain::new(24_000).unwrap().linear())
+                * if mode == 2 { 4.0 } else { 1.0 };
+            for (index, (actual, reference)) in gained.iter().zip(unity).enumerate() {
+                for channel in 0..2 {
+                    assert!(
+                        (f64::from(actual[channel]) - f64::from(reference[channel]) * multiplier)
+                            .abs()
+                            < 1.0e-5,
+                        "session={session} frame={index} channel={channel}"
+                    );
+                }
             }
         }
     }

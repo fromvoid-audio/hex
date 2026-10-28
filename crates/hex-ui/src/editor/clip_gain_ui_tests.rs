@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 #[gpui::test]
 fn midi_top_edge_gain_commits_one_clip_without_changing_curve(cx: &mut TestAppContext) {
-    let (mut visual, editor, _environment, clip) = midi_canvas::creation_tests::fixture(cx);
+    let (mut visual, editor, environment, clip) = midi_canvas::creation_tests::fixture(cx);
     let before = editor.read_with(&visual, |view, _| {
         view.state
             .as_ref()
@@ -86,6 +86,38 @@ fn midi_top_edge_gain_commits_one_clip_without_changing_curve(cx: &mut TestAppCo
             .volume();
         assert_eq!(volume.clip_gain().millidb(), -6_000);
         assert_eq!(volume.points(), before.points());
+    });
+    let after = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_clip(clip)
+                .unwrap()
+                .volume(),
+            &before
+        );
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    let path = environment.root().join("midi-gain.hex");
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Open(path)))
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after);
     });
 }
 

@@ -114,6 +114,13 @@ pub fn remove_empty_aliases(value: &mut Value) {
 
 /// Historical comparisons may omit only an actually empty schema53 host inventory.
 pub fn remove_empty_host_automation(value: &mut Value) {
+    if let Some(rows) = value.as_object_mut().unwrap().remove("midi_clip_gains") {
+        assert_eq!(
+            rows,
+            json!([]),
+            "historical comparison cannot discard midi clip gain"
+        );
+    }
     if let Some(rows) = value.as_object_mut().unwrap().remove("audio_event_gains") {
         assert_eq!(
             rows,
