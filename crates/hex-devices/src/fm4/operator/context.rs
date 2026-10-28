@@ -433,6 +433,14 @@ impl PreparedOperatorConfiguration {
         self.envelopes.levels(age, gate)
     }
 
+    pub(crate) fn has_uniform_envelopes(&self) -> bool {
+        self.envelopes.is_uniform()
+    }
+
+    pub(crate) fn uniform_envelope_levels(&self, age: u64, gate: u64) -> [f64; 4] {
+        self.envelopes.uniform_levels(age, gate)
+    }
+
     /// Borrow a provider-owned waveform law while preserving original routing,
     /// envelope, velocity and phase arithmetic. No preparation occurs here.
     // Specialize the render loop for its borrowed waveform sampler.

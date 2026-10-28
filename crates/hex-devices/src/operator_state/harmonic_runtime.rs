@@ -45,6 +45,7 @@ pub(super) struct Factory {
     companion_sources: [u8; 4],
     partial_companion: bool,
     shared_loop_timing: bool,
+    uniform_envelopes: bool,
 }
 impl Factory {
     #[cfg(test)]
@@ -102,6 +103,7 @@ impl Factory {
                     })
             });
         Ok(Self {
+            uniform_envelopes: configuration.has_uniform_envelopes(),
             configuration,
             tuning,
             base: state.payload()[..ENABLE_PAYLOAD_BYTES]
@@ -1135,6 +1137,10 @@ impl MutableInstrumentRuntime for Runtime {
                             independent()
                         }
                     }
+                } else if self.factory.uniform_envelopes {
+                    self.factory
+                        .configuration
+                        .uniform_envelope_levels(age, gate)
                 } else {
                     self.factory.configuration.envelope_levels(age, gate)
                 };
