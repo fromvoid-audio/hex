@@ -5440,3 +5440,60 @@ mod plugin_browser;
 
 #[path = "browser_reveal_ui_test.rs"]
 mod reveal;
+
+#[gpui::test]
+fn browser_file_result_vectors_paint_in_light_and_dark_themes(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.browser.open = true;
+        view.browser
+            .listing
+            .as_mut()
+            .unwrap()
+            .entries
+            .push(LibraryEntry {
+                name: "project.hex".into(),
+                path: view.browser.directory.join("project.hex"),
+                kind: EntryKind::Project,
+            });
+        view.browser.samples.invalidate_listing();
+        view.browser.tree.source_changed();
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = [
+        visual.debug_bounds("browser-file-icon-0").unwrap(),
+        visual.debug_bounds("browser-file-icon-1").unwrap(),
+    ];
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let expected = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Muted,
+        )));
+        for (index, selector) in ["browser-file-icon-0", "browser-file-icon-1"]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(visual.debug_bounds(selector), Some(bounds[index]));
+            assert!(
+                visual
+                    .rendered_monochrome_colors(selector)
+                    .contains(&expected)
+            );
+        }
+    }
+}
