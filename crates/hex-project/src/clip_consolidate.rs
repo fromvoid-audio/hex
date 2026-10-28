@@ -9,6 +9,19 @@ use crate::{
 use std::{collections::BTreeSet, sync::Arc};
 pub(crate) mod render;
 
+// A flattened curve belongs to the new clip, not to each outgoing voice. Only
+// a shared constant is known to preserve every source's overlapping tail.
+fn constant_clip_volume(clip: &MidiClip) -> Option<MidiClipGain> {
+    let points = clip.volume().points();
+    let gain = points
+        .first()
+        .map_or(MidiClipGain::UNITY, |point| point.value);
+    points
+        .iter()
+        .all(|point| point.incoming == gain && point.value == gain)
+        .then_some(gain)
+}
+
 pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, Invalid> {
     group(project, ids, None)
 }
@@ -86,6 +99,17 @@ fn group(
     {
         return Err(Invalid(
             "cannot group midi clips with different clip gains; release tails would change",
+        ));
+    }
+    if clips.len() > 1
+        && constant_clip_volume(first).is_none_or(|gain| {
+            clips
+                .iter()
+                .any(|clip| constant_clip_volume(clip) != Some(gain))
+        })
+    {
+        return Err(Invalid(
+            "cannot group midi clip volume curves without changing release tails",
         ));
     }
     let start = match range {
