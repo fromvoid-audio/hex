@@ -2682,14 +2682,60 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
         }];
         cx.notify();
     });
+    visual.run_until_parked();
+    let disclosure = visual.debug_bounds("browser-disclosure-0").unwrap();
+    assert_eq!(
+        editor.read_with(visual, |view, _| view.browser.tree.disclosure(&folder)),
+        super::tree::Disclosure::Collapsed
+    );
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        editor.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let expected = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Muted,
+        )));
+        assert!(
+            visual
+                .rendered_monochrome_colors("browser-disclosure-0")
+                .contains(&expected)
+        );
+        assert_eq!(
+            visual.debug_bounds("browser-disclosure-0"),
+            Some(disclosure)
+        );
+    }
     let row = visual.debug_bounds("browser-entry-0").unwrap();
     visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("browser-disclosure-0")
+            .is_empty()
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-disclosure-0"),
+        Some(disclosure)
+    );
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.directory, directory.0);
-        assert_eq!(view.browser.tree.icon(&folder), "▾");
+        assert_eq!(
+            view.browser.tree.disclosure(&folder),
+            super::tree::Disclosure::Expanded
+        );
         assert_eq!(view.browser_visible_entries(cx)[1].path, child);
         assert_eq!(view.browser.playback_generation, 0);
         assert!(view.pending_requests.is_empty());
@@ -5164,7 +5210,10 @@ fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: boo
             visual.simulate_keystrokes("right");
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"))
+                assert!(
+                    (v.browser.tree.disclosure(&samples.join("a"))
+                        == super::tree::Disclosure::Expanded)
+                )
             });
         }
         visual.simulate_keystrokes("escape");
@@ -5180,14 +5229,14 @@ fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: boo
     let before = editor.read_with(&visual, |v, _| {
         (
             v.browser.playback_generation,
-            v.browser.tree.icon(&samples.join("a")),
+            v.browser.tree.disclosure(&samples.join("a")),
             v.browser.tree.requests_started,
         )
     });
     visual.simulate_keystrokes(if left { "left" } else { "right" });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        let after = (v.browser.playback_generation, v.browser.tree.icon(&samples.join("a")), v.browser.tree.requests_started);
+        let after = (v.browser.playback_generation, v.browser.tree.disclosure(&samples.join("a")), v.browser.tree.requests_started);
         eprintln!("ACTUAL_UNHIGHLIGHTED_ROW sample={sample} escape={escape} left={left} before={before:?} after={after:?}");
         assert_eq!(after, before, "unhighlighted navigation must not dispatch a row action");
         assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
@@ -5246,13 +5295,19 @@ fn browser_arrows_selected_controls(cx: &mut TestAppContext) {
             if sample {
                 assert!(v.browser.playback_generation > before);
             } else {
-                assert_eq!(v.browser.tree.icon(&samples.join("a")), "▾");
+                assert_eq!(
+                    v.browser.tree.disclosure(&samples.join("a")),
+                    super::tree::Disclosure::Expanded
+                );
             }
         });
         if !sample {
             visual.simulate_keystrokes("left");
             editor.read_with(&visual, |v, _| {
-                assert_ne!(v.browser.tree.icon(&samples.join("a")), "▾")
+                assert_ne!(
+                    v.browser.tree.disclosure(&samples.join("a")),
+                    super::tree::Disclosure::Expanded
+                )
             });
         }
     }

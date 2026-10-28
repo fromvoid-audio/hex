@@ -28,3 +28,7 @@ The editor transport playback controls use `assets/icons/transport/play.svg`,
 `pause.svg`, and `stop.svg`. These use the same 16 by 16 mask and rebuild
 workflow. Their current text color follows the action surface, including hover;
 other transport glyphs have not yet moved to the vector library.
+
+Browser folder disclosure arrows use `assets/icons/browser-disclosure/` for
+collapsed and expanded folders. Loading and error indicators remain text so
+those states stay distinct from the artwork.
