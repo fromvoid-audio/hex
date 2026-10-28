@@ -508,6 +508,9 @@ impl Runtime {
     fn expire(&mut self) {
         let release = self.factory.configuration.release_frames();
         for voice in &mut self.voices {
+            if voice.id == 0 || voice.gate.is_none() {
+                continue;
+            }
             let finished = if self.factory.settings.global.active {
                 voice.drain >= quality::TAIL as u32
             } else if self.factory.companion_active {
@@ -521,7 +524,7 @@ impl Runtime {
                     .gate
                     .is_some_and(|gate| voice.age >= gate.saturating_add(release))
             };
-            if voice.id != 0 && voice.gate.is_some() && finished {
+            if finished {
                 *voice = Voice::default();
             }
         }
@@ -886,6 +889,13 @@ impl MutableInstrumentRuntime for Runtime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut cursor = 0;
+        // Events can create released voices during this block. Once an event
+        // occurs, keep checking until the next block rather than maintaining
+        // another copy of voice ownership state.
+        let mut may_expire = self
+            .voices
+            .iter()
+            .any(|voice| voice.id != 0 && voice.gate.is_some());
         for (offset, frame) in frames.iter_mut().enumerate() {
             let beat = clock.and_then(|clock| clock.beat_at_offset(offset));
             let running = clock.and_then(|clock| clock.transport_is_running());
@@ -917,6 +927,7 @@ impl MutableInstrumentRuntime for Runtime {
                     .and_then(|clock| clock.performance_frame_at_offset(offset))
                     .unwrap_or(self.local_frame);
                 let _ = self.apply(*event, origin, beat, running);
+                may_expire = true;
                 cursor += 1;
             }
             let transition = (self.elapsed < self.frames).then(|| self.spectrum());
@@ -1127,7 +1138,9 @@ impl MutableInstrumentRuntime for Runtime {
             }
             self.filter.advance();
             self.local_frame = self.local_frame.saturating_add(1);
-            self.expire();
+            if may_expire {
+                self.expire();
+            }
         }
     }
     fn reset(&mut self) {
