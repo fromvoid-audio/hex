@@ -664,6 +664,44 @@ fn typed_audio_track_inputs_align_before_prefix_and_preserve_main_capture() {
     assert_eq!(actual, expected);
     assert_eq!(a[10], [0.375, -0.75]);
     assert_eq!(b[10], f.samples[0]);
+
+    // The direct source and its 0.5 feed meet before the three-frame
+    // prefix; both the fader tap and Main must retain the aligned transient.
+    let mut expected_a = vec![[0.0; 2]; 27];
+    let mut expected_b = expected_a.clone();
+    for (index, source) in f.samples.iter().enumerate() {
+        expected_a[index + 10] = [source[0] * 1.5, source[1] * 1.5];
+        expected_b[index + 10] = *source;
+    }
+    for block in [1, 3, 7, 17] {
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let plan = runtime
+            .output_capture_plan(
+                &[
+                    crate::OutputCaptureId::Track(f.tracks[0]),
+                    crate::OutputCaptureId::Track(f.tracks[1]),
+                ],
+                block,
+            )
+            .unwrap();
+        let mut actual_main = vec![[0.0; 2]; 27];
+        let mut actual_a = actual_main.clone();
+        let mut actual_b = actual_main.clone();
+        for ((main, a), b) in actual_main
+            .chunks_mut(block)
+            .zip(actual_a.chunks_mut(block))
+            .zip(actual_b.chunks_mut(block))
+        {
+            let mut outputs = [a, b];
+            runtime
+                .render_with_capture(main, &mut crate::OutputCapture::new(&plan, &mut outputs))
+                .unwrap();
+        }
+        assert_eq!(actual_main, expected, "Main, block {block}");
+        assert_eq!(actual_a, expected_a, "track A, block {block}");
+        assert_eq!(actual_b, expected_b, "track B, block {block}");
+    }
 }
 
 #[test]
