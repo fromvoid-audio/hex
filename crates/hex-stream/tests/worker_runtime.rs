@@ -724,6 +724,82 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
 }
 
 #[test]
+fn real_worker_loop_crosses_page_boundaries_with_exact_pcm() {
+    let page_frames = hex_engine::STREAM_PAGE_FRAMES;
+    let (wav, pcm) = TestWav::stereo_pcm16(48_000, page_frames + 16);
+    let key = StreamSourceKey::new(44, asset_id(pcm.len(), 48_000));
+    let reader =
+        VerifiedWavReader::open(wav.path(), reader_limits(pcm.len())).expect("verified source");
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        pcm.len() as u64,
+        pcm.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .expect("identity metadata");
+    let definition = SourceDefinition::new(
+        wav.path().to_path_buf(),
+        metadata.clone(),
+        reader_limits(pcm.len()),
+    );
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).expect("runtime");
+    runtime
+        .wait_until_ready(Duration::from_secs(3))
+        .expect("ready");
+    let pages = [
+        PageKey {
+            source: key,
+            page_index: 0,
+        },
+        PageKey {
+            source: key,
+            page_index: 1,
+        },
+    ];
+    for page in pages {
+        runtime.request_page(page.source, page.page_index);
+    }
+    assert!(wait_for_pages(&mut runtime, &pages, Duration::from_secs(3)));
+
+    let clip = Clip::streamed_region(
+        std::sync::Arc::new(metadata),
+        3,
+        20,
+        (page_frames - 3) as u64,
+        9,
+        true,
+    )
+    .expect("looped clip");
+    let project = EngineProject::new(
+        48_000,
+        vec![Track::new(vec![clip], 1.0, false).expect("track")],
+    )
+    .expect("project");
+    let mut renderer = Renderer::new(&project);
+    renderer.play();
+    let mut output = [[0.0; 2]; 26];
+    let mut offset = 0;
+    for count in [2, 5, 1, 7, 3, 8] {
+        renderer
+            .render_with_pages(&mut output[offset..offset + count], &mut runtime)
+            .expect("render");
+        offset += count;
+    }
+    let mut expected = [[0.0; 2]; 26];
+    for (frame, sample) in expected.iter_mut().enumerate().skip(3).take(20) {
+        *sample = pcm[page_frames - 3 + (frame - 3) % 9];
+    }
+    assert_eq!(output, expected);
+    assert_eq!(runtime.stats().misses, 0);
+    let report = runtime.shutdown().expect("balanced shutdown");
+    assert!(report.worker_joined && report.accounting_complete);
+}
+
+#[test]
 fn truncated_source_refuses_its_page_without_stalling_another_source() {
     let (damaged, _) = TestWav::stereo_pcm16(48_000, 4096);
     let (healthy, expected) = TestWav::stereo_pcm16(48_000, 4096);
