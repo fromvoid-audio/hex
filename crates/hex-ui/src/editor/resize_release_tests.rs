@@ -483,6 +483,99 @@ fn install_pending_audio(v: &mut EditorView, clip: ClipId) -> Request {
 }
 
 #[gpui::test]
+fn released_resize_survives_earlier_completion_until_project_replacement(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clip) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let original = visual.debug_bounds(clip_selector).unwrap();
+
+    // Hold the real later events outside the service queue so the repaint cannot
+    // consume them before the intermediate frame has completed.
+    let (replacement, terminal) = editor.update(&mut visual, |v, cx| {
+        let resize = install_pending_audio(v, clip);
+        assert!(v.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: 12_000,
+            end: 36_000,
+            enabled: true,
+        })));
+        assert!(v.enqueue(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        }));
+        assert!(v.enqueue(resize));
+        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(3));
+        let earlier = next(&v.service);
+        let replacement = next(&v.service);
+        let until = Instant::now() + Duration::from_secs(10);
+        let terminal = loop {
+            if let Ok(event) = v.service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(earlier.request_complete && !earlier.project_replaced);
+        assert!(replacement.request_complete && replacement.project_replaced);
+        assert!(terminal.request_complete && terminal.error.is_some());
+        v.receive(earlier);
+        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(2));
+        cx.notify();
+        (replacement, terminal)
+    });
+    visual.run_until_parked();
+    let preview = visual.debug_bounds("trim-live-preview").unwrap();
+    assert!(preview.size.width > original.size.width);
+    assert_eq!(
+        visual.debug_bounds(clip_selector),
+        Some(preview),
+        "the hit surface follows the painted preview"
+    );
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    editor.read_with(&visual, |v, _| {
+        let (_, displayed) = v.audio_trim_display(track, Some(clip)).unwrap();
+        assert_eq!(displayed.duration(), 120_000);
+    });
+    let extended = point(
+        original.right() + (preview.right() - original.right()) / 2.0,
+        preview.origin.y + px(20.0),
+    );
+    visual.simulate_mouse_down(extended, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(extended, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let menu = v
+            .context_menu
+            .as_ref()
+            .expect("preview extension hits the clip");
+        assert_eq!(menu.items[0].label, "use accent flavor");
+        assert!(v.pending_trim.is_some());
+    });
+    visual.simulate_keystrokes("escape");
+
+    editor.update(&mut visual, |v, cx| {
+        v.receive(replacement);
+        assert!(v.pending_trim.is_none());
+        assert!(v.state.as_ref().unwrap().project.clip(clip).is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("trim-live-preview").is_none());
+    assert!(visual.debug_bounds(clip_selector).is_none());
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        assert!(v.pending_trim.is_none());
+        assert!(v.state.as_ref().unwrap().project.clip(clip).is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("trim-live-preview").is_none());
+    assert!(visual.debug_bounds(clip_selector).is_none());
+}
+
+#[gpui::test]
 fn pending_resize_correlates_real_fifo_acceptance_failure_and_deferred_submission(
     cx: &mut TestAppContext,
 ) {

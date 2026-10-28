@@ -1,11 +1,9 @@
 //! Audio clip loop brace in the event editor's retained-root viewport.
+//! Window input capture ends independently of the existing clip-loop receipt.
 use super::*;
 use crate::editor::audio_event_editor::editor_bounds;
-use crate::{
-    editor::{musical_time::SnapGrid, viewport::Viewport},
-    theme,
-};
-use gpui::{Bounds, Context, Div, MouseButton, Pixels, canvas, div, prelude::*, px, relative, rgb};
+use crate::editor::{musical_time::SnapGrid, viewport::Viewport};
+use gpui::{Bounds, Context, Div, MouseButton, Pixels, canvas, div, prelude::*, px, relative};
 use hex_project::AudioClipEdit;
 
 #[derive(Clone)]
@@ -40,6 +38,93 @@ impl EditorView {
     }
     pub(in crate::editor) fn cancel_audio_loop_gesture(&mut self) -> bool {
         self.clip_loop.audio_gesture.take().is_some()
+    }
+    fn capture_audio_loop(
+        &self,
+        gesture: &Gesture,
+        window: &mut gpui::Window,
+        cx: &Context<Self>,
+    ) -> bool {
+        let generation = gesture.generation;
+        let revision = gesture.revision;
+        let clip = gesture.clip;
+        let start_edge = gesture.start_edge;
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            if start_edge {
+                gpui::CursorStyle::ResizeLeft
+            } else {
+                gpui::CursorStyle::ResizeRight
+            },
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<gpui::MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<gpui::MouseUpEvent>()
+                    .filter(|e| e.button == MouseButton::Left);
+                let Some(position) = moved
+                    .map(|e| e.position)
+                    .or_else(|| released.map(|e| e.position))
+                else {
+                    return;
+                };
+                let _ = owner.update(cx, |view, cx| {
+                    if !view.clip_loop.audio_gesture.as_ref().is_some_and(|g| {
+                        g.generation == generation
+                            && g.revision == revision
+                            && g.clip == clip
+                            && g.start_edge == start_edge
+                    }) {
+                        return;
+                    }
+                    if !view.clip_view_open
+                        || view.device_panel_active
+                        || view.audio_event_editor.source_view
+                        || !view.audio_event_focus.is_focused(window)
+                        || !f32::from(position.x).is_finite()
+                        || !f32::from(position.y).is_finite()
+                    {
+                        view.cancel_audio_loop_gesture();
+                    } else {
+                        let platform = moved
+                            .map(|e| e.modifiers.platform)
+                            .or_else(|| released.map(|e| e.modifiers.platform))
+                            .unwrap_or(false);
+                        view.audio_loop_update(f32::from(position.x), platform);
+                        if released.is_some()
+                            && let Some(g) = view.clip_loop.audio_gesture.take()
+                            && g.preview != (g.root.view_start, g.root.view_end)
+                        {
+                            view.commit_audio_clip_loop(
+                                g.clip,
+                                AudioViewResizeOperation::CycleRange {
+                                    start: g.preview.0,
+                                    end: g.preview.1,
+                                    looping: g.looping,
+                                },
+                            );
+                        }
+                    }
+                    cx.notify();
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.clip_loop.audio_gesture.as_ref().is_some_and(|g| {
+                        g.generation == generation
+                            && g.revision == revision
+                            && g.clip == clip
+                            && g.start_edge == start_edge
+                    }) {
+                        view.cancel_audio_loop_gesture();
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        )
     }
     fn audio_loop_update(&mut self, x: f32, platform: bool) {
         let Some(mut g) = self.clip_loop.audio_gesture.take() else {
@@ -169,20 +254,10 @@ impl EditorView {
                 })
         };
         let (a, b) = (position(start), position(end));
-        let color = theme::color(if looping {
-            theme::PaletteRole::Primary
-        } else {
-            theme::PaletteRole::Muted
-        });
-        let mut ruler = div()
+        let mut ruler = crate::editor::timeline_strip::loop_surface()
             .id("audio-loop-ruler")
             .debug_selector(|| "audio-loop-ruler".into())
-            .relative()
-            .h(px(18.0))
-            .flex_shrink_0()
             .w_full()
-            .overflow_hidden()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .track_focus(&self.audio_event_focus);
         let description=refusal.unwrap_or_else(||format!("clip loop {} · drag ends · w/l uses time selection · hold cmd/control to invert snap",if looping {"on"} else {"off"}));
         ruler = ruler.tooltip(move |_, cx| {
@@ -193,17 +268,12 @@ impl EditorView {
             .into()
         });
         if let (Some(a), Some(b)) = (a, b) {
-            if a < b && b > 0.0 && a < 1.0 {
-                ruler = ruler.child(
-                    div()
-                        .absolute()
-                        .top(px(5.0))
-                        .left(relative(a.max(0.0) as f32))
-                        .w(relative((b.min(1.0) - a.max(0.0)).max(0.0) as f32))
-                        .h(px(2.0))
-                        .bg(rgb(color)),
-                );
-            }
+            ruler = ruler.children(crate::editor::timeline_strip::loop_range(
+                a,
+                b,
+                looping,
+                ["audio-loop-start-marker", "audio-loop-end-marker"],
+            ));
             for (start_edge, at) in [(true, a), (false, b)] {
                 if !editable || !(0.0..=1.0).contains(&at) {
                     continue;
@@ -228,27 +298,14 @@ impl EditorView {
                         } else {
                             gpui::CursorStyle::ResizeRight
                         })
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(3.0))
-                                .w(px(3.0))
-                                .h(px(9.0))
-                                .bg(rgb(color))
-                                .when(start_edge, |line| line.left_0())
-                                .when(!start_edge, |line| line.right_0())
-                                .debug_selector(move || {
-                                    if start_edge {
-                                        "audio-loop-start-marker".into()
-                                    } else {
-                                        "audio-loop-end-marker".into()
-                                    }
-                                }),
-                        )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
                                 if !f32::from(event.position.x).is_finite()
+                                    || !f32::from(event.position.y).is_finite()
+                                    || !view.clip_view_open
+                                    || view.device_panel_active
+                                    || view.audio_event_editor.source_view
                                     || view.edit_pending()
                                     || view.clip_loop.pending.is_some()
                                     || view.audio_event_editor.gesture.is_some()
@@ -277,7 +334,7 @@ impl EditorView {
                                     return;
                                 };
                                 let root = clip.audio_event_root();
-                                view.clip_loop.audio_gesture = Some(Gesture {
+                                let gesture = Gesture {
                                     generation: view.project_generation,
                                     revision: state.revision,
                                     clip: id,
@@ -290,7 +347,11 @@ impl EditorView {
                                     down_x: f32::from(event.position.x),
                                     looping,
                                     grid: view.audio_loop_grid(),
-                                });
+                                };
+                                if !view.capture_audio_loop(&gesture, window, cx) {
+                                    return;
+                                }
+                                view.clip_loop.audio_gesture = Some(gesture);
                                 view.audio_event_focus.focus(window);
                                 cx.stop_propagation();
                                 cx.notify();
@@ -313,56 +374,30 @@ impl EditorView {
                                 view.cancel_audio_loop_gesture();
                             }
                         });
-                        let e = entity.clone();
-                        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
-                            if !phase.bubble() {
-                                return;
-                            }
-                            e.update(cx, |view, cx| {
-                                if view.clip_loop.audio_gesture.is_none() {
-                                    return;
-                                }
-                                if event.pressed_button == Some(MouseButton::Left) {
-                                    view.audio_loop_update(
-                                        f32::from(event.position.x),
-                                        event.modifiers.platform,
-                                    );
+                        // Canonical context is reconciled by clip_detail_view;
+                        // only witness this existing held geometry during paint.
+                        let view = entity.read(cx);
+                        if view.clip_view_open
+                            && !view.device_panel_active
+                            && !view.audio_event_editor.source_view
+                            && view.audio_event_focus.is_focused(window)
+                            && let Some(g) = view.clip_loop.audio_gesture.as_ref()
+                            && g.bounds == bounds
+                            && g.generation == view.project_generation
+                            && view
+                                .state
+                                .as_ref()
+                                .is_some_and(|s| s.revision == g.revision)
+                        {
+                            window.renew_pointer_capture(
+                                entity.entity_id(),
+                                if g.start_edge {
+                                    gpui::CursorStyle::ResizeLeft
                                 } else {
-                                    view.cancel_audio_loop_gesture();
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
-                            });
-                        });
-                        let e = entity.clone();
-                        window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
-                            if !phase.bubble() || event.button != MouseButton::Left {
-                                return;
-                            }
-                            e.update(cx, |view, cx| {
-                                if view.clip_loop.audio_gesture.is_none() {
-                                    return;
-                                }
-                                view.audio_loop_update(
-                                    f32::from(event.position.x),
-                                    event.modifiers.platform,
-                                );
-                                if let Some(g) = view.clip_loop.audio_gesture.take()
-                                    && g.preview != (g.root.view_start, g.root.view_end)
-                                {
-                                    view.commit_audio_clip_loop(
-                                        g.clip,
-                                        AudioViewResizeOperation::CycleRange {
-                                            start: g.preview.0,
-                                            end: g.preview.1,
-                                            looping: g.looping,
-                                        },
-                                    );
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
-                            });
-                        });
+                                    gpui::CursorStyle::ResizeRight
+                                },
+                            );
+                        }
                     },
                 )
                 .absolute()
@@ -371,3 +406,7 @@ impl EditorView {
         )
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "audio_loop_capture_tests.rs"]
+mod capture_tests;

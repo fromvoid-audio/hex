@@ -287,7 +287,10 @@ impl PlaybackHandoffError {
     pub const fn is_transient(self) -> bool {
         matches!(
             self,
-            Self::Session(crate::SessionPlaybackError::ReleaseBankFull)
+            Self::Session(
+                crate::SessionPlaybackError::ReleaseBankFull
+                    | crate::SessionPlaybackError::GroupTailRoutingBusy
+            )
         )
     }
 
@@ -1069,6 +1072,33 @@ impl Playback {
         }
     }
 
+    pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
+        self.session_runtime
+            .as_ref()?
+            .native_parameter_input_target()
+    }
+    pub fn set_native_parameter_input(
+        &mut self,
+        operation: hex_lattice::NativeTransientOperation,
+    ) -> Result<(), Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("native parameter input requires session playback"))?
+            .set_native_parameter_input(operation)
+    }
+    pub fn invalidate_native_parameter_input(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.invalidate_native_parameter_input();
+        }
+    }
+    pub fn take_native_parameter_application(
+        &mut self,
+    ) -> Option<crate::NativeParameterApplication> {
+        self.session_runtime
+            .as_mut()?
+            .take_native_parameter_application()
+    }
+
     /// True only for an explicitly armed, admitted Session-capable runtime.
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.session_runtime
@@ -1258,7 +1288,7 @@ impl Playback {
         self.project.sample_rate()
     }
 
-    /// Control-side immutable prepared source facts; these are not page or
+    /// Control-side immutable prepared PCM source facts; these are not page or
     /// native publication authority. Legacy graphs without a complete prepared
     /// revision return an explicit refusal rather than incomplete dependencies.
     pub fn streamed_sources_on_control(
@@ -1270,6 +1300,27 @@ impl Playback {
             .ok_or(Invalid("prepared source inventory unavailable"))?
             .streamed_sources())
     }
+    /// Complete typed dependency inventory for ordinary native publication.
+    /// Actual catalog leases are checked by the output's existing domain owner.
+    pub fn stream_resources_on_control(
+        &self,
+    ) -> Result<impl Iterator<Item = crate::StreamResourceMetadata> + '_, Invalid> {
+        let revision = self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid("prepared source inventory unavailable"))?;
+        Ok(revision
+            .streamed_sources()
+            .cloned()
+            .map(crate::StreamResourceMetadata::Audio)
+            .chain(
+                revision
+                    .scalar_automation
+                    .iter()
+                    .map(|binding| crate::StreamResourceMetadata::Scalar(binding.source.clone())),
+            ))
+    }
+
     /// Whether any Arrangement or Session source needs the streamed page
     /// provider. Cached by the prepared revision, not rescanned per block.
     pub fn contains_streamed_sources(&self) -> bool {
@@ -1315,6 +1366,19 @@ impl Playback {
         self.session_runtime
             .as_ref()
             .and_then(|runtime| runtime.transient_loop)
+    }
+
+    /// Configured content-clock law for a control-side automation capture.
+    /// Includes a transient section loop and excludes loops during linear export.
+    /// A first-pass origin at/after its end still advances linearly, following
+    /// the renderer's absolute-seek rule. This read-only fact grants no capture
+    /// admission: the caller must fence the exact output, source and transport
+    /// epoch through the existing delivered-input endpoint.
+    pub fn automation_capture_loop(&self) -> Option<hex_project::LoopRegion> {
+        self.session_runtime.as_ref().map_or_else(
+            || self.project.loop_region().filter(|region| region.enabled()),
+            |runtime| runtime.loop_region(),
+        )
     }
 
     /// True after the legacy monotonic clock reached its representable limit.
@@ -2024,7 +2088,7 @@ impl Playback {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, Invalid> {
         self.session_runtime
             .as_ref()
@@ -2035,7 +2099,7 @@ impl Playback {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, Invalid> {
         self.session_runtime
             .as_ref()
@@ -2047,7 +2111,7 @@ impl Playback {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
@@ -2060,7 +2124,7 @@ impl Playback {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;

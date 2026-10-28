@@ -58,6 +58,7 @@ fn request(config: &Configuration, n: u64) -> Block {
         frames: config.quantum,
         pcm: [[0.0; 2]; 256],
         events: Events::default(),
+        parameters: crate::transport::Parameters::default(),
     };
     for (i, frame) in block.pcm[..usize::from(block.frames)]
         .iter_mut()
@@ -1512,6 +1513,8 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
 mod epoch;
 #[path = "native_tests/live_capture.rs"]
 mod live_capture;
+#[path = "native_tests/parameters.rs"]
+mod parameters;
 
 #[cfg(feature = "allocation-probe")]
 #[test]

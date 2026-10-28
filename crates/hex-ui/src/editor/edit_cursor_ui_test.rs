@@ -326,6 +326,23 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
     })
     .expect("range drag restores arrangement focus");
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert_eq!(view.selected_track_ids(), ids));
+    for id in &ids {
+        let selector = Box::leak(format!("selected-track-lane-{}", id.value()).into_boxed_str());
+        assert!(
+            visual.rendered_background(selector).is_some(),
+            "crossed lane highlights before release"
+        );
+    }
+    let second = lane(&mut visual, ids[1]);
+    let shrink = point(end.x, second.center().y);
+    visual.simulate_mouse_move(shrink, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_track_ids(), ids[..2])
+    });
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -335,8 +352,8 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(view.selected_track, Some(ids[3]));
         assert_eq!(
             view.selected_track_ids(),
-            [ids[3]],
-            "lane highlight follows the active endpoint, independent of the time range"
+            ids,
+            "painted time span selects every crossed track"
         );
         assert!(view.selected_clip.is_none());
         assert_eq!(
@@ -387,6 +404,13 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         );
     });
     visual.simulate_mouse_move(reselect_end, MouseButton::Left, Modifiers::default());
+    let across_anchor = point(reselect_end.x, first_lane.center().y);
+    visual.simulate_mouse_move(across_anchor, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_track_ids(), ids[..3])
+    });
+    visual.simulate_mouse_move(reselect_end, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(reselect_end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -395,8 +419,8 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(view.selected_track, Some(ids[3]));
         assert_eq!(
             view.selected_track_ids(),
-            [ids[3]],
-            "lane highlight follows the active endpoint, independent of the time range"
+            ids[2..],
+            "repainting shrinks explicit track membership"
         );
         assert!(
             view.last_enqueued_edit.is_none(),
@@ -421,10 +445,29 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(selection.tracks(), ids);
         assert!(selection.start() < selection.end());
         assert_eq!(view.selected_track, Some(ids[0]));
+        assert_eq!(view.selected_track_ids(), ids);
         assert_eq!(
             view.time_selection_paste_target(),
             Some((ids[0], selection.start()))
         );
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.cancel_time_selection_gesture());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.normalized_time_selection().is_none());
+        assert_eq!(
+            view.selected_track_ids(),
+            ids,
+            "clearing time does not discard explicit track selection"
+        );
+        assert_eq!(
+            view.state.as_ref().unwrap().project.as_ref(),
+            model.project()
+        );
+        assert!(view.last_enqueued_edit.is_none());
     });
 }
 
@@ -1354,6 +1397,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        save_correlation: None,
         document_format_upgrade_required: false,
         save_confirmation_required: false,
         open_complete: false,
@@ -1498,6 +1542,12 @@ fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppCon
 
 #[gpui::test]
 fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut TestAppContext) {
+    for enabled in [false, true] {
+        assert_space_restart_policy(&mut cx.new_app(), enabled);
+    }
+}
+
+fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, _) = audio_project();
     let mut model = Editor::new(project, 8).unwrap();
@@ -1505,7 +1555,7 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
         .execute(Command::SetLoopRegion {
             start: 32_000,
             end: 64_000,
-            enabled: true,
+            enabled,
         })
         .unwrap();
     let project = model.project().clone();
@@ -1536,8 +1586,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(28_000)),
-            "reverse time selections restart from their normalized start"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 28_000 }
+            )),
+            "active loop wins; otherwise reverse time selection supplies its normalized start"
         );
     });
 
@@ -1557,8 +1609,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
-            "a point selection falls back to the edit cursor"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "active loop wins; otherwise a point selection falls back to the edit cursor"
         );
     });
 
@@ -1574,8 +1628,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(0)),
-            "no selection or edit cursor starts at project beginning"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 0 }
+            )),
+            "active loop wins; otherwise no selection or cursor starts at project beginning"
         );
     });
 
@@ -1618,12 +1674,14 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
-            "Space after Pause restarts from the edit cursor, not the paused playhead"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "Space after Pause uses active loop or edit cursor rather than the paused playhead"
         );
         assert_eq!(
             view.state.as_ref().unwrap().project.loop_region(),
-            Some(hex_project::LoopRegion::new(32_000, 64_000, true).unwrap())
+            Some(hex_project::LoopRegion::new(32_000, 64_000, enabled).unwrap())
         );
     });
 
@@ -1635,9 +1693,30 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
-        assert!(
-            view.last_transport_command.is_none(),
-            "midi focus keeps Space"
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "Space reaches transport even if a retained focus is no longer mounted"
+        );
+    });
+}
+
+#[gpui::test]
+fn space_starts_from_the_focused_piano_roll_without_repeating(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _) = super::midi_canvas::creation_tests::fixture(cx);
+    assert!(visual.debug_bounds("midi-note-roll").is_some());
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("space").unwrap(),
+        is_held: true,
+    });
+    editor.read_with(cx, |view, _| assert!(view.last_transport_command.is_none()));
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(0))
         );
     });
 }

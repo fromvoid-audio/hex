@@ -201,6 +201,7 @@ fn isolated_source(
                 .iter()
                 .map(|note| hex_project::MidiNoteSnapshot {
                     id: note.id().value(),
+                    active: note.active(),
                     start_raw: note.start().raw(),
                     duration_raw: note.duration().raw(),
                     pitch: note.pitch(),

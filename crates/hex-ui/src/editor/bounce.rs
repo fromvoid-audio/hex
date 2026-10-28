@@ -3,7 +3,7 @@ use super::{EditorMode, EditorView};
 use gpui::Window;
 use hex_session::service::{ExportControl, Request};
 impl EditorView {
-    pub(super) fn bounce_arrangement_selection(&mut self, in_place: bool, window: &Window) {
+    pub(super) fn bounce_arrangement_selection(&mut self, window: &Window) {
         if self.mode != EditorMode::Arrangement
             || !self.focus.is_focused(window)
             || self.computer_keyboard.enabled
@@ -32,7 +32,7 @@ impl EditorView {
         } else {
             hex_project::BounceTarget::Clips(self.selected_clip_ids())
         };
-        self.start_arrangement_bounce(target, in_place);
+        self.start_arrangement_bounce(target, false);
     }
 
     pub(super) fn bounce_track_in_place(
@@ -123,7 +123,7 @@ mod tests {
     use crate::editor::loop_selection_ui_test::{click, fixture_with_bounce_media, pump};
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
     #[gpui::test]
-    fn rendered_b_and_platform_b_adopt_below_or_replace_with_one_undo(cx: &mut TestAppContext) {
+    fn rendered_b_is_unbound_and_platform_b_adopts_below_with_one_undo(cx: &mut TestAppContext) {
         let (handle, editor, audio, _, files) = fixture_with_bounce_media(cx, true);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -155,17 +155,8 @@ mod tests {
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             let p = &v.state.as_ref().unwrap().project;
-            assert_eq!(p.tracks().len(), original.tracks.len());
-            assert!(p.clip(audio).is_none());
-            assert_eq!(p.tracks()[0].clips()[0].duration(), 48_000);
-        });
-        visual.simulate_keystrokes("cmd-z");
-        pump(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| {
-            assert_eq!(
-                v.state.as_ref().unwrap().project.snapshot().tracks,
-                original.tracks
-            )
+            assert_eq!(p.snapshot().tracks, original.tracks);
+            assert!(v.bounce_control.is_none());
         });
     }
     #[gpui::test]
@@ -241,23 +232,16 @@ mod tests {
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
-            let clips = v.state.as_ref().unwrap().project.tracks()[0].clips();
-            assert_eq!(clips.len(), 3);
-            assert!(
-                clips
-                    .iter()
-                    .any(|c| (c.start(), c.duration()) == (12_013, 23_994))
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.tracks()[0].clips().len(), 1);
+            assert_eq!(
+                (
+                    p.tracks()[0].clips()[0].start(),
+                    p.tracks()[0].clips()[0].duration()
+                ),
+                (0, 48_000)
             );
-            assert!(
-                clips
-                    .iter()
-                    .any(|c| (c.start(), c.duration()) == (0, 12_013))
-            );
-            assert!(
-                clips
-                    .iter()
-                    .any(|c| (c.start(), c.duration()) == (36_007, 11_993))
-            );
+            assert!(v.bounce_control.is_none());
         });
     }
     #[gpui::test]

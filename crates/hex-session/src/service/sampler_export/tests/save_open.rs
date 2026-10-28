@@ -211,6 +211,8 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
         "unassigned-missing",
         "missing-facts",
         "cap-before-decode",
+        "future-project",
+        "malformed-project",
     ] {
         let files = Files::new(false);
         let unassigned = Files::new(false);
@@ -237,6 +239,7 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
         service.submit(Request::SaveNew(saved.clone())).unwrap();
         let before = event(&service);
         assert!(before.error.is_none());
+        let saved_bytes = fs::read(&saved).unwrap();
         let original = fs::read(&files.source).unwrap();
         let mut open_path = saved.clone();
         match case {
@@ -275,9 +278,20 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
                 )
                 .unwrap();
             }
+            "future-project" => {
+                let mut document: serde_json::Value = serde_json::from_slice(&saved_bytes).unwrap();
+                document["version"] = (hex_storage::CURRENT_SCHEMA_VERSION + 1).into();
+                open_path = saved.with_file_name("future.hex");
+                fs::write(&open_path, serde_json::to_vec(&document).unwrap()).unwrap();
+            }
+            "malformed-project" => {
+                open_path = saved.with_file_name("malformed.hex");
+                fs::write(&open_path, b"{ invalid project").unwrap();
+            }
             _ => panic!("case"),
         }
-        service.submit(Request::Open(open_path)).unwrap();
+        let rejected_bytes = fs::read(&open_path).unwrap();
+        service.submit(Request::Open(open_path.clone())).unwrap();
         let refused = event(&service);
         assert!(
             refused.open_complete && !refused.project_replaced && refused.error.is_some(),
@@ -305,6 +319,11 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
                 refused.error
             );
         }
+        if case == "future-project" {
+            assert!(refused.error.as_ref().unwrap().contains("newer schema"));
+        }
+        assert_eq!(fs::read(&open_path).unwrap(), rejected_bytes, "{case}");
+        assert_eq!(fs::read(&saved).unwrap(), saved_bytes, "{case}");
         assert_eq!(
             refused.state.project.snapshot(),
             before.state.project.snapshot(),

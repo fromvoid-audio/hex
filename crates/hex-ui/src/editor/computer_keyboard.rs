@@ -751,6 +751,7 @@ mod tests {
     fn replaced_output_clock_cancels_same_target_input_and_prepares_new_root(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use hex_project::{Command, Created, Editor, Project};
         use std::{
             sync::Arc,

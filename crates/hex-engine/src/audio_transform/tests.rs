@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 #[path = "tests/group.rs"]
 mod group;
 
+#[path = "tests/aliases.rs"]
+mod aliases;
 #[path = "tests/content_reverse.rs"]
 mod content_reverse;
 #[path = "tests/view_placement.rs"]
@@ -3071,4 +3073,81 @@ fn per_event_frame_fades_reproject_through_warp_and_a_tempo_seam() {
         );
     }
     assert_eq!(render(&with_fade, 3993, 2007, 31), actual[3993..]);
+}
+
+#[test]
+fn selection_crossfade_pcm_is_the_two_source_mix_with_unchanged_outside_audio() {
+    let (mut editor, left, media) = fixture(true);
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip: left,
+            edge: hex_project::TrimEdge::Right,
+            frame: 4_000,
+        })
+        .unwrap();
+    let Created::Clip(right) = editor
+        .execute(Command::CopyClipTo {
+            clip: left,
+            track,
+            start: 4_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture copy")
+    };
+    editor
+        .execute(Command::SetClipSourcePhase {
+            clip: right,
+            phase: 997,
+        })
+        .unwrap();
+    for (clip, incoming, outgoing) in [(left, 33, 0), (right, 0, 47)] {
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: incoming,
+                fade_out: outgoing,
+            })
+            .unwrap();
+    }
+    let context = AudioTransformPreparation::default();
+    let original = render(&prepare(&editor, &media, &context), 0, 8_000, 257);
+    let before = editor.project().snapshot();
+    editor
+        .execute(Command::CreateArrangementFades {
+            range: hex_project::TimeRange::new(vec![track], 3_500, 4_500).unwrap(),
+        })
+        .unwrap();
+    let prepared = prepare(&editor, &media, &context);
+    let actual = render(&prepared, 0, 8_000, 257);
+    assert_eq!(&actual[..3_500], &original[..3_500]);
+    assert_eq!(&actual[4_500..], &original[4_500..]);
+    let pcm = media.values().next().unwrap().frames();
+    for frame in 3_500..4_500 {
+        let progress = (frame - 3_500) as f64 / 999.0;
+        let outgoing = pcm[(137 + frame) % 8_000];
+        let incoming = pcm[(997_i64 + frame as i64 - 4_000).rem_euclid(8_000) as usize];
+        for channel in 0..2 {
+            let expected =
+                outgoing[channel] * (1.0 - progress) as f32 + incoming[channel] * progress as f32;
+            assert!(
+                (actual[frame][channel] - expected).abs() < 1e-7,
+                "frame={frame} channel={channel}"
+            );
+        }
+    }
+    assert_eq!(render(&prepared, 0, 8_000, 1), actual);
+    assert_eq!(render(&prepared, 3_701, 701, 31), actual[3_701..4_402]);
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8_000, 17),
+        original
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8_000, 17),
+        actual
+    );
 }

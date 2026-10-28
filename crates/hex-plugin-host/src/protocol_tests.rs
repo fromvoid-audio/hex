@@ -324,6 +324,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
         frames: 8,
         pcm: [[0.5; 2]; 256],
         events: Events::default(),
+        parameters: crate::transport::Parameters::default(),
     };
     config.validate_block(&block, 0).unwrap();
     let mut bytes = Vec::new();
@@ -606,4 +607,163 @@ fn tail_facts_preserve_finite_zero_and_infinite_reports_and_fence_resumption() {
         old.drain(130..134);
         assert!(quiescent_facts(&old, &config, 3).is_err());
     }
+}
+
+#[test]
+fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_values() {
+    use crate::transport::{ParameterPoint, Parameters};
+    let config = config();
+    let mut points = Parameters::default();
+    points
+        .push(ParameterPoint {
+            frame: 0,
+            id: 0,
+            normalized: 0.75,
+        })
+        .unwrap();
+    let request = flush_request(&config, 3, 2, &points).unwrap();
+    assert_eq!(request.len(), 88);
+    assert_eq!(&request[..12], b"HXVF\x02\0\0\0\0\0\x01\0");
+    assert_eq!(
+        &request[48..72],
+        &[
+            3_u64.to_le_bytes(),
+            24_u64.to_le_bytes(),
+            2_u64.to_le_bytes()
+        ]
+        .concat()
+    );
+    assert_eq!(&request[80..88], &0.75_f64.to_le_bytes());
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(3_u64.to_le_bytes());
+    body.extend(24_u64.to_le_bytes());
+    body.extend(2_u64.to_le_bytes());
+    body.push(1);
+    body.extend(1_u16.to_le_bytes());
+    body.extend(0_u32.to_le_bytes());
+    body.extend(0.75_f64.to_le_bytes());
+    let result = flushed_parameters(&body, &config, 3, 2, &points).unwrap();
+    assert_eq!(result.disposition, FlushDisposition::Applied);
+    assert_eq!(
+        result.as_slice(),
+        &[FlushedParameter {
+            id: 0,
+            normalized: 0.75
+        }]
+    );
+    for end in 0..body.len() {
+        assert!(flushed_parameters(&body[..end], &config, 3, 2, &points).is_err());
+    }
+    for (offset, value) in [
+        (2, 9),
+        (34, 4),
+        (42, 25),
+        (50, 3),
+        (58, 0),
+        (59, 129),
+        (64, 128),
+    ] {
+        let mut bad = body.clone();
+        bad[offset] = value;
+        assert!(
+            flushed_parameters(&bad, &config, 3, 2, &points).is_err(),
+            "field{offset}"
+        );
+    }
+    let mut bad = body.clone();
+    bad[65..73].copy_from_slice(&f64::NAN.to_le_bytes());
+    assert!(flushed_parameters(&bad, &config, 3, 2, &points).is_err());
+    let mut bad = body.clone();
+    bad[59..61].copy_from_slice(&2_u16.to_le_bytes());
+    bad.extend_from_slice(&body[61..]);
+    assert!(
+        flushed_parameters(&bad, &config, 3, 2, &points).is_err(),
+        "duplicate ID"
+    );
+    let empty = Parameters::default();
+    body[58] = 0;
+    body[59..61].fill(0);
+    body.truncate(61);
+    assert_eq!(
+        flushed_parameters(&body, &config, 3, 2, &empty)
+            .unwrap()
+            .disposition,
+        FlushDisposition::Empty
+    );
+    assert!(flushed_parameters(&body, &config, 3, 2, &points).is_err());
+    assert!(flush_request(&config, 0, 0, &empty).is_err());
+    let mut late = Parameters::default();
+    late.push(ParameterPoint {
+        frame: 1,
+        id: 7,
+        normalized: 0.5,
+    })
+    .unwrap();
+    assert!(flush_request(&config, 0, 1, &late).is_err());
+}
+
+#[test]
+fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalescing() {
+    let config = config();
+    let request = edit_request(&config, 2, 3).unwrap();
+    assert_eq!(&request[..4], b"HXVG");
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(2_u64.to_le_bytes());
+    body.extend(16_u64.to_le_bytes());
+    body.extend(3_u64.to_le_bytes());
+    body.extend(0_u16.to_le_bytes());
+    body.extend(0_u16.to_le_bytes());
+    body.extend(3_u16.to_le_bytes());
+    for (sequence, kind, value, frame) in [
+        (4_u64, 1_u32, 0.0_f64, 0_u64),
+        (5, 2, 0.75, 8),
+        (6, 3, 0.0, 8),
+    ] {
+        body.extend(sequence.to_le_bytes());
+        body.extend(4_u64.to_le_bytes());
+        body.extend(value.to_le_bytes());
+        body.extend(0_u32.to_le_bytes());
+        body.extend(kind.to_le_bytes());
+        body.extend(frame.to_le_bytes());
+    }
+    let result = parameter_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    assert_eq!(result.as_slice().len(), 3);
+    assert_eq!(result.as_slice()[1].kind, ParameterEditKind::Perform);
+    assert_eq!(result.as_slice()[1].id, 0);
+    for end in 0..body.len() {
+        assert!(parameter_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
+    }
+    for (offset, value) in [
+        (2, 2),
+        (34, 1),
+        (42, 15),
+        (50, 2),
+        (58, 25),
+        (60, 1),
+        (62, 9),
+        (64, 0),
+        (72, 0),
+        (92, 4),
+        (96, 17),
+    ] {
+        let mut bad = body.clone();
+        bad[offset] = value;
+        assert!(
+            parameter_edits(&bad, &config, 2, 3, (0, 0)).is_err(),
+            "field{offset}"
+        );
+    }
+    assert!(
+        parameter_edits(&body, &config, 2, 3, (4, 0)).is_err(),
+        "replayed sequence"
+    );
+    assert!(
+        parameter_edits(&body, &config, 2, 3, (0, 1)).is_err(),
+        "time reversal across polls"
+    );
+    let mut bad = body;
+    bad[80..88].copy_from_slice(&f64::NAN.to_le_bytes());
+    assert!(parameter_edits(&bad, &config, 2, 3, (0, 0)).is_err());
 }

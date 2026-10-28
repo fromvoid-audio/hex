@@ -62,6 +62,7 @@ enum WaveformMappingKey {
     GainedSource {
         timeline_origin: u64,
         gain: i32,
+        detail: bool,
     },
     Clip {
         id: u64,
@@ -268,6 +269,7 @@ pub(super) enum WaveformMapping {
     GainedSource {
         timeline_origin: u64,
         gain: hex_project::ClipGain,
+        detail: bool,
     },
     Clip {
         clip: Clip,
@@ -463,9 +465,11 @@ fn waveform_geometry_key(
         WaveformMapping::GainedSource {
             timeline_origin,
             gain,
+            detail,
         } => WaveformMappingKey::GainedSource {
             timeline_origin: *timeline_origin,
             gain: gain.millidb(),
+            detail: *detail,
         },
         WaveformMapping::Clip {
             clip,
@@ -608,7 +612,22 @@ pub(super) fn prepare_waveform_geometry(
                 .checked_sub(*timeline_origin)
                 .zip(end.checked_sub(*timeline_origin))
                 .and_then(|(start, end)| usize::try_from(start).ok().zip(usize::try_from(end).ok()))
-                .and_then(|(start, end)| aggregate_peaks(waveform, start, end)),
+                .and_then(|(start, end)| {
+                    // Limit total PCM reads per event geometry, even for a large
+                    // viewport. Peak-only sources and wider views use the
+                    // existing bounded summary path.
+                    const DETAIL_FRAME_BUDGET: usize = 4_194_304;
+                    const DETAIL_COLUMN_BUDGET: usize = 4_096;
+                    let detail_budget =
+                        (DETAIL_FRAME_BUDGET / grid.columns).min(DETAIL_COLUMN_BUDGET);
+                    if matches!(mapping, WaveformMapping::GainedSource { detail: true, .. }) {
+                        waveform
+                            .bounded_exact_peaks_for_frames(start, end, detail_budget)
+                            .or_else(|| aggregate_peaks(waveform, start, end))
+                    } else {
+                        aggregate_peaks(waveform, start, end)
+                    }
+                }),
         };
         let mut peaks = peaks.unwrap_or([CachedPeak { min: 0.0, max: 0.0 }; 2]);
         if gain != 1.0 {
@@ -766,6 +785,77 @@ mod tests {
             )
             .expect("waveform geometry"),
         )
+    }
+
+    #[test]
+    fn event_detail_keeps_a_transient_in_its_visible_column() {
+        // A long prepared root can have 1,000 source frames per cached bin.
+        // At 65 frames per visible column, one impulse must not fill the
+        // surrounding columns merely because they share a cached bin.
+        let mut samples = vec![[0.0, 0.0]; 1_024_000];
+        samples[2_010] = [1.0, 1.0];
+        let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+        let waveform = hex_media::waveform::summarize(&audio, 1_024).unwrap();
+        let extent = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(100.0)));
+        for (start, frames_per_column) in [
+            (0_u64, 65_u64),
+            (1_300, 65),
+            (1_950, 65),
+            (0, 1_000),
+            (0, 1_025),
+        ] {
+            let geometry = prepare_waveform_geometry(
+                &waveform,
+                &WaveformMapping::GainedSource {
+                    timeline_origin: 0,
+                    gain: hex_project::ClipGain::UNITY,
+                    detail: true,
+                },
+                start,
+                start + 100 * frames_per_column,
+                extent,
+                100,
+                None,
+            )
+            .unwrap();
+            let top = &geometry.channels[0].outline[..100];
+            let peaks: Vec<_> = top
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.y < px(25.0))
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(peaks, vec![((2_010 - start) / frames_per_column) as usize]);
+        }
+
+        // A longer root has wider cached bins. A narrow visible event may use
+        // its share of the same total work budget rather than inheriting the
+        // per-column limit of a full-width event.
+        let mut long_samples = vec![[0.0, 0.0]; 3_072_000];
+        long_samples[6_010] = [1.0, 1.0];
+        let long_audio = hex_engine::Audio::new(48_000, long_samples).unwrap();
+        let long_waveform = hex_media::waveform::summarize(&long_audio, 1_024).unwrap();
+        let geometry = prepare_waveform_geometry(
+            &long_waveform,
+            &WaveformMapping::GainedSource {
+                timeline_origin: 0,
+                gain: hex_project::ClipGain::UNITY,
+                detail: true,
+            },
+            0,
+            205_000,
+            extent,
+            100,
+            None,
+        )
+        .unwrap();
+        let peaks: Vec<_> = geometry.channels[0].outline[..100]
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.y < px(25.0))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(peaks, vec![6_010 / 2_050]);
     }
 
     #[test]
@@ -1338,10 +1428,17 @@ mod tests {
         let neutral = WaveformMapping::GainedSource {
             timeline_origin: 0,
             gain: hex_project::ClipGain::UNITY,
+            detail: false,
         };
         let quiet = WaveformMapping::GainedSource {
             timeline_origin: 0,
             gain: hex_project::ClipGain::new(-6_000).unwrap(),
+            detail: false,
+        };
+        let detailed = WaveformMapping::GainedSource {
+            timeline_origin: 0,
+            gain: hex_project::ClipGain::UNITY,
+            detail: true,
         };
         let geometry = |mapping| {
             cached_waveform_geometry(
@@ -1363,7 +1460,8 @@ mod tests {
         let changed = geometry(&quiet);
         assert!(!Arc::ptr_eq(&first, &changed));
         assert!(Arc::ptr_eq(&first, &geometry(&neutral)));
-        assert_eq!(cache.borrow().entries.len(), 2);
+        assert!(!Arc::ptr_eq(&first, &geometry(&detailed)));
+        assert_eq!(cache.borrow().entries.len(), 3);
     }
 
     #[test]

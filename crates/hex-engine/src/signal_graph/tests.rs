@@ -273,6 +273,33 @@ fn actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_part
         assert_eq!(capture.output(1).unwrap()[index], source);
     }
 }
+
+#[test]
+fn compensated_continuous_audio_matches_single_frame_rendering_across_loop_wraps() {
+    let mut f = fixture(&[&[], &[7], &[3]], 173);
+    for (track, audio) in f.media.values_mut().enumerate() {
+        let samples = (0..173)
+            .map(|frame| {
+                let value = ((frame * (track + 1)) % 29) as f32 / 64.0;
+                [value, -value * 0.5]
+            })
+            .collect();
+        *audio = Audio::new(48000, samples).unwrap();
+    }
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 173,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let expected = session(Arc::clone(&revision), 1200, 1);
+    assert!(expected.iter().any(|frame| frame[0] != 0.0));
+    for partition in [63, 256, 513] {
+        assert_eq!(session(Arc::clone(&revision), 1200, partition), expected);
+    }
+}
 #[test]
 fn serial_three_plus_five_matches_eight_and_return_feed_cumulative_delay() {
     let mut f = fixture(&[&[3, 5], &[8]], 32);
@@ -508,6 +535,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     snapshot.next_id += 3;
     let owner = &mut snapshot.tracks[0];
     owner.instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: next,
         bypassed: false,
@@ -537,6 +565,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
             loop_end_raw: hex_project::BeatTime::ONE.raw(),
             looping: false,
             notes: vec![hex_project::MidiNoteSnapshot {
+                active: true,
                 id: next + 2,
                 start_raw: 0,
                 duration_raw: hex_project::BeatTime::ONE.raw(),
@@ -720,10 +749,11 @@ fn audio_feed_gain_only_handoff_preserves_pending_samples_and_updates_new_source
 #[ignore = "release throughput evidence; run explicitly with --release --ignored --nocapture"]
 fn profile_real_compensated_and_routed_graph() {
     use std::time::Instant;
-    for (label, delays, routed) in [
-        ("dry", [&[][..], &[][..]], false),
-        ("compensated", [&[][..], &[7][..]], false),
-        ("routed", [&[3][..], &[7][..]], true),
+    for (label, delays, routed, grouped) in [
+        ("dry", [&[][..], &[][..]], false, false),
+        ("compensated", [&[][..], &[7][..]], false, false),
+        ("routed", [&[3][..], &[7][..]], true, false),
+        ("grouped", [&[][..], &[][..]], false, true),
     ] {
         let mut f = fixture(&delays, 48000);
         // Keep authored source traversal and nonzero input active for the whole
@@ -764,6 +794,14 @@ fn profile_real_compensated_and_routed_graph() {
                 })
                 .unwrap();
         }
+        if grouped {
+            f.editor
+                .execute(Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&f.tracks).unwrap(),
+                    name: "group".into(),
+                })
+                .unwrap();
+        }
         let mut runtime = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
         runtime.apply(SessionPlaybackCommand::Play).unwrap();
         let mut block = [[0.0; 2]; 256];
@@ -782,7 +820,8 @@ fn profile_real_compensated_and_routed_graph() {
         samples.sort_unstable();
         let frames = 16.0 * 256.0;
         println!(
-            "{label}: rate=48000 tracks=2 block=256 warmup=8192 samples=101 median_ns_per_frame={:.2} p99_ns_per_frame={:.2} median_frames_per_second={:.0}",
+            "{label}: rate=48000 tracks={} block=256 warmup=8192 samples=101 median_ns_per_frame={:.2} p99_ns_per_frame={:.2} median_frames_per_second={:.0}",
+            if grouped { 3 } else { 2 },
             samples[50] as f64 / frames,
             samples[99] as f64 / frames,
             frames * 1e9 / samples[50] as f64
@@ -1168,4 +1207,317 @@ fn main_review_known_latency_handoff_preserves_history_and_refuses_changed_runti
         positions,
         "refused handoff preserves old transport"
     );
+}
+
+#[test]
+fn nested_default_outputs_sum_once_through_each_group() {
+    let mut f = fixture(&[&[], &[]], 8);
+    let Created::Track(inner) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&f.tracks).unwrap(),
+            name: "inner".into(),
+        })
+        .unwrap()
+    else {
+        panic!("inner group")
+    };
+    let Created::Track(outer) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[inner]).unwrap(),
+            name: "outer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("outer group")
+    };
+    let canonical = f.editor.project();
+    let mut tracks = Vec::new();
+    for row in canonical.tracks() {
+        let clips = if f.tracks.contains(&row.id()) {
+            vec![
+                crate::Clip::new(Audio::new(48000, f.samples.clone()).unwrap(), 0, 8, false)
+                    .unwrap(),
+            ]
+        } else {
+            Vec::new()
+        };
+        let gain = if row.id() == inner {
+            0.5
+        } else if row.id() == outer {
+            0.25
+        } else {
+            1.0
+        };
+        let mut track = Track::new(clips, gain, false).unwrap();
+        track.track_id = Some(row.id());
+        tracks.push(track);
+    }
+    let mut project = Project::new(48000, tracks).unwrap();
+    project.signal_graph = SignalGraph::prepare(&project, &[], canonical).unwrap();
+    project.tempo_map = Some(canonical.tempo_map().clone());
+    let mut renderer = Renderer::new(&project);
+    renderer.play();
+    let mut actual = [[0.0; 2]; 8];
+    renderer.render(&mut actual).unwrap();
+    for (actual, source) in actual.iter().zip(&f.samples) {
+        assert_eq!(*actual, [source[0] * 0.25, source[1] * 0.25]);
+    }
+    drop(renderer);
+    f.editor
+        .execute(Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Track(f.tracks[0]),
+            destination: inner,
+            gain: 0.5,
+        })
+        .unwrap();
+    project.signal_graph = SignalGraph::prepare(&project, &[], f.editor.project()).unwrap();
+    let mut renderer = Renderer::new(&project);
+    renderer.play();
+    renderer.render(&mut actual).unwrap();
+    for (actual, source) in actual.iter().zip(&f.samples) {
+        assert_eq!(*actual, [source[0] * 0.3125, source[1] * 0.3125]);
+    }
+}
+
+#[test]
+fn compiled_nested_groups_process_shared_effect_gain_and_captures_once() {
+    let mut f = fixture(&[&[], &[]], 8);
+    let Created::Track(inner) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&f.tracks).unwrap(),
+            name: "inner".into(),
+        })
+        .unwrap()
+    else {
+        panic!("inner group")
+    };
+    let Created::Track(outer) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[inner]).unwrap(),
+            name: "outer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("outer group")
+    };
+    f.editor
+        .execute(Command::Gain {
+            track: inner,
+            gain: 0.5,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::Gain {
+            track: outer,
+            gain: 0.25,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::InsertDevice {
+            track: inner,
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut expected = vec![[0.0; 2]; 11];
+    for (out, source) in expected[3..].iter_mut().zip(&f.samples) {
+        *out = [source[0] * 0.25, source[1] * 0.25];
+    }
+    for partition in [1, 3, 11] {
+        assert_eq!(session(Arc::clone(&revision), 11, partition), expected);
+    }
+    let mut renderer = Renderer::new(revision.arrangement());
+    renderer.play();
+    let mut output = [[0.0; 2]; 11];
+    renderer.render(&mut output).unwrap();
+    assert_eq!(output.as_slice(), expected);
+    let mut runtime = SessionPlayback::new(revision).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let plan = runtime
+        .output_capture_plan(
+            &[
+                crate::OutputCaptureId::Track(inner),
+                crate::OutputCaptureId::Track(outer),
+            ],
+            11,
+        )
+        .unwrap();
+    let mut main = [[0.0; 2]; 11];
+    let mut group_capture = main;
+    let mut outer_capture = main;
+    let mut buffers: [&mut [Frame]; 2] = [&mut group_capture, &mut outer_capture];
+    let mut capture = crate::OutputCapture::new(&plan, &mut buffers);
+    runtime
+        .render_with_capture(&mut main, &mut capture)
+        .unwrap();
+    for (index, frame) in expected.iter().enumerate() {
+        assert_eq!(capture.output(0).unwrap()[index], frame.map(|x| x * 4.0));
+        assert_eq!(capture.output(1).unwrap()[index], *frame);
+        assert_eq!(main[index], *frame);
+    }
+}
+
+#[test]
+fn compiled_group_default_and_additive_feed_preserve_independent_return_send() {
+    let mut f = fixture(&[&[], &[]], 8);
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&f.tracks).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    f.editor
+        .execute(Command::Gain {
+            track: group,
+            gain: 0.5,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Track(f.tracks[0]),
+            destination: group,
+            gain: 0.5,
+        })
+        .unwrap();
+    let Created::ReturnTrack(bus) = f
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    f.editor
+        .execute(Command::SetReturnSend {
+            track: f.tracks[0],
+            return_track: bus,
+            gain: 0.5,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let output = session(revision, 8, 3);
+    for (actual, source) in output.iter().zip(&f.samples) {
+        // Two children plus the explicit half feed through the group, and a
+        // separate half send to Return: 2.5 * 0.5 + 0.5 = 1.75.
+        assert_eq!(*actual, [source[0] * 1.75, source[1] * 1.75]);
+    }
+    f.editor
+        .execute(Command::Balance {
+            track: group,
+            balance: 0.5,
+        })
+        .unwrap();
+    let output = session(prepare(&f).unwrap(), 8, 3);
+    for (actual, source) in output.iter().zip(&f.samples) {
+        assert_eq!(*actual, [source[0] * 1.125, source[1] * 1.75]);
+    }
+    f.editor
+        .execute(Command::Mute {
+            track: group,
+            muted: true,
+        })
+        .unwrap();
+    let output = session(prepare(&f).unwrap(), 8, 3);
+    for (actual, source) in output.iter().zip(&f.samples) {
+        assert_eq!(*actual, [source[0] * 0.5, source[1] * 0.5]);
+    }
+}
+
+#[test]
+fn compiled_group_solo_selects_descendants_and_ancestors_without_changing_flags() {
+    let mut f = fixture(&[&[], &[], &[]], 8);
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&f.tracks[..2]).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    f.editor
+        .execute(Command::ToggleSoloTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[group]).unwrap(),
+            exclusive: true,
+        })
+        .unwrap();
+    let output = session(prepare(&f).unwrap(), 8, 3);
+    for (actual, source) in output.iter().zip(&f.samples) {
+        assert_eq!(*actual, [source[0] * 2.0, source[1] * 2.0]);
+    }
+    assert!(!f.editor.project().track(f.tracks[0]).unwrap().soloed());
+    assert!(!f.editor.project().track(f.tracks[1]).unwrap().soloed());
+    f.editor
+        .execute(Command::ToggleSoloTracks {
+            tracks: hex_project::TrackSelectionIds::new(&[f.tracks[0]]).unwrap(),
+            exclusive: true,
+        })
+        .unwrap();
+    let output = session(prepare(&f).unwrap(), 8, 3);
+    assert_eq!(output, f.samples);
+    f.editor
+        .execute(Command::Mute {
+            track: group,
+            muted: true,
+        })
+        .unwrap();
+    assert_eq!(session(prepare(&f).unwrap(), 8, 3), [[0.0; 2]; 8]);
+}
+
+#[test]
+fn group_gain_automation_tracks_delayed_content_across_render_partitions() {
+    let mut f = fixture(&[&[]], 8);
+    let Created::Track(group) = f
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&f.tracks).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    f.editor
+        .execute(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap();
+    let beat = f.editor.project().tempo_map().frame_to_beat(3).unwrap();
+    f.editor
+        .execute(Command::ReplaceTrackGainEnvelope {
+            track: group,
+            points: vec![
+                hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat: hex_project::BeatTime::ZERO,
+                    gain: 0.5,
+                    outgoing: hex_project::GainInterpolation::Step,
+                },
+                hex_project::GainPoint {
+                    incoming_gain: None,
+                    beat,
+                    gain: 1.0,
+                    outgoing: hex_project::GainInterpolation::Step,
+                },
+            ],
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let whole = session(Arc::clone(&revision), 11, 11);
+    assert_eq!(whole, session(revision, 11, 1));
+    assert_eq!(whole[3], f.samples[0].map(|value| value * 0.5));
+    assert_eq!(whole[10], f.samples[7]);
 }

@@ -1,8 +1,8 @@
 use crate::{
     endpoint::{Endpoint, EndpointQueues, PageBuffer},
     types::{
-        CatalogFootprint, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,
-        StreamRuntimeError, VerifiedCatalog,
+        CatalogFootprint, ScalarSourceDefinition, SourceDefinition, StreamConfig, StreamFailure,
+        StreamFailureKind, StreamRuntimeError, VerifiedCatalog,
     },
     worker::{WorkerQueues, run_worker},
 };
@@ -117,8 +117,38 @@ impl CatalogLease {
             .is_some_and(|member| member == source)
     }
 
-    /// Distinguishes separate catalogs even when they reuse identical
-    /// generation, asset IDs, and source metadata.
+    /// Exact verified scalar facts, including content and projection identity.
+    pub fn covers_scalar_source(&self, source: &hex_engine::ScalarSourceMetadata) -> bool {
+        self.catalog
+            .scalar_sources
+            .binary_search_by_key(&source.key(), hex_engine::ScalarSourceMetadata::key)
+            .ok()
+            .and_then(|index| self.catalog.scalar_sources.get(index))
+            .is_some_and(|actual| actual == source)
+    }
+    pub fn scalar_sources(&self) -> &[hex_engine::ScalarSourceMetadata] {
+        &self.catalog.scalar_sources
+    }
+    pub fn scalar_shared_data(&self) -> &[crate::ScalarSharedData] {
+        &self.catalog.scalar_shared_data
+    }
+
+    /// Key membership for ambiguity checks after complete fact admission.
+    pub fn covers_resource_key(&self, key: hex_engine::StreamResourceKey) -> bool {
+        match key {
+            hex_engine::StreamResourceKey::Audio(key) => self
+                .catalog
+                .sources
+                .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
+                .is_ok(),
+            hex_engine::StreamResourceKey::Scalar(key) => self
+                .catalog
+                .scalar_sources
+                .binary_search_by_key(&key, hex_engine::ScalarSourceMetadata::key)
+                .is_ok(),
+        }
+    }
+    /// Distinguishes actual catalogs even when all source facts are identical.
     pub fn same_catalog(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner) && Arc::ptr_eq(&self.pair_id, &other.pair_id)
     }
@@ -251,26 +281,79 @@ impl StreamRuntime {
         )
         .map(|(runtime, _)| runtime)
     }
+    /// Mixed resources use the same worker, queues, fixed page pool and exact
+    /// pair disposal contract. Scalar readers/projections move to the worker.
+    pub fn spawn_with_scalar_sources(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+    ) -> Result<Self, StreamRuntimeError> {
+        Self::new_factory_with_scalar_sources(
+            config,
+            definitions,
+            scalar_definitions,
+            false,
+            #[cfg(test)]
+            None,
+        )
+        .map(|(runtime, _)| runtime)
+    }
     fn new_factory(
         config: StreamConfig,
         definitions: Vec<SourceDefinition>,
         reserve_disposal: bool,
         #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
     ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
+        Self::new_factory_with_scalar_sources(
+            config,
+            definitions,
+            Vec::new(),
+            reserve_disposal,
+            #[cfg(test)]
+            test_hooks,
+        )
+    }
+    fn new_factory_with_scalar_sources(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        scalar_definitions: Vec<ScalarSourceDefinition>,
+        reserve_disposal: bool,
+        #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+    ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
         let config = config.validate()?;
-        if definitions.len() > config.max_sources {
+        if definitions
+            .len()
+            .checked_add(scalar_definitions.len())
+            .is_none_or(|count| count > config.max_sources)
+        {
             return Err(StreamRuntimeError::InvalidConfiguration);
         }
+        crate::worker::preparation_data_bound_with_scalar_sources(
+            config,
+            &definitions,
+            definitions.capacity(),
+            &scalar_definitions,
+            scalar_definitions.capacity(),
+        )
+        .ok_or(StreamRuntimeError::InvalidConfiguration)?;
         let mut source_keys = Vec::new();
         source_keys
-            .try_reserve_exact(definitions.len())
+            .try_reserve_exact(definitions.len() + scalar_definitions.len())
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
         for definition in &definitions {
-            if definition.key != definition.metadata.key() || source_keys.contains(&definition.key)
+            if definition.key != definition.metadata.key()
+                || source_keys.contains(&hex_engine::StreamResourceKey::from(definition.key))
             {
                 return Err(StreamRuntimeError::InvalidConfiguration);
             }
-            source_keys.push(definition.key);
+            source_keys.push(definition.key.into());
+        }
+        for definition in &scalar_definitions {
+            let key = hex_engine::StreamResourceKey::from(definition.metadata().key());
+            if source_keys.contains(&key) {
+                return Err(StreamRuntimeError::InvalidConfiguration);
+            }
+            source_keys.push(key);
         }
         source_keys.sort_unstable();
         let mut free_pages = Vec::new();
@@ -279,8 +362,9 @@ impl StreamRuntime {
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
         let mut transport_data = crate::TransportData::default();
         for _ in 0..config.page_buffers {
-            let (page, old_capacity) = PageBuffer::new_with_capacity()
-                .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+            let (page, old_capacity) =
+                PageBuffer::new_with_capacity(!scalar_definitions.is_empty())
+                    .map_err(|_| StreamRuntimeError::AllocationFailed)?;
             transport_data.page_objects = crate::footprint::add(
                 transport_data.page_objects,
                 std::mem::size_of_val(page.as_ref()),
@@ -288,6 +372,8 @@ impl StreamRuntime {
             let PageBuffer {
                 key: _,
                 frames,
+                scalar_values,
+                scalar_coverage,
                 valid_frames: _,
             } = page.as_ref();
             transport_data.pcm_boxes = crate::footprint::add(
@@ -297,11 +383,22 @@ impl StreamRuntime {
                     .checked_mul(std::mem::size_of::<hex_engine::Frame>())
                     .ok_or(StreamRuntimeError::AllocationFailed)?,
             )?;
-            transport_data.page_boxing_overlap = transport_data.page_boxing_overlap.max(
-                old_capacity
-                    .checked_mul(std::mem::size_of::<hex_engine::Frame>())
+            transport_data.scalar_boxes = crate::footprint::add(
+                transport_data.scalar_boxes,
+                scalar_values
+                    .len()
+                    .checked_mul(std::mem::size_of::<f32>())
                     .ok_or(StreamRuntimeError::AllocationFailed)?,
-            );
+            )?;
+            transport_data.scalar_coverage_boxes = crate::footprint::add(
+                transport_data.scalar_coverage_boxes,
+                scalar_coverage
+                    .len()
+                    .checked_mul(std::mem::size_of::<u64>())
+                    .ok_or(StreamRuntimeError::AllocationFailed)?,
+            )?;
+            transport_data.page_boxing_overlap =
+                transport_data.page_boxing_overlap.max(old_capacity);
             free_pages.push(page);
         }
         let (request_tx, request_rx) = RingBuffer::new(config.request_capacity);
@@ -381,15 +478,23 @@ impl StreamRuntime {
             // Now validate the actual control-side capacities before a live
             // JoinHandle can exist. Worker payload is separately capped by its
             // exact source/manifest/kernel/scratch constructor limits.
-            let bound = PendingStreamDomain::preparation_bound(
+            let bound = PendingStreamDomain::preparation_bound_with_scalar_sources(
                 config,
                 &definitions,
                 definitions.capacity(),
+                &scalar_definitions,
+                scalar_definitions.capacity(),
                 None,
             )?;
             let (worker_data, worker_peak) =
-                crate::worker::preparation_data_bound(config, &definitions, definitions.capacity())
-                    .ok_or(StreamRuntimeError::InvalidConfiguration)?;
+                crate::worker::preparation_data_bound_with_scalar_sources(
+                    config,
+                    &definitions,
+                    definitions.capacity(),
+                    &scalar_definitions,
+                    scalar_definitions.capacity(),
+                )
+                .ok_or(StreamRuntimeError::InvalidConfiguration)?;
             let free_handles = free_pages
                 .capacity()
                 .checked_sub(config.page_buffers)
@@ -431,6 +536,7 @@ impl StreamRuntime {
                 let pages = run_worker(
                     config,
                     definitions,
+                    scalar_definitions,
                     free_pages,
                     worker_queues,
                     thread_stop,
@@ -682,10 +788,10 @@ impl StreamControl {
             page_buffers: self.owner.config.page_buffers,
             page_bytes: self
                 .owner
-                .config
-                .page_buffers
-                .saturating_mul(hex_engine::STREAM_PAGE_FRAMES)
-                .saturating_mul(std::mem::size_of::<hex_engine::Frame>()),
+                .transport_data
+                .pcm_boxes
+                .saturating_add(self.owner.transport_data.scalar_boxes)
+                .saturating_add(self.owner.transport_data.scalar_coverage_boxes),
             cached_pages_returned,
             queued_pages_reclaimed,
             held_return_pages_reclaimed,
@@ -755,6 +861,16 @@ impl MediaPages for StreamCallbackPages {
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         self.endpoint.request_page(key, page_index);
     }
+    fn scalar_page(
+        &mut self,
+        key: hex_engine::ScalarSourceKey,
+        page_index: u64,
+    ) -> Option<hex_engine::BorrowedScalarPage<'_>> {
+        self.endpoint.scalar_page(key, page_index)
+    }
+    fn request_scalar_page(&mut self, key: hex_engine::ScalarSourceKey, page_index: u64) {
+        self.endpoint.request_scalar_page(key, page_index);
+    }
 }
 
 impl MediaPages for StreamRuntime {
@@ -769,6 +885,18 @@ impl MediaPages for StreamRuntime {
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         if let Some(pages) = self.pages.as_mut() {
             pages.request_page(key, page_index);
+        }
+    }
+    fn scalar_page(
+        &mut self,
+        key: hex_engine::ScalarSourceKey,
+        page_index: u64,
+    ) -> Option<hex_engine::BorrowedScalarPage<'_>> {
+        self.pages.as_mut()?.scalar_page(key, page_index)
+    }
+    fn request_scalar_page(&mut self, key: hex_engine::ScalarSourceKey, page_index: u64) {
+        if let Some(pages) = self.pages.as_mut() {
+            pages.request_scalar_page(key, page_index);
         }
     }
 }
@@ -820,6 +948,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (publication_tx, publication_rx) = mpsc::sync_channel(2);
         let hooks = crate::worker::TestWorkerHooks {
+            scalar_steps: None,
             entered: entered_tx,
             release: release_rx,
             publications: publication_tx,
@@ -911,3 +1040,6 @@ mod tests {
         assert!(worker_finished.load(Ordering::Acquire));
     }
 }
+
+#[cfg(test)]
+mod scalar_tests;

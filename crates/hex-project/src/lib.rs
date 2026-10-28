@@ -10,12 +10,14 @@
 //! supported song content atomically through retained source/history contracts.
 //! Clip-local MIDI volume has independent immutable identity
 //! from note/source data, with bounded current-format and history fidelity.
-//! Arrangement clips sharing a hybrid TrackId have disjoint
-//! half-open occupancy. Newly placed/extended material replaces older occupancy;
-//! retained fragments preserve their processing/source domains. Group edits resolve
-//! all incoming members together. Current-format loading refuses overlap without
-//! normalizing or rewriting the source document. Source events and DSP tails have
-//! their own owners and are not top-level Arrangement occupancy.
+//! Ordinary Arrangement placement on a hybrid TrackId replaces occupied
+//! half-open intervals; retained fragments preserve their processing/source domains.
+//! A selection-fitted crossfade may admit at most two overlapping audio voices
+//! when opposing authored ramps cover their full intersection. MIDI and unfaded
+//! or triple-voice overlaps refuse. Group edits resolve all incoming members
+//! together. Loading validates this law without normalizing source documents;
+//! storage retains older schemas' strictly disjoint contract. Source events and
+//! DSP tails retain their own owners and are not top-level occupancy.
 //!
 //! Track hierarchy is one bounded preorder inventory with typed kind/parent IDs.
 //! Group subtrees are indivisible for structural edits and clipboard membership;
@@ -40,6 +42,7 @@ mod audio_events;
 pub use audio_event_fade::AudioEventFade;
 mod project_tempo;
 mod retained_audio;
+pub use retained_audio::MAX_RETAINED_AUDIO_DEPTH;
 mod track_groups;
 mod track_order;
 pub use audio_events::{
@@ -51,15 +54,22 @@ pub use track_groups::{
 pub use track_order::TrackSelectionIds;
 mod audio_edit;
 mod clip_activation;
+mod clip_alias;
+mod clip_alias_commands;
+mod clip_alias_edit;
+pub use clip_alias::{
+    AliasContentSnapshot, AliasMemberSnapshot, AliasSourceSnapshot, ClipAliasesSnapshot,
+};
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
 mod content_window;
+mod selection_fades;
 mod source_ranges;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioContentView, AudioDomainClock,
-    AudioFadeProjection, AudioImportWarp, AudioProcessingProjection, AudioViewMode,
-    AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
+    AudioClipContent, AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioContentView,
+    AudioDomainClock, AudioFadeProjection, AudioImportWarp, AudioProcessingProjection,
+    AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
     AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
     MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
     WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
@@ -90,6 +100,15 @@ pub use clip_group_preview::ClipGroupMovePreview;
 mod clip_fragment;
 mod conversion;
 mod device;
+mod device_automation;
+pub use device_automation::{
+    AutomationInterpolation, AutomationPoint, AutomationReadSelection, AutomationValue,
+    DeviceAutomation, DeviceAutomationTarget, MAX_DEVICE_AUTOMATION_LANES,
+    MAX_DEVICE_AUTOMATION_POINTS, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
+    validate_device_automation,
+};
+mod device_clipboard;
+pub use device_clipboard::{DeviceChainOwner, DeviceClipboard, DeviceSelectionIds};
 mod device_comparison;
 mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
@@ -160,8 +179,8 @@ pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot
 pub use history::Editor;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{
-    MidiClip, MidiClipTrim, MidiNote, MidiOneShotBoundary, MidiSource, MidiSourceIdentity,
-    TrackContent,
+    MidiClip, MidiClipTrim, MidiContent, MidiNote, MidiOneShotBoundary, MidiSource,
+    MidiSourceIdentity, TrackContent,
 };
 mod midi_loop_resize;
 pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};
@@ -178,11 +197,12 @@ pub use snapshot::{
 };
 use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 pub use timebase::{
-    BeatPulse, BeatTime, InputQuantization, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap,
-    MeterMapCopyCustody, MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout,
-    MeterPoint, MeterPosition, MusicalGridSegment, ResolvedInputGrid, Tempo, TempoMap,
-    TempoMapCopyCustody, TempoMapCopyError, TempoMapCopyPhase, TempoMapOwnedAllocationLayout,
-    TempoPoint, query_beat_pulses,
+    AUTOMATION_PROJECTION_VERSION, BeatPulse, BeatTime, CapturedAutomationProjection,
+    InputQuantization, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterMapCopyCustody,
+    MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout, MeterPoint, MeterPosition,
+    MusicalGridSegment, ResolvedInputGrid, Tempo, TempoMap, TempoMapCopyCustody, TempoMapCopyError,
+    TempoMapCopyPhase, TempoMapOwnedAllocationLayout, TempoPoint, query_beat_pulses,
+    visit_automation_projection_identity,
 };
 
 pub const MAX_TRACKS: usize = 256;
@@ -207,6 +227,7 @@ macro_rules! identifier {
 identifier!(TrackId);
 identifier!(AssetId);
 identifier!(ClipId);
+identifier!(AliasSourceId);
 identifier!(NoteId);
 identifier!(SceneId);
 identifier!(DeviceId);
@@ -621,6 +642,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) aliases: clip_alias::ClipAliases,
     pub(crate) native_sources: Vec<NativeSource>,
     pub(crate) arrangement_sections: Vec<ArrangementSection>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
@@ -646,6 +668,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            aliases: clip_alias::ClipAliases::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             tuning: hex_tuning::ProjectTuning::default(),
@@ -675,6 +698,7 @@ impl Project {
     /// Used by prepared tuning publications; it does not authorize playback itself.
     pub fn same_except_tuning(&self, other: &Self) -> bool {
         let Self {
+            aliases,
             native_sources,
             arrangement_sections,
             tuning: _,
@@ -694,7 +718,8 @@ impl Project {
             tempo_map,
             meter_map,
         } = self;
-        native_sources == &other.native_sources
+        aliases == &other.aliases
+            && native_sources == &other.native_sources
             && arrangement_sections == &other.arrangement_sections
             && routing == &other.routing
             && audio_feeds == &other.audio_feeds

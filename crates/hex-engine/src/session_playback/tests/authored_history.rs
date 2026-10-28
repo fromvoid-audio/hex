@@ -44,6 +44,64 @@ fn warm(old: &mut SessionPlayback, selected_session: bool) {
 }
 
 #[test]
+fn make_alias_unique_and_undo_preserve_held_voice_history_and_note_off() {
+    registry_test(|registry, id| {
+        for selected_session in [false, true] {
+            let base = with_test_instrument(&project(1.0, 0, 1 << 26), id, 0);
+            let mut editor = Editor::new(base, 16).unwrap();
+            let original = if selected_session {
+                let cell = &editor.project().session_cells()[0];
+                let (track, scene) = (cell.track(), cell.scene());
+                let hex_project::SessionCellContent::Midi(clip) = cell.content() else {
+                    panic!("midi cell")
+                };
+                let original = clip.id();
+                editor
+                    .execute(Command::DuplicateSessionCell {
+                        track,
+                        scene,
+                        alias: true,
+                    })
+                    .unwrap();
+                original
+            } else {
+                let original = editor.project().tracks()[0].midi_clips()[0].id();
+                editor
+                    .execute(Command::DuplicateAliasClips(vec![original]))
+                    .unwrap();
+                original
+            };
+            let mut active = ordinary_mutable_playback(editor.project(), registry);
+            let mut reference = ordinary_mutable_playback(editor.project(), registry);
+            warm(&mut active, selected_session);
+            warm(&mut reference, selected_session);
+            editor
+                .execute(Command::MakeClipsUnique(vec![original]))
+                .unwrap();
+            let mut unique = ordinary_mutable_playback(editor.project(), registry);
+            unique.try_inherit_state_from(&mut active).unwrap();
+            let mut actual = [[0.0; 2]; 127];
+            let mut expected = actual;
+            unique.render(&mut actual).unwrap();
+            reference.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.01));
+            assert!(editor.undo());
+            let mut restored = ordinary_mutable_playback(editor.project(), registry);
+            restored.try_inherit_state_from(&mut unique).unwrap();
+            let mut actual = vec![[0.0; 2]; 2_048];
+            let mut expected = actual.clone();
+            for chunk in actual.chunks_mut(17) {
+                restored.render(chunk).unwrap();
+            }
+            reference.render(&mut expected).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual[1_984..].iter().all(|frame| *frame == [0.0; 2]));
+        }
+    });
+}
+
+#[test]
 fn ordinary_restored_or_added_authored_notes_suppress_past_and_admit_future_atomically() {
     registry_test(|registry, id| {
         let full = with_test_instrument(
@@ -135,6 +193,53 @@ fn ordinary_restored_or_added_authored_notes_suppress_past_and_admit_future_atom
             let mut repeated = [[0.0; 2]; 1];
             added.render(&mut repeated).unwrap();
             assert!(repeated[0][0] > 0.0, "next loop iteration is a new onset");
+        }
+    });
+}
+
+#[test]
+fn newly_enabled_notes_do_not_chase_missing_mutable_history() {
+    registry_test(|registry, id| {
+        let full = with_test_instrument(
+            &with_second_arrangement_note(&with_second_session_note(&project(1.0, 0, 8 << 32))),
+            id,
+            0,
+        );
+        for selected_session in [false, true] {
+            let mut snapshot = full.snapshot();
+            arrangement(&mut snapshot)[0].notes[0].active = false;
+            session(&mut snapshot).notes[0].active = false;
+            let before = Project::from_legacy_snapshot(snapshot).unwrap();
+            let mut old = ordinary_mutable_playback(&before, registry);
+            warm(&mut old, selected_session);
+            let mut next = ordinary_mutable_playback(&full, registry);
+            next.try_inherit_state_from(&mut old).unwrap();
+            assert_eq!(next.suppressions.len(), 1);
+            let mut output = [[1.0; 2]; 64];
+            next.render(&mut output).unwrap();
+            assert_eq!(output, [[0.0; 2]; 64]);
+            let mut until_onset = vec![[0.0; 2]; 24_000 - 128];
+            next.render(&mut until_onset).unwrap();
+            assert!(until_onset.iter().all(|frame| *frame == [0.0; 2]));
+            next.render(&mut output[..1]).unwrap();
+            assert!(output[0][0] > 0.0);
+            let mut legacy = SessionPlayback::new(revision_with_instrument_registry(
+                &before,
+                Arc::new(hex_devices::SineTable::new()),
+                registry,
+            ))
+            .unwrap();
+            warm(&mut legacy, selected_session);
+            let mut legacy_next = SessionPlayback::new(revision_with_instrument_registry(
+                &full,
+                Arc::new(hex_devices::SineTable::new()),
+                registry,
+            ))
+            .unwrap();
+            assert_eq!(
+                legacy_next.try_inherit_state_from(&mut legacy),
+                Err(SessionPlaybackError::MutableInstrumentChase)
+            );
         }
     });
 }

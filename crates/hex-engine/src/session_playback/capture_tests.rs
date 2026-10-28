@@ -57,6 +57,7 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
             gain: 0.25,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 21,
                 bypassed: false,
@@ -119,6 +120,31 @@ fn metered_analytic_capture_applies_track_gain_once_and_preserves_main_pcm() {
 }
 
 #[test]
+fn track_meter_reports_post_fader_audio_including_zero_gain_and_mute() {
+    for (gain, muted) in [(1.0, false), (0.25, false), (0.0, false), (1.0, true)] {
+        let mut snapshot = audio_fixture_project(false, false, false).snapshot();
+        snapshot.tracks[0].gain = gain;
+        snapshot.tracks[0].muted = muted;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let revision = prepare_audio(&project);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        let mut runtime = linear(revision);
+        runtime.set_device_metering(true);
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+        let actual = observation
+            .track_output_meter(project.tracks()[0].id())
+            .unwrap()
+            .take_track_output();
+        let expected = if muted { 0.0 } else { 0.4 * 0.5 * gain };
+        assert!(
+            (actual - expected).abs() < 1e-7,
+            "gain={gain} muted={muted} actual={actual} expected={expected}"
+        );
+    }
+}
+
+#[test]
 fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
     for metered in [false, true] {
         use hex_devices::saturator::{SATURATOR_DEFINITION, parameter};
@@ -136,6 +162,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         };
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 22,
             bypassed: false,
@@ -144,6 +171,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         snapshot.return_tracks[0].devices.insert(
             0,
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 23,
                 bypassed: false,
@@ -200,6 +228,7 @@ fn selected_outputs_keep_shared_unselected_sends_and_independent_post_mix_pcm() 
     for (muted, solo) in [(false, false), (true, false), (false, true)] {
         let revision = audio_fixture(true, muted, solo);
         let mut runtime = linear(Arc::clone(&revision));
+        runtime.set_device_metering(true);
         let mut main_only = linear(Arc::clone(&revision));
         let track = runtime.routes[0].id;
         let bus = revision.arrangement().return_buses()[0].id;
@@ -217,6 +246,23 @@ fn selected_outputs_keep_shared_unselected_sends_and_independent_post_mix_pcm() 
         runtime
             .render_with_capture(&mut main, &mut capture)
             .unwrap();
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        for (index, meter) in [
+            observation.return_output_meter(bus).unwrap(),
+            observation.track_output_meter(track).unwrap(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected = capture
+                .output(index)
+                .unwrap()
+                .iter()
+                .flatten()
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            assert_eq!(meter.take_track_output(), expected);
+        }
         assert_eq!(capture.valid_frames(), 512);
         let mut expected_main = [[0.0; 2]; 512];
         main_only.render(&mut expected_main).unwrap();
@@ -645,12 +691,14 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         routed.next_id = 110;
         routed.tracks[0].devices = vec![
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 100,
                 bypassed: false,
                 state: prefix,
             },
             DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 101,
                 bypassed: false,
@@ -668,6 +716,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
             gain: 0.25,
             muted: false,
             devices: vec![DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: 103,
                 bypassed: false,
@@ -799,6 +848,12 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             )
             .unwrap(),
         );
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&retarget_revision).unwrap();
+        observation
+            .track_output_meter(project.tracks()[0].id())
+            .unwrap()
+            .take_track_output();
         let mut retarget = SessionPlayback::new(retarget_revision).unwrap();
         retarget.set_device_metering(metered);
         retarget.try_inherit_state_from(&mut gain_source).unwrap();
@@ -818,6 +873,16 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
             assert_eq!(*frame, expected);
             assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+        }
+        if metered {
+            let observed = observation
+                .track_output_meter(project.tracks()[0].id())
+                .unwrap()
+                .take_track_output();
+            assert!(
+                (observed - (0.4 + 0.25) * 0.125).abs() < 1e-7,
+                "track meter must follow the new post-fader gain: {observed}"
+            );
         }
         // Owner removal uses a local MIDI source, preserving the current
         // handoff contract that does not replace a live routed source layout.
@@ -1019,6 +1084,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     use hex_lattice::conformance::owned_delay;
     let mut snapshot = audio_fixture_project(true, false, false).snapshot();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 31,
         bypassed: false,
@@ -1026,6 +1092,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     }];
     if compensated {
         snapshot.tracks[1].devices = vec![DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: 32,
             bypassed: false,
@@ -1033,6 +1100,7 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
         }];
     }
     snapshot.return_tracks[0].devices = vec![DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 21,
         bypassed: false,
@@ -1082,6 +1150,11 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
                 super::return_effect_tails::ReturnEffectTail::new(chain, bus),
             );
         }
+        tested.set_device_metering(true);
+        let observation =
+            crate::PreparedPlaybackObservation::prepare_on_control(&revision).unwrap();
+        let track_id = tested.routes[0].id;
+        let return_id = revision.arrangement().return_buses()[0].id;
         tested.arrangement_frame = u64::MAX - 300;
         let mut observed = 0;
         let mut actual = [[9.0; 2]; 512];
@@ -1098,6 +1171,20 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
             "failure must follow speculative effect processing"
         );
         assert_eq!(actual, [[0.0; 2]; 512]);
+        assert_eq!(
+            observation
+                .track_output_meter(track_id)
+                .unwrap()
+                .take_track_output(),
+            0.0
+        );
+        assert_eq!(
+            observation
+                .return_output_meter(return_id)
+                .unwrap()
+                .take_track_output(),
+            0.0
+        );
         assert_eq!(tested.performance_frame, 4);
         let candidate = linear(revision);
         // This provider forbids inheriting an open transaction. A next-begin

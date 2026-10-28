@@ -69,6 +69,26 @@ fn browser_drag_fixture(
     (handle, editor, tracks[0], directory, path)
 }
 
+#[gpui::test]
+fn consumed_browser_search_key_is_redacted_from_action_diagnostics(cx: &mut TestAppContext) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut log = hex_diagnostics::SessionLog::start(directory.0.join("diagnostics")).unwrap();
+    cx.update(|cx| {
+        crate::diagnostics::install_session_log(cx, Ok(log.handle()));
+        crate::diagnostics::install_action_diagnostics(cx, true);
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| editor.read(cx).browser.search.read(cx).focus(window));
+    visual.simulate_keystrokes("q->密");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).text(), "密");
+    });
+    log.shutdown().unwrap();
+    let contents = std::fs::read_to_string(log.path()).unwrap();
+    assert!(contents.contains("stage=key key=\\\"redacted\\\""));
+    assert!(!contents.contains("密"));
+}
+
 fn browser_drag_fixture_with_tracks(
     cx: &mut TestAppContext,
     names: &[&str],
@@ -1237,7 +1257,7 @@ fn browser_sample_drop_between_tracks_shows_only_insertion_line_and_keeps_snappe
     assert_eq!(first.origin.x, body.origin.x);
     assert_eq!(
         first.size.width,
-        body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH)
+        body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
     );
     let pointer_start = (((f32::from(target.x) - f32::from(first.origin.x))
         / f32::from(first.size.width))
@@ -1440,7 +1460,7 @@ fn browser_sample_drop_below_last_track_appends_with_line_and_locked_ghost(
             .clone()
             .expect("prepared sample duration");
         let viewport = view.visible_viewport(384_000);
-        let timeline_width = body.size.width - px(super::super::tracks::TRACK_HEADER_WIDTH);
+        let timeline_width = body.size.width - px(view.track_header_width());
         let left = body.origin.x
             + px(
                 (start.saturating_sub(viewport.start) as f64 / viewport.length as f64
@@ -1531,7 +1551,10 @@ fn browser_sample_drop_in_empty_arrangement_creates_bottom_track(cx: &mut TestAp
     assert!(
         (ghost.origin.x
             - body.origin.x
-            - px((start as f64 / 384_000.0 * f64::from(body.size.width - px(176.0))) as f32))
+            - px((start as f64 / 384_000.0
+                * f64::from(
+                    body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
+                )) as f32))
         .abs()
             <= px(1.0)
     );
@@ -1666,7 +1689,10 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
         .debug_bounds("arrangement-grid-line-0")
         .expect("grid starts at the visible timeline origin");
     assert_eq!(grid.origin.x, body.origin.x);
-    assert_eq!(grid.size.width + px(176.0), body.size.width);
+    assert_eq!(
+        grid.size.width + editor.read_with(cx, |view, _| px(view.track_header_width())),
+        body.size.width
+    );
     assert_eq!(first_grid_line.origin.x, ruler.origin.x);
     let pointer = point(
         ruler.origin.x + ruler.size.width * 0.37,
@@ -1907,7 +1933,7 @@ fn physical_wheel_delta_normalizes_pixels_and_lines_without_mutating_raw_delta()
 
 #[gpui::test]
 fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppContext) {
-    let (handle, _editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);
+    let (handle, editor, tracks, _directory, _) = browser_drag_fixture_with_tracks(cx, &[]);
     assert!(tracks.is_empty());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -1928,7 +1954,10 @@ fn empty_arrangement_keeps_the_grid_aligned_with_the_ruler(cx: &mut TestAppConte
         "four-adaptive-unit shading spans the empty Arrangement timeline"
     );
     assert_eq!(grid.origin.x, body.origin.x);
-    assert_eq!(grid.size.width + px(176.0), body.size.width);
+    assert_eq!(
+        grid.size.width + editor.read_with(cx, |view, _| px(view.track_header_width())),
+        body.size.width
+    );
     assert_eq!(line.origin.x, ruler.origin.x);
 }
 
@@ -2014,7 +2043,8 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
             view.track_scroll.max_offset(),
         )
     });
-    let timeline_width = f32::from(body.size.width - px(176.0));
+    let timeline_width =
+        f32::from(body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width())));
     let expected_delta = (90.0 * initial.length as f64 / f64::from(timeline_width)).round() as i128;
     assert_eq!(
         panned,

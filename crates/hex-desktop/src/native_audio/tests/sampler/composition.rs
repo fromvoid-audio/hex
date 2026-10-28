@@ -46,6 +46,7 @@ fn sampler_composition_current_arrange_console_history_and_save_roundtrip() {
         Command::AddMidiNotes {
             clip,
             notes: vec![hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::ZERO,
                 duration: BeatTime::ONE,
                 pitch: 60,

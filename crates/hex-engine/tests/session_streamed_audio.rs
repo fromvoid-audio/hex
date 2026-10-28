@@ -22,6 +22,7 @@ const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
@@ -976,7 +977,7 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
     assert_eq!(
         extents
             .iter()
-            .find(|e| e.source == source_key)
+            .find(|e| e.source == source_key.into())
             .unwrap()
             .start,
         4_093
@@ -1242,7 +1243,7 @@ fn session_gain_resident_streamed_and_replacement_keep_one_shot_anchor() {
 
 #[test]
 fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff_retry() {
-    use hex_engine::{SessionPlayback, SessionPlaybackCommand, StreamPageExtent};
+    use hex_engine::{SessionPlayback, SessionPlaybackCommand, StreamResourceExtent};
     let project = project(4094, 4105);
     let source = metadata(&project, 51, [0x71; 32]);
     let key = source.key();
@@ -1279,14 +1280,14 @@ fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff
     assert_eq!(
         extents,
         vec![
-            StreamPageExtent {
-                source: key,
+            StreamResourceExtent {
+                source: key.into(),
                 page_index: 0,
                 start: 4094,
                 end: 4096
             },
-            StreamPageExtent {
-                source: key,
+            StreamResourceExtent {
+                source: key.into(),
                 page_index: 1,
                 start: 0,
                 end: 6
@@ -1360,8 +1361,8 @@ fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff
     assert_eq!(actual, planned);
     assert_eq!(
         actual,
-        vec![StreamPageExtent {
-            source: key,
+        vec![StreamResourceExtent {
+            source: key.into(),
             page_index: 1,
             start: 2,
             end: 6
@@ -1517,4 +1518,167 @@ fn console_audio_streamed_cycles_match_resident_and_demand_every_wrapped_page() 
         extents.iter().map(|e| e.page_index).collect::<Vec<_>>(),
         vec![0, 1, 0, 1]
     );
+}
+
+#[test]
+fn arrangement_crossfade_demands_both_pages_and_matches_resident_audio() {
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Imported {
+        track,
+        clip: left,
+        asset,
+    } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "crossfade".into(),
+            path: "streamed-crossfade.wav".into(),
+            sample_rate: RATE,
+            frames: 8_192,
+        })
+        .unwrap()
+    else {
+        panic!("fixture import")
+    };
+    editor
+        .execute(Command::SetClipLooping {
+            clip: left,
+            looping: true,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipSourcePhase {
+            clip: left,
+            phase: 2_000,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip: left,
+            edge: hex_project::TrimEdge::Right,
+            frame: 4_096,
+        })
+        .unwrap();
+    let Created::Clip(right) = editor
+        .execute(Command::CopyClipTo {
+            clip: left,
+            track,
+            start: 4_096,
+        })
+        .unwrap()
+    else {
+        panic!("fixture copy")
+    };
+    editor
+        .execute(Command::SetClipSourcePhase {
+            clip: right,
+            phase: 997,
+        })
+        .unwrap();
+    for clip in [left, right] {
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+    }
+    editor
+        .execute(Command::CreateArrangementFades {
+            range: hex_project::TimeRange::new(vec![track], 3_596, 4_596).unwrap(),
+        })
+        .unwrap();
+    let project = editor.project();
+    let generation = 891;
+    let key = StreamSourceKey::new(generation, asset);
+    let streamed_metadata = StreamedSourceMetadata::new(
+        key,
+        RATE,
+        RATE,
+        8_192,
+        8_192,
+        hex_project::IDENTITY_CONVERSION,
+        [17; 32],
+    )
+    .unwrap();
+    let make = |source| {
+        Arc::new(
+            PreparedRevision::prepare_with_prepared_audio_sources(
+                project,
+                &BTreeMap::from([(asset, source)]),
+                generation,
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let streamed = make(PreparedAudioSource::Streamed(Arc::new(streamed_metadata)));
+    let resident = make(PreparedAudioSource::Resident(
+        Audio::new(RATE, (0..8_192).map(sample).collect()).unwrap(),
+    ));
+    let mut demand = hex_engine::SessionPlayback::new(Arc::clone(&streamed)).unwrap();
+    demand
+        .apply(hex_engine::SessionPlaybackCommand::Seek(3_596))
+        .unwrap();
+    demand
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut extents = Vec::new();
+    let window = demand
+        .visit_next_stream_chunk(1_000, None, &mut |extent| {
+            extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(window.arrangement_frame, 3_596);
+    assert!(
+        window.frames > 0 && window.frames <= 1_000,
+        "the existing demand owner may bound a render quantum"
+    );
+    assert!(
+        extents
+            .iter()
+            .any(|e| e.source == key.into() && e.page_index == 0),
+        "incoming source requires page0"
+    );
+    assert!(
+        extents
+            .iter()
+            .any(|e| e.source == key.into() && e.page_index == 1),
+        "outgoing source requires page1"
+    );
+    for block in [1, 17, 257] {
+        let mut a = Playback::try_from_prepared_with_session(Arc::clone(&streamed)).unwrap();
+        let mut b = Playback::try_from_prepared_with_session(Arc::clone(&resident)).unwrap();
+        a.apply(PlaybackCommand::Play);
+        b.apply(PlaybackCommand::Play);
+        let mut pages = MemoryPages::with_source(key);
+        let mut actual = vec![[0.0; 2]; 8_192];
+        let mut expected = actual.clone();
+        for output in actual.chunks_mut(block) {
+            a.render_with_pages(output, &mut pages).unwrap();
+        }
+        for output in expected.chunks_mut(block) {
+            b.render(output).unwrap();
+        }
+        assert_eq!(actual, expected, "crossfade block={block}");
+        assert!(pages.requests.is_empty());
+    }
+    // Missing the incoming page keeps the independently available outgoing
+    // voice audible; there is no track-wide silence or fabricated resident data.
+    let mut pages = MemoryPages::with_source(key);
+    pages.pages.remove(&(key, 0));
+    let mut output = vec![[0.0; 2]; 1_000];
+    let mut cold = Playback::try_from_prepared_with_session(Arc::clone(&streamed)).unwrap();
+    cold.apply(PlaybackCommand::Seek(3_596));
+    cold.apply(PlaybackCommand::Play);
+    cold.render_with_pages(&mut output, &mut pages).unwrap();
+    for (offset, actual) in output.iter().enumerate() {
+        let source = sample(5_596 + offset as u64);
+        let gain = (999 - offset) as f32 / 999.0;
+        for channel in 0..2 {
+            assert!((actual[channel] - source[channel] * gain).abs() < 1e-7);
+        }
+    }
+    assert!(pages.requests.contains(&(key, 0)));
 }

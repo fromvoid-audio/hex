@@ -95,6 +95,40 @@ impl super::EditorView {
         }
     }
 
+    /// Painting an ordinary lane range explicitly selects its visible track span.
+    /// Time geometry remains separately owned; unchanged horizontal motion keeps
+    /// this membership allocation and the stable drag anchor intact.
+    pub(super) fn select_lane_span(&mut self, anchor: TrackId, end: TrackId) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let tracks = state.project.tracks();
+        let Some(first) = tracks.iter().position(|track| track.id() == anchor) else {
+            return;
+        };
+        let Some(last) = tracks.iter().position(|track| track.id() == end) else {
+            return;
+        };
+        let visible = tracks[first.min(last)..=first.max(last)]
+            .iter()
+            .filter(|track| self.arrangement_track_visible(track.id()));
+        if self.selected_track == Some(end)
+            && self.track_selection.anchor == Some(anchor)
+            && visible.clone().count() == self.track_selection.ids.len()
+            && visible
+                .clone()
+                .all(|track| self.track_selection.contains(track.id()))
+        {
+            return;
+        }
+        let ids = visible.map(|track| track.id()).collect();
+        self.track_selection.ids = ids;
+        self.track_selection.anchor = Some(anchor);
+        self.selected_track = Some(end);
+        self.arrangement_focus.observe_active_track(Some(end));
+        self.update_track_selection_status();
+    }
+
     pub(super) fn update_track_selection_status(&mut self) {
         self.status = match self.selected_track_ids().len() {
             0 => "no tracks selected".into(),

@@ -113,6 +113,8 @@ pub struct PreparedRevision {
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
     authored_midi_sources: Vec<authored_midi::Source>,
     gain_recording_track: Option<TrackId>,
+    native_parameter_input: Option<crate::device_automation::NativeParameterInputTarget>,
+    pub(crate) scalar_automation: Option<Box<crate::scalar_automation::ScalarAutomationBinding>>,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -125,6 +127,17 @@ impl std::fmt::Debug for PreparedRevision {
 }
 
 impl PreparedRevision {
+    #[cfg(test)]
+    pub(crate) fn test_install_group_graph(&mut self, canonical: &Project) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.signal_graph =
+            crate::signal_graph::SignalGraph::prepare(&arrangement, &[], canonical).unwrap();
+        for track in &mut arrangement.tracks {
+            track.source_mix = crate::PreparedTrackMix::identity();
+        }
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
     pub fn prepare(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
@@ -140,6 +153,79 @@ impl PreparedRevision {
             previous_session,
             &instruments,
         )
+    }
+
+    /// Prepare one recorded normalized source through the same native factory
+    /// union as live input. Delayed stages use the graph's transport history.
+    /// Metadata alone grants no page lease or native publication authority.
+    pub fn prepare_with_scalar_automation(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        binding: crate::scalar_automation::ScalarAutomationBinding,
+    ) -> Result<Self, Invalid> {
+        crate::scalar_automation::validate_source(project, &binding)?;
+        let prepared = Self::prepare_for_native_parameter_input(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            binding.device,
+            binding.target,
+        )?;
+        prepared.finish_scalar_automation(binding)
+    }
+    /// The same recorded target and factory admission with prepared PCM sources.
+    /// This adds no source worker or resource owner; native publication must
+    /// match every audio/scalar dependency against its actual retained catalog.
+    pub fn prepare_with_scalar_automation_and_prepared_sources(
+        project: &Project,
+        sources: &BTreeMap<AssetId, crate::compile::PreparedAudioSource>,
+        source_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        binding: crate::scalar_automation::ScalarAutomationBinding,
+    ) -> Result<Self, Invalid> {
+        crate::scalar_automation::validate_source(project, &binding)?;
+        let input = crate::device_automation::native_parameter_input_target(
+            project,
+            binding.device,
+            binding.target,
+        )?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_source_bank(
+            project,
+            crate::compile::SourceBank::Mixed(sources, source_generation),
+            sine_table,
+            previous_session,
+            &effects,
+            &instruments,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            None,
+            Some(input),
+        )?
+        .finish_scalar_automation(binding)
+    }
+    fn finish_scalar_automation(
+        mut self,
+        binding: crate::scalar_automation::ScalarAutomationBinding,
+    ) -> Result<Self, Invalid> {
+        let input = self
+            .native_parameter_input
+            .filter(|input| input.device() == binding.device && input.target() == binding.target)
+            .ok_or(Invalid("scalar automation native target is unavailable"))?;
+        self.arrangement.prepare_scalar_automation(input)?;
+        self.scalar_automation = Some(Box::new(binding));
+        Ok(self)
+    }
+    pub fn scalar_automation_binding(
+        &self,
+    ) -> Option<&crate::scalar_automation::ScalarAutomationBinding> {
+        self.scalar_automation.as_deref()
     }
 
     /// Prepare a tuning-only publication in the authoritative Session's existing
@@ -173,7 +259,9 @@ impl PreparedRevision {
         previous_project: &Project,
         previous_revision: &Self,
     ) -> Result<Self, Invalid> {
-        if !previous_project.same_except_tuning(project)
+        if self.scalar_automation.is_some()
+            || previous_revision.scalar_automation.is_some()
+            || !previous_project.same_except_tuning(project)
             || self.arrangement.shared_contexts().tuning()
                 != &project.tuning().table().map_err(|e| Invalid(e.0))?
             || previous_revision.arrangement.sample_rate() != previous_project.sample_rate()
@@ -289,6 +377,62 @@ impl PreparedRevision {
             .arm_gain_recording(track, canonical.gain(), canonical.balance())?;
         prepared.gain_recording_track = Some(track);
         Ok(self)
+    }
+
+    /// Prepare one transient native input through the ordinary compiler, without
+    /// creating canonical points or acquiring a second runtime/publication owner.
+    pub fn prepare_for_native_parameter_input(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        device: hex_project::DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_for_native_parameter_input_with_audio_transforms(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            device,
+            target,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+        )
+    }
+    /// Same transient input with the control worker's existing transform lifecycle.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_for_native_parameter_input_with_audio_transforms(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        device: hex_project::DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+    ) -> Result<Self, Invalid> {
+        let input =
+            crate::device_automation::native_parameter_input_target(project, device, target)?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_source_bank(
+            project,
+            crate::compile::SourceBank::Resident(media),
+            sine_table,
+            previous_session,
+            &effects,
+            &instruments,
+            transforms,
+            None,
+            Some(input),
+        )
+    }
+    /// Exact source locator armed during preparation, never a live application ACK.
+    pub fn native_parameter_input_target(
+        &self,
+    ) -> Option<crate::device_automation::NativeParameterInputTarget> {
+        self.native_parameter_input
     }
 
     pub fn gain_recording_track(&self) -> Option<TrackId> {
@@ -421,6 +565,7 @@ impl PreparedRevision {
             instruments,
             transforms,
             samplers,
+            None,
         )
     }
 
@@ -434,6 +579,7 @@ impl PreparedRevision {
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         transforms: &crate::audio_transform::AudioTransformPreparation,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
             crate::gain_envelope::validate_project(project)?;
@@ -461,6 +607,7 @@ impl PreparedRevision {
                 Some(Arc::clone(&shared_contexts)),
                 Some(transforms),
                 samplers,
+                native_input,
             )?;
             let session = PreparedSessionInventory::prepare_with_source_bank(
                 project,
@@ -514,12 +661,15 @@ impl PreparedRevision {
                 authored_midi_sources: if samplers
                     .and_then(|sources| sources.device_scope())
                     .is_some()
+                    || authored_midi::has_inactive(project)
                 {
                     authored_midi::prepare(project)?
                 } else {
                     Vec::new()
                 },
                 gain_recording_track: None,
+                native_parameter_input: native_input,
+                scalar_automation: None,
             })
         })
     }
@@ -663,6 +813,7 @@ impl PreparedRevision {
             &instruments,
             transforms,
             Some(&preparation),
+            None,
         )
     }
 
@@ -813,6 +964,8 @@ impl PreparedRevision {
             mutable_track_revisions,
             authored_midi_sources: Vec::new(),
             gain_recording_track: None,
+            native_parameter_input: None,
+            scalar_automation: None,
         })
     }
 
@@ -869,7 +1022,9 @@ impl PreparedRevision {
     }
 
     pub fn contains_streamed_sources(&self) -> bool {
-        self.arrangement.contains_streamed_sources() || self.session.contains_streamed_sources()
+        self.scalar_automation.is_some()
+            || self.arrangement.contains_streamed_sources()
+            || self.session.contains_streamed_sources()
     }
 
     /// Whether the compiled Arrangement owns any enabled mutable instrument.
@@ -1238,8 +1393,8 @@ impl PreparedRevision {
         })
     }
 
-    /// Missing DSP history is suppressed only for a genuinely added/restored stable authored
-    /// identity. Complete global evidence prevents a moved clip or an old note outside playback
+    /// Missing DSP history is suppressed for a genuinely added/restored or newly enabled
+    /// authored note. Complete evidence prevents a moved clip or an old note outside playback
     /// markers from being mistaken for a new note. This grants no voice/history continuity.
     pub(crate) fn newly_authored_mutable_note(
         &self,
@@ -1288,6 +1443,14 @@ impl PreparedRevision {
                     .and_then(|index| track.arrangement_midi_sources.get(index))
             })
             .is_some_and(|clip| !clip.active)
+    }
+
+    pub(crate) fn midi_note_inactive(
+        &self,
+        clip: hex_project::ClipId,
+        note: hex_project::NoteId,
+    ) -> bool {
+        authored_midi::inactive_note(&self.authored_midi_sources, clip, note)
     }
 
     /// A retained prefix is a strict narrowing of the same source clock, not
@@ -1504,6 +1667,7 @@ fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevis
                                 && a.bypassed == b.bypassed
                                 && a.sample_rate == b.sample_rate
                                 && a.matrix == b.matrix
+                                && a.automation == b.automation
                                 && match (&a.configuration, &b.configuration) {
                                     (Some(a), Some(b)) => a.processing_eq(b),
                                     (None, None) => true,
