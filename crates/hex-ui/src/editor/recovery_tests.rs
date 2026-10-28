@@ -13,7 +13,10 @@ use hex_session::service::{
 };
 use std::sync::{
     Arc, Mutex,
-    atomic::AtomicBool,
+    atomic::{
+        AtomicBool,
+        Ordering::{AcqRel, Release},
+    },
     mpsc::{SyncSender, TryRecvError, sync_channel},
 };
 use std::time::{Duration, Instant};
@@ -26,6 +29,9 @@ struct Sink {
     events: SyncSender<EditorAudioEvent>,
     hold: Arc<AtomicBool>,
     held: Arc<Mutex<Option<EditorAudioEvent>>>,
+    reject_next_fresh: Arc<AtomicBool>,
+    cancel_next_fresh: Arc<AtomicBool>,
+    cancellation_done: Arc<AtomicBool>,
 }
 impl WorkerAudioSink for Sink {
     fn resident_publication_enabled(&self) -> bool {
@@ -61,6 +67,16 @@ impl WorkerAudioSink for Sink {
         _: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        if matches!(policy, ResidentPublicationPolicy::InstallFreshRuntime)
+            && self.reject_next_fresh.swap(false, AcqRel)
+        {
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "fixture refused stopped restoration".into(),
+            });
+        }
+        let cancel_fresh = matches!(policy, ResidentPublicationPolicy::InstallFreshRuntime)
+            && self.cancel_next_fresh.swap(false, AcqRel);
         let control = self.output.publication.control().unwrap();
         let output_identity = control.output_identity().unwrap();
         let policy = match policy {
@@ -72,7 +88,13 @@ impl WorkerAudioSink for Sink {
                 });
             }
             ResidentPublicationPolicy::InstallFreshRuntime => {
-                PublicationPolicy::InstallFreshRuntime
+                if cancel_fresh {
+                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(
+                        control.capture_fresh_runtime_fence().unwrap(),
+                    )
+                } else {
+                    PublicationPolicy::InstallFreshRuntime
+                }
             }
             ResidentPublicationPolicy::RestorePluginState => {
                 return Err(ResidentPublicationRefusal {
@@ -143,6 +165,13 @@ impl WorkerAudioSink for Sink {
                     error: error.reason.into(),
                 },
             })?;
+        if cancel_fresh {
+            assert_eq!(
+                control.cancel_fresh_runtime_publication(revision),
+                hex_audio::prepared::FreshRuntimeCancellationResult::Cancelled
+            );
+            self.cancellation_done.store(true, Release);
+        }
         let event = EditorAudioEvent::Publication {
             context: metadata.context,
             output_identity,
@@ -217,6 +246,26 @@ fn replaced_project_cannot_resume_an_older_latency_rebuild(cx: &mut gpui::TestAp
 fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     cx: &mut gpui::TestAppContext,
 ) {
+    let files = super::super::test_environment::Environment::new().unwrap();
+    let wav_path = files.root().join("latency-recovery.wav");
+    let frames = 96_000_u32;
+    let mut wav = Vec::with_capacity(44 + frames as usize * 2);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&48_000_u32.to_le_bytes());
+    wav.extend_from_slice(&96_000_u32.to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(frames * 2).to_le_bytes());
+    for _ in 0..frames {
+        wav.extend_from_slice(&8192_i16.to_le_bytes());
+    }
+    std::fs::write(&wav_path, wav).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
@@ -251,6 +300,9 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     let (events, receiver) = sync_channel(64);
     let hold = Arc::new(AtomicBool::new(false));
     let held = Arc::new(Mutex::new(None));
+    let reject_next_fresh = Arc::new(AtomicBool::new(false));
+    let cancel_next_fresh = Arc::new(AtomicBool::new(false));
+    let cancellation_done = Arc::new(AtomicBool::new(false));
     let release = events.clone();
     let service = Service::with_audio_sink_and_native_reservation(
         16,
@@ -261,6 +313,9 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
             events,
             hold: Arc::clone(&hold),
             held: Arc::clone(&held),
+            reject_next_fresh: Arc::clone(&reject_next_fresh),
+            cancel_next_fresh: Arc::clone(&cancel_next_fresh),
+            cancellation_done: Arc::clone(&cancellation_done),
         }),
         reservation,
     )
@@ -301,6 +356,18 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
         Created::Track(track) => track,
         other => panic!("{other:?}"),
     };
+    service
+        .submit(Request::ImportToTrack {
+            path: wav_path,
+            track,
+            start: 0,
+        })
+        .unwrap();
+    let imported = receive();
+    assert_eq!(
+        imported.state.project.track(track).unwrap().clips().len(),
+        1
+    );
     let add_limiter = |track| Request::AddNativeDevice {
         track,
         class: hex_engine::NativeDeviceClass::Effect,
@@ -347,7 +414,16 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     editor.update(cx, |view, _| {
         view.queue_audio_command(PlaybackCommand::PlayFrom(123))
     });
-    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut audible_before = false;
+    for _ in 0..32 {
+        let mut output = [[0.0; 2]; 64];
+        backend.render(&mut output).unwrap();
+        audible_before |= output.iter().flatten().any(|sample| sample.abs() > 0.05);
+    }
+    assert!(
+        audible_before,
+        "the original graph must produce the fixture audio"
+    );
     hold.store(true, std::sync::atomic::Ordering::Release);
     editor.update(cx, |view, _| {
         assert!(view.enqueue(add_limiter(second_track)));
@@ -471,6 +547,16 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
             1
         );
     });
+    let mut audible_after = false;
+    for _ in 0..32 {
+        let mut output = [[0.0; 2]; 64];
+        backend.render(&mut output).unwrap();
+        audible_after |= output.iter().flatten().any(|sample| sample.abs() > 0.05);
+    }
+    assert!(
+        audible_after,
+        "the rebuilt graph must resume the fixture audio"
+    );
 
     // A later explicit Stop must win even if another rebuild is in flight.
     editor.update(cx, |view, _| {
@@ -503,6 +589,187 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     editor.update(cx, |view, _| {
         assert!(!view.audio_status().unwrap().playing.load(Acquire))
     });
+
+    // A worker refusal of the fresh stopped graph must never restart transport.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            view.stopped_playback_restore.is_none()
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| view.applied_project_revision == Some(state.revision))
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cancelled restoration did not settle"
+        );
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        view.queue_audio_command(PlaybackCommand::Play)
+    });
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    reject_next_fresh.store(true, Release);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(add_limiter(second_track)))
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            !reject_next_fresh.load(Acquire)
+                && view.latency_rebuild.is_none()
+                && view.stopped_playback_restore.is_none()
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "refused restoration did not settle"
+        );
+        std::thread::yield_now();
+    }
+    for _ in 0..20 {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(cx, |view, cx| {
+            view.tick(cx);
+            assert!(!view.audio_status().unwrap().playing.load(Acquire));
+        });
+    }
+
+    // Retry the retained project while stopped, then force the callback to
+    // reject the next fresh publication before it can be installed.
+    editor.update(cx, |view, _| view.stop());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            view.stopped_playback_restore.is_none()
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| view.applied_project_revision == Some(state.revision))
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "manual retry did not settle");
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        view.queue_audio_command(PlaybackCommand::Play)
+    });
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    cancel_next_fresh.store(true, Release);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(add_limiter(second_track)))
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            matches!(
+                view.latency_rebuild,
+                Some(super::super::audio_admission::LatencyRebuild::Restoring { .. })
+            ) && !view.audio_status().unwrap().playing.load(Acquire)
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "callback-refusal recovery did not stop"
+        );
+        std::thread::yield_now();
+    }
+    while !cancellation_done.load(Acquire) {
+        editor.update(cx, |view, cx| view.tick(cx));
+        assert!(
+            Instant::now() < deadline,
+            "fresh publication was not cancelled"
+        );
+        std::thread::yield_now();
+    }
+    let mut rejected = false;
+    for _ in 0..100 {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(cx, |view, cx| {
+            view.tick(cx);
+            let status = view.audio_status().unwrap();
+            rejected |= status.rejected_revision().is_some_and(|(_, reason)| {
+                reason == hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled
+            });
+            assert!(!status.playing.load(Acquire));
+        });
+        std::thread::yield_now();
+    }
+    assert!(
+        rejected,
+        "the callback must report the cancelled fresh graph"
+    );
+    editor.update(cx, |view, _| {
+        assert!(view.latency_rebuild.is_none());
+        assert!(view.stopped_playback_restore.is_none());
+    });
+
+    // A later Pause is a new user intent and must cancel automatic resume.
+    editor.update(cx, |view, _| view.stop());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            view.stopped_playback_restore.is_none()
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| view.applied_project_revision == Some(state.revision))
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "pause fixture did not recover");
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        view.queue_audio_command(PlaybackCommand::Play)
+    });
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(add_limiter(second_track)))
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            matches!(
+                view.latency_rebuild,
+                Some(super::super::audio_admission::LatencyRebuild::Restoring { .. })
+            )
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "pause recovery did not start");
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        view.queue_audio_command(PlaybackCommand::Pause)
+    });
+    for _ in 0..100 {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        editor.update(cx, |view, cx| {
+            view.tick(cx);
+            assert!(view.latency_rebuild.is_none());
+            assert!(!view.audio_status().unwrap().playing.load(Acquire));
+        });
+        std::thread::yield_now();
+    }
 }
 
 #[gpui::test]
@@ -556,6 +823,9 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             events,
             hold: hold.clone(),
             held: held.clone(),
+            reject_next_fresh: Arc::new(AtomicBool::new(false)),
+            cancel_next_fresh: Arc::new(AtomicBool::new(false)),
+            cancellation_done: Arc::new(AtomicBool::new(false)),
         }),
         reservation,
     )
