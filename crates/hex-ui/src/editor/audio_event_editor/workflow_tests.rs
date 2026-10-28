@@ -303,7 +303,8 @@ fn event_overlap_accent_covers_only_replaced_audio_and_survives_release(cx: &mut
         v.audio_event_editor.grid = SnapGrid::Off
     });
     let body = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(body.left() + body.size.width * 0.125, body.top() + px(26.0));
+    // The top five pixels now own event gain; move from the remaining rail.
+    let down = point(body.left() + body.size.width * 0.125, body.top() + px(32.0));
     let up = point(body.left() + body.size.width * 0.375, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
@@ -674,7 +675,7 @@ fn check_event_move_release(cx: &mut TestAppContext, outside: bool) {
         Arc::clone(&v.state.as_ref().unwrap().project)
     });
     let b = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(b.left() + b.size.width * 0.125, b.top() + px(26.0));
+    let down = point(b.left() + b.size.width * 0.125, b.top() + px(32.0));
     let up = point(b.left() + b.size.width * 0.5, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
