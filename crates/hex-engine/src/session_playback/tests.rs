@@ -5452,7 +5452,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let previous_frame = previous.performance_frame();
     assert_eq!(
         refused.try_inherit_state_from(&mut previous),
-        Err(SessionPlaybackError::MutableInstrumentChase)
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
     );
     assert_eq!(previous.performance_frame(), previous_frame);
     assert!(
@@ -11294,7 +11294,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
     let mut successor = SessionPlayback::new(candidate).unwrap();
     assert_eq!(
         successor.try_inherit_state_from(&mut previous),
-        Err(SessionPlaybackError::DeviceRuntime)
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
     );
     assert!(previous.playing());
 
@@ -11319,7 +11319,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
     let mut successor = SessionPlayback::new(candidate).unwrap();
     assert_eq!(
         successor.try_inherit_state_from(&mut previous),
-        Err(SessionPlaybackError::DeviceRuntime)
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
     );
 
     // The same edit is admissible after the prior runtime has no active ledger
@@ -11474,7 +11474,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
     let mut from_applied_b = SessionPlayback::new(final_revision).unwrap();
     assert_eq!(
         from_applied_b.try_inherit_state_from(&mut applied_b),
-        Err(SessionPlaybackError::DeviceRuntime)
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
     );
     assert!(from_applied_b.candidate_admission_open);
 }

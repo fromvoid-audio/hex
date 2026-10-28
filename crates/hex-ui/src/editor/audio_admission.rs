@@ -17,6 +17,26 @@ pub(super) enum StoppedPlaybackRestore {
     Published(u64),
 }
 
+/// A rejected canonical latency change may be rebuilt after an explicit Stop.
+/// The output and project identities fence both the stop and the later resume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LatencyRebuild {
+    Unresolved {
+        generation: u64,
+        output: u64,
+        audio_revision: u64,
+    },
+    Waiting {
+        project: ProjectRevision,
+        output: u64,
+    },
+    Restoring {
+        project: ProjectRevision,
+        output: u64,
+        frame: u64,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AdmissionState {
     Pending,
@@ -279,11 +299,13 @@ mod tests {
         assert_eq!(status.current().unwrap().audio_revision, Some(31));
         assert_eq!(status.last_audible(), None);
 
-        assert!(status.rejected(current, 31, "session graph handoff was rejected"));
+        let reason = hex_engine::PlaybackHandoffRejection::SourceHistoryUnavailable.message();
+        assert!(status.rejected(current, 31, reason));
         assert_eq!(
             status.current().unwrap().state,
-            AdmissionState::Rejected("session graph handoff was rejected")
+            AdmissionState::Rejected(reason)
         );
+        assert!(status.description().contains("stop transport"));
         assert!(status.description().contains("audio revision 31"));
         assert!(status.description().contains("rejected:"));
 
