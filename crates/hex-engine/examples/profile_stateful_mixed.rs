@@ -2,6 +2,7 @@
 //! handoffs. This is a headless timing fixture, not a physical device deadline.
 //! `--companion` gives each Operator a looping, shaped envelope.
 //! `--asymmetric` also gives the fourth operator a different sustain level.
+//! `--distinct` gives all four operators different sustain levels.
 #[allow(dead_code)]
 #[path = "support/operator_feedback_fixture.rs"]
 mod operator_fixture;
@@ -20,18 +21,35 @@ const SOURCE: usize = 512;
 const TRACKS: usize = 100;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompanionProfile {
+    Default,
+    Uniform,
+    Asymmetric,
+    Distinct,
+}
+impl CompanionProfile {
+    fn from_flag(flag: &str) -> Option<Self> {
+        match flag {
+            "--companion" => Some(Self::Uniform),
+            "--asymmetric" => Some(Self::Asymmetric),
+            "--distinct" => Some(Self::Distinct),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn fixture(
     tracks: usize,
     devices: usize,
 ) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>)> {
-    fixture_with_companion(tracks, devices, false, false)
+    fixture_with_companion(tracks, devices, CompanionProfile::Default)
 }
 
 fn fixture_with_companion(
     tracks: usize,
     devices: usize,
-    companion: bool,
-    asymmetric: bool,
+    profile: CompanionProfile,
 ) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>)> {
     let source = operator_fixture::project_with_operators(tracks, 4, 0.24, 0.82, true)?;
     let mut snapshot = source.project.snapshot();
@@ -111,7 +129,7 @@ fn fixture_with_companion(
     snapshot
         .native_sources
         .retain(|source| !source.receiver.is_some_and(|id| audio_tracks.contains(&id)));
-    if companion {
+    if profile != CompanionProfile::Default {
         for source in &mut snapshot.native_sources {
             let instrument = source
                 .devices
@@ -129,10 +147,10 @@ fn fixture_with_companion(
                         operator,
                         hex_devices::operator_state::parameter::EnvelopeField::Sustain,
                     ),
-                    ParameterValue::Float(if asymmetric && operator == 4 {
-                        0.35
-                    } else {
-                        0.2
+                    ParameterValue::Float(match profile {
+                        CompanionProfile::Distinct => operator as f32 * 0.1,
+                        CompanionProfile::Asymmetric if operator == 4 => 0.35,
+                        _ => 0.2,
                     }),
                 )?;
             }
@@ -231,9 +249,9 @@ fn composition_oracle(
 // Audio sources finish at the handoff while held Operator notes continue.
 // Bypassing the audio filters detaches their live histories; the old graph's
 // separately rendered track composition provides the full post-cut reference.
-fn mixed_tail(tracks: usize, block: usize, companion: bool, asymmetric: bool) -> Result<()> {
-    let (base, mut media) = if companion {
-        fixture_with_companion(tracks, 1, true, asymmetric)?
+fn mixed_tail(tracks: usize, block: usize, profile: CompanionProfile) -> Result<()> {
+    let (base, mut media) = if profile != CompanionProfile::Default {
+        fixture_with_companion(tracks, 1, profile)?
     } else {
         fixture(tracks, 1)?
     };
@@ -341,7 +359,7 @@ fn mixed_tail(tracks: usize, block: usize, companion: bool, asymmetric: bool) ->
         digest(&mut hash, &output[..count]);
     }
     println!(
-        "mixed_tail tracks={tracks} audio_tracks={} operator_tracks={} companion={companion} asymmetric={asymmetric} block={block} rate={RATE} post_cut_frames={} digest={hash:016x} composition_max_error={max_error:e} audio_tail_peak={audio_peak:e} handoff_us={:.3} first_render_us={:.3} combined_us={:.3}; separate preparation/retirement; one transition, no physical deadline",
+        "mixed_tail tracks={tracks} audio_tracks={} operator_tracks={} profile={profile:?} block={block} rate={RATE} post_cut_frames={} digest={hash:016x} composition_max_error={max_error:e} audio_tail_peak={audio_peak:e} handoff_us={:.3} first_render_us={:.3} combined_us={:.3}; separate preparation/retirement; one transition, no physical deadline",
         tracks.div_ceil(2),
         tracks / 2,
         RATE,
@@ -357,10 +375,9 @@ fn run(
     block: usize,
     seconds: usize,
     composition: bool,
-    companion: bool,
-    asymmetric: bool,
+    profile: CompanionProfile,
 ) -> Result<()> {
-    let (project, media) = fixture_with_companion(tracks, devices, companion, asymmetric)?;
+    let (project, media) = fixture_with_companion(tracks, devices, profile)?;
     let table = Arc::new(SineTable::new());
     let initial = match revision(&project, &media, &table, None) {
         Ok(value) => value,
@@ -369,7 +386,7 @@ fn run(
                 && error.to_string() == "stateful device runtime exceeds its bounded budget" =>
         {
             println!(
-                "tracks={tracks} devices_per_track={devices} companion={companion} asymmetric={asymmetric} requested_effects={} requested_mutable_instruments={} admission=refused error={error}",
+                "tracks={tracks} devices_per_track={devices} profile={profile:?} requested_effects={} requested_mutable_instruments={} admission=refused error={error}",
                 tracks * devices,
                 tracks / 2
             );
@@ -484,7 +501,7 @@ fn run(
     handoffs.sort_unstable();
     let p = |pct: usize| timings[(timings.len() - 1) * pct / 100].1 as f64 / 1000.0;
     println!(
-        "tracks={tracks} audio_tracks={} operator_tracks={} devices_per_track={devices} effect_instances={} mutable_instruments={} total_stateful_instances={} companion={companion} asymmetric={asymmetric} admission=accepted rate={RATE} block={block} seconds={seconds} frames={frame} digest={hash:016x} peak={peak:.8} render_p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_actual_period={late} first_audible_frame={} first_render_us={:.3} handoffs={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late} isolated_track_composition={composition} composition_max_error={composition_max_error:.9}",
+        "tracks={tracks} audio_tracks={} operator_tracks={} devices_per_track={devices} effect_instances={} mutable_instruments={} total_stateful_instances={} profile={profile:?} admission=accepted rate={RATE} block={block} seconds={seconds} frames={frame} digest={hash:016x} peak={peak:.8} render_p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_actual_period={late} first_audible_frame={} first_render_us={:.3} handoffs={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late} isolated_track_composition={composition} composition_max_error={composition_max_error:.9}",
         tracks.div_ceil(2),
         tracks / 2,
         tracks * devices,
@@ -504,36 +521,32 @@ fn run(
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if (args.len() == 2
-        || (args.len() == 3 && ["--companion", "--asymmetric"].contains(&args[2].as_str())))
-        && args[0] == "--mixed-tail"
-    {
+    const USAGE: &str = "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition] [--companion|--asymmetric|--distinct], or --mixed-tail <block:128|512> [--companion|--asymmetric|--distinct]";
+    if args.first().is_some_and(|arg| arg == "--mixed-tail") {
+        let profile = match args.as_slice() {
+            [_, _] => CompanionProfile::Default,
+            [_, _, flag] => CompanionProfile::from_flag(flag).ok_or(USAGE)?,
+            _ => return Err(USAGE.into()),
+        };
         let block: usize = args[1].parse()?;
         if ![128, 512].contains(&block) {
             return Err("mixed-tail block must be 128 or 512".into());
         }
-        return mixed_tail(
-            TRACKS,
-            block,
-            args.len() == 3,
-            args.len() == 3 && args[2] == "--asymmetric",
-        );
+        return mixed_tail(TRACKS, block, profile);
     }
-    if args.len() < 3
-        || args.len() > 6
-        || args[3..]
-            .iter()
-            .any(|arg| !["--composition", "--companion", "--asymmetric"].contains(&arg.as_str()))
-        || args[3..]
-            .iter()
-            .enumerate()
-            .any(|(i, arg)| args[3..3 + i].contains(arg))
-        || (args[3..].iter().any(|arg| arg == "--companion")
-            && args[3..].iter().any(|arg| arg == "--asymmetric"))
-    {
-        return Err(
-            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition] [--companion|--asymmetric], or --mixed-tail <block:128|512> [--companion|--asymmetric]".into(),
-        );
+    if args.len() < 3 || args.len() > 5 {
+        return Err(USAGE.into());
+    }
+    let mut composition = false;
+    let mut profile = CompanionProfile::Default;
+    for flag in &args[3..] {
+        if flag == "--composition" && !composition {
+            composition = true;
+        } else if profile == CompanionProfile::Default {
+            profile = CompanionProfile::from_flag(flag).ok_or(USAGE)?;
+        } else {
+            return Err(USAGE.into());
+        }
     }
     let devices = args[0].parse()?;
     let block = args[1].parse()?;
@@ -547,16 +560,7 @@ fn main() -> Result<()> {
     println!(
         "headless mixed resident audio and four-voice all-operator arrangement; identical revision handoffs; continuous playback PCM reference; uncontrolled host load; no physical callback or first-audible measurement"
     );
-    run(
-        TRACKS,
-        devices,
-        block,
-        seconds,
-        args.iter().any(|arg| arg == "--composition"),
-        args.iter()
-            .any(|arg| arg == "--companion" || arg == "--asymmetric"),
-        args.iter().any(|arg| arg == "--asymmetric"),
-    )
+    run(TRACKS, devices, block, seconds, composition, profile)
 }
 
 #[cfg(test)]
@@ -565,8 +569,9 @@ mod tests {
 
     #[test]
     fn looping_companion_mixed_fixture_matches_continuous_and_composed_output() -> Result<()> {
-        let (looped, media) = fixture_with_companion(2, 1, true, false)?;
-        let (asymmetric, _) = fixture_with_companion(2, 1, true, true)?;
+        let (looped, media) = fixture_with_companion(2, 1, CompanionProfile::Uniform)?;
+        let (asymmetric, _) = fixture_with_companion(2, 1, CompanionProfile::Asymmetric)?;
+        let (distinct, _) = fixture_with_companion(2, 1, CompanionProfile::Distinct)?;
         let (normal, _) = fixture(2, 1)?;
         let snapshot = looped.snapshot();
         let clips = match &snapshot.tracks[1].content {
@@ -600,20 +605,25 @@ mod tests {
         let table = Arc::new(SineTable::new());
         let mut looped_playback = playback(revision(&looped, &media, &table, None)?)?;
         let mut asymmetric_playback = playback(revision(&asymmetric, &media, &table, None)?)?;
+        let mut distinct_playback = playback(revision(&distinct, &media, &table, None)?)?;
         let mut normal_playback = playback(revision(&normal, &media, &table, None)?)?;
         let mut looped_hash = 0xcbf29ce484222325;
         let mut normal_hash = looped_hash;
         let mut asymmetric_hash = looped_hash;
+        let mut distinct_hash = looped_hash;
         for _ in 0..375 {
             let mut looped_block = [[0.0; 2]; 128];
             let mut normal_block = [[0.0; 2]; 128];
             let mut asymmetric_block = [[0.0; 2]; 128];
+            let mut distinct_block = [[0.0; 2]; 128];
             looped_playback.render(&mut looped_block)?;
             normal_playback.render(&mut normal_block)?;
             asymmetric_playback.render(&mut asymmetric_block)?;
+            distinct_playback.render(&mut distinct_block)?;
             digest(&mut looped_hash, &looped_block);
             digest(&mut normal_hash, &normal_block);
             digest(&mut asymmetric_hash, &asymmetric_block);
+            digest(&mut distinct_hash, &distinct_block);
         }
         assert_ne!(
             looped_hash, normal_hash,
@@ -623,8 +633,13 @@ mod tests {
             looped_hash, asymmetric_hash,
             "asymmetry must affect rendered PCM"
         );
-        run(2, 1, 128, 1, true, true, false)?;
-        run(2, 1, 128, 1, true, true, true)
+        assert_ne!(
+            asymmetric_hash, distinct_hash,
+            "distinct laws must affect rendered PCM"
+        );
+        run(2, 1, 128, 1, true, CompanionProfile::Uniform)?;
+        run(2, 1, 128, 1, true, CompanionProfile::Asymmetric)?;
+        run(2, 1, 128, 1, true, CompanionProfile::Distinct)
     }
 
     #[test]
@@ -685,9 +700,10 @@ mod tests {
 
     #[test]
     fn mixed_tail_keeps_audio_residual_and_sustained_instrument() -> Result<()> {
-        mixed_tail(2, 128, false, false)?;
-        mixed_tail(2, 128, true, false)?;
-        mixed_tail(2, 128, true, true)
+        mixed_tail(2, 128, CompanionProfile::Default)?;
+        mixed_tail(2, 128, CompanionProfile::Uniform)?;
+        mixed_tail(2, 128, CompanionProfile::Asymmetric)?;
+        mixed_tail(2, 128, CompanionProfile::Distinct)
     }
 
     #[test]
