@@ -279,11 +279,13 @@ mod tests {
         assert_eq!(status.current().unwrap().audio_revision, Some(31));
         assert_eq!(status.last_audible(), None);
 
-        assert!(status.rejected(current, 31, "session graph handoff was rejected"));
+        let reason = hex_engine::PlaybackHandoffRejection::SourceHistoryUnavailable.message();
+        assert!(status.rejected(current, 31, reason));
         assert_eq!(
             status.current().unwrap().state,
-            AdmissionState::Rejected("session graph handoff was rejected")
+            AdmissionState::Rejected(reason)
         );
+        assert!(status.description().contains("stop transport"));
         assert!(status.description().contains("audio revision 31"));
         assert!(status.description().contains("rejected:"));
 

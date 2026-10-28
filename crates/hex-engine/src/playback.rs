@@ -218,6 +218,7 @@ pub enum PlaybackHandoffRejection {
     ConstructorClaimsUnavailable = 8,
     StreamedPagesNotReady = 9,
     LatencyLayoutChanged = 10,
+    SourceHistoryUnavailable = 11,
 }
 
 impl PlaybackHandoffRejection {
@@ -226,6 +227,9 @@ impl PlaybackHandoffRejection {
             PlaybackHandoffError::Session(crate::SessionPlaybackError::LatencyLayoutChanged) => {
                 Self::LatencyLayoutChanged
             }
+            PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::SourceHistoryUnavailable,
+            ) => Self::SourceHistoryUnavailable,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
             }
@@ -257,6 +261,7 @@ impl PlaybackHandoffRejection {
             8 => Some(Self::ConstructorClaimsUnavailable),
             9 => Some(Self::StreamedPagesNotReady),
             10 => Some(Self::LatencyLayoutChanged),
+            11 => Some(Self::SourceHistoryUnavailable),
             _ => None,
         }
     }
@@ -286,6 +291,9 @@ impl PlaybackHandoffRejection {
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
             Self::LatencyLayoutChanged => {
                 "latency layout changed · stop transport before applying this revision"
+            }
+            Self::SourceHistoryUnavailable => {
+                "source history cannot transfer · stop transport before applying this revision"
             }
         }
     }
