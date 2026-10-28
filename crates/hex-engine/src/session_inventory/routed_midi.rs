@@ -122,7 +122,7 @@ pub(super) fn prepare_clip(
         && mutable_limits.is_some()
         && let Some(instrument) = config.config.as_deref()
     {
-        for note in clip.source().notes() {
+        for note in clip.source().notes().iter().filter(|note| note.active()) {
             instrument
                 .validate_event_note(note.pitch(), note.velocity())
                 .map_err(|_| crate::Invalid("mutable Session instrument note is unsupported"))?;

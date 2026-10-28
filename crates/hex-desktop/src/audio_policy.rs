@@ -101,7 +101,7 @@ impl AudioPolicy {
         let ordinary_stream_metadata_bytes = readiness
             .extents_per_role
             .checked_mul(2)
-            .and_then(|n| n.checked_mul(std::mem::size_of::<hex_stream::StreamPageExtent>()))
+            .and_then(|n| n.checked_mul(std::mem::size_of::<hex_stream::StreamResourceExtent>()))
             .and_then(|n| n.checked_add(4096))
             .ok_or("ordinary stream metadata overflow")?;
         let sources = Self::source_reservation();

@@ -272,3 +272,156 @@ fn actual_root_epoch_completion_refusal_and_late_close_retain_disposal() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_stopped_parameters_require_original_return_and_keep_failure_or_resume_custody() {
+    if std::env::var_os("HEX_ROOT_PARAMETER_DRIVER").is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        for (mode, variant) in [("apply", "37"), ("refuse", "76"), ("cancel", "37")] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &name,
+                    "--ignored",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env("HEX_ROOT_PARAMETER_DRIVER", mode)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+        }
+        return;
+    }
+    let mode = std::env::var("HEX_ROOT_PARAMETER_DRIVER").unwrap();
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(binding, presentation())
+        .unwrap();
+    let confirmed = root.native_source_prepared_state(binding).unwrap();
+    let child = {
+        let work = lock(&root.work);
+        let Some(Owner::Prepared(owner)) = work.sources.cells[0].owner.as_ref() else {
+            panic!("original prepared source")
+        };
+        owner.child_id_on_control()
+    };
+    root.start_native_effect(binding).unwrap();
+    let mut points = hex_plugin_host::transport::Parameters::default();
+    points
+        .push(hex_plugin_host::transport::ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.75,
+        })
+        .unwrap();
+    assert!(
+        root.flush_native_parameters(binding, &points, &mut || false)
+            .is_err(),
+        "active source cannot flush"
+    );
+    let endpoint = root.loan_native_endpoint(binding).unwrap();
+    assert!(
+        root.quiesce_native_source(binding, binding.graph + 1)
+            .is_err()
+    );
+    assert!(root.ingest_native_endpoint(endpoint).is_ok());
+    let next = root
+        .quiesce_native_source(binding, binding.graph + 1)
+        .unwrap();
+    assert!(
+        root.flush_native_parameters(binding, &points, &mut || false)
+            .is_err(),
+        "old reservation is stale"
+    );
+    {
+        let _work = lock(&root.work);
+        assert!(matches!(
+            root.flush_native_parameters(next, &points, &mut || false),
+            Err("native preparation is busy")
+        ));
+    }
+    let result = root
+        .flush_native_parameters(next, &points, &mut || mode == "cancel")
+        .unwrap();
+    if mode != "apply" {
+        assert!(
+            result.is_none(),
+            "failure cannot publish a readback or resume"
+        );
+        assert!(root.complete_native_source(next, presentation()).is_err());
+        dispose(&root, next);
+        let returned = root.recover_native_source(next).unwrap();
+        if mode == "refuse" {
+            assert!(matches!(
+                returned.error,
+                Some(hex_plugin_host::Error::Worker(11))
+            ))
+        } else {
+            assert!(matches!(
+                returned.error,
+                Some(hex_plugin_host::Error::Cancelled)
+            ))
+        }
+        assert_eq!(
+            &hex_plugin_state::decode(&confirmed)
+                .unwrap()
+                .component
+                .unwrap()[8..12],
+            &1.0_f32.to_le_bytes()
+        );
+        return;
+    }
+    let values = result.unwrap();
+    assert_eq!(
+        values.as_slice(),
+        &[hex_plugin_host::protocol::FlushedParameter {
+            id: 7,
+            normalized: 0.75
+        }]
+    );
+    assert!(
+        root.native_source_prepared_state(next).is_none(),
+        "flush is no resume ACK"
+    );
+    assert!(root.loan_native_endpoint(next).is_err());
+    let captured = root
+        .capture_native_source(next, &mut || false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        &hex_plugin_state::decode(&captured)
+            .unwrap()
+            .component
+            .unwrap()[8..12],
+        &3.0_f32.to_le_bytes()
+    );
+    {
+        let work = lock(&root.work);
+        let Some(Owner::Quiescent(owner)) = work.sources.cells[0].owner.as_ref() else {
+            panic!("same stopped source")
+        };
+        assert_eq!(owner.child_id_on_control(), child);
+        assert_eq!(owner.completed_blocks(), 0);
+    }
+    root.complete_native_source(next, presentation()).unwrap();
+    assert!(root.native_source_prepared_state(next).is_some());
+    root.start_native_effect(next).unwrap();
+    assert!(root.retire_native_source(next));
+    dispose(&root, next);
+    let returned = root.recover_native_source(next).unwrap();
+    assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    assert!(
+        matches!(returned.disposal,PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
+}

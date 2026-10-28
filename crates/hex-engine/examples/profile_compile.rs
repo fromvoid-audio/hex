@@ -86,6 +86,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         })
         .collect::<Result<Vec<_>, hex_project::Invalid>>()?;
     let snapshot = Snapshot {
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),

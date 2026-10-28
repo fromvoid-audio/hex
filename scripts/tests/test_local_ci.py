@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import errno
+import signal
 import ast
 import hashlib
 import json
@@ -154,6 +156,85 @@ class LocalCiRunnerTests(unittest.TestCase):
             self.release_attempt("pending")
         self.release_attempt("recovered", adopt=True)
         self.assertIsNone(runner.target_lock)
+
+    def test_release_fresh_target_accepts_only_metadata_created_during_locked_preflight(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        runner = self.runner("fresh-metadata")
+        scope = runner._release_scope
+
+        def metadata():
+            result = scope()
+            (target / ".rustc_info.json").write_text("cargo metadata cache")
+            return result
+
+        with patch.object(runner, "_release_scope", side_effect=metadata):
+            with runner.guarded_release() as report:
+                self.assertEqual(report["cleanup_status"], "not_needed")
+                artifact = target / "release-fixture"
+                artifact.write_bytes(b"optimized fixture")
+                argv = ["cargo", "build", "--release"]
+                report.update(build_argv=argv, build_exit_code=0,
+                              artifact=runner.identify_release_artifact(artifact, argv))
+
+    def test_release_preserves_existing_or_new_unowned_preflight_files(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        cache = target / ".rustc_info.json"
+        cache.write_text("preexisting")
+        runner = self.runner("existing-metadata")
+        with patch.object(runner, "_release_scope") as scope:
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "ownership is unknown"):
+                with runner.guarded_release():
+                    self.fail("preexisting metadata must not acquire release custody")
+            scope.assert_not_called()
+        self.assertEqual(cache.read_text(), "preexisting")
+        cache.unlink()
+
+        runner = self.runner("concurrent-content")
+        scope = runner._release_scope
+        def metadata():
+            result = scope()
+            (target / "foreign").write_text("preserve")
+            return result
+        with patch.object(runner, "_release_scope", side_effect=metadata):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "changed during preflight"):
+                with runner.guarded_release():
+                    self.fail("foreign content must not acquire release custody")
+        self.assertEqual((target / "foreign").read_text(), "preserve")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
+
+    def test_release_refuses_target_replacement_or_metadata_symlink_during_preflight(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        runner = self.runner("replaced-target")
+        scope = runner._release_scope
+        def replace_target():
+            result = scope()
+            target.rename(self.repo / "original-target")
+            target.mkdir()
+            return result
+        with patch.object(runner, "_release_scope", side_effect=replace_target):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "identity changed"):
+                with runner.guarded_release():
+                    self.fail("replaced target must not acquire release custody")
+        target.rmdir()
+        (self.repo / "original-target").rename(target)
+
+        runner = self.runner("symlink-metadata")
+        scope = runner._release_scope
+        foreign = self.repo / "foreign"
+        foreign.write_text("preserve")
+        def link_metadata():
+            result = scope()
+            (target / ".rustc_info.json").symlink_to(foreign)
+            return result
+        with patch.object(runner, "_release_scope", side_effect=link_metadata):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "changed during preflight"):
+                with runner.guarded_release():
+                    self.fail("metadata symlink must not acquire release custody")
+        self.assertEqual(foreign.read_text(), "preserve")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
 
     def test_release_cleanup_failure_and_interruption_keep_pending(self):
         _, report = self.release_attempt("first")
@@ -865,6 +946,107 @@ fi
         self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
         self.assertIsNone(summary["steps"][1]["duration_seconds"])
         self.assertIn("intentional failure", (self.repo / summary["steps"][0]["log"]).read_text())
+
+    def test_report_enospc_preserves_failed_command_and_cleanup(self):
+        self._report_enospc_cases("command", failed_command=True)
+
+    def test_report_enospc_before_command_admission_releases_target(self):
+        self._report_enospc_cases("admission", failed_command=False)
+
+    def test_transient_report_failure_stops_commands_and_records_incomplete_evidence(self):
+        runner = self.runner("transient-report", steps=(local_ci.Step("first", ("first",)), local_ci.Step("later", ("second",))))
+        original = Path.replace
+        faulted = False
+        def replace(path, target):
+            nonlocal faulted
+            if Path(target) == runner.summary_path and not faulted and any(e["status"] == "passed" for e in runner.summary["steps"]):
+                faulted = True
+                raise OSError(errno.ENOSPC, "one-off report publication refusal")
+            return original(path, target)
+        output = io.StringIO()
+        with patch.object(Path, "replace", replace), redirect_stderr(output):
+            self.assertEqual(runner.run(), 2)
+        saved = self.summary("transient-report")
+        self.assertEqual((saved["status"], saved["verification_status"]), ("incomplete", "failed"))
+        self.assertEqual([e["status"] for e in saved["steps"]], ["passed", "not_run"])
+        self.assertIn("one-off report publication refusal", saved["report_publication_error"])
+        self.assertIn("report publication failed", output.getvalue())
+        self.assertNotIn("second", self.call_log.read_text())
+
+    def test_initial_report_enospc_runs_no_commands(self):
+        self._report_enospc_cases("initial", failed_command=False)
+
+    def test_final_report_enospc_cannot_qualify_successful_commands(self):
+        self._report_enospc_cases("final", failed_command=False)
+
+    def _report_enospc_cases(self, stage, *, failed_command):
+        for operation in ("write", "replace"):
+            with self.subTest(stage=stage, operation=operation):
+                name = f"report-{stage}-{operation}"
+                runner = self.runner(name, env={**self.env, "FAIL_MATCH": "cargo build" if failed_command else "never-match"},
+                    steps=(local_ci.Step("build", ("cargo", "build")), local_ci.Step("later", ("second",))))
+                original_write, original_replace = Path.write_text, Path.replace
+                faulted = False
+                durable = None
+                def should_fail():
+                    nonlocal faulted
+                    entries = runner.summary["steps"]
+                    triggered = (stage == "initial" or
+                        stage == "admission" and any(e["status"] == "running" for e in entries) or
+                        stage == "command" and any(e["status"] == "failed" for e in entries) or
+                        stage == "final" and runner.summary.get("ended_at") is not None)
+                    faulted = faulted or triggered
+                    return faulted
+                def write(path, *args, **kwargs):
+                    if path == runner.summary_path.with_suffix(".json.tmp") and operation == "write" and should_fail():
+                        raise OSError(errno.ENOSPC, "injected report storage exhaustion")
+                    return original_write(path, *args, **kwargs)
+                def replace(path, target):
+                    nonlocal durable
+                    if Path(target) == runner.summary_path:
+                        if operation == "replace" and should_fail():
+                            raise OSError(errno.ENOSPC, "injected report storage exhaustion")
+                        result = original_replace(path, target)
+                        durable = runner.summary_path.read_bytes()
+                        return result
+                    return original_replace(path, target)
+                previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+                calls_before = self.call_log.read_bytes() if self.call_log.exists() else None
+                output = io.StringIO()
+                with patch.object(Path, "write_text", write), patch.object(Path, "replace", replace), redirect_stderr(output):
+                    result = runner.run()
+                self.assertTrue(faulted)
+                self.assertEqual(result, 1 if failed_command else 2)
+                self.assertEqual({sig: signal.getsignal(sig) for sig in previous_handlers}, previous_handlers)
+                self.assertIsNone(runner.target_lock)
+                self.assertNotIn(runner.summary["status"], {"passed", "partial"})
+                self.assertEqual(runner.summary["verification_status"], "failed")
+                self.assertIn("report publication failed", output.getvalue())
+                self.assertIn(str(runner.summary_path), output.getvalue())
+                self.assertNotIn("Traceback", output.getvalue())
+                if durable is None:
+                    self.assertFalse(runner.summary_path.exists())
+                else:
+                    self.assertEqual(runner.summary_path.read_bytes(), durable)
+                    self.assertNotIn(json.loads(durable)["status"], {"passed", "partial"})
+                if failed_command:
+                    step = runner.summary["steps"][0]
+                    self.assertEqual((step["status"], step["exit_code"]), ("failed", 7))
+                    log = runner.root / step["log"]
+                    self.assertIn("intentional failure", log.read_text())
+                    self.assertIn("command: cargo build", output.getvalue())
+                    self.assertIn("exit code: 7", output.getvalue())
+                    self.assertIn(str(log), output.getvalue())
+                    self.assertEqual(runner.summary["steps"][1]["status"], "not_run")
+                elif stage == "initial":
+                    self.assertEqual(self.call_log.read_bytes() if self.call_log.exists() else None, calls_before)
+                elif stage == "admission":
+                    self.assertTrue(all(e["status"] == "not_run" for e in runner.summary["steps"]))
+                    self.assertNotIn(b"cargo build", self.call_log.read_bytes()[len(calls_before or b""):])
+                else:
+                    self.assertTrue(all(e["status"] == "passed" for e in runner.summary["steps"]))
+                # The report failure cannot strand the shared target lease.
+                self.assertEqual(self.runner("after-" + name).run(), 0)
 
     def test_missing_executable_is_logged_as_failure(self) -> None:
         runner = local_ci.LocalCiRunner(

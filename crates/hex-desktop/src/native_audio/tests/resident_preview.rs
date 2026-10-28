@@ -807,6 +807,15 @@ impl ResidentHarness {
 }
 
 #[test]
+fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (revision, _) = h.applied(0);
+    assert!(revision > 0);
+}
+
+#[test]
 fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonical() {
     use hex_project::{Command, Created};
     use hex_session::device_gesture::ParameterValue;
@@ -900,6 +909,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
     h.service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
             key,
             sequence: 2,
             value: ParameterValue::Float(0.25),
@@ -974,6 +984,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
             (last, _) = h.applied(after);
         }
         let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
             key,
             sequence: 2,
             value: ParameterValue::Float(1.0),

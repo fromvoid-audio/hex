@@ -17,6 +17,7 @@
 //! graph replacement. Queued explicit Stop, foreign/unbound inputs and lifecycle shutdown remain
 //! terminal. Epoch transitions and note snapshots perform no callback allocation or reclamation.
 use crate::{
+    audio_diagnostics::{self, AudioDiagnosticEvent, AudioDiagnosticKind, AudioDiagnosticsFlags},
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
 };
@@ -59,6 +60,11 @@ impl Callback {
 mod admission;
 mod eligible_publication;
 mod endpoints;
+pub(crate) mod retired_scalar_receipts;
+pub use retired_scalar_receipts::{
+    RetiredReceiptFailure, RetiredScalarReceiptBatch, RetiredScalarReceipts, ScalarReceipt,
+    ScalarReceiptTarget, ScalarReceiptTerminal,
+};
 mod native_effects;
 pub(crate) use native_effects::NativeEffectWindow;
 mod midi_recording;
@@ -68,6 +74,8 @@ mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
+#[cfg(all(test, feature = "allocation-probe"))]
+mod alias_tests;
 mod applied_source;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod delay_tests;
@@ -461,6 +469,8 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    diagnostics_flags: AtomicU32,
+    diagnostics_dropped: AtomicU64,
     sampler_edit: sampler_edit::Fence,
     sampler_keyboard: sampler_keyboard::Mailbox,
     keyboard_activation: Arc<hex_engine::computer_keyboard::KeyboardActivationClock>,
@@ -518,6 +528,8 @@ pub struct Status {
     pub performance_frame: AtomicU64,
     pub transport_epoch: AtomicU64,
     pub gain_recording_fault: AtomicBool,
+    pub native_parameter_input_fault: AtomicBool,
+    native_parameter_revoked_gesture: AtomicU64,
     pub gain_recording_ready: AtomicBool,
     pub playing: AtomicBool,
     /// Last callback-admitted interactive click state.
@@ -613,6 +625,25 @@ impl Status {
     pub(crate) fn gain_begin_committed(&self) {
         self.publication_pending.legacy_gain_started();
     }
+    pub(crate) fn reserve_native_parameter_input(&self) -> Result<(), &'static str> {
+        if self.closing.load(Acquire) {
+            return Err("native parameter input output is closing");
+        }
+        if !self.publication_pending.reserve_parameter_input() {
+            return Err("playback publication or live input is pending");
+        }
+        Ok(())
+    }
+    pub(crate) fn native_parameter_input_end(&self) {
+        self.publication_pending.parameter_input_finished();
+    }
+    pub(crate) fn revoke_native_parameter_input(&self, gesture: u64) {
+        self.native_parameter_revoked_gesture
+            .fetch_max(gesture, AcqRel);
+    }
+    fn native_parameter_input_revoked(&self, gesture: u64) -> bool {
+        self.native_parameter_revoked_gesture.load(Acquire) >= gesture
+    }
     pub(crate) fn gain_end(&self) {
         self.publication_pending.gain_finished();
     }
@@ -651,6 +682,8 @@ impl Status {
             device_fault: AtomicBool::new(false),
             render_fault: AtomicBool::new(false),
             render_fault_record: crate::render_fault::RenderFaultRecord::default(),
+            diagnostics_flags: AtomicU32::new(0),
+            diagnostics_dropped: AtomicU64::new(0),
             callback_max_ns: AtomicU64::new(0),
             deadline_misses: AtomicU64::new(0),
             peak_left: AtomicU32::new(0),
@@ -674,6 +707,8 @@ impl Status {
             performance_frame: AtomicU64::new(0),
             transport_epoch: AtomicU64::new(1),
             gain_recording_fault: AtomicBool::new(false),
+            native_parameter_input_fault: AtomicBool::new(false),
+            native_parameter_revoked_gesture: AtomicU64::new(0),
             gain_recording_ready: AtomicBool::new(false),
             playing: AtomicBool::new(false),
             metronome_enabled: AtomicBool::new(false),
@@ -696,6 +731,14 @@ impl Status {
 }
 
 impl Status {
+    /// Current diagnostic configuration; this observation grants no authority.
+    pub fn audio_diagnostics_flags(&self) -> AudioDiagnosticsFlags {
+        AudioDiagnosticsFlags::from_bits(self.diagnostics_flags.load(Relaxed))
+    }
+    /// Number of callback trace records lost to the bounded diagnostic queue.
+    pub fn audio_diagnostics_dropped(&self) -> u64 {
+        self.diagnostics_dropped.load(Relaxed)
+    }
     /// Read bounded diagnostic telemetry on control/UI, never in a callback.
     pub fn render_fault_snapshot(&self) -> Option<crate::RenderFaultSnapshot> {
         if !self.render_fault.load(Acquire) {
@@ -1011,11 +1054,13 @@ impl std::fmt::Debug for PublishError {
 /// Legacy unsplit control. Native worker composition consumes this exactly once
 /// before delivering its nonowning client. Resident callers retain these APIs.
 pub struct Control {
+    diagnostics: audio_diagnostics::TraceReader,
     pub sample_preview: crate::sample_preview::Control,
     commands: Producer<QueuedCommand>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
     pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
     pub gain_recording: crate::gain_recording::Control,
+    pub native_parameter_input: crate::native_parameter_input::Control,
     pub midi_recording: crate::midi_recording::Control,
     command_ticket: u64,
     publication: PublicationControl,
@@ -1040,6 +1085,20 @@ pub struct PublicationControl {
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
     latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
 }
+impl PublicationControl {
+    /// Configure optional tracing on control. Default is off; old records may
+    /// still be drained after disabling. The music/fault queues are independent.
+    pub fn set_audio_diagnostics(&self, flags: AudioDiagnosticsFlags) {
+        self.status.diagnostics_flags.store(flags.bits(), Relaxed);
+    }
+}
+impl Control {
+    /// Take one non-owning Copy event; callers bound each drain.
+    pub fn take_audio_diagnostic(&mut self) -> Option<AudioDiagnosticEvent> {
+        self.diagnostics.pop()
+    }
+}
+
 impl std::ops::Deref for Control {
     type Target = PublicationControl;
     fn deref(&self) -> &Self::Target {
@@ -1062,6 +1121,7 @@ pub(crate) enum OutputTransportDelivery {
 }
 
 pub struct Callback {
+    diagnostics: audio_diagnostics::TraceWriter,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_sources: crate::candidate_custody::NativeEndpointBank,
     requested_physical_callback_frames: Option<u16>,
@@ -1080,6 +1140,7 @@ pub struct Callback {
     processor_audition_lease: Option<processor_audition::ProcessorAuditionTarget>,
     processor_audition_rejected_epoch: u64,
     gain_recording: crate::gain_recording::Callback,
+    native_parameter_input: Box<crate::native_parameter_input::Callback>,
     midi_recording: crate::midi_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stages: SpectrumStages,
@@ -1141,13 +1202,17 @@ pub fn channel_with_spectrum(
     let (publications, incoming) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
+    let (trace_writer, trace_reader) = audio_diagnostics::channel();
     let status = Arc::new(Status::try_new()?);
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
     let (mut gain_recording, callback_gain_recording) = crate::gain_recording::channel();
+    let (mut native_parameter_input, callback_native_parameter_input) =
+        crate::native_parameter_input::channel();
     let (mut midi_recording, callback_midi_recording) = crate::midi_recording::channel();
     sample_preview.bind_status(status.clone());
     gain_recording.bind_status(status.clone());
+    native_parameter_input.bind_status(status.clone());
     midi_recording.bind_status(status.clone());
     let candidate_root = crate::candidate_custody::CandidateRoot::new(RETIRED).map_err(Invalid)?;
     let command_storage_bytes = commands
@@ -1155,14 +1220,17 @@ pub fn channel_with_spectrum(
         .capacity()
         .checked_mul(std::mem::size_of::<QueuedCommand>())
         .and_then(|n| n.checked_add(std::mem::size_of_val(commands.buffer())))
+        .and_then(|n| n.checked_add(trace_writer.storage_bytes()?))
         .ok_or(Invalid("command queue storage overflow"))?;
     Ok((
         Control {
+            diagnostics: trace_reader,
             sample_preview,
             commands,
             spectrum_target,
             processor_audition,
             gain_recording,
+            native_parameter_input,
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
@@ -1186,6 +1254,7 @@ pub fn channel_with_spectrum(
             },
         },
         Callback {
+            diagnostics: trace_writer,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
             requested_physical_callback_frames: None,
@@ -1204,6 +1273,7 @@ pub fn channel_with_spectrum(
             processor_audition_lease: None,
             processor_audition_rejected_epoch: 0,
             gain_recording: callback_gain_recording,
+            native_parameter_input: callback_native_parameter_input,
             midi_recording: callback_midi_recording,
             spectrum_capture: capture,
             spectrum_stages: SpectrumStages::new()?,
@@ -2055,8 +2125,9 @@ impl Callback {
     /// Construct an original whole-output transport profile before callback
     /// exposure. This does not admit a device, graph node or native worker.
     /// Native resource admission remains unavailable until device insertion
-    /// and delayed delivery clocks exist. Spectrum/gain capture are unsupported
-    /// in this original whole-output profile; ordinary output is unchanged.
+    /// and delayed delivery clocks exist. Spectrum/gain capture and native
+    /// parameter input are unsupported in this original whole-output profile;
+    /// ordinary output is unchanged.
     pub(crate) fn prepare_output_transport_on_control(
         &mut self,
         instance: u64,
@@ -2131,7 +2202,10 @@ impl Callback {
             transport.reject(hex_plugin_host::transport::Fault::Identity);
             return false;
         }
-        if self.gain_recording.has_take() || frames.len() > hex_plugin_host::transport::MAX_FRAMES {
+        if self.gain_recording.has_take()
+            || self.native_parameter_input.has_input()
+            || frames.len() > hex_plugin_host::transport::MAX_FRAMES
+        {
             transport.reject(hex_plugin_host::transport::Fault::Protocol);
             return false;
         }
@@ -2209,6 +2283,7 @@ impl Callback {
         self.sample_preview
             .constructor_channel_storage()?
             .plus(self.gain_recording.constructor_channel_storage()?)?
+            .plus(self.native_parameter_input.constructor_channel_storage()?)?
             .plus(self.midi_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
             .plus(self.processor_audition.constructor_channel_storage()?)?
@@ -2531,7 +2606,7 @@ impl Callback {
                 if let Some(publication) = self.deferred.take() {
                     if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
                         if cancellation.finish_for_shutdown() {
-                            self.status.publish_rejected_revision(
+                            self.reject_publication(
                                 publication.revision,
                                 PlaybackHandoffRejection::FreshRuntimeCancelled,
                             );
@@ -2586,7 +2661,7 @@ impl Callback {
                     };
                     if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
                         if cancellation.finish_for_shutdown() {
-                            self.status.publish_rejected_revision(
+                            self.reject_publication(
                                 publication.revision,
                                 PlaybackHandoffRejection::FreshRuntimeCancelled,
                             );
@@ -2692,6 +2767,67 @@ impl Callback {
         self.consume_commands();
     }
 
+    fn reject_publication(&mut self, revision: u64, reason: PlaybackHandoffRejection) {
+        self.status.publish_rejected_revision(revision, reason);
+        self.trace_audio(
+            AudioDiagnosticKind::PublicationRejected { reason },
+            revision,
+            None,
+            0,
+        );
+    }
+
+    fn trace_audio(
+        &mut self,
+        kind: AudioDiagnosticKind,
+        revision: u64,
+        context: Option<hex_engine::AudioSourceContext>,
+        frames: usize,
+    ) {
+        if !self
+            .status
+            .audio_diagnostics_flags()
+            .contains(kind.category())
+        {
+            return;
+        }
+        let event = AudioDiagnosticEvent {
+            sequence: 0,
+            output: self.candidate_root.root_id(),
+            revision,
+            context,
+            applied_revision: self.status.applied_revision.load(Relaxed),
+            consumed_command: self.status.consumed_command.load(Relaxed),
+            performance_frame: self.status.performance_frame.load(Relaxed),
+            arrangement_frame: self.status.position.load(Relaxed),
+            rate: self.rate,
+            frames,
+            commands_pending: self.commands.slots(),
+            retirement_slots: self.retired.slots(),
+            kind,
+        };
+        self.diagnostics
+            .push(event, &self.status.diagnostics_dropped);
+    }
+    /// Native adapter supplies its already measured whole-host-callback time.
+    /// Reading the clock and formatting remain outside this record operation.
+    pub(crate) fn trace_callback_timing(
+        &mut self,
+        elapsed_ns: u64,
+        deadline_ns: u64,
+        frames: usize,
+    ) {
+        self.trace_audio(
+            AudioDiagnosticKind::CallbackTiming {
+                elapsed_ns,
+                deadline_ns,
+            },
+            self.status.applied_revision.load(Relaxed),
+            None,
+            frames,
+        );
+    }
+
     fn advance_legacy_publication(&mut self, frames: Option<usize>) {
         if frames.is_none()
             && self
@@ -2710,6 +2846,12 @@ impl Callback {
         if (self.active.is_none() || !self.retired.is_full())
             && let Some(mut next) = self.deferred.take()
         {
+            self.trace_audio(
+                AudioDiagnosticKind::PublicationAttempt,
+                next.revision,
+                next.source_context,
+                frames.unwrap_or(0),
+            );
             if next
                 .fresh_runtime_cancellation
                 .as_ref()
@@ -2721,7 +2863,7 @@ impl Callback {
                 if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                     cancellation.finish();
                 }
-                self.status.publish_rejected_revision(
+                self.reject_publication(
                     next.revision,
                     PlaybackHandoffRejection::FreshRuntimeCancelled,
                 );
@@ -2819,7 +2961,7 @@ impl Callback {
                         })
                     })
                 {
-                    self.status.publish_rejected_revision(
+                    self.reject_publication(
                         next.revision,
                         PlaybackHandoffRejection::RuntimeFenceChanged,
                     );
@@ -2854,6 +2996,12 @@ impl Callback {
                 });
                 match prepared {
                     Some(Ok(Some(_))) => {
+                        self.trace_audio(
+                            AudioDiagnosticKind::PublicationPrepared,
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         let committed = next
                             .streams
                             .as_mut()
@@ -2870,6 +3018,12 @@ impl Callback {
                         }
                     }
                     Some(Ok(None)) => {
+                        self.trace_audio(
+                            AudioDiagnosticKind::PublicationWaiting,
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         if self.active.is_some()
                             && let Some(streams) = next.streams.as_mut()
                         {
@@ -2881,14 +3035,28 @@ impl Callback {
                         self.deferred = Some(next);
                         return;
                     }
-                    _ => {
+                    refused => {
+                        let handoff = next
+                            .streams
+                            .as_mut()
+                            .and_then(|streams| streams.take_handoff_diagnostic());
+                        let detail = match refused {
+                            Some(Err(error)) => error.0,
+                            _ => "stream preparation state unavailable",
+                        };
+                        self.trace_audio(
+                            AudioDiagnosticKind::StreamPreflightFailed { detail, handoff },
+                            next.revision,
+                            next.source_context,
+                            frames.unwrap_or(0),
+                        );
                         if let Some(streams) = next.streams.as_mut() {
                             streams.cancel_install(&mut self.domain_pages);
                         }
                         if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                             cancellation.finish();
                         }
-                        self.status.publish_rejected_revision(
+                        self.reject_publication(
                             next.revision,
                             PlaybackHandoffRejection::StreamedPagesNotReady,
                         );
@@ -2945,7 +3113,7 @@ impl Callback {
                         cancellation.finish();
                     }
                     if let Some(reason) = error.rejection() {
-                        self.status.publish_rejected_revision(next.revision, reason);
+                        self.reject_publication(next.revision, reason);
                     }
                     self.return_graph(next);
                     self.status.publication_pending.store(false, Release);
@@ -2973,7 +3141,7 @@ impl Callback {
                         if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                             cancellation.finish();
                         }
-                        self.status.publish_rejected_revision(
+                        self.reject_publication(
                             next.revision,
                             PlaybackHandoffRejection::FreshRuntimeCancelled,
                         );
@@ -3102,6 +3270,7 @@ impl Callback {
                         self.return_graph(next);
                         return;
                     }
+                    let diagnostic_context = next.source_context;
                     let previous = self.active.replace(ActivePublication::Legacy(next));
                     // Publish actual inherited-tail requirements before the
                     // old graph can be destroyed on control and release its
@@ -3131,6 +3300,12 @@ impl Callback {
                     self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);
+                    self.trace_audio(
+                        AudioDiagnosticKind::PublicationApplied,
+                        revision,
+                        diagnostic_context,
+                        frames.unwrap_or(0),
+                    );
                 }
             }
         }
@@ -3246,8 +3421,27 @@ impl Callback {
         self.acknowledge_sampler_edit();
     }
 
+    fn trace_command_dequeued(&mut self, queued: QueuedCommand, cut: CommandCut) {
+        self.trace_audio(
+            AudioDiagnosticKind::CommandDequeued {
+                ticket: queued.ticket,
+                action: queued.action,
+                discarded_by_stop: cut.stop_through.is_some_and(|stop| queued.ticket <= stop),
+            },
+            self.status.applied_revision.load(Relaxed),
+            None,
+            0,
+        );
+    }
+
     fn consume_commands_through(&mut self, cut: CommandCut) {
-        if cut.stop_through.is_some() {
+        if let Some(through_ticket) = cut.stop_through {
+            self.trace_audio(
+                AudioDiagnosticKind::PriorityStop { through_ticket },
+                self.status.applied_revision.load(Relaxed),
+                None,
+                0,
+            );
             self.finish_midi_before_stop();
             self.revoke_output_transport();
             self.revoke_current_sampler_keyboard();
@@ -3278,6 +3472,7 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
+            self.trace_command_dequeued(queued, cut);
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,
@@ -3450,6 +3645,7 @@ impl Callback {
 
         if !output.is_empty() {
             self.prepare_gain_recording_quantum();
+            self.prepare_native_parameter_quantum();
         }
         self.reconcile_processor_audition();
         self.begin_project_spectrum(output.len());
@@ -3789,6 +3985,23 @@ impl Callback {
         // output must not expose pre-seek/pause/stop buffers in a new context.
         self.revoke_output_transport();
         self.gain_recording.abort(reason);
+        self.invalidate_native_parameter_input(match reason {
+            crate::gain_recording::AbortReason::SourceChanged => {
+                crate::native_parameter_input::AbortReason::SourceChanged
+            }
+            crate::gain_recording::AbortReason::TransportChanged => {
+                crate::native_parameter_input::AbortReason::TransportChanged
+            }
+            crate::gain_recording::AbortReason::OutputFailed => {
+                crate::native_parameter_input::AbortReason::OutputFailed
+            }
+            crate::gain_recording::AbortReason::Cancelled => {
+                crate::native_parameter_input::AbortReason::Cancelled
+            }
+            crate::gain_recording::AbortReason::ClockExhausted => {
+                crate::native_parameter_input::AbortReason::ClockExhausted
+            }
+        });
         if let Some(mut active) = self
             .active
             .as_mut()
@@ -3803,6 +4016,117 @@ impl Callback {
             .is_err()
         {
             self.status.gain_recording_fault.store(true, Release);
+        }
+    }
+    fn invalidate_native_parameter_input(
+        &mut self,
+        reason: crate::native_parameter_input::AbortReason,
+    ) {
+        self.native_parameter_input.abort(reason);
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        {
+            active.playback.invalidate_native_parameter_input();
+        }
+    }
+    fn prepare_native_parameter_quantum(&mut self) {
+        use crate::native_parameter_input::AbortReason;
+        let source = self.status.recording_source();
+        let transport_epoch = self.status.transport_epoch.load(Acquire);
+        let unsupported_output = self.output_transport.is_some();
+        let status = &self.status;
+        let active = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut);
+        let live = self.native_parameter_input.prepare(|target| {
+            if status.native_parameter_input_revoked(target.gesture_serial) {
+                return Err(AbortReason::Cancelled);
+            }
+            if unsupported_output {
+                return Err(AbortReason::UnsupportedOutput);
+            }
+            let active = active.as_ref().ok_or(AbortReason::SourceChanged)?;
+            if source != Some(target.source)
+                || active.revision != target.source.audio_revision
+                || active.control_context_generation != target.source.context.project_generation
+                || active.playback.native_parameter_input_target() != Some(target.input)
+            {
+                return Err(AbortReason::SourceChanged);
+            }
+            if transport_epoch != target.transport_epoch || !active.playback.playing() {
+                return Err(AbortReason::TransportChanged);
+            }
+            Ok(())
+        });
+        if let Some(mut active) = active {
+            if let Some(operation) = live {
+                if active
+                    .playback
+                    .set_native_parameter_input(operation)
+                    .is_err()
+                {
+                    self.native_parameter_input
+                        .abort(AbortReason::TargetUnavailable);
+                    active.playback.invalidate_native_parameter_input();
+                }
+            } else {
+                active.playback.invalidate_native_parameter_input();
+            }
+        }
+    }
+    /// Final checked host write, not physical loudspeaker delivery. Both Set
+    /// and Clear wait for the actual processed sample plus remaining Main delay.
+    pub fn finish_native_parameter_quantum(&mut self, valid: bool) {
+        use crate::native_parameter_input::AbortReason;
+        let invalidated = self.native_parameter_input.owner().and_then(|target| {
+            if self.status.closing.load(Acquire)
+                || self
+                    .status
+                    .native_parameter_input_revoked(target.gesture_serial)
+            {
+                Some(AbortReason::Cancelled)
+            } else if self.status.pending_stop_marker.load(Acquire) != 0
+                || self.status.transport_epoch.load(Acquire) != target.transport_epoch
+            {
+                Some(AbortReason::TransportChanged)
+            } else if self.status.recording_source() != Some(target.source) {
+                Some(AbortReason::SourceChanged)
+            } else {
+                None
+            }
+        });
+        if let Some(reason) = invalidated {
+            self.invalidate_native_parameter_input(reason);
+            return;
+        }
+        let cancelled = self.native_parameter_input.owner().is_some_and(|target| {
+            self.status
+                .native_parameter_input_revoked(target.gesture_serial)
+        });
+        let mut active = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut);
+        let application = active
+            .as_mut()
+            .and_then(|active| active.playback.take_native_parameter_application());
+        let end = active
+            .as_ref()
+            .map_or(0, |active| active.playback.performance_frame());
+        self.native_parameter_input
+            .finish_quantum(application, end, valid, cancelled);
+        if !self.native_parameter_input.has_input()
+            && let Some(active) = &mut active
+        {
+            active.playback.invalidate_native_parameter_input();
+        }
+        if self.native_parameter_input.receipt_fault {
+            self.status
+                .native_parameter_input_fault
+                .store(true, Release);
         }
     }
     fn prepare_gain_recording_quantum(&mut self) {
@@ -3977,6 +4301,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
+        .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::midi_recording::constructor_storage_quote()?)?
         .checked_add(spectrum_target::constructor_storage_quote()?)?
         .checked_add(processor_audition::constructor_storage_quote()?)?
@@ -3988,8 +4313,15 @@ pub(crate) fn worker_publication_queue_storage_quote() -> Option<usize> {
     ChannelStorage::ring_bytes::<QueuedPublication>(1)?
         .checked_add(ChannelStorage::ring_bytes::<ReturnedPublication>(RETIRED)?)?
         .checked_add(ChannelStorage::ring_bytes::<QueuedCommand>(COMMANDS)?)?
+        .checked_add(ChannelStorage::ring_bytes::<AudioDiagnosticEvent>(
+            audio_diagnostics::TRACE_CAPACITY,
+        )?)?
         .checked_add(crate::native_callback_owner::worker_boundary_storage_quote()?)
 }
+
+#[cfg(all(test, feature = "allocation-probe"))]
+#[path = "prepared/diagnostics_tests.rs"]
+mod diagnostics_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4161,10 +4493,12 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 2,
                     bypassed: false,
@@ -4203,6 +4537,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID,
                     bypassed: false,
@@ -4241,6 +4576,7 @@ mod tests {
                 gain: 1.0,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: DEVICE_ID + 1,
                     bypassed: false,
@@ -4331,6 +4667,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let make_state = || state.clone();
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -4364,6 +4701,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
@@ -4398,6 +4736,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
@@ -4461,6 +4800,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -4494,6 +4834,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: TRACK_DEVICE_ID,
                     bypassed: false,
@@ -4528,6 +4869,7 @@ mod tests {
                 gain: 0.75,
                 muted: false,
                 devices: vec![DeviceSnapshot {
+                    automation: Vec::new(),
                     comparison: None,
                     id: RETURN_DEVICE_ID,
                     bypassed: false,
@@ -4610,6 +4952,7 @@ mod tests {
         const RETURN_DEVICE_ID: u64 = 8;
         const FRAMES: u64 = 512;
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -4645,6 +4988,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        automation: Vec::new(),
                         comparison: None,
                         id: TRACK_DEVICE_ID,
                         bypassed: false,
@@ -4683,6 +5027,7 @@ mod tests {
                 devices: state
                     .as_ref()
                     .map(|state| DeviceSnapshot {
+                        automation: Vec::new(),
                         comparison: None,
                         id: RETURN_DEVICE_ID,
                         bypassed: false,
@@ -4775,7 +5120,7 @@ mod tests {
         gain_db: f64,
     }
 
-    fn metronome_graph() -> Playback {
+    pub(super) fn metronome_graph() -> Playback {
         let mut project = hex_project::Project::new(8_000).unwrap().snapshot();
         project.loop_region = Some(hex_project::LoopRegion::new(0, 4_050, true).unwrap());
         let revision = hex_engine::PreparedRevision::prepare(
@@ -7800,6 +8145,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -8311,6 +8657,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),

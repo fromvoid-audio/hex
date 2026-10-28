@@ -152,6 +152,27 @@ impl PreparedOperatorEnvelope {
         self.sustain
     }
 
+    // Callers prove that attack and decay frame counts and rates are equal.
+    pub(crate) fn shared_held_levels(envelopes: [&Self; 4], age: u64) -> [f64; 4] {
+        let first = envelopes[0];
+        if age < first.attack {
+            return envelopes
+                .map(|e| e.initial + (e.peak - e.initial) * age as f64 * e.attack_inverse);
+        }
+        let decay_age = age - first.attack;
+        if decay_age < first.decay {
+            let factor = (-(decay_age as f64) * first.decay_rate).exp();
+            return envelopes.map(|e| {
+                if e.peak != e.sustain {
+                    e.sustain + (e.peak - e.sustain) * factor
+                } else {
+                    e.sustain
+                }
+            });
+        }
+        envelopes.map(|e| e.sustain)
+    }
+
     /// NoteOff at `gate_frames` releases from that instant's held level.
     /// Zero-duration stages transition immediately. A zero gate and nonzero
     /// release emits the held level at age zero, then releases; zero release
@@ -176,6 +197,36 @@ pub struct PreparedOperatorEnvelopes {
 }
 
 impl PreparedOperatorEnvelopes {
+    pub(crate) fn is_uniform(&self) -> bool {
+        let first = &self.envelopes[0];
+        self.envelopes[1..].iter().all(|e| {
+            [
+                e.initial,
+                e.peak,
+                e.sustain,
+                e.attack_inverse,
+                e.decay_rate,
+                e.release_rate,
+            ]
+            .map(f64::to_bits)
+                == [
+                    first.initial,
+                    first.peak,
+                    first.sustain,
+                    first.attack_inverse,
+                    first.decay_rate,
+                    first.release_rate,
+                ]
+                .map(f64::to_bits)
+                && [e.attack, e.decay, e.release] == [first.attack, first.decay, first.release]
+        })
+    }
+
+    // Callers must establish is_uniform() for this immutable bank.
+    pub(crate) fn uniform_levels(&self, age: u64, gate: u64) -> [f64; 4] {
+        [self.envelopes[0].level(age, gate); 4]
+    }
+
     pub fn new(
         sample_rate: u32,
         envelopes: [OperatorEnvelope; OPERATOR_ENVELOPES],
@@ -193,7 +244,13 @@ impl PreparedOperatorEnvelopes {
 
     #[inline]
     pub fn levels(&self, age_frames: u64, gate_frames: u64) -> [f64; OPERATOR_ENVELOPES] {
-        std::array::from_fn(|index| self.envelopes[index].level(age_frames, gate_frames))
+        let [a, b, c, d] = &self.envelopes;
+        [
+            a.level(age_frames, gate_frames),
+            b.level(age_frames, gate_frames),
+            c.level(age_frames, gate_frames),
+            d.level(age_frames, gate_frames),
+        ]
     }
 
     /// Maximum envelope release duration, not complete instrument quiescence.
@@ -350,6 +407,27 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn uniform_envelope_proof_preserves_exact_queries_and_signed_zero() {
+        let law = OperatorEnvelope::new(-0.0, 1.0, 0.3, 0.001, 0.002, 0.003).unwrap();
+        let bank = PreparedOperatorEnvelopes::new(8000, [law; 4]).unwrap();
+        assert!(bank.is_uniform());
+        for gate in [0, 4, 8, 16, 24, 48, u64::MAX] {
+            for age in 0..96 {
+                assert_eq!(
+                    bank.uniform_levels(age, gate).map(f64::to_bits),
+                    bank.levels(age, gate).map(f64::to_bits)
+                );
+            }
+        }
+        let other = OperatorEnvelope::new(0.0, 1.0, 0.3, 0.001, 0.002, 0.003).unwrap();
+        assert!(
+            !PreparedOperatorEnvelopes::new(8000, [law, law, law, other])
+                .unwrap()
+                .is_uniform()
+        );
     }
 
     #[test]

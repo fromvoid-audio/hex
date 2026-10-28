@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 fn valid_snapshot() -> Snapshot {
     Snapshot {
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
@@ -139,6 +140,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut missing_position = valid_snapshot();
     missing_position.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 50,
         bypassed: false,
@@ -148,6 +150,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut out_of_range = valid_snapshot();
     out_of_range.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 50,
         bypassed: false,
@@ -158,6 +161,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut valid = valid_snapshot();
     valid.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: 50,
         bypassed: false,

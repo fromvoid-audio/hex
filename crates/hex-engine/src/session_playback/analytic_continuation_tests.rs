@@ -532,6 +532,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
         let next = on.next_id;
         if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut on.tracks[0].content {
             midi_clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
                 id: next,
                 start_raw: start,
                 duration_raw: duration,
@@ -544,6 +545,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
             panic!("fixture midi")
         };
         clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: next + 1,
             start_raw: start,
             duration_raw: duration,
@@ -602,6 +604,7 @@ fn analytic_polyphony_above_mutable_limit_and_capture_single_sample_order_are_pr
     if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut on.tracks[0].content {
         for offset in 0..24 {
             midi_clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
                 id: on.next_id + offset,
                 start_raw: 0,
                 duration_raw: 8 << 32,

@@ -44,6 +44,128 @@ fn actual_native_harness() -> Harness {
 }
 
 #[test]
+fn gain_diagnostics_correlate_session_outcome_submission_and_callback_application() {
+    use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
+    use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 480_000)));
+    let track = imported.state.project.tracks()[0].id();
+    let before = h.applied(h.context.unwrap());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    wait_gain(&h, before.audio_revision.saturating_sub(1), 1.0);
+    while h.events.try_recv().is_ok() {}
+
+    let rows = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&rows);
+    let observer = Arc::new(DiagnosticObserver::new(move |event| {
+        sink.lock()
+            .unwrap()
+            .push((event.request, event.stage, event.details.clone()));
+    }));
+    h.service
+        .as_ref()
+        .unwrap()
+        .set_diagnostic_observer(Arc::clone(&observer))
+        .unwrap();
+    let audio = h.audio.as_mut().unwrap();
+    let output = audio.control.output_identity().unwrap();
+    audio
+        .control
+        .set_audio_diagnostics(AudioDiagnosticsFlags::PUBLICATION);
+    while audio.control.take_audio_diagnostic().is_some() {}
+
+    let scope = observer.enter_ui_action(42);
+    let changed = h.run(Request::Edit(hex_project::Command::Gain {
+        track,
+        gain: 0.5,
+    }));
+    drop(scope);
+    let context = changed
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let rows = rows.lock().unwrap();
+    let request = rows
+        .iter()
+        .find_map(|(request, stage, _)| {
+            (*stage == DiagnosticStage::SubmitAttempt)
+                .then_some(*request)
+                .flatten()
+        })
+        .unwrap();
+    assert_eq!(request.ui_action_id, Some(42));
+    assert_eq!(request.operation, Some("gain"));
+    assert!(rows.iter().any(|(id, stage, _)| *id == Some(request)
+        && matches!(stage,
+        DiagnosticStage::ClientReceived { generation: Some(generation), revision, error: false }
+        if *generation == context.project_generation && *revision == context.editor_revision)));
+    drop(rows);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let submitted = loop {
+        match h.events.try_recv() {
+            Ok(EditorAudioEvent::Publication {
+                context: seen,
+                output_identity,
+                state: EditorPublicationState::Submitted { audio_revision },
+            }) if seen == context && output_identity == output => break audio_revision,
+            Ok(EditorAudioEvent::Publication {
+                context: seen,
+                state:
+                    EditorPublicationState::Refused(reason) | EditorPublicationState::Fault(reason),
+                ..
+            }) if seen == context => panic!("gain publication refused: {reason}"),
+            _ => {}
+        }
+        h.render();
+        assert!(
+            Instant::now() < deadline,
+            "gain submission was not observed"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let applied = wait_gain(&h, before.audio_revision, 0.5);
+    assert_eq!(applied.audio_revision, submitted);
+    let audio = h.audio.as_mut().unwrap();
+    assert_eq!(audio.status().unwrap().audio_diagnostics_dropped(), 0);
+    let events: Vec<_> = std::iter::from_fn(|| audio.control.take_audio_diagnostic()).collect();
+    assert!(events.iter().any(|event| event.output == output
+        && event.revision == submitted
+        && event.context == Some(context)
+        && event.kind == AudioDiagnosticKind::PublicationApplied));
+    audio
+        .control
+        .set_audio_diagnostics(AudioDiagnosticsFlags::OFF);
+    h.render();
+    assert!(
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .take_audio_diagnostic()
+            .is_none()
+    );
+}
+
+#[test]
 fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
     for session in [false, true] {
         verified_gain_case(session);
@@ -333,6 +455,7 @@ fn verified_gain_case(session: bool) {
     stable_gain(&h, applied, 2.0);
     let commit_at = Instant::now();
     let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        manual_edit: true,
         key: second,
         sequence: 1,
         value: ParameterValue::Float(2.0),
@@ -361,6 +484,7 @@ fn verified_gain_case(session: bool) {
     }));
     applied = wait(&h, applied.audio_revision, 0.5);
     let invalid = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        manual_edit: true,
         key: third,
         sequence: 2,
         value: ParameterValue::Float(f32::NAN),

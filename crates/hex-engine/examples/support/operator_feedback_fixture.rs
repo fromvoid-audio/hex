@@ -58,6 +58,7 @@ pub fn project_with_operators(
         let mut notes = Vec::with_capacity(notes_per_track);
         for note_index in 0..notes_per_track {
             notes.push(MidiNoteSnapshot {
+                active: true,
                 id: take_id(&mut next_id)?,
                 start_raw: 0,
                 duration_raw: note_duration,
@@ -81,6 +82,7 @@ pub fn project_with_operators(
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
                 bypassed: false,
@@ -110,6 +112,7 @@ pub fn project_with_operators(
     }
 
     let project = Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),

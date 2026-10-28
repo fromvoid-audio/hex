@@ -143,7 +143,7 @@ impl EditorView {
 
     fn range_input_available(&self) -> bool {
         self.mode == EditorMode::Arrangement
-            && !self.automation_view.enabled
+            && (!self.automation_view.enabled || self.time_selection_key_held)
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.track_name.is_editing()
@@ -211,7 +211,6 @@ impl EditorView {
             pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         });
-        self.retain_clip_detail_for_time_selection();
         self.selected_clip = None;
         self.suppress_cursor_click = true;
         true
@@ -284,7 +283,6 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
-        self.retain_clip_detail_for_time_selection();
         self.selected_clip = None;
         true
     }
@@ -417,7 +415,9 @@ impl EditorView {
             return false;
         };
         let (ordinary_handle, priority_control) = self.clip_pointer_handles(track, x, y, viewport);
-        if priority_control || ((extend || !inside_selection) && ordinary_handle) {
+        if !self.time_selection_key_held
+            && (priority_control || ((extend || !inside_selection) && ordinary_handle))
+        {
             return false;
         }
         let anchor = self.time_selection_cursor_anchor(extend);
@@ -449,8 +449,7 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
-        self.retain_clip_detail_for_time_selection();
-        self.select_lane_track(track);
+        self.select_lane_span(selection.anchor_track, track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
         true
@@ -1020,7 +1019,7 @@ impl EditorView {
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
         if !self.time_selection_project_scope {
-            self.select_lane_track(track);
+            self.select_lane_span(next.anchor_track, track);
         }
         self.selected_clip = None;
         true
@@ -1031,7 +1030,6 @@ impl EditorView {
             return false;
         };
         self.suppress_cursor_click = gesture.moved;
-        self.finish_arrange_range_fit();
         true
     }
 
@@ -1053,7 +1051,6 @@ impl EditorView {
     pub(super) fn cancel_time_selection_gesture(&mut self) -> bool {
         let had_move = self.cancel_time_range_move_gesture();
         let had_gesture = self.time_selection_gesture.take().is_some();
-        self.cancel_arrange_range_fit();
         if had_move {
             self.advance_selection_intent();
             self.suppress_cursor_click = false;

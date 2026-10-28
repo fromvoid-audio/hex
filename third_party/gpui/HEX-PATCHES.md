@@ -369,3 +369,14 @@ host refuses Begin after pointer admission. It checks the exact EntityId, leaves
 other owners/typed drags untouched, and runs the existing cancellation terminal
 immediately outside paint. Refusal therefore retains no input lease while its
 trailing release remains suppressed. Splitter sizing snapshots remain host-owned.
+
+The existing macOS cursor owner rasterizes Hex's three embedded SVG sources in
+`../../assets/cursors/` using the pinned GPUI SVG dependencies. The 24-point
+logical size, centered (12, 12) hotspot, cached native cursor ownership and OS
+fallbacks remain in this dependency boundary; the 48-pixel raster is derived
+at startup. No new workspace unsafe code or native cursor path is introduced.
+
+Test support may install an application's asset source and inspect completed
+monochrome sprite geometry. This is for deterministic SVG consumer tests; it
+does not change the native asset cache, create an OS window, or establish
+native framebuffer appearance.

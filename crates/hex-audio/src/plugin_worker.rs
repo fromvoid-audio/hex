@@ -12,6 +12,12 @@ use std::{
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod capture;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod edits;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod parameters;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParameterValues};
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
@@ -24,6 +30,8 @@ struct Signal {
     capture: std::sync::Mutex<capture::Slot>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     capture_requested: std::sync::atomic::AtomicBool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    edits_requested: std::sync::atomic::AtomicBool,
 }
 impl Signal {
     fn new() -> Self {
@@ -33,6 +41,8 @@ impl Signal {
             capture: std::sync::Mutex::new(capture::Slot::default()),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             capture_requested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            edits_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -56,6 +66,10 @@ struct State {
     native_error: Option<hex_plugin_host::Error>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     capture: capture::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    parameters: parameters::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    edits: edits::Work,
 }
 impl State {
     fn prepare_transport(&mut self) -> Result<(), Fault> {
@@ -204,6 +218,10 @@ fn spawn_processor_with(
         native_error: None,
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         capture: capture::Work::default(),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        parameters: parameters::Work::default(),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        edits: edits::Work::default(),
     });
     let storage = storage::reserved_backing(&guard, &completed);
     let join = spawn(guard, published);
@@ -280,9 +298,14 @@ fn transport_runner_with_setup(
             };
             match state.worker.receive() {
                 Ok(Some(block)) => {
-                    let result = state
-                        .process(block)
-                        .and_then(|reply| state.worker.complete(reply));
+                    let result = state.process(block).and_then(|reply| {
+                        // Validate the complete reply before publishing a
+                        // read-only observation under this original owner.
+                        state.worker.complete(reply)?;
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        state.observe_parameter_reply(&reply)?;
+                        Ok(())
+                    });
                     if let Err(error) = result {
                         state.worker.revoke();
                         if error != Fault::Revoked {
@@ -302,7 +325,25 @@ fn transport_runner_with_setup(
                 }
             }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            if let Err(error) = state.advance_capture(&published) {
+            if let Err(error) = state.publish_parameter_observations(&published) {
+                state.worker.revoke();
+                fault = Some(error);
+                break;
+            }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Err(error) = if published.edits_requested.load(Acquire)
+                && state.capture.between_polls()
+            {
+                // Drain bounded receipts between capture's timed polls so
+                // GUI backpressure cannot starve that same capture.
+                state.advance_parameter_edits(&published)
+            } else if published.capture_requested.load(Acquire) || state.capture.is_in_flight() {
+                // Save capture keeps priority and at most one native control
+                // exchange runs per worker iteration.
+                state.advance_capture(&published)
+            } else {
+                state.advance_parameter_edits(&published)
+            } {
                 let refused = matches!(error, hex_plugin_host::Error::Cancelled);
                 state.native_error = Some(error);
                 state.worker.revoke();

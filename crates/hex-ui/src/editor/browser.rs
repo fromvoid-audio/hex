@@ -368,6 +368,7 @@ struct BrowserGhostGeometry {
     top: f32,
     width: f32,
     height: f32,
+    scale: f32,
 }
 
 struct BrowserGhostDecor {
@@ -386,6 +387,7 @@ fn browser_audio_drag_ghost(
         top,
         width,
         height,
+        scale,
     } = geometry;
     let BrowserGhostDecor {
         selector,
@@ -405,20 +407,26 @@ fn browser_audio_drag_ghost(
             format!("{seconds:.2} s · {} frames", metadata.playback_frames)
         },
     );
+    let stroke = 1.0 / scale.max(1.0);
+    let width = width.max(3.0);
+    let height = height.max(3.0);
     let mut ghost = div()
         .debug_selector(move || selector.to_owned())
         .absolute()
-        .left(px(left))
-        .top(px(top))
-        .w(px(width.max(3.0)))
-        .h(px(height.max(3.0)))
+        .left_0()
+        .top_0()
+        .w_full()
+        .h_full()
         .overflow_hidden()
         .border_1()
+        .border_l(px(stroke))
+        .border_r(px(0.0))
         .border_color(rgb(0x000000))
-        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
-        .opacity(0.9);
+        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)));
     if let Some((lines, start, end)) = grid {
-        ghost = ghost.children(super::tracks::clip_grid_layer(&lines, start, end));
+        ghost = ghost.children(super::tracks::aligned_clip_grid_layer(
+            &lines, start, end, stroke, true,
+        ));
     }
     if let Some(waveform) = waveform_visual {
         ghost = ghost.children([waveform]);
@@ -437,7 +445,7 @@ fn browser_audio_drag_ghost(
                 .bg(rgb(theme::color(theme::PaletteRole::ClipText))),
         );
     }
-    ghost.child(
+    let ghost = ghost.child(
         div()
             .absolute()
             .left(px(4.0))
@@ -451,7 +459,9 @@ fn browser_audio_drag_ghost(
             .line_clamp(1)
             .child(theme::text(payload.label.clone()))
             .child(theme::text(status)),
-    )
+    );
+    super::tracks::pixel_boundary_shell(ghost, left, top, width, height, stroke, 0x000000, true)
+        .opacity(0.9)
 }
 
 fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
@@ -1156,7 +1166,7 @@ impl EditorView {
         }
     }
 
-    pub(super) fn floating_browser_audio_drag_ghost(&self) -> Option<Div> {
+    pub(super) fn floating_browser_audio_drag_ghost(&self, scale: f32) -> Option<Div> {
         let payload = self
             .active_browser_audio_drag
             .as_ref()
@@ -1200,6 +1210,7 @@ impl EditorView {
                         top,
                         width: 3.0,
                         height,
+                        scale,
                     },
                     BrowserGhostDecor {
                         selector: "browser-audio-append-preview",
@@ -1234,6 +1245,7 @@ impl EditorView {
                     top,
                     width: width as f32,
                     height,
+                    scale,
                 },
                 BrowserGhostDecor {
                     selector: "browser-audio-append-preview",
@@ -1283,6 +1295,7 @@ impl EditorView {
                 top,
                 width: 184.0,
                 height: 36.0,
+                scale,
             },
             BrowserGhostDecor {
                 selector: "browser-audio-floating-preview",
@@ -2219,10 +2232,17 @@ impl EditorView {
         entry: LibraryEntry,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let icon = match entry.kind {
-            EntryKind::Directory => self.browser.tree.icon(&entry.path),
-            EntryKind::WaveAudio => "♫",
-            EntryKind::Project => "▤",
+        let (disclosure, icon) = match entry.kind {
+            EntryKind::Directory => match self.browser.tree.disclosure(&entry.path) {
+                tree::Disclosure::Loading => (Some("…"), None),
+                tree::Disclosure::Error => (Some("!"), None),
+                tree::Disclosure::Expanded => (None, Some("icons/browser-disclosure/expanded.svg")),
+                tree::Disclosure::Collapsed => {
+                    (None, Some("icons/browser-disclosure/collapsed.svg"))
+                }
+            },
+            EntryKind::WaveAudio => (None, Some("icons/browser-place/samples.svg")),
+            EntryKind::Project => (None, Some("icons/browser-place/projects.svg")),
         };
         let path = entry.path.clone();
         let name = entry.name.clone();
@@ -2454,7 +2474,16 @@ impl EditorView {
             .flex_shrink_0()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-            .child(theme::text(icon));
+            .children(disclosure.map(theme::text))
+            .children(icon.map(|path| {
+                gpui::svg()
+                    .path(path)
+                    .size(px(14.0))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+            }));
+        if icon.is_some() && entry.kind != EntryKind::Directory {
+            control = control.debug_selector(move || format!("browser-file-icon-{index}"));
+        }
         if entry.kind == EntryKind::Directory {
             let folder = path.clone();
             control = control

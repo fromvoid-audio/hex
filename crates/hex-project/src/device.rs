@@ -16,6 +16,7 @@ pub fn default_instrument_state() -> Result<NativeDeviceState, Invalid> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
+    pub(crate) automation: Vec<crate::DeviceAutomation>,
     pub(crate) id: DeviceId,
     pub(crate) state: NativeDeviceState,
     pub(crate) bypassed: bool,
@@ -160,6 +161,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                 value.validate(&state)?;
             }
             project.edit_device(device, |target| {
+                target.validate_automation_provider(&state)?;
                 target.state = state;
                 target.comparison = comparison;
                 Ok(())
@@ -199,6 +201,7 @@ fn insert_instrument(
     let binding = project.register_instrument(
         name,
         Device {
+            automation: Vec::new(),
             comparison: None,
             id,
             state,
@@ -251,6 +254,7 @@ fn insert(
     target.devices.insert(
         index,
         Device {
+            automation: Vec::new(),
             comparison: None,
             id,
             state,

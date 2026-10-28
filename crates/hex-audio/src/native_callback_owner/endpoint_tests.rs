@@ -264,20 +264,11 @@ fn publication_destructor_failure_keeps_other_actual_endpoint_and_first_payload_
         .unwrap();
     assert_eq!(first.downcast_ref::<u64>(), Some(&1234));
     assert_eq!(calls.load(SeqCst), 1);
-    assert!(
-        retirement
-            .terminals
-            .as_mut()
-            .unwrap()
-            .endpoints
-            .as_mut()
-            .unwrap()
-            .client
-            .ready()
-    );
+    // All returned Boxes are secured before any destructor can unwind.
+    assert!(retirement.client.is_some());
     assert!(retirement.advance().is_err());
     assert_eq!(calls.load(SeqCst), 1);
-    assert!(retirement.data.is_none()); // exact callback Boxes still retained by terminals
+    assert!(retirement.data.is_some()); // exact callback Boxes retained in persistent custody
     // Fixture teardown is explicit and never asserted as successful disposal.
     wait(|| !retirement.root.cleanup_scheduled());
     drop(first);
