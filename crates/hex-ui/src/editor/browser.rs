@@ -2233,7 +2233,14 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let (disclosure, icon) = match entry.kind {
-            EntryKind::Directory => (Some(self.browser.tree.icon(&entry.path)), None),
+            EntryKind::Directory => match self.browser.tree.disclosure(&entry.path) {
+                tree::Disclosure::Loading => (Some("…"), None),
+                tree::Disclosure::Error => (Some("!"), None),
+                tree::Disclosure::Expanded => (None, Some("icons/browser-disclosure/expanded.svg")),
+                tree::Disclosure::Collapsed => {
+                    (None, Some("icons/browser-disclosure/collapsed.svg"))
+                }
+            },
             EntryKind::WaveAudio => (None, Some("icons/browser-place/samples.svg")),
             EntryKind::Project => (None, Some("icons/browser-place/projects.svg")),
         };
@@ -2474,7 +2481,7 @@ impl EditorView {
                     .size(px(14.0))
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             }));
-        if icon.is_some() {
+        if icon.is_some() && entry.kind != EntryKind::Directory {
             control = control.debug_selector(move || format!("browser-file-icon-{index}"));
         }
         if entry.kind == EntryKind::Directory {
