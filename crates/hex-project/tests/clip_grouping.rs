@@ -601,6 +601,7 @@ fn audio_group_retains_all_dependencies_and_can_regroup_neutral_containers() {
                 length: 10,
                 events: vec![hex_project::AudioEvent {
                     active: true,
+                    gain: hex_project::ClipGain::UNITY,
                     fade: None,
                     id: 1,
                     source: 0,

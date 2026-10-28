@@ -310,6 +310,7 @@ fn audio(
                     .map_err(|_| Invalid("could not reserve grouped audio events"))?;
                 events.push(AudioEvent {
                     active: event.active && clip.active(),
+                    gain: event.gain,
                     fade: event.fade,
                     source,
                     id: events.len() as u64 + 1,
@@ -342,6 +343,7 @@ fn audio(
                 .map_err(|_| Invalid("could not reserve grouped audio events"))?;
             events.push(AudioEvent {
                 active: clip.active(),
+                gain: crate::ClipGain::UNITY,
                 fade: None,
                 source: id,
                 id: events.len() as u64 + 1,

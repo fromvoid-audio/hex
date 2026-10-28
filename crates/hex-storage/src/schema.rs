@@ -15,6 +15,7 @@ pub(crate) mod device_assets;
 pub(crate) mod device_automation;
 pub(crate) mod event_activation;
 pub(crate) mod event_fades;
+pub(crate) mod event_gain;
 pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;

@@ -70,7 +70,7 @@ mod tests {
         assert_eq!(migrated.snapshot(), editor.project().snapshot());
         let current = crate::encode(&migrated).unwrap();
         let mut value: Value = serde_json::from_slice(&current).unwrap();
-        assert_eq!(value["version"], 60);
+        assert_eq!(value["version"], crate::CURRENT_SCHEMA_VERSION);
         assert_eq!(
             crate::decode(&current).unwrap().snapshot(),
             migrated.snapshot()

@@ -93,6 +93,7 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         "inactive_midi_notes",
         "inactive_audio_events",
         "nested_audio",
+        "audio_event_gains",
     ] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),
@@ -282,15 +283,16 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
 }
 
 #[test]
-fn schema58_save_requires_consent_or_save_as_for_schema60() {
+fn schema60_save_requires_consent_or_save_as_for_current_schema() {
     let files = Files::new();
-    let path = files.0.join("schema58.hex");
+    let path = files.0.join("schema60.hex");
     let service = Service::new(48_000, 16, 8_000_000).unwrap();
     let initial = next(&service);
     let mut prior: serde_json::Value =
         serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
-    // Empty schema58 uses the same complete envelope and was readable by the old writer.
-    prior["version"] = 58.into();
+    // Empty schema60 has the same envelope without schema61's gain inventory.
+    prior.as_object_mut().unwrap().remove("audio_event_gains");
+    prior["version"] = 60.into();
     let original = serde_json::to_vec(&prior).unwrap();
     fs::write(&path, &original).unwrap();
     let opened = request(&service, Request::Open(path.clone()));
@@ -306,5 +308,5 @@ fn schema58_save_requires_consent_or_save_as_for_schema60() {
     assert!(!saved.document_format_upgrade_required);
     assert_eq!(fs::read(&path).unwrap(), original);
     let upgraded: serde_json::Value = serde_json::from_slice(&fs::read(copy).unwrap()).unwrap();
-    assert_eq!(upgraded["version"], 60);
+    assert_eq!(upgraded["version"], hex_storage::CURRENT_SCHEMA_VERSION);
 }
