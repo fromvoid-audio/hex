@@ -230,7 +230,17 @@ fn session(revision: Arc<PreparedRevision>, frames: usize, partition: usize) -> 
 }
 #[test]
 fn actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_partitions() {
-    let f = fixture(&[&[], &[7]], 300);
+    for sample_rate in [44_100, 48_000, 96_000] {
+        actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_partitions_at_rate(
+            sample_rate,
+        );
+    }
+}
+
+fn actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_partitions_at_rate(
+    sample_rate: u32,
+) {
+    let f = fixture_at_rate(&[&[], &[7]], 300, sample_rate);
     let revision = prepare(&f).unwrap();
     assert_eq!(revision.arrangement().main_latency_frames(), 7);
     let mut expected = vec![[0.0; 2]; 307];
@@ -1222,7 +1232,13 @@ fn main_review_cumulative_latency_limit_includes_upstream_and_serial_main() {
 
 #[test]
 fn main_review_main_only_delay_retains_fast_pre_main_path_and_bypass() {
-    let mut f = fixture(&[&[]], 8);
+    for sample_rate in [44_100, 48_000, 96_000] {
+        main_review_main_only_delay_retains_fast_pre_main_path_and_bypass_at_rate(sample_rate);
+    }
+}
+
+fn main_review_main_only_delay_retains_fast_pre_main_path_and_bypass_at_rate(sample_rate: u32) {
+    let mut f = fixture_at_rate(&[&[]], 8, sample_rate);
     f.editor
         .execute(Command::InsertMainDevice {
             before: None,
@@ -1255,7 +1271,9 @@ fn main_review_main_only_delay_retains_fast_pre_main_path_and_bypass() {
     assert_eq!(revision.arrangement().main_latency_frames(), 0);
     assert_eq!(session(revision, 8, 3), f.samples);
     assert_eq!(
-        Project::new(48_000, vec![]).unwrap().main_latency_frames(),
+        Project::new(sample_rate, vec![])
+            .unwrap()
+            .main_latency_frames(),
         0
     );
 }
@@ -1586,7 +1604,13 @@ fn compiled_group_solo_selects_descendants_and_ancestors_without_changing_flags(
 
 #[test]
 fn delayed_group_solo_and_mute_preserve_main_and_capture_across_blocks() {
-    let mut f = fixture(&[&[], &[], &[]], 8);
+    for sample_rate in [44_100, 48_000, 96_000] {
+        delayed_group_solo_and_mute_preserve_main_and_capture_across_blocks_at_rate(sample_rate);
+    }
+}
+
+fn delayed_group_solo_and_mute_preserve_main_and_capture_across_blocks_at_rate(sample_rate: u32) {
+    let mut f = fixture_at_rate(&[&[], &[], &[]], 8, sample_rate);
     let Created::Track(group) = f
         .editor
         .execute(Command::GroupTracks {
@@ -1647,8 +1671,14 @@ fn delayed_group_solo_and_mute_preserve_main_and_capture_across_blocks() {
                     )
                     .unwrap();
             }
-            assert_eq!(main, expected, "Main muted={muted}, block={block}");
-            assert_eq!(group_tap, expected, "group muted={muted}, block={block}");
+            assert_eq!(
+                main, expected,
+                "Main rate={sample_rate}, muted={muted}, block={block}"
+            );
+            assert_eq!(
+                group_tap, expected,
+                "group rate={sample_rate}, muted={muted}, block={block}"
+            );
         }
     }
 }
