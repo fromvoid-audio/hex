@@ -1150,7 +1150,9 @@ impl MutableInstrumentRuntime for Runtime {
                 }
                 voice.age = voice.age.saturating_add(1);
                 if quality {
-                    if EventVoice::read(voice, &self.factory).envelope_finished() {
+                    if voice.envelope_gate.is_some()
+                        && EventVoice::read(voice, &self.factory).envelope_finished()
+                    {
                         voice.drain = voice.drain.saturating_add(1);
                     } else {
                         voice.drain = 0;
