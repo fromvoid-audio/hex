@@ -597,15 +597,38 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
         .unwrap(),
     );
     assert_eq!(revision.arrangement().main_latency_frames(), 5);
-    let pcm = session(Arc::clone(&revision), 37, 1);
-    assert_eq!(pcm[5], [0.5, -1.0]);
-    assert!(pcm[..5].iter().all(|frame| *frame == [0.0; 2]));
-    assert_eq!(pcm[36], f.samples[31]);
+    // The analytic generator emits only one impulse at its declared five-frame
+    // latency; the 3-frame audio path is aligned to that same output frame.
+    let mut expected = vec![[0.0; 2]; 37];
+    expected[5] = [0.5, -1.0];
+    expected[36] = f.samples[31];
+    for block in [1, 3, 7, 17, 64] {
+        assert_eq!(
+            session(Arc::clone(&revision), 37, block),
+            expected,
+            "Main block {block}"
+        );
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let plan = runtime
+            .output_capture_plan(&[crate::OutputCaptureId::Track(f.tracks[0])], block)
+            .unwrap();
+        let mut output = vec![[0.0; 2]; 37];
+        let mut tap = output.clone();
+        for (main, track) in output.chunks_mut(block).zip(tap.chunks_mut(block)) {
+            let mut captures = [track];
+            runtime
+                .render_with_capture(main, &mut crate::OutputCapture::new(&plan, &mut captures))
+                .unwrap();
+        }
+        assert_eq!(output, expected, "captured Main block {block}");
+        assert_eq!(tap, expected, "track tap block {block}");
+    }
     let mut legacy = Renderer::new(revision.arrangement());
     legacy.play();
-    let mut output = pcm.clone();
+    let mut output = expected.clone();
     legacy.render(&mut output).unwrap();
-    assert_eq!(output, pcm);
+    assert_eq!(output, expected);
 }
 
 #[test]
