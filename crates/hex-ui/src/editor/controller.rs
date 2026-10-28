@@ -4083,7 +4083,8 @@ impl EditorView {
                         output,
                         frame,
                     });
-                    self.status = "rebuilding audio · playback will resume".into();
+                    self.status =
+                        "rebuilding audio · effect tails reset · playback will resume".into();
                 }
                 true
             }

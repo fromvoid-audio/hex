@@ -477,6 +477,12 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
                 frame, ..
             }) = view.latency_rebuild
             {
+                if captured.is_none() {
+                    assert_eq!(
+                        view.status,
+                        "rebuilding audio · effect tails reset · playback will resume"
+                    );
+                }
                 captured = Some(frame);
             }
             let status = view.audio_status().unwrap();
