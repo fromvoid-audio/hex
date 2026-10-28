@@ -240,6 +240,109 @@ fn main_limiter_quiet_timing_changes_publish_and_render_the_new_delay() {
 }
 
 #[test]
+fn changing_existing_latency_reports_stop_and_restores_current_project() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    let limiter = || Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    };
+    h.run(limiter());
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..12 {
+        h.render();
+    }
+    let added = h.run(limiter());
+    let device = added.state.project.track(track).unwrap().devices()[1].id();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let rejected = loop {
+        h.pump();
+        h.render();
+        if let Some((revision, reason)) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_revision()
+            && revision > applied
+        {
+            assert_eq!(
+                reason,
+                hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
+            );
+            assert_eq!(
+                hex_engine::PlaybackHandoffRejection::from_code(reason as u32),
+                Some(reason)
+            );
+            assert!(reason.message().contains("stop transport"));
+            break revision;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "latency refusal was not reported"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    h.render();
+    let restored = h.run(Request::RestoreStoppedPlayback);
+    assert_eq!(restored.state.project, added.state.project);
+    (applied, _) = h.applied(rejected);
+    h.run(Request::SetDeviceParameter {
+        device,
+        parameter: ParameterId::from_static(2),
+        value: ParameterValue::Float(-18.0),
+    });
+    h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..20 {
+        h.render();
+    }
+    let ceiling = 10.0_f32.powf(-18.0 / 20.0);
+    assert!(
+        h.render()
+            .iter()
+            .flatten()
+            .all(|sample| *sample <= ceiling + 1e-5)
+    );
+}
+
+#[test]
 fn first_track_limiter_after_play_or_pause_publishes_and_parameter_edits_are_audible() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     for paused in [false, true] {

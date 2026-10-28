@@ -3058,7 +3058,10 @@ impl Callback {
                         }
                         self.reject_publication(
                             next.revision,
-                            PlaybackHandoffRejection::StreamedPagesNotReady,
+                            handoff.map_or(
+                                PlaybackHandoffRejection::StreamedPagesNotReady,
+                                PlaybackHandoffRejection::from_error,
+                            ),
                         );
                         self.return_graph(next);
                         self.status.publication_pending.store(false, Release);
