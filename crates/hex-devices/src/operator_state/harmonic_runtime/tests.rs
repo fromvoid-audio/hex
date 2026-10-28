@@ -470,6 +470,41 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
 }
 
 #[test]
+fn pure_sine_spectrum_matches_table_across_phases_and_interpolation_modes() {
+    let settings =
+        OperatorSettings::from_state(&OPERATOR_METADATA.default_state().unwrap()).unwrap();
+    let spectrum = Spectrum::prepare(&settings);
+    let table = crate::shared_sine_table();
+    let bank = prepared_bank().unwrap();
+    let phase_table = harmonic_phase_table().unwrap();
+    for interpolate in [false, true] {
+        for phase in [0, 1, 1 << 62, 1 << 63, u64::MAX]
+            .into_iter()
+            .chain((0..4096_u64).map(|i| i.wrapping_mul(0x9e3779b97f4a7c15)))
+        {
+            let expected =
+                (0.0_f64 + f64::from(table.sample_phase_policy(phase, interpolate))) as f32;
+            let actual = spectrum.sample_policy(
+                0,
+                phase,
+                1 << 54,
+                0,
+                1 << 54,
+                table,
+                bank,
+                phase_table,
+                interpolate,
+            );
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "phase={phase} interpolate={interpolate}"
+            );
+        }
+    }
+}
+
+#[test]
 fn builtin_and_custom_spectra_transition_matches_independent_weighted_output() {
     let builtin_settings =
         OperatorSettings::from_state(&OPERATOR_METADATA.default_state().unwrap()).unwrap();
