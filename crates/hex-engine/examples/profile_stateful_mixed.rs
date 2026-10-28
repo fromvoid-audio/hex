@@ -225,8 +225,12 @@ fn composition_oracle(
 // Audio sources finish at the handoff while held Operator notes continue.
 // Bypassing the audio filters detaches their live histories; the old graph's
 // separately rendered track composition provides the full post-cut reference.
-fn mixed_tail(tracks: usize, block: usize) -> Result<()> {
-    let (base, mut media) = fixture(tracks, 1)?;
+fn mixed_tail(tracks: usize, block: usize, companion: bool) -> Result<()> {
+    let (base, mut media) = if companion {
+        fixture_with_companion(tracks, 1, true)?
+    } else {
+        fixture(tracks, 1)?
+    };
     let asset = base.assets().next().ok_or("missing mixed-tail asset")?.id();
     media.insert(asset, Audio::new(RATE, vec![[0.3, -0.1]; 512])?);
     let mut snapshot = base.snapshot();
@@ -331,7 +335,7 @@ fn mixed_tail(tracks: usize, block: usize) -> Result<()> {
         digest(&mut hash, &output[..count]);
     }
     println!(
-        "mixed_tail tracks={tracks} audio_tracks={} operator_tracks={} block={block} rate={RATE} post_cut_frames={} digest={hash:016x} composition_max_error={max_error:e} audio_tail_peak={audio_peak:e} handoff_us={:.3} first_render_us={:.3} combined_us={:.3}; separate preparation/retirement; one transition, no physical deadline",
+        "mixed_tail tracks={tracks} audio_tracks={} operator_tracks={} companion={companion} block={block} rate={RATE} post_cut_frames={} digest={hash:016x} composition_max_error={max_error:e} audio_tail_peak={audio_peak:e} handoff_us={:.3} first_render_us={:.3} combined_us={:.3}; separate preparation/retirement; one transition, no physical deadline",
         tracks.div_ceil(2),
         tracks / 2,
         RATE,
@@ -493,12 +497,14 @@ fn run(
 }
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() == 2 && args[0] == "--mixed-tail" {
+    if (args.len() == 2 || (args.len() == 3 && args[2] == "--companion"))
+        && args[0] == "--mixed-tail"
+    {
         let block: usize = args[1].parse()?;
         if ![128, 512].contains(&block) {
             return Err("mixed-tail block must be 128 or 512".into());
         }
-        return mixed_tail(TRACKS, block);
+        return mixed_tail(TRACKS, block, args.len() == 3);
     }
     if args.len() < 3
         || args.len() > 5
@@ -508,7 +514,7 @@ fn main() -> Result<()> {
         || (args.len() == 5 && args[3] == args[4])
     {
         return Err(
-            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition] [--companion], or --mixed-tail <block:128|512>".into(),
+            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition] [--companion], or --mixed-tail <block:128|512> [--companion]".into(),
         );
     }
     let devices = args[0].parse()?;
@@ -648,7 +654,8 @@ mod tests {
 
     #[test]
     fn mixed_tail_keeps_audio_residual_and_sustained_instrument() -> Result<()> {
-        mixed_tail(2, 128)
+        mixed_tail(2, 128, false)?;
+        mixed_tail(2, 128, true)
     }
 
     #[test]

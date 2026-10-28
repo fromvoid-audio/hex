@@ -4,6 +4,7 @@
 //! `--companion` enables looping shaped envelopes; `--envelope-reference`
 //! keeps the same envelope shape without looping for an audible comparison.
 //! `--sparse` uses four and eight voices instead of sixteen and thirty-two.
+//! `--asymmetric` enables looping and changes one operator envelope.
 use hex_devices::operator_state::{OPERATOR_METADATA, harmonic_parameter, parameter};
 use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentEvent};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
@@ -32,7 +33,8 @@ fn main() {
     let varied = std::env::args().any(|arg| arg == "--varied");
     let fm = std::env::args().any(|arg| arg == "--fm");
     let builtin = std::env::args().any(|arg| arg == "--builtin");
-    let companion = std::env::args().any(|arg| arg == "--companion");
+    let asymmetric = std::env::args().any(|arg| arg == "--asymmetric");
+    let companion = asymmetric || std::env::args().any(|arg| arg == "--companion");
     let sparse = std::env::args().any(|arg| arg == "--sparse");
     let shaped_envelope = companion || std::env::args().any(|arg| arg == "--envelope-reference");
     let blocks = if cpu_handshake { 512 } else { 128 };
@@ -100,7 +102,11 @@ fn main() {
                         .patch_parameter(
                             &state,
                             parameter::envelope(operator, parameter::EnvelopeField::Sustain),
-                            ParameterValue::Float(0.2),
+                            ParameterValue::Float(if asymmetric && operator == 4 {
+                                0.35
+                            } else {
+                                0.2
+                            }),
                         )
                         .unwrap();
                 }
@@ -180,7 +186,7 @@ fn main() {
             assert!(checksum.is_finite() && checksum > 0.0);
             timings.sort_by(f64::total_cmp);
             println!(
-                "rate={rate} unique_note_ons={voices} active_occurrences={active} waveform={} oscillators=4 block=256 timed_blocks={blocks} varied={varied} fm={fm} companion={companion} shaped_envelope={shaped_envelope} pcm_digest={digest:016x} pair_bytes={} median_ms={:.4} p95_ms={:.4} max_ms={:.4} deadline_ms={:.4} checksum={:.8}",
+                "rate={rate} unique_note_ons={voices} active_occurrences={active} waveform={} oscillators=4 block=256 timed_blocks={blocks} varied={varied} fm={fm} companion={companion} asymmetric={asymmetric} shaped_envelope={shaped_envelope} pcm_digest={digest:016x} pair_bytes={} median_ms={:.4} p95_ms={:.4} max_ms={:.4} deadline_ms={:.4} checksum={:.8}",
                 if builtin { "saw" } else { "custom-64" },
                 2 * factory.declared_twin_bytes(),
                 timings[blocks / 2],

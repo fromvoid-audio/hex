@@ -37,6 +37,11 @@ pub(super) struct Factory {
     parameters: [f64; 12],
     filter: FilterTrajectory,
     companion_active: bool,
+    // Identical authored machine laws start equal and receive the same
+    // per-voice age, clock observations and note-off. Active history may only
+    // transfer across compatible companion and envelope laws. Per-operator
+    // machine events would require invalidating this proof.
+    uniform_companion: bool,
 }
 impl Factory {
     #[cfg(test)]
@@ -74,6 +79,13 @@ impl Factory {
                 FilterTrajectory::new(settings.filter, rate)?
             },
             companion_active: settings.companion.requires_runtime(),
+            uniform_companion: (1..4).all(|operator| {
+                settings.companion.words[operator] == settings.companion.words[0]
+                    && (0..ENVELOPE_FIELDS).all(|field| {
+                        settings.fields[CORE_FIELDS + operator * ENVELOPE_FIELDS + field].to_bits()
+                            == settings.fields[CORE_FIELDS + field].to_bits()
+                    })
+            }),
             settings,
             table,
             phase_table: harmonic_phase_table()?,
@@ -1042,11 +1054,17 @@ impl MutableInstrumentRuntime for Runtime {
                     voice.gate.unwrap_or(u64::MAX)
                 };
                 let amplitudes = if self.factory.companion_active {
-                    std::array::from_fn(|i| {
-                        voice.machines[i]
+                    if self.factory.uniform_companion {
+                        [voice.machines[0]
                             .as_ref()
-                            .map_or(0.0, |machine| machine.level(age))
-                    })
+                            .map_or(0.0, |machine| machine.level(age)); 4]
+                    } else {
+                        std::array::from_fn(|i| {
+                            voice.machines[i]
+                                .as_ref()
+                                .map_or(0.0, |machine| machine.level(age))
+                        })
+                    }
                 } else {
                     self.factory.configuration.envelope_levels(age, gate)
                 };
