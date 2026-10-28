@@ -1,12 +1,13 @@
 //! Sustained mixed Arrangement playback with stateful effects and identical-revision
 //! handoffs. This is a headless timing fixture, not a physical device deadline.
+//! `--companion` gives each Operator a looping, shaped envelope.
 #[allow(dead_code)]
 #[path = "support/operator_feedback_fixture.rs"]
 mod operator_fixture;
 
 use hex_devices::{compressor, gate, saturator, utility};
 use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
-use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipGain, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION,
     Project, TrackContentSnapshot,
@@ -21,6 +22,14 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 pub(crate) fn fixture(
     tracks: usize,
     devices: usize,
+) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>)> {
+    fixture_with_companion(tracks, devices, false)
+}
+
+fn fixture_with_companion(
+    tracks: usize,
+    devices: usize,
+    companion: bool,
 ) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>)> {
     let source = operator_fixture::project_with_operators(tracks, 4, 0.24, 0.82, true)?;
     let mut snapshot = source.project.snapshot();
@@ -63,12 +72,20 @@ pub(crate) fn fixture(
                 looping: true,
                 fade: ClipFade::neutral(u64::from(RATE) * 140)?,
             }]);
-        } else if let TrackContentSnapshot::Instrument(clips) = &mut track.content {
+        } else {
+            let clips = match &mut track.content {
+                TrackContentSnapshot::Instrument(clips)
+                | TrackContentSnapshot::Hybrid {
+                    midi_clips: clips, ..
+                } => clips,
+                TrackContentSnapshot::Audio(_) => return Err("missing fixture midi clips".into()),
+            };
+            let clip = clips.first_mut().ok_or("missing fixture midi clip")?;
             let length = BeatTime::from_quarters(256)?.raw();
-            clips[0].length_raw = length;
-            clips[0].source_length_raw = length;
-            clips[0].loop_end_raw = length;
-            for note in &mut clips[0].notes {
+            clip.length_raw = length;
+            clip.source_length_raw = length;
+            clip.loop_end_raw = length;
+            for note in &mut clip.notes {
                 note.duration_raw = BeatTime::from_quarters(240)?.raw();
             }
         }
@@ -92,6 +109,40 @@ pub(crate) fn fixture(
     snapshot
         .native_sources
         .retain(|source| !source.receiver.is_some_and(|id| audio_tracks.contains(&id)));
+    if companion {
+        for source in &mut snapshot.native_sources {
+            let instrument = source
+                .devices
+                .get_mut(source.instrument_index)
+                .ok_or("missing fixture source instrument")?;
+            for operator in 1..=4 {
+                instrument.state = hex_devices::operator_state::OPERATOR_METADATA.patch_parameter(
+                    &instrument.state,
+                    ParameterId::from_static(362 + (operator - 1) * 8),
+                    ParameterValue::Choice(1),
+                )?;
+                instrument.state = hex_devices::operator_state::OPERATOR_METADATA.patch_parameter(
+                    &instrument.state,
+                    hex_devices::operator_state::parameter::envelope(
+                        operator,
+                        hex_devices::operator_state::parameter::EnvelopeField::Sustain,
+                    ),
+                    ParameterValue::Float(0.2),
+                )?;
+            }
+            let receiver = source.receiver.ok_or("missing fixture source receiver")?;
+            let track = snapshot
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == receiver)
+                .ok_or("missing fixture receiver track")?;
+            track
+                .instrument
+                .as_mut()
+                .ok_or("missing fixture instrument projection")?
+                .state = instrument.state.clone();
+        }
+    }
     let project = Project::from_snapshot(snapshot)?;
     let asset_id = project.assets().next().ok_or("missing fixture asset")?.id();
     let samples = (0..SOURCE)
@@ -296,8 +347,9 @@ fn run(
     block: usize,
     seconds: usize,
     composition: bool,
+    companion: bool,
 ) -> Result<()> {
-    let (project, media) = fixture(tracks, devices)?;
+    let (project, media) = fixture_with_companion(tracks, devices, companion)?;
     let table = Arc::new(SineTable::new());
     let initial = match revision(&project, &media, &table, None) {
         Ok(value) => value,
@@ -306,7 +358,7 @@ fn run(
                 && error.to_string() == "stateful device runtime exceeds its bounded budget" =>
         {
             println!(
-                "tracks={tracks} devices_per_track={devices} requested_effects={} requested_mutable_instruments={} admission=refused error={error}",
+                "tracks={tracks} devices_per_track={devices} companion={companion} requested_effects={} requested_mutable_instruments={} admission=refused error={error}",
                 tracks * devices,
                 tracks / 2
             );
@@ -421,7 +473,7 @@ fn run(
     handoffs.sort_unstable();
     let p = |pct: usize| timings[(timings.len() - 1) * pct / 100].1 as f64 / 1000.0;
     println!(
-        "tracks={tracks} audio_tracks={} operator_tracks={} devices_per_track={devices} effect_instances={} mutable_instruments={} total_stateful_instances={} admission=accepted rate={RATE} block={block} seconds={seconds} frames={frame} digest={hash:016x} peak={peak:.8} render_p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_actual_period={late} first_audible_frame={} first_render_us={:.3} handoffs={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late} isolated_track_composition={composition} composition_max_error={composition_max_error:.9}",
+        "tracks={tracks} audio_tracks={} operator_tracks={} devices_per_track={devices} effect_instances={} mutable_instruments={} total_stateful_instances={} companion={companion} admission=accepted rate={RATE} block={block} seconds={seconds} frames={frame} digest={hash:016x} peak={peak:.8} render_p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3} beyond_actual_period={late} first_audible_frame={} first_render_us={:.3} handoffs={} handoff_max_us={:.3} handoff_plus_render_max_us={:.3} transition_beyond_period={transition_late} isolated_track_composition={composition} composition_max_error={composition_max_error:.9}",
         tracks.div_ceil(2),
         tracks / 2,
         tracks * devices,
@@ -448,9 +500,15 @@ fn main() -> Result<()> {
         }
         return mixed_tail(TRACKS, block);
     }
-    if args.len() != 3 && !(args.len() == 4 && args[3] == "--composition") {
+    if args.len() < 3
+        || args.len() > 5
+        || args[3..]
+            .iter()
+            .any(|arg| !["--composition", "--companion"].contains(&arg.as_str()))
+        || (args.len() == 5 && args[3] == args[4])
+    {
         return Err(
-            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition], or --mixed-tail <block:128|512>".into(),
+            "usage: profile_stateful_mixed <devices:1|4|16> <block:128|512> <seconds:1..60> [--composition] [--companion], or --mixed-tail <block:128|512>".into(),
         );
     }
     let devices = args[0].parse()?;
@@ -465,12 +523,72 @@ fn main() -> Result<()> {
     println!(
         "headless mixed resident audio and four-voice all-operator arrangement; identical revision handoffs; continuous playback PCM reference; uncontrolled host load; no physical callback or first-audible measurement"
     );
-    run(TRACKS, devices, block, seconds, args.len() == 4)
+    run(
+        TRACKS,
+        devices,
+        block,
+        seconds,
+        args.iter().any(|arg| arg == "--composition"),
+        args.iter().any(|arg| arg == "--companion"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn looping_companion_mixed_fixture_matches_continuous_and_composed_output() -> Result<()> {
+        let (looped, media) = fixture_with_companion(2, 1, true)?;
+        let (normal, _) = fixture(2, 1)?;
+        let snapshot = looped.snapshot();
+        let clips = match &snapshot.tracks[1].content {
+            TrackContentSnapshot::Instrument(clips)
+            | TrackContentSnapshot::Hybrid {
+                midi_clips: clips, ..
+            } => clips,
+            TrackContentSnapshot::Audio(_) => panic!("expected MIDI fixture"),
+        };
+        assert_eq!(clips[0].length_raw, BeatTime::from_quarters(256)?.raw());
+        let duration = BeatTime::from_quarters(240)?.raw();
+        assert!(
+            clips[0]
+                .notes
+                .iter()
+                .all(|note| note.duration_raw == duration)
+        );
+        let source = looped
+            .native_sources()
+            .first()
+            .ok_or("missing native source")?;
+        for operator in 1..=4 {
+            assert_eq!(
+                hex_devices::operator_state::OPERATOR_METADATA.read_parameter(
+                    source.instrument().state(),
+                    ParameterId::from_static(362 + (operator - 1) * 8),
+                )?,
+                ParameterValue::Choice(1)
+            );
+        }
+        let table = Arc::new(SineTable::new());
+        let mut looped_playback = playback(revision(&looped, &media, &table, None)?)?;
+        let mut normal_playback = playback(revision(&normal, &media, &table, None)?)?;
+        let mut looped_hash = 0xcbf29ce484222325;
+        let mut normal_hash = looped_hash;
+        for _ in 0..375 {
+            let mut looped_block = [[0.0; 2]; 128];
+            let mut normal_block = [[0.0; 2]; 128];
+            looped_playback.render(&mut looped_block)?;
+            normal_playback.render(&mut normal_block)?;
+            digest(&mut looped_hash, &looped_block);
+            digest(&mut normal_hash, &normal_block);
+        }
+        assert_ne!(
+            looped_hash, normal_hash,
+            "companion mode must affect rendered PCM"
+        );
+        run(2, 1, 128, 1, true, true)
+    }
 
     #[test]
     fn mixed_fixture_handoff_preserves_continuous_pcm() -> Result<()> {
