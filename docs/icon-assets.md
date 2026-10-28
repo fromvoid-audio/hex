@@ -22,3 +22,8 @@ These original Hex vectors replace only the browser place catalog. Other app
 icons and font glyphs are not yet covered; system-owned cursor artwork remains
 outside this library. See [cursor artwork](cursor-assets.md) for the custom
 macOS cursor sources.
+
+The editor transport playback controls use `assets/icons/transport/play.svg`,
+`pause.svg`, and `stop.svg`. These use the same 16 by 16 mask and rebuild
+workflow. Their current text color follows the action surface, including hover;
+other transport glyphs have not yet moved to the vector library.

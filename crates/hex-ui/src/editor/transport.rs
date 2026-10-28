@@ -5,6 +5,23 @@ use super::{
 use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
+#[derive(Clone, Copy)]
+enum PlaybackIcon {
+    Play,
+    Pause,
+    Stop,
+}
+
+impl PlaybackIcon {
+    fn asset(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Play => ("icons/transport/play.svg", "transport-play-icon"),
+            Self::Pause => ("icons/transport/pause.svg", "transport-pause-icon"),
+            Self::Stop => ("icons/transport/stop.svg", "transport-stop-icon"),
+        }
+    }
+}
+
 impl EditorView {
     pub(super) fn transport(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let playing = self
@@ -54,8 +71,12 @@ impl EditorView {
                 cx,
             ))
             .child(
-                self.icon(
-                    if playing { "Ⅱ" } else { "▶" },
+                self.vector_icon(
+                    if playing {
+                        PlaybackIcon::Pause
+                    } else {
+                        PlaybackIcon::Play
+                    },
                     "play or pause · space",
                     TogglePlay,
                     cx,
@@ -63,7 +84,7 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
-                self.icon("■", "stop · escape", Stop, cx)
+                self.vector_icon(PlaybackIcon::Stop, "stop · escape", Stop, cx)
                     .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
@@ -389,6 +410,46 @@ impl EditorView {
                 }))
             }
         })
+    }
+
+    fn vector_icon(
+        &self,
+        icon: PlaybackIcon,
+        description: &'static str,
+        action: impl gpui::Action,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let (path, selector) = icon.asset();
+        let style = theme::action_style();
+        let hover_text = style.hover_text.unwrap_or(style.text);
+        hex_widgets::action_surface(style)
+            .group(description)
+            .rounded_full()
+            .child(
+                div().debug_selector(move || selector.into()).child(
+                    gpui::svg()
+                        .path(path)
+                        .size(px(14.0))
+                        .text_color(rgb(style.text))
+                        .group_hover(description, move |style| style.text_color(rgb(hover_text))),
+                ),
+            )
+            .id(description)
+            .debug_selector(move || description.into())
+            .w(px(header::CONTROL_SIZE))
+            .h(px(header::CONTROL_SIZE))
+            .text_xs()
+            .tooltip(move |_, cx| {
+                cx.new(|_| MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: description.into(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |_, _, window, cx| {
+                window.dispatch_action(action.boxed_clone(), cx);
+                cx.notify();
+            }))
     }
 
     fn icon(
