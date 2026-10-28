@@ -128,6 +128,9 @@ pub enum SessionPlaybackError {
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
     ForeignTailSourceBusy,
+    /// The retained group path is still processing an outgoing tail. The
+    /// publication owner can retry once the predecessor drains or stops.
+    GroupTailRoutingBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
@@ -164,6 +167,9 @@ impl SessionPlaybackError {
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"
+            }
+            Self::GroupTailRoutingBusy => {
+                "group routing change is waiting for an outgoing tail · stop or wait for it to finish"
             }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"
@@ -1818,20 +1824,23 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-        if revision.scalar_automation.is_some() && compensation.is_some() {
-            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                "scalar automation requires uncompensated stage origins",
-            ));
-        }
         let scalar_automation = match revision.scalar_automation.as_ref() {
-            Some(_) => Some(Box::new(
-                crate::scalar_automation::State::new(
-                    revision
-                        .native_parameter_input_target()
-                        .ok_or(SessionPlaybackError::DeviceRuntime)?,
-                )
-                .map_err(|_| SessionPlaybackError::Allocation)?,
-            )),
+            Some(_) => {
+                let input = revision
+                    .native_parameter_input_target()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let arrival = revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .parameter_arrival(input)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                Some(Box::new(
+                    crate::scalar_automation::State::new(input, arrival)
+                        .map_err(|_| SessionPlaybackError::Allocation)?,
+                ))
+            }
             None => None,
         };
         let analytic_import = analytic_import::ImportPlan::new()?;

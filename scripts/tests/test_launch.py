@@ -363,20 +363,24 @@ class LaunchTests(unittest.TestCase):
             with self.subTest(failure=str(failure)), patch.object(launch.sys, "platform", "darwin"), \
                     patch.object(launch.delivery, "verify", side_effect=failure), \
                     patch.object(launch.ci, "LocalCiRunner", side_effect=AssertionError("CI on startup")):
-                with self.assertRaisesRegex(launch.LaunchError, "run ./launch to verify and build it"):
+                with self.assertRaisesRegex(launch.LaunchError, "run ./launch --update to build it"):
                     launch.launch_installed(self.root)
         for receipt in ({"source": self.source, "profile": "debug"}, {"source": "unknown", "profile": "release"}):
             with self.subTest(receipt=receipt), patch.object(launch.sys, "platform", "darwin"), \
                     patch.object(launch.delivery, "verify", return_value=receipt):
-                with self.assertRaisesRegex(launch.LaunchError, "run ./launch to verify and build it"):
+                with self.assertRaisesRegex(launch.LaunchError, "run ./launch --update to build it"):
                     launch.launch_installed(self.root)
         self.assertEqual(self.calls, [])
 
     def test_cli_default_test_open_help_and_unknown_option_dispatch(self):
         with patch.object(launch, "launch_installed") as startup, patch.object(launch, "run_launch") as test_run:
             self.assertEqual(launch.main([]), 0)
+            startup.assert_called_once_with()
+            test_run.assert_not_called()
+        with patch.object(launch, "launch_installed") as startup, patch.object(launch, "run_launch") as test_run:
+            self.assertEqual(launch.main(["--update"]), 0)
             startup.assert_not_called()
-            test_run.assert_called_once_with(argv=[])
+            test_run.assert_called_once_with(argv=["--update"])
         with patch.object(launch, "launch_installed") as startup, patch.object(launch, "run_launch") as test_run:
             self.assertEqual(launch.main(["--test"]), 0)
             startup.assert_not_called()

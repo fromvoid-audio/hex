@@ -47,9 +47,19 @@ impl MeterState {
         if self.dynamics_routing != routing {
             self.dynamics.reduction_db = [0.0; 2];
             self.dynamics.clipped = false;
+            self.dynamics.post_input_peak = 0.0;
             self.dynamics_routing = routing;
         }
         let decay = 24.0 * elapsed_seconds.max(0.0);
+        let peak = reading.unwrap_or_default().post_input_peak;
+        self.dynamics.post_input_peak = if playing {
+            peak.max(
+                self.dynamics.post_input_peak
+                    * 10.0_f32.powf(-12.0 * elapsed_seconds.max(0.0) / 20.0),
+            )
+        } else {
+            0.0
+        };
         for (held, peak) in self
             .dynamics
             .reduction_db
@@ -123,12 +133,6 @@ pub(super) fn dynamics(
     state.dynamics_updated = now;
     let routing = has_source.then_some(audible_routing).flatten();
     state.update_dynamics(routing, reading, playing, elapsed)
-}
-
-/// Read and decay sample peaks once through the same display owner as the side strip.
-/// Multiple presentations share cached levels; no endpoint handle escapes this call.
-pub(super) fn levels(view: &mut EditorView, device: &hex_project::Device) -> [f32; 2] {
-    sample_levels(view, device).0
 }
 
 fn sample_levels(view: &mut EditorView, device: &hex_project::Device) -> ([f32; 2], [f32; 2]) {
@@ -283,6 +287,7 @@ mod tests {
         let left_right = hex_engine::DynamicsMeter {
             reduction_db: [12.0, 8.0],
             clipped: true,
+            post_input_peak: 0.75,
         };
         assert_eq!(
             state.update_dynamics(Some(0), Some(left_right), true, 0.0),
@@ -296,6 +301,7 @@ mod tests {
         let mid_side = hex_engine::DynamicsMeter {
             reduction_db: [3.0, 5.0],
             clipped: false,
+            post_input_peak: 0.0,
         };
         assert_eq!(
             state.update_dynamics(Some(1), Some(mid_side), true, 0.0),

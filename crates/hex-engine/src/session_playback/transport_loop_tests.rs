@@ -503,6 +503,22 @@ fn combined_loop_expanded_oracle_project() -> Project {
 }
 
 #[test]
+fn transport_wrap_matches_authored_pcm_at_fixed_callback_sizes() {
+    let mut source_loop = arrangement_loop_project().snapshot();
+    source_loop.loop_region = Some(LoopRegion::new(30_000, 78_000, true).unwrap());
+    let source_loop = legacy_project_from_snapshot(source_loop).unwrap();
+    let expanded = combined_loop_expanded_oracle_project();
+    // Include the first wrap and its freshly chased gate, with the reference
+    // generated from independently authored linear occurrences.
+    let expected = render_transport_project(&expanded, 80_000, &[256]);
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    for block in [1, 17, 64, 128, 256, 512] {
+        let actual = render_transport_project(&source_loop, expected.len(), &[block]);
+        assert_eq!(actual, expected, "block size {block}");
+    }
+}
+
+#[test]
 fn mutable_source_and_transport_loops_match_authored_linear_occurrences_across_wraps() {
     let mut source_loop = arrangement_loop_project().snapshot();
     source_loop.loop_region =

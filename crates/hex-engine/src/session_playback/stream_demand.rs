@@ -11,7 +11,26 @@ pub(super) struct HandoffDemand<'a> {
     pub window: Option<StreamChunkWindow>,
 }
 
+/// The history that will own the planned render frontier. A seek and a fresh
+/// compensation epoch start empty; a copy/swap handoff reads the donor history.
+#[derive(Clone, Copy)]
+pub(super) enum ScalarOriginHistory<'a> {
+    Current(&'a SessionPlayback),
+    Empty,
+}
+
 impl SessionPlayback {
+    /// This is derived from the retained runtime graph, not a caller-declared
+    /// readiness mode. Keyboard and previously unsupported compensated graphs
+    /// retain their existing refusal.
+    pub(super) fn supports_closed_stream_demand(&self) -> bool {
+        self.computer_keyboard.is_none()
+            && self
+                .compensation
+                .as_ref()
+                .is_none_or(|runtime| runtime.graph.supports_closed_group_stream())
+    }
+
     /// Repeat the actual handoff's pure planning and enumerate its next chunk.
     /// Does not consume candidate admission or transfer any owner. A later
     /// commit must revalidate against the actual current predecessor.
@@ -35,10 +54,8 @@ impl SessionPlayback {
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || (!ordinary
-                && (self.compensation.is_some()
-                    || previous.compensation.is_some()
-                    || self.computer_keyboard.is_some()
-                    || previous.computer_keyboard.is_some()))
+                && (!self.supports_closed_stream_demand()
+                    || !previous.supports_closed_stream_demand()))
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
@@ -115,10 +132,8 @@ impl SessionPlayback {
         maximum_frames: usize,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
-        if !ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()) {
-            return Err(Invalid("stream demand requires a closed audio runtime"));
-        }
-        self.visit_stream_chunk_sources_at(
+        self.visit_stream_chunk_with_history(
+            ordinary,
             routes,
             performance_frame,
             arrangement_frame,
@@ -127,6 +142,37 @@ impl SessionPlayback {
             playing,
             maximum_frames,
             visit,
+            ScalarOriginHistory::Current(self),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn visit_stream_chunk_with_history(
+        &self,
+        ordinary: bool,
+        routes: &[TrackRoute],
+        performance_frame: u64,
+        arrangement_frame: u64,
+        route_generation: u64,
+        loop_pass: u64,
+        playing: bool,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        history: ScalarOriginHistory<'_>,
+    ) -> Result<StreamChunkWindow, Invalid> {
+        if !ordinary && !self.supports_closed_stream_demand() {
+            return Err(Invalid("stream demand requires a closed audio runtime"));
+        }
+        self.visit_stream_chunk_sources_with_history(
+            routes,
+            performance_frame,
+            arrangement_frame,
+            route_generation,
+            loop_pass,
+            playing,
+            maximum_frames,
+            visit,
+            history,
         )
     }
     /// Ordinary prepared playback retains its existing keyboard and compensated
@@ -162,6 +208,32 @@ impl SessionPlayback {
         playing: bool,
         maximum_frames: usize,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+    ) -> Result<StreamChunkWindow, Invalid> {
+        self.visit_stream_chunk_sources_with_history(
+            routes,
+            performance_frame,
+            arrangement_frame,
+            route_generation,
+            loop_pass,
+            playing,
+            maximum_frames,
+            visit,
+            ScalarOriginHistory::Current(self),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn visit_stream_chunk_sources_with_history(
+        &self,
+        routes: &[TrackRoute],
+        performance_frame: u64,
+        arrangement_frame: u64,
+        route_generation: u64,
+        loop_pass: u64,
+        playing: bool,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
+        history: ScalarOriginHistory<'_>,
     ) -> Result<StreamChunkWindow, Invalid> {
         let mut window = StreamChunkWindow {
             performance_frame,
@@ -205,7 +277,24 @@ impl SessionPlayback {
             .arrangement_frame
             .checked_add(window.frames as u64)
             .ok_or(Invalid("stream demand arrangement clock overflow"))?;
+        let raw_audio = self
+            .compensation
+            .as_ref()
+            .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing());
         for (index, route) in routes.iter().enumerate() {
+            // The per-frame audio stage exits before reading either Arrangement
+            // or Session pages when this retained track disables local content.
+            if raw_audio
+                && !self
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .ok_or(Invalid("stream demand track missing"))?
+                    .audio_content_enabled()
+            {
+                continue;
+            }
             let owner = if let Some(pending) = route
                 .pending
                 .filter(|pending| pending.frame <= performance_frame)
@@ -224,10 +313,11 @@ impl SessionPlayback {
                         .get(index)
                         .ok_or(Invalid("stream demand track missing"))?;
                     // Buffered/ordered paths read raw audio even when postmix is muted.
-                    let buffered = self
-                        .device_chains
-                        .get(index)
-                        .is_some_and(|chain| !chain.is_empty())
+                    let buffered = raw_audio
+                        || self
+                            .device_chains
+                            .get(index)
+                            .is_some_and(|chain| !chain.is_empty())
                         || self
                             .mutable_instruments
                             .get(index)
@@ -294,11 +384,74 @@ impl SessionPlayback {
             }
         }
         if let Some(binding) = self.revision.scalar_automation.as_ref() {
-            crate::stream_demand::visit_scalar_page_range(
-                &binding.source,
-                window.arrangement_frame,
+            let input = self
+                .revision
+                .native_parameter_input_target()
+                .ok_or(Invalid("scalar parameter target is unavailable"))?;
+            let delay = self
+                .revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .ok_or(Invalid("scalar signal graph is unavailable"))?
+                .parameter_arrival(input)?;
+            if delay == 0 {
+                crate::stream_demand::visit_scalar_page_range(
+                    &binding.source,
+                    window.arrangement_frame,
+                    window.frames,
+                    visit,
+                )?;
+                return Ok(window);
+            }
+            let (owner, lead) = match history {
+                ScalarOriginHistory::Current(owner) => (
+                    Some(owner),
+                    performance_frame
+                        .checked_sub(owner.performance_frame)
+                        .ok_or(Invalid("scalar origin frontier is after demand"))?,
+                ),
+                ScalarOriginHistory::Empty => (None, 0),
+            };
+            crate::scalar_automation::visit_origin_runs(
                 window.frames,
-                visit,
+                |offset| {
+                    let position = lead
+                        .checked_add(offset as u64)
+                        .ok_or(Invalid("scalar origin offset overflow"))?;
+                    let history = owner
+                        .and_then(|owner| owner.compensation.as_ref())
+                        .map(|compensation| &compensation.delays);
+                    crate::compensation::CompensationRuntime::preview_stage_frame(
+                        history,
+                        delay,
+                        position,
+                        |source| {
+                            if source >= lead {
+                                return window
+                                    .arrangement_frame
+                                    .checked_add(source - lead)
+                                    .map(Some)
+                                    .ok_or(Invalid("scalar origin frame overflow"));
+                            }
+                            let owner =
+                                owner.ok_or(Invalid("scalar projection owner is unavailable"))?;
+                            let projected = owner
+                                .performance_frame
+                                .checked_add(source)
+                                .ok_or(Invalid("scalar origin performance overflow"))?;
+                            Ok(Some(owner.project_stream_arrangement(projected)?.0))
+                        },
+                    )
+                },
+                |_, frame, len| {
+                    crate::stream_demand::visit_scalar_page_range(
+                        &binding.source,
+                        frame,
+                        len,
+                        &mut *visit,
+                    )
+                },
             )?;
         }
         Ok(window)

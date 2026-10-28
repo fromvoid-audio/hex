@@ -127,6 +127,17 @@ impl std::fmt::Debug for PreparedRevision {
 }
 
 impl PreparedRevision {
+    #[cfg(test)]
+    pub(crate) fn test_install_group_graph(&mut self, canonical: &Project) {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        arrangement.signal_graph =
+            crate::signal_graph::SignalGraph::prepare(&arrangement, &[], canonical).unwrap();
+        for track in &mut arrangement.tracks {
+            track.source_mix = crate::PreparedTrackMix::identity();
+        }
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+    }
+
     pub fn prepare(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
@@ -145,8 +156,7 @@ impl PreparedRevision {
     }
 
     /// Prepare one recorded normalized source through the same native factory
-    /// union as live input. This first streamed-source path admits only a graph
-    /// with zero final latency; delayed stage origins require separate admission.
+    /// union as live input. Delayed stages use the graph's transport history.
     /// Metadata alone grants no page lease or native publication authority.
     pub fn prepare_with_scalar_automation(
         project: &Project,
@@ -204,11 +214,6 @@ impl PreparedRevision {
         mut self,
         binding: crate::scalar_automation::ScalarAutomationBinding,
     ) -> Result<Self, Invalid> {
-        if self.arrangement.main_latency_frames() != 0 {
-            return Err(Invalid(
-                "scalar automation requires uncompensated stage origins",
-            ));
-        }
         let input = self
             .native_parameter_input
             .filter(|input| input.device() == binding.device && input.target() == binding.target)

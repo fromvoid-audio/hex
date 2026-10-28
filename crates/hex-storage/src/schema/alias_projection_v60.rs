@@ -62,7 +62,10 @@ mod tests {
         // provenance and a reproducible writer live beside the frozen bytes.
         let old =
             include_bytes!("../../tests/fixtures/alias-projection/schema58-inactive-event.json");
-        assert_eq!(serde_json::to_vec(&prior).unwrap(), old);
+        // JSON object key order depends on serde_json feature unification; the
+        // frozen historical bytes still exercise the actual migration below.
+        let old_value: Value = serde_json::from_slice(old).unwrap();
+        assert_eq!(prior, old_value);
         let migrated = crate::decode(old).unwrap();
         assert_eq!(migrated.snapshot(), editor.project().snapshot());
         let current = crate::encode(&migrated).unwrap();

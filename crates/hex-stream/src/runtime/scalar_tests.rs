@@ -178,6 +178,7 @@ fn scalar_installed_zero_and_gap_are_distinct_from_missing_and_catalog_facts_are
     wrong_projection.fingerprint[0] ^= 1;
     let wrong = hex_engine::ScalarSourceMetadata::new(
         key,
+        metadata.target(),
         metadata.project_rate(),
         metadata.start_frame(),
         metadata.end_frame(),

@@ -53,11 +53,30 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
         self.push_compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
+        let grouped = self
+            .compensation
+            .as_ref()
+            .is_some_and(|runtime| runtime.graph.has_group_outputs());
+        let mut detached = if grouped {
+            Some([[0.0; 2]; MAX_TRACKS])
+        } else {
+            None
+        };
+        if let Some(detached) = detached.as_mut() {
+            self.render_detached_tails(
+                performance_frame,
+                output,
+                frame_offset,
+                capture,
+                Some(detached),
+            )?;
+        }
         let region = self.active_loop_region();
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         for scratch in &mut self.return_scratch {
@@ -272,6 +291,19 @@ impl SessionPlayback {
                             .render(&mut generator, Some(&clock))
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     }
+                    for keyboard in self
+                        .current_sampler_keyboards
+                        .iter_mut()
+                        .filter(|keyboard| keyboard.track() == route.id)
+                    {
+                        let source = sources.ok_or(SessionPlaybackError::DeviceRuntime)?;
+                        let resources = source
+                            .resources(keyboard.track())
+                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                        keyboard
+                            .render_with_resources(&mut generator, None, &resources)
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    }
                     let compensation = self
                         .compensation
                         .as_mut()
@@ -290,6 +322,7 @@ impl SessionPlayback {
                             self.native_parameter_state
                                 .as_deref_mut()
                                 .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     let override_gain = self
@@ -298,10 +331,16 @@ impl SessionPlayback {
                     let mixed = compensation
                         .fader(track, index, override_gain, processed)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    // Retired tails retain their old post-fader output; they do
+                    // not re-enter current authored sends or feeds.
+                    let routed = if let Some(detached) = detached.as_ref() {
+                        [mixed[0] + detached[index][0], mixed[1] + detached[index][1]]
+                    } else {
+                        mixed
+                    };
                     let main = compensation
-                        .edge(compensation.graph.tracks[index].main, mixed)
+                        .route_track_output(index, routed)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    compensation.main[index] = main;
                     if let Some(capture) = capture.as_mut() {
                         capture.add(OutputCaptureId::Track(route.id), frame_offset, &[main])?;
                     }
@@ -344,6 +383,7 @@ impl SessionPlayback {
                             self.native_parameter_state
                                 .as_deref_mut()
                                 .and_then(|state| state.processing.as_mut()),
+                            external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(matrix) = bus.matrix {
@@ -397,7 +437,9 @@ impl SessionPlayback {
         }
         // Only zero-latency routed layouts admit detached old chains. Positive
         // latency revisions refuse those transitions before moving audible owners.
-        self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
+        if !grouped {
+            self.render_detached_tails(performance_frame, output, frame_offset, capture, None)?;
+        }
         if self.playing {
             self.return_effect_tails
                 .render_chunk(output, frame_offset, capture, foreign)?;

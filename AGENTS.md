@@ -6,6 +6,13 @@ Arrangement and Session workflows, audio/MIDI behavior, editing, recording,
 automation, routing, and project fidelity, while improving architecture,
 responsiveness, and measured performance.
 
+Hex's project-specific instructions and established conventions take precedence
+over the Google Rust Style Guide wherever they conflict.
+When implementing an issue, improve observed Rust style-guide deviations in the
+code being changed when the adjustment is small, coherent, and preserves behavior
+and Hex's contracts. Include appropriate verification; avoid unrelated or broad
+style-only refactors. Record substantial improvements separately in Pulse.
+
 ## Saved-project compatibility policy
 
 Hex is active alpha software. Saved projects must remain openable through explicit,
@@ -90,6 +97,12 @@ contracts beside their source owners; do not invent a parallel architecture spec
 Enforce boundaries through Rust visibility, types, dependency checks and contract
 tests. The architecture guard checks declared crate edges and doc headings; it
 does not prove module isolation or runtime correctness.
+
+Continually strengthen cohesive system boundaries with explicit ownership and
+testable contracts as work exposes a concrete need. Keep dependencies contained so
+changes can be verified at the owning boundary and its affected consumers without
+unnecessary broad testing. Do not introduce speculative abstractions or assume a
+boundary provides isolation without evidence; broaden checks when impact is unclear.
 
 Internal devices use existing host APIs. A missing capability requires an explicit,
 bounded host-contract change with checks for affected consumers; do not reach into
@@ -197,6 +210,11 @@ full disks with a useful error and a defined recovery path.
    snapshot churn, duplicate assertions and slow exhaustive matrices without a
    demonstrated risk. Preserve meaningful boundary, lifecycle and malformed-input
    coverage; suite size alone is not a quality measure.
+   Continually improve tests touched by issue work: remove demonstrated duplication,
+   simplify fixtures and reduce measured runtime while retaining effective regression
+   coverage. Verify the retained tests still exercise the intended behavior and report
+   meaningful timing evidence for performance-driven cleanup. Keep unrelated or
+   substantial test-suite work separate; never weaken coverage merely to run faster.
 6. **Keep GPUI thin and inspect it visually.** Separate UI display state from
    authoritative audio/project state. Draw cached waveform summaries and visible
    content; do not traverse/render a whole project every frame. Consolidate design

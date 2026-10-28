@@ -1,7 +1,7 @@
 //! Preparation declarations and bounded materialization for recorded native
-//! parameters. Source/catalog custody remains with the stream owner. The first
-//! admission is one exact zero-latency native effect; no saved fields are added.
-use crate::{Invalid, MediaPages, ScalarSourceMetadata};
+//! parameters. Source/catalog custody remains with the stream owner. Admission
+//! is one exact native effect; delayed stages use the compensation owner.
+use crate::{Invalid, MediaPages, ScalarSourceMetadata, ScalarSourceTarget};
 use hex_lattice::{
     ExternalParameterAutomation, NativeExternalAutomation, NormalizedAutomationValue,
 };
@@ -21,6 +21,14 @@ pub(crate) fn validate_source(
     binding: &ScalarAutomationBinding,
 ) -> Result<(), Invalid> {
     let source = &binding.source;
+    if source.target()
+        != (ScalarSourceTarget::Device {
+            device: binding.device,
+            target: binding.target,
+        })
+    {
+        return Err(Invalid("scalar take target does not match its binding"));
+    }
     if source.project_rate() != project.sample_rate()
         || !projection_matches(source, project.tempo_map())
     {
@@ -51,6 +59,41 @@ pub(crate) fn projection_matches(
     source.projection_identity().fingerprint == fingerprint
 }
 
+/// Group a bounded stage-origin window into contiguous source-frame runs.
+/// Missing origins never request pages. Both readiness and materialization use
+/// this partition so a discontinuity cannot turn into an accidental long read.
+pub(crate) fn visit_origin_runs(
+    frames: usize,
+    mut origin: impl FnMut(usize) -> Result<Option<u64>, Invalid>,
+    mut visit: impl FnMut(usize, u64, usize) -> Result<(), Invalid>,
+) -> Result<(), Invalid> {
+    if frames > 256 {
+        return Err(Invalid("scalar origin window exceeds its fixed quantum"));
+    }
+    let mut run: Option<(usize, u64, usize)> = None;
+    for offset in 0..frames {
+        let frame = origin(offset)?;
+        if let (Some((_, start, len)), Some(frame)) = (run, frame)
+            && start.checked_add(len as u64) == Some(frame)
+        {
+            if let Some((_, _, length)) = &mut run {
+                *length += 1;
+            }
+            continue;
+        }
+        if let Some((start, frame, len)) = run.take() {
+            visit(start, frame, len)?;
+        }
+        if let Some(frame) = frame {
+            run = Some((offset, frame, 1));
+        }
+    }
+    if let Some((start, frame, len)) = run {
+        visit(start, frame, len)?;
+    }
+    Ok(())
+}
+
 /// Fixed preparation-allocated scratch. Filling completes before any PCM/DSP
 /// access for this chunk; failed materialization never becomes a base fallback.
 pub(crate) struct State {
@@ -60,6 +103,7 @@ pub(crate) struct State {
     frames: usize,
     offset: usize,
     identity: hex_lattice::ProcessorInstanceIdentity,
+    arrival_frames: u32,
 }
 impl State {
     /// Fixed DATA reservation, independently checked against actual capacities.
@@ -71,7 +115,10 @@ impl State {
                 * (std::mem::size_of::<Option<hex_project::AutomationValue>>()
                     + std::mem::size_of::<Option<NormalizedAutomationValue>>())
     }
-    pub(crate) fn new(input: crate::NativeParameterInputTarget) -> Result<Self, Invalid> {
+    pub(crate) fn new(
+        input: crate::NativeParameterInputTarget,
+        arrival_frames: u32,
+    ) -> Result<Self, Invalid> {
         fn scratch<T: Copy>() -> Result<Vec<Option<T>>, Invalid> {
             let mut values = Vec::new();
             values
@@ -90,7 +137,11 @@ impl State {
             frames: 0,
             offset: 0,
             identity: input.identity(),
+            arrival_frames,
         })
+    }
+    pub(crate) fn arrival_frames(&self) -> u32 {
+        self.arrival_frames
     }
     pub(crate) fn fill<P: MediaPages + ?Sized>(
         &mut self,
@@ -107,6 +158,39 @@ impl State {
             .get_mut(..frames)
             .ok_or(Invalid("scalar automation chunk exceeds scratch"))?;
         crate::read_scalar_values(pages, source, start, raw)?;
+        self.finish_fill(frames, offset)
+    }
+    pub(crate) fn fill_with_origins<P: MediaPages + ?Sized>(
+        &mut self,
+        pages: &mut P,
+        source: &ScalarSourceMetadata,
+        frames: usize,
+        offset: usize,
+        origin: impl FnMut(usize) -> Result<Option<u64>, Invalid>,
+    ) -> Result<(), Invalid> {
+        self.frames = 0;
+        self.values.fill(None);
+        let raw = self
+            .raw
+            .get_mut(..frames)
+            .ok_or(Invalid("scalar automation chunk exceeds scratch"))?;
+        raw.fill(None);
+        visit_origin_runs(frames, origin, |start, frame, len| {
+            let end = start
+                .checked_add(len)
+                .ok_or(Invalid("scalar origin run overflow"))?;
+            let destination = raw
+                .get_mut(start..end)
+                .ok_or(Invalid("scalar origin run is outside scratch"))?;
+            crate::read_scalar_values(pages, source, frame, destination)
+        })?;
+        self.finish_fill(frames, offset)
+    }
+    fn finish_fill(&mut self, frames: usize, offset: usize) -> Result<(), Invalid> {
+        let raw = self
+            .raw
+            .get(..frames)
+            .ok_or(Invalid("scalar automation chunk exceeds scratch"))?;
         for (slot, value) in self.values.iter_mut().zip(raw) {
             *slot = match value {
                 Some(value) => Some(

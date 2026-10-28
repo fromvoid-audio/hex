@@ -103,7 +103,7 @@ impl SessionPlayback {
         &self,
         prepared: &PreparedStreamAction,
     ) -> Result<(), SessionPlaybackError> {
-        if (!prepared.ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()))
+        if (!prepared.ordinary && !self.supports_closed_stream_demand())
             || prepared.expected != self.stream_action_expected()
         {
             return Err(SessionPlaybackError::InvalidCommand);
@@ -166,9 +166,7 @@ impl SessionPlayback {
         action: PlaybackAction,
         ordinary: bool,
     ) -> Result<PreparedStreamAction, SessionPlaybackError> {
-        if (!ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()))
-            || self.linear_arrangement_export
-        {
+        if (!ordinary && !self.supports_closed_stream_demand()) || self.linear_arrangement_export {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         let resolved = match action {
@@ -260,7 +258,7 @@ impl SessionPlayback {
         if prepared.playing_after_commit() {
             self.project_due_stream_routes(performance, anchor)?;
         }
-        self.visit_stream_chunk_in_scope(
+        self.visit_stream_chunk_with_history(
             prepared.ordinary,
             &self.route_scratch,
             performance,
@@ -270,9 +268,17 @@ impl SessionPlayback {
             prepared.playing_after_commit(),
             maximum_frames,
             visit,
+            if matches!(&prepared.resolved, Resolved::Seek { .. }) {
+                super::stream_demand::ScalarOriginHistory::Empty
+            } else {
+                super::stream_demand::ScalarOriginHistory::Current(self)
+            },
         )
     }
-    fn project_stream_arrangement(&self, performance: u64) -> Result<(u64, u64), Invalid> {
+    pub(super) fn project_stream_arrangement(
+        &self,
+        performance: u64,
+    ) -> Result<(u64, u64), Invalid> {
         let delta = performance
             .checked_sub(self.performance_frame)
             .ok_or(Invalid("stream projection precedes current clock"))?;
@@ -332,7 +338,7 @@ impl SessionPlayback {
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
         ordinary: bool,
     ) -> Result<StreamChunkWindow, Invalid> {
-        if (!ordinary && (self.compensation.is_some() || self.computer_keyboard.is_some()))
+        if (!ordinary && !self.supports_closed_stream_demand())
             || !self
                 .routes
                 .iter()
