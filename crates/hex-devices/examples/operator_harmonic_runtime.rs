@@ -1,9 +1,11 @@
 //! Production registered harmonic-runtime profile; no test-only sampler.
 //! Unique pitches prevent same-pitch retrigger from collapsing the workload.
 //! Active occurrences include the held ledger and are not a physical deadline.
+//! `--companion` enables looping shaped envelopes; `--envelope-reference`
+//! keeps the same envelope shape without looping for an audible comparison.
 use hex_devices::operator_state::{OPERATOR_METADATA, harmonic_parameter, parameter};
 use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentEvent};
-use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
 use std::{hint::black_box, time::Instant};
 fn cpu_checkpoint(enabled: bool, stage: &str, rate: u32, voices: usize) {
     if enabled {
@@ -29,11 +31,24 @@ fn main() {
     let varied = std::env::args().any(|arg| arg == "--varied");
     let fm = std::env::args().any(|arg| arg == "--fm");
     let builtin = std::env::args().any(|arg| arg == "--builtin");
+    let companion = std::env::args().any(|arg| arg == "--companion");
+    let shaped_envelope = companion || std::env::args().any(|arg| arg == "--envelope-reference");
     let blocks = if cpu_handshake { 512 } else { 128 };
     for rate in [44100, 48000, 96000] {
         for voices in [16, 32] {
             let mut state = OPERATOR_METADATA.default_state().unwrap();
             for operator in 1..=4 {
+                if companion {
+                    // The companion descriptors assign eight fields per operator;
+                    // loop mode is field five, starting at parameter 357.
+                    state = OPERATOR_METADATA
+                        .patch_parameter(
+                            &state,
+                            ParameterId::from_static(362 + (operator - 1) * 8),
+                            ParameterValue::Choice(1),
+                        )
+                        .unwrap();
+                }
                 for (id, value) in [
                     (
                         parameter::oscillator_ratio(operator),
@@ -75,6 +90,15 @@ fn main() {
                             &state,
                             parameter::envelope(operator, field),
                             ParameterValue::Float(1.0),
+                        )
+                        .unwrap();
+                }
+                if shaped_envelope {
+                    state = OPERATOR_METADATA
+                        .patch_parameter(
+                            &state,
+                            parameter::envelope(operator, parameter::EnvelopeField::Sustain),
+                            ParameterValue::Float(0.2),
                         )
                         .unwrap();
                 }
@@ -154,7 +178,7 @@ fn main() {
             assert!(checksum.is_finite() && checksum > 0.0);
             timings.sort_by(f64::total_cmp);
             println!(
-                "rate={rate} unique_note_ons={voices} active_occurrences={active} waveform={} oscillators=4 block=256 timed_blocks={blocks} varied={varied} fm={fm} pcm_digest={digest:016x} pair_bytes={} median_ms={:.4} p95_ms={:.4} max_ms={:.4} deadline_ms={:.4} checksum={:.8}",
+                "rate={rate} unique_note_ons={voices} active_occurrences={active} waveform={} oscillators=4 block=256 timed_blocks={blocks} varied={varied} fm={fm} companion={companion} shaped_envelope={shaped_envelope} pcm_digest={digest:016x} pair_bytes={} median_ms={:.4} p95_ms={:.4} max_ms={:.4} deadline_ms={:.4} checksum={:.8}",
                 if builtin { "saw" } else { "custom-64" },
                 2 * factory.declared_twin_bytes(),
                 timings[blocks / 2],
@@ -170,6 +194,68 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn companion_fixture_differs_from_the_same_unlooped_envelope() {
+        fn render(looped: bool) -> Vec<[f32; 2]> {
+            let mut state = OPERATOR_METADATA
+                .patch_parameter(
+                    &OPERATOR_METADATA.default_state().unwrap(),
+                    harmonic_parameter(1, 2),
+                    ParameterValue::Float(0.5),
+                )
+                .unwrap();
+            for operator in 1..=4 {
+                state = OPERATOR_METADATA
+                    .patch_parameter(
+                        &state,
+                        parameter::envelope(operator, parameter::EnvelopeField::Sustain),
+                        ParameterValue::Float(0.2),
+                    )
+                    .unwrap();
+                if looped {
+                    state = OPERATOR_METADATA
+                        .patch_parameter(
+                            &state,
+                            ParameterId::from_static(362 + (operator - 1) * 8),
+                            ParameterValue::Choice(1),
+                        )
+                        .unwrap();
+                }
+            }
+            let instrument = OPERATOR_METADATA
+                .prepare_instrument(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
+                .unwrap();
+            let factory = instrument.prepare_mutable_runtime().unwrap().unwrap();
+            let mut runtime = factory.create_runtime();
+            let mut output = Vec::new();
+            for block_index in 0..24 {
+                let mut block = [[0.0; 2]; 256];
+                let events = if block_index == 0 {
+                    fixture_events(1)
+                } else {
+                    Vec::new()
+                };
+                runtime
+                    .preflight_events(&events, block.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                    .unwrap();
+                runtime.process_block(&events, &mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                output.extend(block);
+            }
+            output
+        }
+        let looped = render(true);
+        let reference = render(false);
+        assert!(looped.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        assert_ne!(looped, reference);
+    }
 
     #[test]
     fn distinct_notes_exercise_different_voice_densities() {
