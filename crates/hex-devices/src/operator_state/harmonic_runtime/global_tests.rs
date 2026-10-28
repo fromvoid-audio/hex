@@ -221,6 +221,143 @@ fn held_voice_release_inside_block_matches_partitioned_render() {
         assert!(partitioned.is_quiescent());
     }
 }
+
+#[test]
+fn uniform_companion_matches_independent_machines_through_handoff_and_release() {
+    struct Clock(u64);
+    impl NativeInstrumentClock for Clock {
+        fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+            let frame = self.0 + offset as u64;
+            Some(frame * (1 << 25) + if frame >= 40 { 1000 << 32 } else { 0 })
+        }
+        fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+            Some(self.0 + offset as u64)
+        }
+        fn transport_is_running(&self) -> Option<bool> {
+            Some(true)
+        }
+    }
+    fn render(
+        r: &mut Runtime,
+        events: &[NativeInstrumentEvent],
+        frames: usize,
+        at: u64,
+    ) -> Vec<StereoFrame> {
+        let clock = Clock(at);
+        r.preflight_events(events, frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        r.preflight_clock(Some(&clock), frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        let mut output = vec![[0.0; 2]; frames];
+        r.process_block_with_clock(
+            events,
+            &mut output,
+            Some(&clock),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
+        output
+    }
+    for mode in 1..=4 {
+        for global in [false, true] {
+            let mut s = settings();
+            s.global.active = global;
+            for row in &mut s.companion.words {
+                row[5] = mode;
+                row[6] = 0.001_f32.to_bits();
+                row[7] = 0;
+            }
+            let mut fast = runtime(s);
+            let mut reference = runtime(s);
+            assert!(fast.factory.uniform_companion);
+            reference.factory.uniform_companion = false;
+            assert_eq!(
+                render(&mut fast, &[on(1, 60)], 128, 0),
+                render(&mut reference, &[on(1, 60)], 128, 0)
+            );
+            let mut fast_handoff = runtime(s);
+            let mut reference_handoff = runtime(s);
+            reference_handoff.factory.uniform_companion = false;
+            assert!(fast_handoff.can_copy_history_from(&fast));
+            fast_handoff.copy_history_from(&fast);
+            reference_handoff.copy_history_from(&reference);
+            let mut retargeted = runtime(s);
+            let mut reference_retargeted = runtime(s);
+            reference_retargeted.factory.uniform_companion = false;
+            let InstrumentHistoryRetargetPreparation::Prepared(proof) = retargeted
+                .factory
+                .prepare_history_retarget_target()
+                .unwrap()
+            else {
+                panic!("prepared target")
+            };
+            let InstrumentHistoryRetargetPreparation::Prepared(reference_proof) =
+                reference_retargeted
+                    .factory
+                    .prepare_history_retarget_target()
+                    .unwrap()
+            else {
+                panic!("prepared target")
+            };
+            assert!(retargeted.can_retarget_history_from(&fast, proof.as_ref()));
+            assert!(
+                reference_retargeted
+                    .can_retarget_history_from(&reference, reference_proof.as_ref())
+            );
+            retargeted.retarget_history_from(&fast, proof.as_ref());
+            reference_retargeted.retarget_history_from(&reference, reference_proof.as_ref());
+            assert_eq!(
+                render(&mut fast_handoff, &[off(1)], 128, 128),
+                render(&mut reference_handoff, &[off(1)], 128, 128)
+            );
+            assert_eq!(
+                render(&mut retargeted, &[off(1)], 128, 128),
+                render(&mut reference_retargeted, &[off(1)], 128, 128)
+            );
+            assert_eq!(
+                render(&mut fast_handoff, &[], 5000, 256),
+                render(&mut reference_handoff, &[], 5000, 256)
+            );
+            assert!(fast_handoff.is_quiescent());
+            assert!(reference_handoff.is_quiescent());
+        }
+    }
+}
+
+#[test]
+fn uniform_companion_requires_bit_identical_authored_laws() {
+    let mut s = settings();
+    for row in &mut s.companion.words {
+        row[5] = 1;
+    }
+    assert!(runtime(s).factory.uniform_companion);
+    s.companion.words[3][5] = 4;
+    assert!(!runtime(s).factory.uniform_companion);
+    s.fields[31] = 1.0;
+    let mut independent = runtime(s);
+    let mut incorrectly_shared = runtime(s);
+    incorrectly_shared.factory.uniform_companion = true;
+    assert_ne!(
+        process(&mut independent, &[on(1, 60)], 512),
+        process(&mut incorrectly_shared, &[on(1, 60)], 512)
+    );
+    s.companion.words[3][5] = 1;
+    let mut different_law = s;
+    different_law.fields[CORE_FIELDS + 3 * ENVELOPE_FIELDS + 2] = 0.8;
+    let mut previous = runtime(different_law);
+    process(&mut previous, &[on(1, 60)], 64);
+    let target = runtime(s);
+    let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        target.factory.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("prepared target")
+    };
+    assert!(!target.can_retarget_history_from(&previous, proof.as_ref()));
+    for i in 0..4 {
+        s.fields[CORE_FIELDS + i * ENVELOPE_FIELDS] = 0.0;
+    }
+    s.fields[CORE_FIELDS] = -0.0;
+    assert!(!runtime(s).factory.uniform_companion);
+}
 #[test]
 fn oldest_stealing_keeps_64_occurrence_admission_and_silent_noteoffs() {
     let mut s = settings();
