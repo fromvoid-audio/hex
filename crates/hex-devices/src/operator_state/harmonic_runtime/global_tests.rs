@@ -167,6 +167,34 @@ fn releasing_voice_can_retire_before_its_age_would_overflow() {
 }
 
 #[test]
+fn note_added_in_later_slot_mid_block_matches_partitioned_render() {
+    for global in [false, true] {
+        let mut s = settings();
+        s.global.active = global;
+        let mut whole = runtime(s);
+        let mut partitioned = runtime(s);
+        let mut one_voice = runtime(s);
+        assert_eq!(
+            process(&mut whole, &[on(1, 60)], 64),
+            process(&mut partitioned, &[on(1, 60)], 64)
+        );
+        process(&mut one_voice, &[on(1, 60)], 64);
+        let without_new_voice = process(&mut one_voice, &[], 128);
+        let delayed = NativeInstrumentEvent::NoteOn {
+            frame_offset: 33,
+            occurrence_id: 2,
+            pitch: 67,
+            velocity: 100,
+        };
+        let actual = process(&mut whole, &[delayed], 128);
+        let mut expected = process(&mut partitioned, &[], 33);
+        expected.extend(process(&mut partitioned, &[on(2, 67)], 95));
+        assert_eq!(actual, expected);
+        assert_ne!(actual, without_new_voice);
+    }
+}
+
+#[test]
 fn held_voice_release_inside_block_matches_partitioned_render() {
     for global in [false, true] {
         let mut s = settings();
