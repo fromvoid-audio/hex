@@ -350,7 +350,9 @@ mod tests {
         let old = super::super::alias_projection_v60::encode(&project).unwrap();
         let frozen =
             include_bytes!("../../tests/fixtures/event-gain/schema60-aliased-inactive.json");
-        assert_eq!(serde_json::to_vec(&old).unwrap(), frozen);
+        // JSON object ordering varies with serde_json feature unification; the
+        // frozen writer output must represent the same complete document.
+        assert_eq!(old, serde_json::from_slice::<Value>(frozen).unwrap());
         assert_eq!(
             crate::decode(frozen).unwrap().snapshot(),
             project.snapshot()
