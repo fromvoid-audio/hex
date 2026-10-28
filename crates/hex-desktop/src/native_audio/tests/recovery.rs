@@ -169,7 +169,12 @@ fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
     sink.request_open(Some(48_000), Some(8));
     sink.lifecycle_status = Some(|| Some(AudioLifecycleFailure::Retirement));
     sink.poll_open();
-    assert!(sink.output.is_some()); // observation cannot release its retained output
+    // Observation must not release the actual exclusive lease: a second
+    // constructor still refuses while this output and callback remain retained.
+    assert!(matches!(
+        hex_audio::worker_fixture::open(48_000),
+        Err(error) if error == "audio output is open or still shutting down"
+    ));
     assert!(!sink.open_pending);
     drop(audio);
     drop(backend);
