@@ -2459,29 +2459,25 @@ impl Callback {
                     .deferred_eligible
                     .take()
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
-                    .or_else(|| {
-                        self.publications.pop().ok().and_then(|queued| {
-                            Some(match queued {
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                QueuedPublication::NativeEpoch { .. } => return None,
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                QueuedPublication::Native(endpoint) => {
-                                    ReturnedPublication::Native(endpoint)
-                                }
-                                QueuedPublication::Domain(pages) => {
-                                    ReturnedPublication::Domain(pages)
-                                }
-                                QueuedPublication::Eligible(value) => {
-                                    ReturnedPublication::Eligible(value.reject_before_install())
-                                }
-                                QueuedPublication::Legacy(value) => {
-                                    ReturnedPublication::Legacy(value)
-                                }
-                                QueuedPublication::Candidate(value) => {
-                                    ReturnedPublication::Candidate(value.reject_before_install())
-                                }
-                            })
-                        })
+                    .or_else(|| match self.publications.pop().ok()? {
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::NativeEpoch { .. } => None,
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::Native(endpoint) => {
+                            Some(ReturnedPublication::Native(endpoint))
+                        }
+                        QueuedPublication::Domain(pages) => {
+                            Some(ReturnedPublication::Domain(pages))
+                        }
+                        QueuedPublication::Eligible(value) => {
+                            Some(ReturnedPublication::Eligible(value.reject_before_install()))
+                        }
+                        QueuedPublication::Legacy(value) => {
+                            Some(ReturnedPublication::Legacy(value))
+                        }
+                        QueuedPublication::Candidate(value) => Some(
+                            ReturnedPublication::Candidate(value.reject_before_install()),
+                        ),
                     });
             }
             if matches!(
