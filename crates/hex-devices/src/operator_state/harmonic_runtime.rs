@@ -995,32 +995,33 @@ impl MutableInstrumentRuntime for Runtime {
                 } else {
                     PreparedOperatorConfiguration::lfo_steps(&voice.note)
                 };
+                // Envelope age and machines advance only after both quality
+                // subframes, so one evaluation serves the whole output frame.
+                let age = if quality {
+                    voice.envelope_frame()
+                } else {
+                    voice.age
+                };
+                let gate = if quality {
+                    voice.envelope_gate.unwrap_or(u64::MAX)
+                } else {
+                    voice.gate.unwrap_or(u64::MAX)
+                };
+                let amplitudes = if self.factory.companion_active {
+                    std::array::from_fn(|i| {
+                        voice.machines[i]
+                            .as_ref()
+                            .map_or(0.0, |machine| machine.level(age))
+                    })
+                } else {
+                    self.factory.configuration.envelope_levels(age, gate)
+                };
                 let mut rendered = 0.0;
                 for subframe in 0..if quality { 2 } else { 1 } {
                     let (sample, previous) =
                         self.factory.configuration.sample_with_waveform_sampler(
                             &voice.note,
-                            if quality {
-                                voice.envelope_frame()
-                            } else {
-                                voice.age
-                            },
-                            if quality {
-                                voice.envelope_gate.unwrap_or(u64::MAX)
-                            } else {
-                                voice.gate.unwrap_or(u64::MAX)
-                            },
-                            self.factory.companion_active.then(|| {
-                                std::array::from_fn(|i| {
-                                    voice.machines[i].as_ref().map_or(0.0, |machine| {
-                                        machine.level(if quality {
-                                            voice.envelope_frame()
-                                        } else {
-                                            voice.age
-                                        })
-                                    })
-                                })
-                            }),
+                            amplitudes,
                             &voice.phases,
                             voice.previous,
                             std::array::from_fn(|i| {
