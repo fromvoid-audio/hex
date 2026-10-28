@@ -85,18 +85,26 @@ fn measured_render(
 }
 #[test]
 fn ordinary_resource_graph_requires_actual_catalog_and_protected_pages_and_returns_before_join() {
-    ordinary_case(false, false);
+    ordinary_case(false, false, false);
 }
 #[test]
 fn ordinary_sampler_and_streamed_clip_share_resource_and_page_custody_without_callback_allocations()
 {
-    ordinary_case(true, false);
+    ordinary_case(true, false, false);
 }
 #[test]
 fn ordinary_paused_keyboard_monitor_and_first_play_keep_resident_pcm_and_clock_semantics() {
-    ordinary_case(true, true);
+    ordinary_case(true, true, false);
 }
-fn ordinary_case(sampler: bool, keyboard: bool) {
+#[test]
+fn grouped_file_backed_native_playback_matches_resident_oracle_without_callback_allocations() {
+    ordinary_case(false, false, true);
+}
+#[test]
+fn grouped_sampler_and_file_backed_sources_keep_existing_resource_custody() {
+    ordinary_case(true, false, true);
+}
+fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
     let _serial = serial();
     let mut project = super::readiness::project_with_frames(8);
     let asset = project.assets().next().unwrap().id();
@@ -184,6 +192,38 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
                 || Ok::<_, hex_engine::native_device_resources::ResourcePreparationError>(()),
             )
             .unwrap();
+    }
+    if grouped {
+        let mut editor = hex_project::Editor::new(project, 16).unwrap();
+        let ids: Vec<_> = editor
+            .project()
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect();
+        let hex_project::Created::Track(group) = editor
+            .execute(hex_project::Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&ids).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        editor
+            .execute(hex_project::Command::Gain {
+                track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Track(ids[0]),
+                destination: group,
+                gain: 0.5,
+            })
+            .unwrap();
+        project = editor.project().clone();
     }
     let resources = PreparedDeviceResources::prepare_on_control(
         &store,
@@ -462,7 +502,10 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
         let seek = control
             .command_with_ticket(PlaybackCommand::PlayFrom(0))
             .unwrap();
-        assert_eq!(measured_block(&mut data), [[0.25; 2]; 8]);
+        assert_eq!(
+            measured_block(&mut data),
+            [[if grouped { 0.1875 } else { 0.25 }; 2]; 8]
+        );
         assert_eq!(
             control.status.stream_applied_command_prefix.load(Acquire),
             seek

@@ -456,6 +456,7 @@ impl Command {
             | Self::SetSessionMidiClipSource { clip, .. }
             | Self::SetMidiClipSource { clip, .. }
             | Self::ReplaceMidiClipVolume { clip, .. }
+            | Self::SetMidiClipGain { clip, .. }
             | Self::AddMidiNote { clip, .. }
             | Self::AddMidiNotes { clip, .. }
             | Self::SetMidiNotesActive { clip, .. }

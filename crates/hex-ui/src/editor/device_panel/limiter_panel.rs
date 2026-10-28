@@ -37,7 +37,6 @@ pub(super) fn render_body(
     let id = device.id();
     let maximize = effective(view, id, metadata, 9) == Some(ParameterValue::Bool(true));
     let mid_side = effective(view, id, metadata, 7) == Some(ParameterValue::Choice(1));
-    let input_level = gain_meters::levels(view, device)[0];
     // Working-lane labels must match the audible routing, including during a
     // pending mode edit; an older l/r graph must not be presented as m/s.
     let audible_routing = view
@@ -59,6 +58,7 @@ pub(super) fn render_body(
         });
     let reading = gain_meters::dynamics(view, device, audible_routing)
         .filter(|_| audible_routing == Some(u32::from(mid_side)));
+    let input_level = reading.map_or(0.0, |reading| reading.post_input_peak);
     let identity = DeviceControlIdentity {
         class: NativeDeviceClass::Effect,
         type_id: metadata.type_id,

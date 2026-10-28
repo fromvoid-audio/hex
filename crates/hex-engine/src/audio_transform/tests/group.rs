@@ -93,6 +93,47 @@ fn group_fixture() -> (
 }
 
 #[test]
+fn retained_event_gain_matches_edit_before_group_and_undo() {
+    let (mut editor, ids, media) = group_fixture();
+    let mut reference = Editor::new(editor.project().clone(), 32).unwrap();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let gain = hex_project::ClipGain::new(-6000).unwrap();
+    reference
+        .execute(Command::EditAudioEvents {
+            clip: ids[0],
+            operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+        })
+        .unwrap();
+    reference.execute(Command::GroupClips(ids.clone())).unwrap();
+    let expected = render(&prepare(&reference, &media, &context), 0, 16000, 127);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    let baseline = render(&prepare(&editor, &media, &context), 0, 16000, 127);
+    let source = editor.project().clip(group).unwrap().audio_events().events[0].source;
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetRetainedGain {
+                sources: vec![source],
+                event: 1,
+                gain,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16000, 257),
+        expected
+    );
+    assert_ne!(expected, baseline);
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16000, 64),
+        baseline
+    );
+}
+
+#[test]
 fn retained_source_event_can_be_reactivated_without_losing_processing() {
     let (mut editor, ids, media) = group_fixture();
     let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);

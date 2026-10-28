@@ -131,6 +131,11 @@ impl Manifest {
             });
         let mut count = 0_usize;
         for (id, volume) in arrangement.chain(console) {
+            if volume.clip_gain() != hex_project::ClipGain::UNITY {
+                return Err(StorageError::Invalid(
+                    "older schema cannot save midi clip gain",
+                ));
+            }
             count = count
                 .checked_add(volume.points().len())
                 .filter(|n| *n <= hex_project::MAX_MIDI_VOLUME_POINTS)

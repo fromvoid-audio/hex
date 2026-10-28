@@ -1117,6 +1117,21 @@ impl CandidateRoot {
                     && matches!(slot.phase, Phase::Accepted | Phase::Complete))
             })
     }
+    /// Lifecycle-only observation after advancement; pending takes are not
+    /// failures. Existing custody retains every failed owner and unwind payload.
+    pub(crate) fn cleanup_failed(&self) -> bool {
+        if self.0.eligible.cleanup_failed() {
+            return true;
+        }
+        if lock(&self.0.returns)
+            .as_ref()
+            .is_some_and(|r| r.first_panic.is_some())
+        {
+            return true;
+        }
+        let work = lock(&self.0.execution);
+        work.first_panic.is_some() || work.current.as_ref().is_some_and(|c| c.failed)
+    }
     /// Idle decision and flag clearing share the ingest/scheduling lock.
     pub(crate) fn job_idle(&self) -> bool {
         let mut bank = lock(&self.0.bank);
@@ -1323,7 +1338,9 @@ mod tests {
             });
             slot.phase = Phase::Cleaning;
         }
+        assert!(!root.cleanup_failed());
         root.advance_on_control();
+        assert!(root.cleanup_failed());
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert!(root.recover(&ticket).is_none());
         assert!(lock(&root.0.bank).slots[ticket.stamp.slot].ready.is_some());

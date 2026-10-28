@@ -1,7 +1,8 @@
-//! Arrangement audio gain input. The Window lease owns held input only; the
+//! Arrangement audio and MIDI gain input. The Window lease owns held input only; the
 //! ordinary FIFO receipt retains the released value until canonical installation.
 //! Release freezes the ordinary clip-property scope: selected audio clips retain
-//! their relative gains in one EditClips command; other clips use SetAudioClipGain.
+//! their relative gains in one EditClips command; a single audio or MIDI clip
+//! uses its corresponding typed gain command.
 //! No pointer update prepares audio.
 use super::{
     EditorView, ViewState,
@@ -14,7 +15,7 @@ use gpui::{
     Context, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, Window, div, prelude::*, px,
     rgb,
 };
-use hex_project::{Clip, ClipGain, ClipId, Command, TrackId};
+use hex_project::{Clip, ClipGain, ClipId, Command, MidiClip, TrackId};
 use hex_session::service::{Event, Request};
 use std::rc::Rc;
 
@@ -26,7 +27,7 @@ pub(super) struct State {
 struct Drag {
     generation: u64,
     revision: u64,
-    clip: Rc<Clip>,
+    clip: GainTarget,
     track: TrackId,
     viewport: Viewport,
     lane: LaneBounds,
@@ -35,6 +36,31 @@ struct Drag {
     moved: bool,
     value: f64,
     preview: ClipGain,
+}
+#[derive(Clone)]
+enum GainTarget {
+    Audio(Rc<Clip>),
+    Midi(Rc<MidiClip>),
+}
+impl GainTarget {
+    fn id(&self) -> ClipId {
+        match self {
+            Self::Audio(clip) => clip.id(),
+            Self::Midi(clip) => clip.id(),
+        }
+    }
+    fn gain(&self) -> ClipGain {
+        match self {
+            Self::Audio(clip) => clip.gain(),
+            Self::Midi(clip) => clip.volume().clip_gain(),
+        }
+    }
+    fn matches(&self, project: &hex_project::Project) -> bool {
+        match self {
+            Self::Audio(clip) => project.clip(clip.id()) == Some(clip.as_ref()),
+            Self::Midi(clip) => project.midi_clip(clip.id()) == Some(clip.as_ref()),
+        }
+    }
 }
 struct Pending {
     command: Command,
@@ -47,7 +73,7 @@ impl Drag {
             && view
                 .state
                 .as_ref()
-                .is_some_and(|s| s.project.clip(self.clip.id()) == Some(self.clip.as_ref()))
+                .is_some_and(|s| self.clip.matches(&s.project))
     }
     fn current(&self, view: &EditorView) -> bool {
         self.source_current(view)
@@ -79,9 +105,15 @@ impl Drag {
             })
     }
     fn command(&self) -> Command {
-        Command::SetAudioClipGain {
-            clip: self.clip.id(),
-            millidb: self.preview.millidb(),
+        match self.clip {
+            GainTarget::Audio(_) => Command::SetAudioClipGain {
+                clip: self.clip.id(),
+                millidb: self.preview.millidb(),
+            },
+            GainTarget::Midi(_) => Command::SetMidiClipGain {
+                clip: self.clip.id(),
+                gain: self.preview,
+            },
         }
     }
 }
@@ -180,7 +212,10 @@ impl EditorView {
             && drag.preview != drag.clip.gain()
         {
             let selected = self.selected_clip_ids();
-            let command = if selected.len() > 1 && selected.contains(&drag.clip.id()) {
+            let command = if matches!(drag.clip, GainTarget::Audio(_))
+                && selected.len() > 1
+                && selected.contains(&drag.clip.id())
+            {
                 Command::EditClips {
                     clips: selected,
                     edit: hex_project::ClipEdit::GainBy {
@@ -211,6 +246,42 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        self.gain_handle(
+            state,
+            track,
+            GainTarget::Audio(Rc::new(clip.clone())),
+            width,
+            viewport,
+            cx,
+        )
+    }
+    pub(super) fn midi_clip_gain_handle(
+        &self,
+        state: &ViewState,
+        track: TrackId,
+        clip: &MidiClip,
+        width: f32,
+        viewport: Viewport,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        self.gain_handle(
+            state,
+            track,
+            GainTarget::Midi(Rc::new(clip.clone())),
+            width,
+            viewport,
+            cx,
+        )
+    }
+    fn gain_handle(
+        &self,
+        state: &ViewState,
+        track: TrackId,
+        clip: GainTarget,
+        width: f32,
+        viewport: Viewport,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let clip_id = clip.id();
         let held = self
             .clip_gain
@@ -227,10 +298,10 @@ impl EditorView {
         let lane = *self.drag_lanes.get(&track)?;
         let generation = self.project_generation;
         let revision = state.revision;
-        let original = Rc::new(clip.clone());
+        let original = clip;
         let owner = cx.entity_id();
         let displayed = self.displayed_clip_gain(clip_id);
-        let value = displayed.unwrap_or(clip.gain()).millidb();
+        let value = displayed.unwrap_or(original.gain()).millidb();
         Some(
             div()
                 .id(("clip-gain-handle", clip_id.value()))
@@ -281,7 +352,7 @@ impl EditorView {
                         let drag = Drag {
                             generation,
                             revision,
-                            clip: Rc::clone(&original),
+                            clip: original.clone(),
                             track,
                             viewport,
                             lane,
@@ -351,6 +422,10 @@ impl EditorView {
                             clip: b,
                             millidb: bv,
                         }),
+                    ) => (a, av) == (b, bv),
+                    (
+                        Command::SetMidiClipGain { clip: a, gain: av },
+                        Request::Edit(Command::SetMidiClipGain { clip: b, gain: bv }),
                     ) => (a, av) == (b, bv),
                     (
                         Command::EditClips { clips: a, edit: av },

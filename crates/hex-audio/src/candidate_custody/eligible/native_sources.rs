@@ -177,6 +177,10 @@ pub(super) struct Bank {
     resources: Option<resources::PoolResources>,
 }
 impl Bank {
+    pub(super) fn cleanup_failed(&self) -> bool {
+        self.slots.iter().any(|s| s.phase == Phase::Failed)
+    }
+
     pub(super) fn occupied(&self) -> bool {
         self.slots.iter().any(|s| s.phase != Phase::Vacant)
     }
