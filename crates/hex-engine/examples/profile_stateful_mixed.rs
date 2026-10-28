@@ -18,7 +18,7 @@ const SOURCE: usize = 512;
 const TRACKS: usize = 100;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-pub(super) fn fixture(
+pub(crate) fn fixture(
     tracks: usize,
     devices: usize,
 ) -> Result<(Project, BTreeMap<hex_project::AssetId, Audio>)> {
@@ -107,7 +107,7 @@ pub(super) fn fixture(
     ))
 }
 
-pub(super) fn revision(
+pub(crate) fn revision(
     project: &Project,
     media: &BTreeMap<hex_project::AssetId, Audio>,
     table: &Arc<SineTable>,
@@ -120,12 +120,12 @@ pub(super) fn revision(
         previous,
     )?))
 }
-pub(super) fn playback(revision: Arc<PreparedRevision>) -> Result<SessionPlayback> {
+pub(crate) fn playback(revision: Arc<PreparedRevision>) -> Result<SessionPlayback> {
     let mut result = SessionPlayback::new(revision)?;
     result.apply(SessionPlaybackCommand::Play)?;
     Ok(result)
 }
-pub(super) fn digest(hash: &mut u64, frames: &[[f32; 2]]) {
+pub(crate) fn digest(hash: &mut u64, frames: &[[f32; 2]]) {
     for sample in frames.iter().flatten() {
         *hash ^= u64::from(sample.to_bits());
         *hash = hash.wrapping_mul(0x100000001b3);
