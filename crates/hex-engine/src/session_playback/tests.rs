@@ -10215,6 +10215,87 @@ fn session_audio_quantized_launch_begins_on_the_due_performance_frame() {
 }
 
 #[test]
+fn quantized_scene_launch_and_cancel_match_explicit_pcm_across_block_sizes() {
+    let source: Vec<Frame> = (0..32)
+        .map(|index| [index as f32 + 0.25, -(index as f32 + 0.5)])
+        .collect();
+    let audio = crate::Audio::new(48_000, source.clone()).unwrap();
+    let other = crate::Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap();
+    let project = audio_project(5, 18, 4);
+    let scene = project.scenes()[0].id();
+    let media = audio_media(&project, &audio, &other);
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            &project,
+            &media,
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let clip = revision.session().audio_clips()[0].id;
+    let track = revision.session().audio_clips()[0].track;
+    for cancelled in [false, true] {
+        for block in [1_usize, 17, 64, 128, 256, 512] {
+            let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            playback.render(&mut [[0.0; 2]; 1]).unwrap();
+            playback
+                .apply(SessionPlaybackCommand::LaunchScene {
+                    scene,
+                    quantization: LaunchQuantization::FourQuarter,
+                })
+                .unwrap();
+            assert_eq!(
+                playback
+                    .route_status(0)
+                    .unwrap()
+                    .pending
+                    .unwrap()
+                    .performance_frame,
+                96_000
+            );
+            if cancelled {
+                playback
+                    .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
+                    .unwrap();
+                assert!(playback.route_status(0).unwrap().pending.is_none());
+            }
+            playback.render(&mut []).unwrap();
+            assert_eq!(playback.performance_frame(), 1);
+            assert_eq!(
+                playback.owner(track),
+                Some(SessionPlaybackOwner::Arrangement)
+            );
+            let mut output = vec![[1.0; 2]; 96_020 - 1];
+            for chunk in output.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            for (offset, actual) in output.iter().enumerate() {
+                let frame = offset + 1;
+                let expected = if !cancelled && (96_000..96_013).contains(&frame) {
+                    source[5 + frame - 96_000]
+                } else {
+                    [0.0; 2]
+                };
+                assert_eq!(
+                    *actual, expected,
+                    "cancelled={cancelled}, block={block}, frame={frame}"
+                );
+            }
+            let expected_owner = if cancelled {
+                SessionPlaybackOwner::Arrangement
+            } else {
+                SessionPlaybackOwner::Session { clip }
+            };
+            assert_eq!(playback.owner(track), Some(expected_owner));
+            assert!(playback.route_status(0).unwrap().pending.is_none());
+            assert_eq!(playback.performance_frame(), 96_020);
+        }
+    }
+}
+
+#[test]
 fn prepared_session_audio_refuses_missing_rate_or_length_mismatched_pcm_and_reuses_shared_pcm() {
     let project = audio_project(1, 7, 4);
     let audio = crate::Audio::new(48_000, vec![[0.2, -0.3]; 32]).unwrap();
