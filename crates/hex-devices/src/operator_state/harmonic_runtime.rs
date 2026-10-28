@@ -42,6 +42,8 @@ pub(super) struct Factory {
     // transfer across compatible companion and envelope laws. Per-operator
     // machine events would require invalidating this proof.
     uniform_companion: bool,
+    companion_sources: [u8; 4],
+    partial_companion: bool,
 }
 impl Factory {
     #[cfg(test)]
@@ -66,6 +68,24 @@ impl Factory {
                 .feedback_parameters(settings.effective_feedback().map(f64::from))
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?,
         );
+        // Each alias points backward to the first bit-identical machine law.
+        let mut companion_sources = [0, 1, 2, 3];
+        for (operator, source) in companion_sources.iter_mut().enumerate().skip(1) {
+            for previous in 0..operator {
+                if settings.companion.words[operator] == settings.companion.words[previous]
+                    && (0..ENVELOPE_FIELDS).all(|field| {
+                        settings.fields[CORE_FIELDS + operator * ENVELOPE_FIELDS + field].to_bits()
+                            == settings.fields[CORE_FIELDS + previous * ENVELOPE_FIELDS + field]
+                                .to_bits()
+                    })
+                {
+                    *source = previous as u8;
+                    break;
+                }
+            }
+        }
+        let uniform_companion = companion_sources == [0, 0, 0, 0];
+        let partial_companion = !uniform_companion && companion_sources != [0, 1, 2, 3];
         Ok(Self {
             configuration,
             tuning,
@@ -79,13 +99,9 @@ impl Factory {
                 FilterTrajectory::new(settings.filter, rate)?
             },
             companion_active: settings.companion.requires_runtime(),
-            uniform_companion: (1..4).all(|operator| {
-                settings.companion.words[operator] == settings.companion.words[0]
-                    && (0..ENVELOPE_FIELDS).all(|field| {
-                        settings.fields[CORE_FIELDS + operator * ENVELOPE_FIELDS + field].to_bits()
-                            == settings.fields[CORE_FIELDS + field].to_bits()
-                    })
-            }),
+            uniform_companion,
+            companion_sources,
+            partial_companion,
             settings,
             table,
             phase_table: harmonic_phase_table()?,
@@ -196,6 +212,32 @@ fn compatible_base(
         let routing = allow_routing && (48..112).contains(&i);
         routing || levels || carriers || waveforms || feedback || enabled || lfo || a == b
     })
+}
+#[inline(never)]
+fn partial_levels(
+    machines: &[Option<companion::Machine>; 4],
+    sources: [u8; 4],
+    age: u64,
+) -> [f64; 4] {
+    let [a, b, c, d] = machines;
+    let a = a.as_ref().map_or(0.0, |machine| machine.level(age));
+    let b = if sources[1] == 0 {
+        a
+    } else {
+        b.as_ref().map_or(0.0, |machine| machine.level(age))
+    };
+    let c = match sources[2] {
+        0 => a,
+        1 => b,
+        _ => c.as_ref().map_or(0.0, |machine| machine.level(age)),
+    };
+    let d = match sources[3] {
+        0 => a,
+        1 => b,
+        2 => c,
+        _ => d.as_ref().map_or(0.0, |machine| machine.level(age)),
+    };
+    [a, b, c, d]
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Voice {
@@ -1058,6 +1100,8 @@ impl MutableInstrumentRuntime for Runtime {
                         [voice.machines[0]
                             .as_ref()
                             .map_or(0.0, |machine| machine.level(age)); 4]
+                    } else if self.factory.partial_companion {
+                        partial_levels(&voice.machines, self.factory.companion_sources, age)
                     } else {
                         std::array::from_fn(|i| {
                             voice.machines[i]
