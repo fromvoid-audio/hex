@@ -690,6 +690,18 @@ fn midi_group_preserves_independent_clip_gain_and_curve_through_seams() {
             })
             .unwrap();
     }
+    let before_refusal = editor.project().snapshot();
+    let error = editor
+        .execute(Command::GroupClips(vec![first, second]))
+        .unwrap_err();
+    assert!(error.to_string().contains("different clip gains"));
+    assert_eq!(editor.project().snapshot(), before_refusal);
+    editor
+        .execute(Command::SetMidiClipGain {
+            clip: second,
+            gain: ClipGain::new(-6_000).unwrap(),
+        })
+        .unwrap();
     let originals = [
         editor.project().midi_clip(first).unwrap().clone(),
         editor.project().midi_clip(second).unwrap().clone(),

@@ -77,6 +77,17 @@ fn group(
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no midi clips selected"))?;
+    let merged_gain = first.volume().clip_gain();
+    // One consolidated MIDI clip cannot give overlapping release tails
+    // different clip scalars without changing their audio.
+    if clips
+        .iter()
+        .any(|clip| clip.volume().clip_gain() != merged_gain)
+    {
+        return Err(Invalid(
+            "cannot group midi clips with different clip gains; release tails would change",
+        ));
+    }
     let start = match range {
         Some(range) => project.tempo_map().frame_to_beat(range.start())?.raw(),
         None => first.start().raw(),
@@ -117,16 +128,7 @@ fn group(
         .try_reserve_exact(count)
         .map_err(|_| Invalid("could not reserve grouped midi notes"))?;
     let mut points = Vec::new();
-    // Factor out the largest clip scalar so every relative multiplier is at
-    // most unity and remains representable by the existing 0..4 curve domain.
-    let merged_gain = clips
-        .iter()
-        .map(|clip| clip.volume().clip_gain())
-        .max_by_key(|gain| gain.millidb())
-        .unwrap_or(crate::ClipGain::UNITY);
-    let has_volume = clips
-        .iter()
-        .any(|clip| !clip.volume().points().is_empty() || clip.volume().clip_gain() != merged_gain);
+    let has_volume = clips.iter().any(|clip| !clip.volume().points().is_empty());
     for clip in &clips {
         let offset = clip.start().raw() - start;
         let playback = clip.source_playback()?;
@@ -163,10 +165,6 @@ fn group(
             ]);
         }
         for mut point in local {
-            let relative =
-                f64::from(clip.volume().clip_gain().linear()) / f64::from(merged_gain.linear());
-            point.incoming = MidiClipGain::new(point.incoming.linear() * relative)?;
-            point.value = MidiClipGain::new(point.value.linear() * relative)?;
             point.beat = BeatTime::from_raw(
                 offset
                     .checked_add(point.beat.raw())
