@@ -10547,6 +10547,17 @@ fn accepted_session_candidate_refuses_second_handoff_before_either_runtime_chang
     previous.render(&mut previous_output).unwrap();
     previous_twin.render(&mut twin_output).unwrap();
     assert_eq!(previous_output, twin_output);
+    // The previously accepted candidate is also an audible owner. Refusal of
+    // another handoff must not damage its inherited DSP continuation.
+    let mut accepted_output = [[0.0; 2]; 128];
+    accepted.render(&mut accepted_output).unwrap();
+    assert_eq!(accepted_output, twin_output);
+    assert!(
+        accepted_output
+            .iter()
+            .flatten()
+            .any(|sample| *sample != 0.0)
+    );
 }
 
 #[test]
@@ -10554,18 +10565,21 @@ fn release_bank_refusal_keeps_fresh_candidate_retryable_after_predecessor_drains
     let table = Arc::new(hex_devices::SineTable::new());
     let original = project(0.5, 0, 8 << 32);
     let original_revision = revision(&original, Arc::clone(&table));
-    let mut previous = SessionPlayback::new(original_revision).unwrap();
+    let mut previous = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+    let mut uninterrupted = SessionPlayback::new(original_revision).unwrap();
     let track = previous.routes[0].id;
     let clip = previous.revision.session().midi_clips()[0].id;
-    previous
-        .apply(SessionPlaybackCommand::LaunchClip {
-            clip,
-            quantization: LaunchQuantization::Immediate,
-        })
-        .unwrap();
-    previous.apply(SessionPlaybackCommand::Play).unwrap();
     let mut prefix = [[0.0; 2]; 64];
-    previous.render(&mut prefix).unwrap();
+    for playback in [&mut previous, &mut uninterrupted] {
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut prefix).unwrap();
+    }
 
     let removed_clip_revision = revision(&without_session_cells(&original), table);
     let mut candidate = SessionPlayback::new(removed_clip_revision).unwrap();
@@ -10576,7 +10590,16 @@ fn release_bank_refusal_keeps_fresh_candidate_retryable_after_predecessor_drains
     );
     assert!(candidate.candidate_admission_open);
 
-    let mut drain = vec![[0.0; 2]; 200_000];
+    let mut after_refusal = [[0.0; 2]; 256];
+    let mut expected = [[0.0; 2]; 256];
+    previous.render(&mut after_refusal).unwrap();
+    uninterrupted.render(&mut expected).unwrap();
+    assert_eq!(
+        after_refusal, expected,
+        "the donor remains audible after refusal"
+    );
+    assert!(after_refusal.iter().flatten().any(|sample| *sample != 0.0));
+    let mut drain = vec![[0.0; 2]; 200_000 - 256];
     previous.render(&mut drain).unwrap();
     assert_eq!(previous.release_voice_count(), 0);
     candidate.try_inherit_state_from(&mut previous).unwrap();
