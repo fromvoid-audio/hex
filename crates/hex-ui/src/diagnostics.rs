@@ -480,6 +480,85 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn real_refused_gain_is_recorded_with_request_terminal_and_error(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Ok(event) = service.try_event() {
+                    return event;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "session event timed out"
+                );
+                std::thread::yield_now();
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "hex-ui-gain-diagnostic-test-{}",
+            std::process::id()
+        ));
+        let mut log = hex_diagnostics::SessionLog::start(directory.clone()).unwrap();
+        let service = hex_session::service::Service::new(48_000, 8, 0).unwrap();
+        next(&service);
+        service
+            .submit(hex_session::service::Request::Edit(
+                hex_project::Command::AddTrack {
+                    name: "fixture".into(),
+                },
+            ))
+            .unwrap();
+        let initial = next(&service);
+        let track = initial.state.project.tracks()[0].id();
+        cx.update(|cx| {
+            install_session_log(cx, Ok(log.handle()));
+            install_action_diagnostics(cx, false);
+            assert!(action_scope(cx, "gain_fixture").is_none());
+            install_action_diagnostics(cx, true);
+            attach_service(cx, &service);
+            let _action = action_scope(cx, "gain_fixture").unwrap();
+            service
+                .submit(hex_session::service::Request::Edit(
+                    hex_project::Command::Gain {
+                        track,
+                        gain: f32::NAN,
+                    },
+                ))
+                .unwrap();
+        });
+        let refused = next(&service);
+        assert!(refused.request_complete);
+        assert_eq!(refused.state.revision, initial.state.revision);
+        let error = refused.error.as_deref().expect("gain refusal");
+        cx.update(|cx| assert!(record_state(cx, "gain edit refused", Some(error)).is_none()));
+        let stats = log.handle().statistics();
+        assert_eq!(
+            (stats.queue_full, stats.producer_busy, stats.closed),
+            (0, 0, 0)
+        );
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        let action = contents
+            .split("stage=handler action_id=")
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap();
+        assert!(contents.contains(&format!("ui_action_id: Some({action})")));
+        assert!(contents.contains("operation: Some(\\\"gain\\\")"));
+        assert!(contents.contains("SubmitAttempt"));
+        assert!(contents.contains("WorkerBegin"));
+        assert!(contents.contains("ClientReceived"));
+        assert!(contents.contains("error: true"));
+        assert!(contents.contains(error));
+        assert!(contents.contains("gain edit refused"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
     fn key_diagnostics_redact_typed_unicode_and_keep_control_keys(cx: &mut gpui::TestAppContext) {
         let directory =
             std::env::temp_dir().join(format!("hex-ui-key-redaction-test-{}", std::process::id()));
