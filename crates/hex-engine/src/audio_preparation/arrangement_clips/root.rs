@@ -208,7 +208,7 @@ impl ArrangementRootAssembly {
                 .ok_or(AudioStorageError::Overflow)?;
             end = Some(end.map_or(value, |previous: u64| previous.max(value)));
         }
-        self.signal_reserved = effects.is_some();
+        self.signal_reserved = effects.is_some() || project.has_group_tracks();
         self.growth = 0;
         for (old, count, stride) in [
             (

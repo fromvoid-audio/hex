@@ -50,6 +50,67 @@ fn render(
     }
     output
 }
+
+#[test]
+fn meter_reports_committed_post_input_gain_in_both_modes() {
+    for settings in [
+        vec![(GAIN, ParameterValue::Float(6.0))],
+        vec![
+            (MAXIMIZE, ParameterValue::Bool(true)),
+            (THRESHOLD, ParameterValue::Float(-6.0)),
+        ],
+    ] {
+        let mut runtime = factory(48_000, &settings).create_runtime().unwrap();
+        let mut input = [[0.125, -0.25]; 16];
+        runtime.begin_block();
+        runtime.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+        runtime.rollback_block();
+        assert_eq!(runtime.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+
+        let mut input = [[0.125, -0.25]; 16];
+        runtime.begin_block();
+        runtime.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+        runtime.commit_block();
+        let peak = runtime.take_dynamics_meter().unwrap().post_input_peak;
+        assert!(
+            (peak - 0.25 * 10.0_f32.powf(6.0 / 20.0)).abs() < 1e-5,
+            "{peak}"
+        );
+        assert_eq!(runtime.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+    }
+}
+
+#[test]
+fn meter_tracks_the_actual_gain_ramp_and_silence() {
+    let mut changed = factory(
+        48_000,
+        &[
+            (GAIN, ParameterValue::Float(6.0)),
+            (ROUTING, ParameterValue::Choice(1)),
+        ],
+    )
+    .create_runtime()
+    .unwrap();
+    let old_ms = factory(48_000, &[(ROUTING, ParameterValue::Choice(1))])
+        .create_runtime()
+        .unwrap();
+    assert!(changed.can_inherit_from(old_ms.as_ref()));
+    changed.inherit_from(old_ms.as_ref());
+    let mut frame = [[0.25, -0.5]];
+    changed.begin_block();
+    changed.process_block(&mut frame, &EMPTY_DEVICE_RESOURCES);
+    changed.commit_block();
+    let peak = changed.take_dynamics_meter().unwrap().post_input_peak;
+    let target = 10.0_f32.powf(6.0 / 20.0);
+    let expected = 0.5 * (1.0 + (target - 1.0) / 240.0);
+    assert!((peak - expected).abs() < 1e-6, "{peak} != {expected}");
+
+    let mut silence = [[0.0; 2]; 16];
+    changed.begin_block();
+    changed.process_block(&mut silence, &EMPTY_DEVICE_RESOURCES);
+    changed.commit_block();
+    assert_eq!(changed.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+}
 #[test]
 fn state_is_strict_and_inactive_values_survive_mode_switching() {
     for descriptor in state::DESCRIPTORS {

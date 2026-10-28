@@ -10,6 +10,11 @@
 //! Does not own a second editable project, construct DSP or access files/audio devices from
 //! rendering. Render app-owned text through theme::text with bundled Ioskeley Mono; preserve
 //! original user data and path casing.
+mod update;
+pub use update::{
+    UpdateAction, UpdateApproval, UpdateClient, UpdateCommand, UpdateReady, UpdateStatus,
+    UpdateWorker, channel as update_channel, install_update_client,
+};
 mod mts;
 pub use mts::install_mts_publisher;
 mod app;

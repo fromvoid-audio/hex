@@ -2612,6 +2612,7 @@ name = "hex-desktop"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "fs2",
  "gpui",
  "hex-audio",
  "hex-diagnostics",
@@ -2629,6 +2630,9 @@ dependencies = [
  "hex-stream",
  "hex-tuning",
  "hex-ui",
+ "nix 0.31.3",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
