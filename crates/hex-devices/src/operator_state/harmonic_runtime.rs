@@ -908,6 +908,12 @@ impl MutableInstrumentRuntime for Runtime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut cursor = 0;
+        // Events can populate later slots; retirement only removes voices.
+        let mut voice_end = self
+            .voices
+            .iter()
+            .rposition(|voice| voice.id != 0)
+            .map_or(0, |i| i + 1);
         // Events can create released voices during this block. Once an event
         // occurs, keep checking until the next block rather than maintaining
         // another copy of voice ownership state.
@@ -946,6 +952,7 @@ impl MutableInstrumentRuntime for Runtime {
                     }
                 }
             }
+            let mut voices_changed = false;
             while let Some(event) = events.get(cursor) {
                 let at = match *event {
                     NativeInstrumentEvent::NoteOn { frame_offset, .. }
@@ -959,8 +966,16 @@ impl MutableInstrumentRuntime for Runtime {
                     .and_then(|clock| clock.performance_frame_at_offset(offset))
                     .unwrap_or(self.local_frame);
                 let _ = self.apply(*event, origin, beat, running);
+                voices_changed = true;
                 may_expire = true;
                 cursor += 1;
+            }
+            if voices_changed {
+                voice_end = self
+                    .voices
+                    .iter()
+                    .rposition(|voice| voice.id != 0)
+                    .map_or(0, |i| i + 1);
             }
             let transition = (self.elapsed < self.frames).then(|| self.spectrum());
             let spectrum = transition.as_ref().unwrap_or(&self.factory.target);
@@ -978,7 +993,7 @@ impl MutableInstrumentRuntime for Runtime {
             } else {
                 law.rate() / f64::from(self.factory.rate)
             };
-            for voice in &mut self.voices {
+            for voice in self.voices.iter_mut().take(voice_end) {
                 if voice.id == 0 {
                     continue;
                 }
