@@ -447,3 +447,118 @@ fn transport_edit_vectors_keep_history_commands_and_theme_colors(cx: &mut TestAp
         Some(split)
     );
 }
+
+#[gpui::test]
+fn transport_creation_vectors_preserve_track_and_clip_commands(cx: &mut TestAppContext) {
+    use crate::editor::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.offline_cursor = 96_000;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let add = visual.debug_bounds("add track").unwrap();
+    let midi = visual
+        .debug_bounds("add four-beat midi clip · cmd+shift+m")
+        .unwrap();
+    let remove = visual.debug_bounds("remove selected track").unwrap();
+    for selector in [
+        "transport-add-track-icon",
+        "transport-add-midi-icon",
+        "transport-remove-track-icon",
+    ] {
+        assert!(!visual.rendered_monochrome_colors(selector).is_empty());
+    }
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        visual.simulate_mouse_move(gpui::point(px(2.0), px(500.0)), None, Modifiers::default());
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let style = crate::theme::action_style();
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-add-track-icon")
+                .contains(&gpui::Hsla::from(gpui::rgb(style.text)))
+        );
+        visual.simulate_mouse_move(
+            gpui::point(add.origin.x + px(1.0), add.origin.y + px(1.0)),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-add-track-icon")
+                .contains(&gpui::Hsla::from(gpui::rgb(
+                    style.hover_text.unwrap_or(style.text)
+                )))
+        );
+    }
+    let (track, tracks, clips) = editor.read_with(cx, |view, _| {
+        let track = view.selected_track.unwrap();
+        (
+            track,
+            view.state().unwrap().project.tracks().len(),
+            view.state()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+        )
+    });
+    visual.simulate_click(midi.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view
+            .state()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .midi_clips()
+            .len()),
+        clips + 1
+    );
+    visual.simulate_click(add.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        tracks + 1
+    );
+    editor.update(cx, |view, cx| {
+        view.selected_track = view
+            .state()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|candidate| candidate.id() != track)
+            .map(|candidate| candidate.id());
+        cx.notify();
+    });
+    visual.simulate_click(remove.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        tracks
+    );
+    assert_eq!(visual.debug_bounds("add track"), Some(add));
+    assert_eq!(visual.debug_bounds("remove selected track"), Some(remove));
+    assert_eq!(
+        visual.debug_bounds("add four-beat midi clip · cmd+shift+m"),
+        Some(midi)
+    );
+}
