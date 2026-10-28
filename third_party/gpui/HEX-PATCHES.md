@@ -375,3 +375,8 @@ The existing macOS cursor owner rasterizes Hex's three embedded SVG sources in
 logical size, centered (12, 12) hotspot, cached native cursor ownership and OS
 fallbacks remain in this dependency boundary; the 48-pixel raster is derived
 at startup. No new workspace unsafe code or native cursor path is introduced.
+
+Test support may install an application's asset source and inspect completed
+monochrome sprite geometry. This is for deterministic SVG consumer tests; it
+does not change the native asset cache, create an OS window, or establish
+native framebuffer appearance.

@@ -4514,8 +4514,14 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "□");
-        assert_eq!(view.browser_place_glyph(&unknown), "□");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/folder.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&unknown),
+            "icons/browser-place/folder.svg"
+        );
         assert!(
             view.browser
                 .places_status
@@ -4547,7 +4553,10 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
                     .focus_handle()
                     .is_focused(window)
             );
-            assert_eq!(view.browser_place_glyph(&first), "♫");
+            assert_eq!(
+                view.browser_place_icon_path(&first),
+                "icons/browser-place/samples.svg"
+            );
             assert_eq!(view.browser.section, BrowserSection::All);
             assert_eq!(view.browser.playback_generation, generation);
             assert!(view.pending_requests.is_empty());
@@ -4578,7 +4587,11 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let control = visual.debug_bounds("browser-control-⚙").unwrap();
-    for (index, expected) in [(2, "□"), (3, "♫"), (4, "♫")] {
+    for (index, expected) in [
+        (2, "icons/browser-place/folder.svg"),
+        (3, "icons/browser-place/samples.svg"),
+        (4, "icons/browser-place/samples.svg"),
+    ] {
         let row = visual
             .debug_bounds(Box::leak(format!("browser-place-{index}").into_boxed_str()))
             .unwrap();
@@ -4591,7 +4604,7 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
         assert!(glyph.left() >= row.left() && glyph.right() <= row.right());
         editor.read_with(visual, |view, _| {
             assert_eq!(
-                view.browser_place_glyph(&view.browser.places[index]),
+                view.browser_place_icon_path(&view.browser.places[index]),
                 expected
             )
         });
@@ -4615,9 +4628,18 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     let reopened_visual = &mut VisualTestContext::from_window(reopened_handle, cx);
     reopened_visual.run_until_parked();
     reopened.read_with(reopened_visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "♫");
-        assert_eq!(view.browser_place_glyph(&second), "♫");
-        assert_eq!(view.browser_place_glyph(&unknown), "□");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/samples.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&second),
+            "icons/browser-place/samples.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&unknown),
+            "icons/browser-place/folder.svg"
+        );
         assert_eq!(
             view.browser.place_icons.get(&unknown).map(String::as_str),
             Some("future-icon")
@@ -4760,7 +4782,10 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
                 view.browser
                     .place_icons
                     .insert(path.clone(), "samples".into());
-                assert_eq!(view.browser_place_glyph(&path), "□");
+                assert_eq!(
+                    view.browser_place_icon_path(&path),
+                    "icons/browser-place/folder.svg"
+                );
                 view.open_browser_place_icons(path, point(px(0.0), px(0.0)), window, cx);
                 assert!(
                     view.context_menu.is_none(),
@@ -4784,13 +4809,13 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         for (index, (id, glyph)) in [
-            (None, "□"),
-            (Some("samples"), "♫"),
-            (Some("devices"), "⌘"),
-            (Some("projects"), "▤"),
-            (Some("collection"), "◈"),
-            (Some("waveform"), "≋"),
-            (Some("search"), "⌕"),
+            (None, "icons/browser-place/folder.svg"),
+            (Some("samples"), "icons/browser-place/samples.svg"),
+            (Some("devices"), "icons/browser-place/devices.svg"),
+            (Some("projects"), "icons/browser-place/projects.svg"),
+            (Some("collection"), "icons/browser-place/collection.svg"),
+            (Some("waveform"), "icons/browser-place/waveform.svg"),
+            (Some("search"), "icons/browser-place/search.svg"),
         ]
         .into_iter()
         .enumerate()
@@ -4812,7 +4837,7 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
             assert!(bounds.left() >= row.left() && bounds.right() <= row.right());
             assert!(f32::from(bounds.center().y - row.center().y).abs() <= 0.5);
             editor.read_with(visual, |view, _| {
-                assert_eq!(view.browser_place_glyph(&directory.0), glyph)
+                assert_eq!(view.browser_place_icon_path(&directory.0), glyph)
             });
             assert_eq!(
                 hex_preferences::load(&directory.0.join("icon-preferences.json"))
@@ -5010,8 +5035,14 @@ fn browser_place_icon_grid_uses_clicked_row_reset_and_reopens(cx: &mut TestAppCo
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     reopened.read_with(visual, |view, _| {
-        assert_eq!(view.browser_place_glyph(&first), "□");
-        assert_eq!(view.browser_place_glyph(&second), "≋");
+        assert_eq!(
+            view.browser_place_icon_path(&first),
+            "icons/browser-place/folder.svg"
+        );
+        assert_eq!(
+            view.browser_place_icon_path(&second),
+            "icons/browser-place/waveform.svg"
+        );
     });
 }
 

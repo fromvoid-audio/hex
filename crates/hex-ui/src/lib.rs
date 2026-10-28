@@ -10,6 +10,7 @@
 //! Does not own a second editable project, construct DSP or access files/audio devices from
 //! rendering. Render app-owned text through theme::text with bundled Ioskeley Mono; preserve
 //! original user data and path casing.
+pub mod assets;
 mod update;
 pub use update::{
     UpdateAction, UpdateApproval, UpdateClient, UpdateCommand, UpdateReady, UpdateStatus,
@@ -36,12 +37,16 @@ use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px,
 use hex_audio::AudioOutput;
 
 /// Open the editor with a worker-owned native audio backend.
+/// The host must install [`assets::HexAssets`] with `Application::with_assets`.
 pub fn open_editor_backend(cx: &mut App, backend: EditorBackend) -> Result<(), String> {
+    assets::validate(cx)?;
     editor::open_backend(cx, backend)
 }
 
 /// Compose the GPUI window around the backend created by the desktop entry point.
+/// The host must install [`assets::HexAssets`] with `Application::with_assets`.
 pub fn open(cx: &mut App, output: Result<AudioOutput, String>) -> Result<(), String> {
+    assets::validate(cx)?;
     theme::load_fonts(cx)?;
     cx.bind_keys([
         KeyBinding::new("space", app::TogglePlay, Some("daw")),
@@ -80,6 +85,7 @@ pub fn open_time_selection_profile(
     settings: std::path::PathBuf,
     result: std::sync::mpsc::SyncSender<Result<String, String>>,
 ) -> Result<(), String> {
+    assets::validate(cx)?;
     editor::time_selection_profile::open(cx, directory, settings, result)
 }
 

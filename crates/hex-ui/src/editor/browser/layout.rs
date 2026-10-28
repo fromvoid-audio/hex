@@ -23,7 +23,15 @@ fn picker_resize_width(raw: f32, maximum: f32, locked: bool) -> (f32, bool) {
     (if locked { PICKER_MIN_WIDTH } else { width }, locked)
 }
 
-const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
+const ICONS: [&str; 7] = [
+    "icons/browser-place/samples.svg",
+    "icons/browser-place/devices.svg",
+    "icons/browser-place/projects.svg",
+    "icons/browser-place/collection.svg",
+    "icons/browser-place/waveform.svg",
+    "icons/browser-place/folder.svg",
+    "icons/browser-place/search.svg",
+];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
     ("content", &["audio clip", "midi clip", "preset", "sample"]),
     ("type", &["loop", "one shot", "impulse response"]),
@@ -130,6 +138,15 @@ pub(super) fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpu
 
 fn browser_caption(value: impl AsRef<str>) -> Div {
     div().text_xs().child(theme::text(value))
+}
+
+fn browser_vector_icon(path: &'static str) -> Div {
+    div().flex().items_center().justify_center().child(
+        gpui::svg()
+            .path(path)
+            .size(px(14.0))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text))),
+    )
 }
 
 fn picker_icon(icon: Div) -> Div {
@@ -479,7 +496,7 @@ impl EditorView {
             }
             let active = self.browser.section == section;
             let icon = picker_icon(
-                browser_caption(ICONS[self.browser.layout.icons[index]])
+                browser_vector_icon(ICONS[self.browser.layout.icons[index]])
                     .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
             );
             sidebar =
@@ -618,7 +635,9 @@ impl EditorView {
                                         cx.notify();
                                     }),
                                 )
-                                .child(browser_caption(ICONS[self.browser.layout.icons[index]])),
+                                .child(browser_vector_icon(
+                                    ICONS[self.browser.layout.icons[index]],
+                                )),
                         ),
                 );
             }
@@ -725,7 +744,7 @@ impl EditorView {
             };
             let tooltip = name.to_owned();
             let icon = picker_icon(
-                browser_caption(self.browser_place_glyph(place))
+                browser_vector_icon(self.browser_place_icon_path(place))
                     .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
             );
             places = places.child(
