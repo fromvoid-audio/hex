@@ -896,9 +896,20 @@ impl MutableInstrumentRuntime for Runtime {
             .voices
             .iter()
             .any(|voice| voice.id != 0 && voice.gate.is_some());
+        let companion = self.factory.settings.companion;
+        let needs_companion_beat = companion.needs_clock();
+        let needs_companion_transport = companion.needs_running();
         for (offset, frame) in frames.iter_mut().enumerate() {
-            let beat = clock.and_then(|clock| clock.beat_at_offset(offset));
-            let running = clock.and_then(|clock| clock.transport_is_running());
+            let beat = if needs_companion_beat {
+                clock.and_then(|clock| clock.beat_at_offset(offset))
+            } else {
+                None
+            };
+            let running = if needs_companion_transport {
+                clock.and_then(|clock| clock.transport_is_running())
+            } else {
+                None
+            };
             if self.factory.companion_active {
                 for voice in &mut self.voices {
                     if voice.id != 0 {
