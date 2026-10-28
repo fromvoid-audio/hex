@@ -361,3 +361,89 @@ fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppConte
         assert_eq!(visual.debug_bounds("stop · escape"), Some(stop));
     }
 }
+
+#[gpui::test]
+fn transport_edit_vectors_keep_history_commands_and_theme_colors(cx: &mut TestAppContext) {
+    use crate::editor::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    visual.run_until_parked();
+    let split = visual
+        .debug_bounds("split selection edges or edit cursor · e")
+        .unwrap();
+    let undo = visual.debug_bounds("undo · cmd+z").unwrap();
+    let redo = visual.debug_bounds("redo · cmd+shift+z").unwrap();
+    for selector in [
+        "transport-split-icon",
+        "transport-undo-icon",
+        "transport-redo-icon",
+    ] {
+        assert!(!visual.rendered_monochrome_colors(selector).is_empty());
+    }
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        visual.simulate_mouse_move(gpui::point(px(2.0), px(500.0)), None, Modifiers::default());
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let style = crate::theme::action_style();
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-split-icon")
+                .contains(&gpui::Hsla::from(gpui::rgb(style.text)))
+        );
+        visual.simulate_mouse_move(
+            gpui::point(split.origin.x + px(1.0), split.origin.y + px(1.0)),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-split-icon")
+                .contains(&gpui::Hsla::from(gpui::rgb(
+                    style.hover_text.unwrap_or(style.text)
+                )))
+        );
+    }
+    let count = editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len());
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::AddMidiTrack {
+                name: "history test".into()
+            }
+        )))
+    });
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        count + 1
+    );
+    visual.simulate_click(undo.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        count
+    );
+    visual.simulate_click(redo.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        count + 1
+    );
+    assert_eq!(visual.debug_bounds("undo · cmd+z"), Some(undo));
+    assert_eq!(visual.debug_bounds("redo · cmd+shift+z"), Some(redo));
+    assert_eq!(
+        visual.debug_bounds("split selection edges or edit cursor · e"),
+        Some(split)
+    );
+}
