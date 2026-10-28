@@ -98,6 +98,85 @@ fn grouping_differently_gained_clips_refuses_without_changing_release_tails() {
         }
     }
 }
+
+#[test]
+fn grouping_different_curves_refuses_without_changing_release_tails() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let mut clips = Vec::new();
+    for (start, pitch, gain) in [(0, 60, 0.5), (1, 67, 2.0)] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: beat(start),
+                length: beat(1),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: beat(0),
+                duration: beat(1),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ReplaceMidiClipVolume {
+                clip,
+                volume: MidiClipVolume::new(
+                    vec![MidiClipVolumePoint::linear(
+                        beat(0),
+                        MidiClipGain::new(gain).unwrap(),
+                    )],
+                    beat(1),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        clips.push(clip);
+    }
+    let before = render(
+        &crate::compile::project(editor.project(), &BTreeMap::new()).unwrap(),
+        &[17, 256],
+        8500,
+    );
+    let snapshot = editor.project().snapshot();
+    let error = editor.execute(Command::GroupClips(clips)).unwrap_err();
+    assert!(error.to_string().contains("clip volume curves"));
+    assert_eq!(editor.project().snapshot(), snapshot);
+    let after = render(
+        &crate::compile::project(editor.project(), &BTreeMap::new()).unwrap(),
+        &[64, 1, 127],
+        8500,
+    );
+    assert!(before[4000..4100].iter().any(|frame| frame[0].abs() > 1e-4));
+    for (frame, (left, right)) in before.iter().zip(after).enumerate() {
+        for channel in 0..2 {
+            assert!(
+                (left[channel] - right[channel]).abs() < 1e-6,
+                "frame {frame}, channel {channel}: {} vs {}",
+                left[channel],
+                right[channel]
+            );
+        }
+    }
+}
 #[test]
 fn real_finite_voices_keep_independent_gain_endpoint_tails_and_partition_identity() {
     let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();

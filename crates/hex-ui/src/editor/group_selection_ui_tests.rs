@@ -5,6 +5,85 @@ use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
 #[gpui::test]
+fn g_refuses_unsafe_midi_curves_without_changing_selection_or_project(cx: &mut TestAppContext) {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let (_files, handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
+            name: "notes".into(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    let track = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[1].id()
+    });
+    let mut clips = Vec::new();
+    for (start, gain) in [(BeatTime::ZERO, 0.5), (BeatTime::from_raw(3 << 32), 2.0)] {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start,
+                length: BeatTime::ONE,
+            })));
+        });
+        pump(&editor, &mut visual);
+        let clip = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .last()
+                .unwrap()
+                .id()
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(
+                view.enqueue(Request::Edit(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![MidiClipVolumePoint::linear(
+                            BeatTime::ZERO,
+                            MidiClipGain::new(gain).unwrap()
+                        )],
+                        BeatTime::ONE,
+                    )
+                    .unwrap(),
+                }))
+            );
+        });
+        pump(&editor, &mut visual);
+        clips.push(clip);
+    }
+    click(&mut visual, clips[0], false);
+    click(&mut visual, clips[1], true);
+    let (before, can_undo, can_redo) = editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_clip_ids(), clips);
+        let state = view.state.as_ref().unwrap();
+        (state.project.snapshot(), state.can_undo, state.can_redo)
+    });
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project.snapshot(), before);
+        assert_eq!((state.can_undo, state.can_redo), (can_undo, can_redo));
+        assert_eq!(view.selected_clip_ids(), clips);
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|error| error.contains("clip volume curves")),
+            "{:?}",
+            view.error
+        );
+    });
+}
+
+#[gpui::test]
 fn g_groups_selected_midi_clips_and_selects_one_created_clip(cx: &mut TestAppContext) {
     let (_files, handle, editor, _) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
