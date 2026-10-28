@@ -6,6 +6,134 @@ use hex_project::{BeatTime, Command, Created, TrimEdge};
 use hex_session::service::ResidentPublicationAcceptance;
 
 #[test]
+fn active_source_provider_change_reports_why_and_recovers_after_stop() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let file = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track");
+    };
+    (applied, _) = h.applied(applied);
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: file.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    let sampler = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .clone();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(4).unwrap(),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+    let vector = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_session::device_gesture::DeviceTypeId::from_static("hex.instrument.fm4"),
+    )
+    .unwrap();
+    let replaced = h.run(Request::Edit(Command::ReplaceDeviceState {
+        device: sampler.id(),
+        state: vector,
+    }));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let rejected = loop {
+        h.pump();
+        let audio = h.render();
+        if let Some((revision, reason)) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_revision()
+            && revision > applied
+        {
+            assert_eq!(
+                reason,
+                hex_engine::PlaybackHandoffRejection::SourceHistoryUnavailable
+            );
+            assert_eq!(
+                hex_engine::PlaybackHandoffRejection::from_code(reason as u32),
+                Some(reason)
+            );
+            assert!(
+                reason.message().contains("stop transport"),
+                "wrong refusal: {reason:?}"
+            );
+            assert!(
+                audio.iter().flatten().any(|sample| *sample != 0.0),
+                "donor became silent"
+            );
+            break revision;
+        }
+        assert!(Instant::now() < deadline, "source change did not refuse");
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Stop)
+        .unwrap();
+    h.render();
+    let restored = h.run(Request::RestoreStoppedPlayback);
+    assert_eq!(restored.state.project, replaced.state.project);
+    (applied, _) = h.applied(rejected);
+    let undone = h.run(Request::Undo);
+    h.applied(applied);
+    assert_eq!(
+        undone.state.project.track(track).unwrap().instrument(),
+        Some(&sampler)
+    );
+}
+
+#[test]
 fn global_bpm_publishes_with_original_and_predecessor_pcm_still_retained() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     for rate in [44_100, 48_000] {
