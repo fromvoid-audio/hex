@@ -724,6 +724,87 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
 }
 
 #[test]
+fn truncated_source_refuses_its_page_without_stalling_another_source() {
+    let (damaged, _) = TestWav::stereo_pcm16(48_000, 4096);
+    let (healthy, expected) = TestWav::stereo_pcm16(48_000, 4096);
+    let asset = asset_id(4096, 48_000);
+    let damaged_key = StreamSourceKey::new(101, asset);
+    let healthy_key = StreamSourceKey::new(102, asset);
+    let definition = |wav: &TestWav, key| {
+        let reader = VerifiedWavReader::open(wav.path(), reader_limits(4096)).expect("verified");
+        let metadata = StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .expect("metadata");
+        SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(4096))
+    };
+    let mut runtime = StreamRuntime::new(
+        StreamConfig::with_pool_pages(3),
+        vec![
+            definition(&damaged, damaged_key),
+            definition(&healthy, healthy_key),
+        ],
+    )
+    .expect("runtime");
+    runtime
+        .wait_until_ready(Duration::from_secs(3))
+        .expect("ready");
+    OpenOptions::new()
+        .write(true)
+        .open(damaged.path())
+        .expect("open damaged fixture")
+        .set_len(48)
+        .expect("truncate fixture");
+    runtime.request_page(damaged_key, 0);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut failures = [hex_stream::StreamFailure {
+        key: damaged_key.into(),
+        page_index: 0,
+        kind: hex_stream::StreamFailureKind::DecodeFailed,
+    }; 1];
+    let mut count = 0;
+    while Instant::now() < deadline && count == 0 {
+        runtime.pump_ready(8);
+        count = runtime.take_failures(&mut failures);
+        if count == 0 {
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    assert_eq!(count, 1);
+    assert_eq!(failures[0].key, damaged_key.into());
+    assert_eq!(failures[0].page_index, 0);
+    assert_eq!(
+        failures[0].kind,
+        hex_stream::StreamFailureKind::SourceChanged
+    );
+    assert!(runtime.page(damaged_key, 0).is_none());
+
+    let page = PageKey {
+        source: healthy_key,
+        page_index: 0,
+    };
+    runtime.request_page(healthy_key, 0);
+    assert!(wait_for_pages(
+        &mut runtime,
+        &[page],
+        Duration::from_secs(3)
+    ));
+    assert_eq!(
+        runtime.page(healthy_key, 0).expect("healthy page").frames,
+        expected
+    );
+    let report = runtime.shutdown().expect("balanced shutdown");
+    assert!(report.worker_joined && report.accounting_complete);
+}
+
+#[test]
 fn catalog_rejects_nonfinite_float_samples_outside_the_first_page() {
     let wav = TestWav::stereo_float_with_nan(8192);
     let asset = asset_id(8192, 48_000);
