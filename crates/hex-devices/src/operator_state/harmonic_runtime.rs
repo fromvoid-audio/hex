@@ -213,7 +213,9 @@ fn compatible_base(
         routing || levels || carriers || waveforms || feedback || enabled || lfo || a == b
     })
 }
+// Keep the partially shared path out of the distinct-envelope render path.
 #[inline(never)]
+#[cold]
 fn partial_levels(
     machines: &[Option<companion::Machine>; 4],
     sources: [u8; 4],
