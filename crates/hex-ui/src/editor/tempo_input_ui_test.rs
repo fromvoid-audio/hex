@@ -267,3 +267,97 @@ fn project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortc
         }
     }
 }
+
+#[gpui::test]
+fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppContext) {
+    use crate::editor::device_panel::tests::eq_ui_tests::{graph_layout_tests, held_pointer_tests};
+    use crate::editor::midi_canvas::creation_tests::fixture;
+    use std::time::{Duration, Instant};
+
+    let _guard = graph_layout_tests::status_fixture_guard();
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    let (mut output, mut backend) =
+        held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+    visual.run_until_parked();
+    let play = visual.debug_bounds("play or pause · space").unwrap();
+    let stop = visual.debug_bounds("stop · escape").unwrap();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("transport-play-icon")
+            .is_empty()
+    );
+    assert!(
+        !visual
+            .rendered_monochrome_colors("transport-stop-icon")
+            .is_empty()
+    );
+    assert!(visual.debug_bounds("transport-pause-icon").is_none());
+
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        visual.simulate_mouse_move(gpui::point(px(2.0), px(500.0)), None, Modifiers::default());
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let style = crate::theme::action_style();
+        let normal = gpui::Hsla::from(gpui::rgb(style.text));
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-play-icon")
+                .contains(&normal)
+        );
+        visual.simulate_mouse_move(
+            gpui::point(play.origin.x + px(1.0), play.origin.y + px(1.0)),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let hover = gpui::Hsla::from(gpui::rgb(style.hover_text.unwrap_or(style.text)));
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-play-icon")
+                .contains(&hover)
+        );
+    }
+
+    for (button, playing) in [(play, true), (stop, false)] {
+        visual.simulate_click(button.center(), Modifiers::default());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+            visual.run_until_parked();
+            if editor.read_with(cx, |view, _| {
+                view.audio_status().is_some_and(|status| {
+                    status.playing.load(std::sync::atomic::Ordering::Acquire) == playing
+                })
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "transport command did not reach the callback"
+            );
+        }
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let (shown, hidden) = if playing {
+            ("transport-pause-icon", "transport-play-icon")
+        } else {
+            ("transport-play-icon", "transport-pause-icon")
+        };
+        assert!(!visual.rendered_monochrome_colors(shown).is_empty());
+        assert!(visual.debug_bounds(hidden).is_none());
+        assert_eq!(visual.debug_bounds("play or pause · space"), Some(play));
+        assert_eq!(visual.debug_bounds("stop · escape"), Some(stop));
+    }
+}
