@@ -201,6 +201,7 @@ fn retained_root_nesting_has_a_bounded_depth() {
             next_id: 2,
             events: vec![AudioEvent {
                 active: true,
+                gain: crate::ClipGain::UNITY,
                 source: 1,
                 id: 1,
                 start: 0,

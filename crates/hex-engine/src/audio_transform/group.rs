@@ -182,6 +182,7 @@ impl AudioTransformPreparation {
                 let destination = root_pcm
                     .get_mut(event.start as usize..event.end as usize)
                     .ok_or(Invalid("grouped audio event exceeds root"))?;
+                let event_gain = event.gain.linear();
                 for (offset, frame) in destination.iter_mut().enumerate() {
                     if offset % 4096 == 0 && self.cancelled() {
                         return Err(Invalid("audio preparation cancelled"));
@@ -215,6 +216,10 @@ impl AudioTransformPreparation {
                             let gain = fade.shape().gain_at(at);
                             sample[0] *= gain;
                             sample[1] *= gain;
+                        }
+                        if event_gain != 1.0 {
+                            sample[0] *= event_gain;
+                            sample[1] *= event_gain;
                         }
                         *frame = sample;
                     }

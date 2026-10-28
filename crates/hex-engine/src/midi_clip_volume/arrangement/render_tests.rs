@@ -23,6 +23,81 @@ fn render(project: &crate::Project, partitions: &[usize], frames: usize) -> Vec<
     }
     result
 }
+
+#[test]
+fn grouping_differently_gained_clips_refuses_without_changing_release_tails() {
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let mut clips = Vec::new();
+    for (start, pitch, db) in [(0, 60, -6_000), (1, 67, 6_000)] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: beat(start),
+                length: beat(1),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: beat(0),
+                duration: beat(1),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetMidiClipGain {
+                clip,
+                gain: hex_project::ClipGain::new(db).unwrap(),
+            })
+            .unwrap();
+        clips.push(clip);
+    }
+    let before = render(
+        &crate::compile::project(editor.project(), &BTreeMap::new()).unwrap(),
+        &[17, 256],
+        8500,
+    );
+    let snapshot = editor.project().snapshot();
+    let error = editor.execute(Command::GroupClips(clips)).unwrap_err();
+    assert!(error.to_string().contains("different clip gains"));
+    assert_eq!(editor.project().snapshot(), snapshot);
+    let after = render(
+        &crate::compile::project(editor.project(), &BTreeMap::new()).unwrap(),
+        &[17, 256],
+        8500,
+    );
+    assert!(
+        before[4000..4100]
+            .iter()
+            .any(|sample| sample[0].abs() > 1e-4)
+    );
+    for (frame, (left, right)) in before.iter().zip(after).enumerate() {
+        for channel in 0..2 {
+            assert!(
+                (left[channel] - right[channel]).abs() < 1e-6,
+                "frame {frame}, channel {channel}: {} vs {}",
+                left[channel],
+                right[channel]
+            );
+        }
+    }
+}
 #[test]
 fn real_finite_voices_keep_independent_gain_endpoint_tails_and_partition_identity() {
     let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
@@ -135,4 +210,31 @@ fn real_finite_voices_keep_independent_gain_endpoint_tails_and_partition_identit
             .any(|sample| sample[0].abs() > 1.0e-4),
         "fixture must expose another clip on the same track"
     );
+
+    let scalar = hex_project::ClipGain::new(-6_000).unwrap();
+    editor
+        .execute(Command::SetMidiClipGain {
+            clip: clips[0],
+            gain: scalar,
+        })
+        .unwrap();
+    let compiled = crate::compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let scaled = render(&compiled, &[1, 17, 63, 511, 7], 8500);
+    for (frame, sample) in scaled.iter().enumerate() {
+        let curve = if frame < 4000 {
+            0.5 * frame as f64 / 4000.0
+        } else {
+            0.5
+        };
+        for (channel, value) in sample.iter().enumerate() {
+            let expected = (f64::from(isolated[0][frame][channel])
+                * curve
+                * f64::from(scalar.linear())) as f32
+                + isolated[1][frame][channel];
+            assert!(
+                (*value - expected).abs() < 1.0e-7,
+                "frame {frame}, channel {channel}: {value} vs {expected}"
+            );
+        }
+    }
 }

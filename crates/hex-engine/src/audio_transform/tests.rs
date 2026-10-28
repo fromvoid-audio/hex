@@ -903,6 +903,137 @@ fn derived_and_raw_audio_never_gain_private_constructor_provenance() {
 }
 
 #[test]
+fn event_gain_scales_only_its_audio_and_undo_restores_render() {
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split { at: 4000 },
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    let gain = hex_project::ClipGain::new(-6000).unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+        })
+        .unwrap();
+    let scaled = render(&prepare(&editor, &media, &context), 0, 8000, 127);
+    for (actual, original) in scaled[..4000].iter().zip(&baseline[..4000]) {
+        for channel in 0..2 {
+            assert!((actual[channel] - original[channel] * gain.linear()).abs() < 1e-6);
+        }
+    }
+    assert_eq!(&scaled[4000..], &baseline[4000..]);
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 64),
+        baseline
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 17),
+        scaled
+    );
+}
+
+#[test]
+fn event_gain_preserves_fades_and_inactive_state_in_frame_and_musical_clocks() {
+    for musical in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        if musical {
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true,
+                })
+                .unwrap();
+        }
+        let context = AudioTransformPreparation::default();
+        let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+        let gain = hex_project::ClipGain::new(-6000).unwrap();
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+            })
+            .unwrap();
+        let gained = render(&prepare(&editor, &media, &context), 0, 8000, 127);
+        for (actual, original) in gained.iter().zip(&baseline) {
+            for channel in 0..2 {
+                assert!((actual[channel] - original[channel] * gain.linear()).abs() < 1e-6);
+            }
+        }
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::SetActive {
+                    events: vec![1],
+                    active: false,
+                },
+            })
+            .unwrap();
+        assert!(
+            render(&prepare(&editor, &media, &context), 0, 8000, 64)
+                .iter()
+                .all(|frame| *frame == [0.0; 2])
+        );
+        assert!(editor.undo());
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 8000, 17),
+            gained
+        );
+    }
+}
+
+#[test]
+fn event_gain_survives_reverse_split_crop_and_move() {
+    let (mut gained, clip, media) = fixture(false);
+    let mut baseline = Editor::new(gained.project().clone(), 32).unwrap();
+    let gain = hex_project::ClipGain::new(-6000).unwrap();
+    gained
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+        })
+        .unwrap();
+    for editor in [&mut baseline, &mut gained] {
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let Created::Clip(second) = editor
+            .execute(Command::SplitClip { clip, frame: 4000 })
+            .unwrap()
+        else {
+            panic!("split")
+        };
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(Command::MoveClip {
+                clip: second,
+                track,
+                start: 9000,
+            })
+            .unwrap();
+    }
+    let context = AudioTransformPreparation::default();
+    let expected = render(&prepare(&baseline, &media, &context), 0, 13000, 257);
+    let actual = render(&prepare(&gained, &media, &context), 0, 13000, 127);
+    for (actual, original) in actual.iter().zip(&expected) {
+        for channel in 0..2 {
+            assert!((actual[channel] - original[channel] * gain.linear()).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
 fn nested_audio_events_are_exact_through_splits_overwrite_silence_seek_and_blocks() {
     use hex_project::AudioEventEdit;
     let (mut editor, clip, media) = fixture(false);
