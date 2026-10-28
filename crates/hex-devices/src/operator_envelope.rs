@@ -193,7 +193,13 @@ impl PreparedOperatorEnvelopes {
 
     #[inline]
     pub fn levels(&self, age_frames: u64, gate_frames: u64) -> [f64; OPERATOR_ENVELOPES] {
-        std::array::from_fn(|index| self.envelopes[index].level(age_frames, gate_frames))
+        let [a, b, c, d] = &self.envelopes;
+        [
+            a.level(age_frames, gate_frames),
+            b.level(age_frames, gate_frames),
+            c.level(age_frames, gate_frames),
+            d.level(age_frames, gate_frames),
+        ]
     }
 
     /// Maximum envelope release duration, not complete instrument quiescence.
