@@ -435,6 +435,8 @@ impl PreparedOperatorConfiguration {
 
     /// Borrow a provider-owned waveform law while preserving original routing,
     /// envelope, velocity and phase arithmetic. No preparation occurs here.
+    // Specialize the render loop for its borrowed waveform sampler.
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sample_with_waveform_sampler(
         &self,
