@@ -728,6 +728,142 @@ fn study_true_peak_with_independent_lanczos_reconstruction() {
     );
     assert!(guarded_peak <= ceiling + 1e-6);
 }
+
+#[test]
+#[ignore = "offline feasibility experiment, not a real-time limiter correction"]
+fn study_feasible_output_gain_plan() {
+    const TAPS: usize = 32;
+    const PHASES: usize = 8;
+    const COUNT: usize = 128;
+    let f = factory(
+        48_000,
+        &[
+            (MODE, ParameterValue::Choice(2)),
+            (LINK, ParameterValue::Float(0.0)),
+            (RELEASE, ParameterValue::Float(0.01)),
+            (CEILING, ParameterValue::Float(-1.0)),
+        ],
+    );
+    let mut runtime = f.create_runtime().unwrap();
+    let input: Vec<_> = (0..512)
+        .map(|i| {
+            let envelope = if i % 137 < 17 { 10.0 } else { 1.0 };
+            [
+                envelope * (i as f32 * 2.7 + 0.2).sin(),
+                envelope * (i as f32 * 2.1 + 0.7).sin(),
+            ]
+        })
+        .collect();
+    let output = render(runtime.as_mut(), &input, &[1, 63, 257]);
+    let sinc = |x: f64| {
+        if x.abs() < 1e-12 {
+            1.0
+        } else {
+            (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+        }
+    };
+    let kernels: [[f64; TAPS]; PHASES] = std::array::from_fn(|phase| {
+        let mut kernel = std::array::from_fn(|tap| {
+            let d = 15.0 + phase as f64 / PHASES as f64 - tap as f64;
+            sinc(d) * sinc(d / 16.0)
+        });
+        let sum: f64 = kernel.iter().sum();
+        for coefficient in &mut kernel {
+            *coefficient /= sum;
+        }
+        kernel
+    });
+    let ceiling = 10.0_f64.powf(-1.0 / 20.0);
+    let limit = ceiling - 1e-6;
+    let mut samples = vec![[0.0_f64; 2]; COUNT + 2 * (TAPS - 1)];
+    for (destination, sample) in samples[TAPS - 1..TAPS - 1 + COUNT]
+        .iter_mut()
+        .zip(&output[64..64 + COUNT])
+    {
+        *destination = sample.map(f64::from);
+    }
+    let mut gains = vec![[0.0_f64; 2]; samples.len()];
+    // All-zero output is feasible. Each coordinate may only increase while
+    // every overlapping signed reconstruction remains within the limit.
+    for _ in 0..2 {
+        for index in TAPS - 1..TAPS - 1 + COUNT {
+            for lane in 0..2 {
+                let mut step = 1.0 - gains[index][lane];
+                for start in index.saturating_sub(TAPS - 1)..=index.min(samples.len() - TAPS) {
+                    for kernel in &kernels {
+                        let value: f64 = (0..TAPS)
+                            .map(|tap| {
+                                kernel[tap] * samples[start + tap][lane] * gains[start + tap][lane]
+                            })
+                            .sum();
+                        let slope = kernel[index - start] * samples[index][lane];
+                        if slope > 0.0 {
+                            step = step.min((limit - value) / slope);
+                        }
+                        if slope < 0.0 {
+                            step = step.min((-limit - value) / slope);
+                        }
+                    }
+                }
+                gains[index][lane] += step.max(0.0);
+            }
+        }
+    }
+    let result: Vec<_> = samples
+        .iter()
+        .zip(&gains)
+        .map(|(sample, gain)| [(sample[0] * gain[0]) as f32, (sample[1] * gain[1]) as f32])
+        .collect();
+    let mut max_model = 0.0_f64;
+    for window in result.windows(TAPS) {
+        for kernel in &kernels {
+            for lane in 0..2 {
+                let value: f64 = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, s)| c * f64::from(s[lane]))
+                    .sum();
+                max_model = max_model.max(value.abs());
+            }
+        }
+    }
+    let selected = &gains[TAPS - 1..TAPS - 1 + COUNT];
+    let min_gain = selected.iter().flatten().copied().fold(1.0_f64, f64::min);
+    let mean_gain = selected.iter().flatten().sum::<f64>() / (COUNT * 2) as f64;
+    let jump = selected
+        .windows(2)
+        .flat_map(|pair| (0..2).map(move |lane| (pair[1][lane] - pair[0][lane]).abs()))
+        .fold(0.0_f64, f64::max);
+    let wider: [[f64; 64]; 32] = std::array::from_fn(|phase| {
+        let mut kernel = std::array::from_fn(|tap| {
+            let d = 31.0 + phase as f64 / 32.0 - tap as f64;
+            sinc(d) * sinc(d / 32.0)
+        });
+        let sum: f64 = kernel.iter().sum();
+        for coefficient in &mut kernel {
+            *coefficient /= sum;
+        }
+        kernel
+    });
+    let mut independent_peak = 0.0_f64;
+    for window in result.windows(64) {
+        for kernel in &wider {
+            for lane in 0..2 {
+                let value: f64 = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, s)| c * f64::from(s[lane]))
+                    .sum();
+                independent_peak = independent_peak.max(value.abs());
+            }
+        }
+    }
+    println!(
+        "32-tap/8-phase feasible peak {max_model:.9}; gain min {min_gain:.6}, mean {mean_gain:.6}, max adjacent gain jump {jump:.6}"
+    );
+    println!("independent 64-tap/32-phase peak {independent_peak:.9}, ceiling {ceiling:.9}");
+    assert!(max_model <= ceiling + 1e-7);
+}
 #[test]
 fn invalid_rates_and_nonfinite_pcm_are_contained() {
     for rate in [0, 7999, 192001, u32::MAX] {
