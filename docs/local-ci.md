@@ -280,6 +280,24 @@ cargo test -p hex-stream --features allocation-probe --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+For the focused Limiter stage-clock allocation check, a smaller test binary
+can reduce cold-start time while retaining debug assertions and the same test
+coverage. This opt-in command optimizes only `hex-engine`; it does not change
+the workspace's default test profile or the application build:
+
+```sh
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_STRIP=symbols \
+  cargo --config 'profile.test.package.hex-engine.opt-level=1' test \
+  -p hex-audio --locked --features allocation-probe --test callback_stage_clocks \
+  stage_clocks::limiter_output_gain_uses_delayed_content_clock_without_callback_allocations \
+  -- --exact
+```
+
+Measure the selected check's wall time, including test-process startup, and
+report compilation separately. This targeted profile is not a substitute for
+the other affected owner and consumer checks, or for an unoptimized debugging
+run when one is needed.
+
 Focused tests can form part of a reviewed change-based merge check set when its
 affected contracts, consumers and configurations are covered; an isolated passing
 test alone does not establish that scope.
