@@ -242,8 +242,9 @@ impl StateView<'_> {
                     .any(|row| row.source == failure.key && row.page_index == failure.page_index);
                 failed_window |=
                     failure.kind != hex_stream::StreamFailureKind::CapacityExhausted && demanded;
-                workspace.source_changed |=
-                    demanded && failure.kind == hex_stream::StreamFailureKind::SourceChanged;
+                workspace.source_changed |= demanded
+                    && failure.kind == hex_stream::StreamFailureKind::SourceChanged
+                    && matches!(failure.key, hex_engine::StreamResourceKey::Audio(_));
                 pages.inner.last_failure = Some(failure);
             }
             if failed_window {
@@ -428,6 +429,7 @@ pub(crate) struct StreamOutcome {
     pub(crate) progress: StreamProgress,
     pub(crate) play_applied: bool,
     pub(crate) readiness_refused: bool,
+    pub(crate) source_changed: bool,
     pub(crate) fault: Option<hex_engine::Invalid>,
     pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
     pub(crate) activated: Option<u64>,
@@ -484,6 +486,7 @@ impl ActiveView<'_> {
                     },
                     play_applied: false,
                     readiness_refused: false,
+                    source_changed: false,
                     fault: None,
                     action_rejection: None,
                     activated: None,
@@ -504,6 +507,11 @@ impl ActiveView<'_> {
             let mut planned =
                 self.state
                     .prepare_stream_window(None, &mut request, ProtectionRole::Transition);
+            let mut source_changed = self
+                .state
+                .streaming
+                .as_mut()
+                .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
             if !matches!(planned, Ok(Some(_))) && self.revoke_launch_prewarm(request.domains) {
                 if let Some(scheduled) = self
                     .state
@@ -522,6 +530,11 @@ impl ActiveView<'_> {
                     &mut request,
                     ProtectionRole::Transition,
                 );
+                source_changed |= self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
             }
             let window = match planned {
                 Ok(Some(window)) => window,
@@ -535,6 +548,7 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: refused,
+                        source_changed,
                         fault: None,
                         action_rejection,
                         activated,
@@ -551,6 +565,7 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: true,
+                        source_changed: false,
                         fault: None,
                         action_rejection,
                         activated,
@@ -578,6 +593,7 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: false,
+                        source_changed: false,
                         fault: Some(error),
                         action_rejection,
                         activated,
@@ -665,6 +681,7 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: false,
+                        source_changed: false,
                         fault: Some(error),
                         action_rejection,
                         activated,
@@ -695,6 +712,7 @@ impl ActiveView<'_> {
             progress: StreamProgress::Complete,
             play_applied,
             readiness_refused: false,
+            source_changed: false,
             fault: None,
             action_rejection,
             activated,

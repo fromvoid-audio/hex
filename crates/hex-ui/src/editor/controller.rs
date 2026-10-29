@@ -1915,6 +1915,26 @@ impl EditorView {
                 },
             );
             visible_change |= replace_error(&mut self.error, &diagnostic);
+        } else if audio
+            .control
+            .status()
+            .is_some_and(|status| status.stream_source_changed.load(Acquire))
+        {
+            self.stream_source_warning = true;
+            visible_change |= replace_status(&mut self.status, "streamed media unavailable");
+            visible_change |= replace_error(
+                &mut self.error,
+                "original media changed · reopen or relink it",
+            );
+        } else if self.stream_source_warning {
+            self.stream_source_warning = false;
+            if self.status == "streamed media unavailable" {
+                visible_change |= replace_status(&mut self.status, "audio ready");
+            }
+            if self.error.as_deref() == Some("original media changed · reopen or relink it") {
+                self.error = None;
+                visible_change = true;
+            }
         }
         if audio.control.status().is_some_and(|status| {
             !status.device_fault.load(Relaxed)
