@@ -642,6 +642,64 @@ fn finished_gain_receipts_survive_all_current_output_retirement_paths(cx: &mut T
 }
 
 #[gpui::test]
+fn cancelled_delivered_gain_take_releases_callback_and_preserves_project(cx: &mut TestAppContext) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let mut fixture = delivered_fixture(cx, false);
+    let (before, mut next_target) = fixture.editor.update(&mut fixture.visual, |view, _| {
+        let before = view.state.as_ref().unwrap().project.snapshot();
+        let target = view.gain_recorder.target.unwrap();
+        view.cancel_gain_recording();
+        assert!(view.gain_recorder.blocks_edits());
+        assert_eq!(view.gain_recorder.events.len(), 1);
+        (before, target)
+    });
+    let mut frames = [[0.0; 2]; 16];
+    let mut host = [0.0; 32];
+    fixture
+        .backend
+        .render_direct(&mut frames, &mut host)
+        .unwrap();
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        assert!(view.tick_gain_recording());
+        assert!(!view.gain_recorder.blocks_edits());
+        assert!(view.gain_recorder.events.is_empty());
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.pending_requests.is_empty());
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+
+        next_target.gesture_serial += 1;
+        view.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .gain_begin(next_target, 0.75)
+            .unwrap();
+    });
+    fixture
+        .backend
+        .render_direct(&mut frames, &mut host)
+        .unwrap();
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        let control = &mut view.audio.as_mut().unwrap().control;
+        assert!(matches!(control.gain_receipt(), Some(Receipt::Applied { target, gain, .. }) if target == next_target && gain == 0.75));
+        control.gain_cancel().unwrap();
+    });
+    fixture
+        .backend
+        .render_direct(&mut frames, &mut host)
+        .unwrap();
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        let control = &mut view.audio.as_mut().unwrap().control;
+        assert!(matches!(control.gain_receipt(), Some(Receipt::Aborted { target, .. }) if target == next_target));
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        view.audio.take().unwrap().control.close();
+    });
+    fixture.backend.close();
+    drop(fixture.output.take());
+}
+
+#[gpui::test]
 fn interrupted_gain_capture_retains_incomplete_events_without_inventing_end_clock(
     cx: &mut TestAppContext,
 ) {
