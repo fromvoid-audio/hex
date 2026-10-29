@@ -1519,6 +1519,38 @@ impl EditorView {
             }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
             .children(track.is_group().then(|| {
+                let folded = self.arrangement_focus.projection.folded(track_id);
+                div()
+                    .id(("group-fold", track_id.value()))
+                    .debug_selector(move || format!("group-fold-{}", track_id.value()))
+                    .w(px(14.0))
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
+                        if view.arrangement_view_change_available(cx)
+                            && view
+                                .state
+                                .as_ref()
+                                .and_then(|state| state.project.track(track_id))
+                                .is_some_and(Track::is_group)
+                        {
+                            view.arrangement_focus.projection.toggle_fold(track_id);
+                            view.reconcile_arrangement_focus();
+                            cx.notify();
+                        }
+                    }))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
+                            description: if folded { "expand group" } else { "fold group" }.into(),
+                        })
+                        .into()
+                    })
+                    .child(theme::text(if folded { ">" } else { "v" }))
+            }))
+            .children(track.is_group().then(|| {
                 div()
                     .flex_shrink_0()
                     .debug_selector(move || format!("group-track-marker-{}", track_id.value()))
