@@ -595,6 +595,12 @@ impl Callback {
                             ticket,
                             PlaybackActionRejection::SessionNotPrepared,
                         );
+                        self.stage_stream_outcome(
+                            ticket,
+                            action_outcomes::Outcome::Rejected(
+                                PlaybackActionRejection::SessionNotPrepared,
+                            ),
+                        );
                         self.status
                             .stream_applied_command_prefix
                             .store(self.stream_prefix, Release);

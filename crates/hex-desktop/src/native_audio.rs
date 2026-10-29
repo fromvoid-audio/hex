@@ -249,7 +249,10 @@ impl NativeAudioSink {
             } else {
                 hex_audio::WorkerOutputProfile::DeviceDefault
             };
-            match hex_audio::request_worker_open_with_profile(self.requested_rate, profile) {
+            match hex_audio::request_worker_open_with_reliable_action_outcomes(
+                self.requested_rate,
+                profile,
+            ) {
                 Ok(opening) => self.opening = Some(opening),
                 Err(
                     hex_audio::RecoveryOpenError::Busy | hex_audio::RecoveryOpenError::QueueFull,
@@ -340,9 +343,21 @@ impl NativeAudioSink {
         if let Some(control) = output.publication.control() {
             control.set_audio_diagnostics(self.audio_diagnostics);
         }
-        let Some(client) = output.take_client() else {
+        let Some(mut client) = output.take_client() else {
             return;
         };
+        let reader = output.take_action_outcomes();
+        if reader.is_none_or(|reader| client.attach_action_outcomes(reader).is_err()) {
+            client.close();
+            drop(self.output.take());
+            self.output_generation = Some(generation);
+            self.pending_open_event = Some(EditorAudioEvent::Unavailable {
+                project_generation: generation,
+                restart_request: self.restart_request,
+                error: "audio command outcomes unavailable".into(),
+            });
+            return;
+        }
         self.output_identity = client.output_identity();
         self.output_generation = Some(generation);
         self.pending_open_event = Some(EditorAudioEvent::Opened {
