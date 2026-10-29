@@ -863,6 +863,96 @@ fn study_feasible_output_gain_plan() {
     );
     println!("independent 64-tap/32-phase peak {independent_peak:.9}, ceiling {ceiling:.9}");
     assert!(max_model <= ceiling + 1e-7);
+
+    // A second offline plan uses eight-frame linear knots, with zero endpoints
+    // and a 64-tap/16-phase signed constraint. It still has no emitted past.
+    const STRIDE: usize = 8;
+    const KNOTS: usize = COUNT / STRIDE - 1;
+    let source = &samples[TAPS - 1..TAPS - 1 + COUNT];
+    let mut padded = vec![[0.0_f64; 2]; COUNT + 126];
+    padded[63..63 + COUNT].copy_from_slice(source);
+    let windows = padded.len() - 63;
+    let mut knot_gain = [[0.0_f64; KNOTS]; 2];
+    let mut planned = vec![[0.0_f32; 2]; padded.len()];
+    for lane in 0..2 {
+        // Precompute each knot's linear contribution to every constraint.
+        let mut effects = vec![vec![0.0_f64; windows * 16]; KNOTS];
+        for (knot, effect) in effects.iter_mut().enumerate() {
+            let center = (knot + 1) * STRIDE;
+            for (start, window) in padded.windows(64).enumerate() {
+                for (phase, kernel) in wider.iter().step_by(2).enumerate() {
+                    effect[start * 16 + phase] = kernel
+                        .iter()
+                        .zip(window)
+                        .enumerate()
+                        .map(|(tap, (coefficient, frame))| {
+                            let absolute = start + tap;
+                            let weight = absolute.checked_sub(63).map_or(0.0, |index| {
+                                (1.0 - index.abs_diff(center) as f64 / STRIDE as f64).max(0.0)
+                            });
+                            coefficient * frame[lane] * weight
+                        })
+                        .sum();
+                }
+            }
+        }
+        let mut constraints = vec![0.0_f64; windows * 16];
+        for _ in 0..3 {
+            for knot in 0..KNOTS {
+                let mut step = 1.0 - knot_gain[lane][knot];
+                for (&value, &slope) in constraints.iter().zip(&effects[knot]) {
+                    if slope > 0.0 {
+                        step = step.min((limit - value) / slope);
+                    }
+                    if slope < 0.0 {
+                        step = step.min((-limit - value) / slope);
+                    }
+                }
+                let step = step.max(0.0);
+                knot_gain[lane][knot] += step;
+                for (value, slope) in constraints.iter_mut().zip(&effects[knot]) {
+                    *value += step * slope;
+                }
+            }
+        }
+        for (index, frame) in planned[63..63 + COUNT].iter_mut().enumerate() {
+            let gain: f64 = knot_gain[lane]
+                .iter()
+                .enumerate()
+                .map(|(knot, gain)| {
+                    let center = (knot + 1) * STRIDE;
+                    gain * (1.0 - index.abs_diff(center) as f64 / STRIDE as f64).max(0.0)
+                })
+                .sum();
+            frame[lane] = (source[index][lane] * gain) as f32;
+        }
+    }
+    let mut smooth_peak = 0.0_f64;
+    let mut constrained_peak = 0.0_f64;
+    for window in planned.windows(64) {
+        for (phase, kernel) in wider.iter().enumerate() {
+            for lane in 0..2 {
+                let value: f64 = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, frame)| c * f64::from(frame[lane]))
+                    .sum();
+                smooth_peak = smooth_peak.max(value.abs());
+                if phase % 2 == 0 {
+                    constrained_peak = constrained_peak.max(value.abs());
+                }
+            }
+        }
+    }
+    let max_knot_jump = knot_gain
+        .iter()
+        .flat_map(|lane| lane.windows(2).map(|pair| (pair[1] - pair[0]).abs()))
+        .fold(0.0_f64, f64::max);
+    println!(
+        "smooth knot plan: constrained peak {constrained_peak:.9}, independent peak {smooth_peak:.9}, max knot jump {max_knot_jump:.6}, mean knot gain {:.6}",
+        knot_gain.iter().flatten().sum::<f64>() / (2 * KNOTS) as f64
+    );
+    assert!(constrained_peak <= ceiling + 1e-7);
 }
 #[test]
 fn invalid_rates_and_nonfinite_pcm_are_contained() {
