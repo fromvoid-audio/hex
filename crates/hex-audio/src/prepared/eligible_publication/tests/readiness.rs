@@ -2,13 +2,21 @@
 use super::*;
 #[test]
 fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_worker_pages() {
-    first_play(false);
+    first_play(false, false);
 }
 #[test]
 fn grouped_closed_constructor_buffers_and_renders_verified_worker_pages() {
-    first_play(true);
+    first_play(true, false);
 }
-fn first_play(grouped: bool) {
+#[test]
+fn priority_stop_revokes_buffered_play_before_installation() {
+    assert!(
+        hex_engine::audio_storage_constructor_layout_supported(),
+        "this regression requires the real sealed-source constructor"
+    );
+    first_play(false, true);
+}
+fn first_play(grouped: bool, stop_pending: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -127,7 +135,7 @@ fn first_play(grouped: bool) {
         )
         .ok()
         .unwrap();
-    let play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let mut play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
     let mut output = [[1.0; 2]; 8];
     let measured = allocation_counter::measure(|| {
         data.owner_mut().unwrap().run(|callback, _| {
@@ -154,6 +162,9 @@ fn first_play(grouped: bool) {
         control.status.stream_applied_command_prefix.load(Acquire),
         0
     );
+    if stop_pending {
+        control.stop();
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while control.status.applied_revision.load(Acquire) == 0 {
         let measured = allocation_counter::measure(|| {
@@ -171,8 +182,57 @@ fn first_play(grouped: bool) {
             ),
             (0, 0, 0, 0)
         );
+        if stop_pending {
+            assert_eq!(output, [[0.0; 2]; 8]);
+            assert!(!control.status.playing.load(Acquire));
+            assert_eq!(control.status.position.load(Acquire), 0);
+            assert_eq!(control.status.performance_frame.load(Acquire), 0);
+        }
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
+    }
+    if stop_pending {
+        for _ in 0..3 {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|callback, _| {
+                    callback.begin_block();
+                    callback.render(&mut output).unwrap();
+                })
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(output, [[0.0; 2]; 8]);
+            assert!(!control.status.playing.load(Acquire));
+            assert_eq!(control.status.position.load(Acquire), 0);
+            assert_eq!(control.status.performance_frame.load(Acquire), 0);
+        }
+        play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        while control.status.stream_applied_command_prefix.load(Acquire) < play {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|callback, _| {
+                    callback.begin_block();
+                    callback.render(&mut output).unwrap();
+                })
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
     }
     assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
     assert_eq!(control.status.position.load(Acquire), 8);
