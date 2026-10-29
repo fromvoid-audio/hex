@@ -1029,6 +1029,170 @@ mod tests {
     }
 
     #[test]
+    fn full_ready_queue_drains_held_real_worker_page_and_continues() {
+        use hex_engine::StreamedSourceMetadata;
+        use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
+        use hex_project::{Command, Created, Editor, Project};
+        use std::time::Instant;
+
+        let wav = crate::worker::tests::Fixture::pcm16_frames(12_001);
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(2 * 1024 * 1024, 12_001, 128, 32_768),
+            1024 * 1024,
+        );
+        let reader = VerifiedWavReader::open(&wav.0, limits).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "ready-queue-source.wav".into(),
+                sample_rate: 48_000,
+                frames: 12_001,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let key = StreamSourceKey::new(106, asset);
+        let metadata = StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            12_001,
+            12_001,
+            hex_project::IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .unwrap();
+        drop(reader);
+        let mut config = StreamConfig::with_pool_pages(4);
+        config.ready_capacity = 1;
+        config.max_ready_pages_per_pump = 1;
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (publication_tx, publication_rx) = mpsc::sync_channel(3);
+        let hooks = crate::worker::TestWorkerHooks {
+            entered: entered_tx,
+            release: release_rx,
+            publications: publication_tx,
+            scalar_steps: None,
+        };
+        let mut runtime = StreamRuntime::new_inner(
+            config,
+            vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
+            Some(hooks),
+            #[cfg(feature = "test-support")]
+            None,
+        )
+        .unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        #[cfg(feature = "allocation-probe")]
+        let initial_requests = allocation_counter::measure(|| {
+            runtime.request_page(key, 0);
+            runtime.request_page(key, 1);
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            runtime.request_page(key, 0);
+            runtime.request_page(key, 1);
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                initial_requests.count_total,
+                initial_requests.count_current,
+                initial_requests.bytes_total,
+                initial_requests.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        release_tx.send(()).unwrap();
+        runtime.wake_worker();
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            0
+        );
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            1
+        );
+
+        // Pump and request are callback-side operations. Construction, waking,
+        // fixture verification and all destruction stay outside the probe.
+        let pump = |runtime: &mut StreamRuntime| {
+            let count = std::cell::Cell::new(0);
+            #[cfg(feature = "allocation-probe")]
+            let measured = allocation_counter::measure(|| count.set(runtime.pump_ready(1)));
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                count.set(runtime.pump_ready(1));
+            }
+            #[cfg(feature = "allocation-probe")]
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.count_current,
+                    measured.bytes_total,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            count.get()
+        };
+        assert_eq!(pump(&mut runtime), 1);
+        assert!(runtime.page(key, 0).is_some());
+        runtime.wake_worker();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pump(&mut runtime) == 0 {
+            assert!(Instant::now() < deadline, "held ready page did not drain");
+            std::thread::yield_now();
+        }
+        assert!(runtime.page(key, 1).is_some());
+        #[cfg(feature = "allocation-probe")]
+        let measured = allocation_counter::measure(|| runtime.request_page(key, 2));
+        #[cfg(not(feature = "allocation-probe"))]
+        runtime.request_page(key, 2);
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_total,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        runtime.wake_worker();
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            0
+        );
+        assert_eq!(pump(&mut runtime), 1);
+        assert_eq!(pump(&mut runtime), 0);
+        for index in 0..3 {
+            let page = runtime.page(key, index).expect("each page arrives once");
+            let start = index as usize * hex_engine::STREAM_PAGE_FRAMES;
+            assert_eq!(
+                page.frames.len(),
+                (12_001 - start).min(hex_engine::STREAM_PAGE_FRAMES)
+            );
+            for (offset, frame) in page.frames.iter().enumerate() {
+                let sample = (start + offset) as f32 / 32768.0;
+                assert_eq!(*frame, [sample, -sample]);
+            }
+        }
+        let report = runtime.shutdown().unwrap();
+        assert!(report.worker_joined && report.accounting_complete);
+        assert_eq!(report.page_buffers, 4);
+        assert_eq!(
+            report.queued_pages_reclaimed
+                + report.held_return_pages_reclaimed
+                + report.worker_pages_reclaimed,
+            4
+        );
+    }
+
+    #[test]
     fn full_request_queue_retries_with_real_worker_and_preserves_pcm_and_custody() {
         use hex_engine::StreamedSourceMetadata;
         use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
