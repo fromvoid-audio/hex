@@ -63,7 +63,14 @@ pub(crate) fn input_for(
             output_channels: 2,
             limits: native::Limits {
                 startup: Duration::from_secs(3),
-                exchange: Duration::from_secs(1),
+                // This isolated held-worker driver observes the callback fault
+                // before cleanup. Shorten only its eventual native I/O timeout;
+                // it still requires the unresponsive child to be reaped.
+                exchange: if std::env::var_os("HEX_AUDIO_HELD_WORKER_DRIVER").is_some() {
+                    Duration::from_millis(400)
+                } else {
+                    Duration::from_secs(1)
+                },
                 retirement: Duration::from_secs(3),
             },
         },
