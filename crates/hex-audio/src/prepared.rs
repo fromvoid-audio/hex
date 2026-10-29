@@ -3640,6 +3640,11 @@ impl Callback {
                             .status
                             .publish_rejected_action(queued.ticket, error.telemetry_rejection()),
                     }
+                } else {
+                    self.status.publish_rejected_action(
+                        queued.ticket,
+                        PlaybackActionRejection::NoActivePlayback,
+                    );
                 }
                 if invalidate_audition
                     || matches!(
@@ -8414,6 +8419,69 @@ mod tests {
 
     fn graph() -> (Playback, Weak<hex_engine::Project>) {
         graph_with_frame([0.25; 2])
+    }
+
+    #[test]
+    fn initial_stale_fence_rejects_play_without_active_playback() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let revision = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        #[cfg(not(feature = "allocation-probe"))]
+        callback.begin_block();
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| callback.begin_block());
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        assert_eq!(control.status.applied_revision.load(Acquire), 0);
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        assert_eq!(
+            control.status.rejected_revision().map(|r| r.0),
+            Some(revision)
+        );
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((ticket, PlaybackActionRejection::NoActivePlayback))
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn priority_stop_discards_play_without_active_playback() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        control.stop();
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), 0);
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        assert_eq!(control.status.rejected_action(), None);
+        assert!(!control.status.playing.load(Acquire));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
     }
 
     fn graph_with_frame(frame: hex_engine::Frame) -> (Playback, Weak<hex_engine::Project>) {
