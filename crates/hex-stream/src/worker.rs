@@ -1057,11 +1057,12 @@ pub(crate) mod tests {
             file.write_all(b"data").expect("data header");
             file.write_all(&(u32::from(frames) * 4).to_le_bytes())
                 .expect("data length");
+            let mut pcm = Vec::with_capacity(usize::from(frames) * 4);
             for index in 0..i16::try_from(frames).expect("bounded fixture frames") {
-                file.write_all(&index.to_le_bytes()).expect("left sample");
-                file.write_all(&(-index).to_le_bytes())
-                    .expect("right sample");
+                pcm.extend_from_slice(&index.to_le_bytes());
+                pcm.extend_from_slice(&(-index).to_le_bytes());
             }
+            file.write_all(&pcm).expect("PCM samples");
             file.sync_all().expect("flush fixture");
             Self(path)
         }

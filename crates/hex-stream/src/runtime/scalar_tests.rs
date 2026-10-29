@@ -490,9 +490,11 @@ fn assert_zero(observed: allocation_counter::AllocationInfo) {
 
 #[test]
 fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_job() {
-    let (_first_file, first) = definition(false, 2048);
+    // Four dense quanta are enough to hold this fairness boundary; the
+    // larger 2,048-event page is checked independently above.
+    let (_first_file, first) = definition(false, 256);
     let first_key = first.metadata().key();
-    let (_second_file, second) = definition(false, 2048);
+    let (_second_file, second) = definition(false, 256);
     let second_key = ScalarSourceKey::new(7, 2, 1).unwrap();
     let second = ScalarSourceDefinition::new(second_key, second.source, second.projection).unwrap();
     let (_wav, audio) = audio_definition();
@@ -538,10 +540,14 @@ fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_
         first_key
     );
     pages.pump_ready(4);
-    assert!(
-        pages.page(audio_key, 0).is_some(),
-        "PCM must progress while the first dense scalar job is gated pending"
-    );
+    let page = pages
+        .page(audio_key, 0)
+        .expect("PCM must progress while the first dense scalar job is gated pending");
+    assert_eq!(page.frames.len(), 4096);
+    for (index, actual) in page.frames.iter().enumerate() {
+        let sample = index as f32 / 32768.0;
+        assert_eq!(*actual, [sample, -sample], "PCM frame {index}");
+    }
     assert!(
         pages.scalar_page(first_key, 0).is_none(),
         "partial scalar page must not publish"
