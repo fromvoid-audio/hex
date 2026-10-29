@@ -221,9 +221,86 @@ pub fn open(rate: u32) -> Result<(crate::WorkerPreparedOutput, HeadlessBackend),
     crate::device::headless_worker_output(rate)
 }
 
+/// Open a headless split worker with the reliable outcome reader selected.
+pub fn open_with_reliable_action_outcomes(
+    rate: u32,
+) -> Result<(crate::WorkerPreparedOutput, HeadlessBackend), String> {
+    crate::device::headless_worker_output_with_outcomes(rate, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reliable_headless_worker_retains_reader_through_exact_retirement() {
+        use crate::prepared::{ActionOutcome, ActionOutcomeReceipt};
+        use hex_engine::{Audio, Clip, PlaybackCommand, Project, Track, playback::Playback};
+        use std::sync::Arc;
+        let _serial = crate::prepared::candidate_tests::serial();
+        let (mut output, mut backend) = open_with_reliable_action_outcomes(48_000).unwrap();
+        let mut reader = output
+            .take_action_outcomes()
+            .expect("reliable output reader");
+        assert!(output.take_action_outcomes().is_none());
+        let audio = Audio::new(48_000, vec![[0.25; 2]; 64]).unwrap();
+        let project = Arc::new(
+            Project::new(
+                48_000,
+                vec![
+                    Track::new(vec![Clip::new(audio, 0, 64, false).unwrap()], 1.0, false).unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
+        output
+            .publication
+            .control()
+            .unwrap()
+            .publish(Playback::from_shared(project))
+            .unwrap();
+        let mut client = output.take_client().unwrap();
+        assert_eq!(client.output_identity(), Some(reader.output_identity()));
+        let played = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        let mut frames = [[0.0; 2]; 8];
+        let mut result = Ok(());
+        let counted = allocation_counter::measure(|| result = backend.render(&mut frames));
+        result.unwrap();
+        assert_eq!(
+            (
+                counted.count_total,
+                counted.bytes_total,
+                counted.count_current,
+                counted.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(frames, [[0.25; 2]; 8]);
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket: played,
+                outcome: ActionOutcome::Applied
+            })
+        );
+        let pending = client.command_with_ticket(PlaybackCommand::Pause).unwrap();
+        client.close();
+        backend.close();
+        drop(output);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !reader.is_retired() {
+            assert!(reader.failure().is_none());
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket: pending,
+                outcome: ActionOutcome::Interrupted
+            })
+        );
+        assert_eq!(reader.try_take(), None);
+    }
     #[test]
     fn device_fault_fences_the_next_real_callback() {
         use hex_engine::{Audio, Clip, PlaybackCommand, Project, Track, playback::Playback};
