@@ -191,3 +191,27 @@ fn actual_worker_quiescence_drains_held_controller_getter_before_source_return()
     assert_eq!(quiescent.completed_blocks(), 1);
     assert!(quiescent.retire_on_control().unwrap().status.success());
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn retirement_cancels_held_controller_getter_without_normal_stop() {
+    const NAME: &str = "plugin_worker::capture::tests::controller::retirement_cancels_held_controller_getter_without_normal_stop";
+    if fixture_child(93, NAME) {
+        return;
+    }
+    let (mut owner, _callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let _request = query(&mut owner);
+    let until = Instant::now() + Duration::from_secs(3);
+    while fs::read(trace_path()).ok().is_none_or(|bytes| {
+        bytes.len() != 56 || i32::from_le_bytes(bytes[..4].try_into().unwrap()) != 26
+    }) {
+        assert!(Instant::now() < until, "actual held controller getter");
+        thread::sleep(Duration::from_millis(1));
+    }
+    owner.revoke_on_control();
+    let retired = owner.retire_on_control().unwrap();
+    assert!(matches!(
+        retired.failure,
+        Some(hex_plugin_host::Error::Cancelled)
+    ));
+}
