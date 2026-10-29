@@ -350,20 +350,22 @@ fn limiter_host_input_automation_follows_entering_content() {
     }
 }
 
-#[test]
-fn limiter_host_output_automation_follows_emitted_content() {
-    for location in [
-        HostLocation::Track,
-        HostLocation::Main,
-        HostLocation::Return,
-    ] {
-        assert_limiter_host_automation_content_origin(
-            DeviceAutomationTarget::HostOutputGain,
-            location,
-            None,
-        );
-    }
+macro_rules! output_automation_case {
+    ($name:ident, $location:expr) => {
+        #[test]
+        fn $name() {
+            assert_limiter_host_automation_content_origin(
+                DeviceAutomationTarget::HostOutputGain,
+                $location,
+                None,
+            );
+        }
+    };
 }
+
+output_automation_case!(limiter_output_automation_track, HostLocation::Track);
+output_automation_case!(limiter_output_automation_main, HostLocation::Main);
+output_automation_case!(limiter_output_automation_return, HostLocation::Return);
 
 #[test]
 fn utility_host_automation_before_and_after_limiter_follows_content() {

@@ -7,13 +7,14 @@ mod cursor_loop;
 mod finite_bounce;
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
+#[path = "callback_allocations/probe.rs"]
+mod probe;
 #[path = "callback_allocations/project_tuning.rs"]
 mod project_tuning;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
-#[path = "callback_allocations/stage_clocks.rs"]
-mod stage_clocks;
+use probe::{compare_output, measured_block, measured_shutdown};
 
 use allocation_counter::{AllocationInfo, measure};
 use hex_audio::prepared::{self, PublicationPolicy, SessionRouteOwner};
@@ -456,30 +457,6 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
     }
 }
 
-fn measured_block(callback: &mut prepared::Callback, output: &mut [Frame]) -> AllocationInfo {
-    let mut render_failed = false;
-    let info = measure(|| {
-        callback.begin_block();
-        render_failed = callback.render(output).is_err();
-    });
-    assert!(!render_failed, "callback render returned an error");
-    assert_eq!(info.count_total, 0, "callback allocated");
-    assert_eq!(info.bytes_total, 0, "callback allocated bytes");
-    assert_eq!(
-        info.count_current, 0,
-        "callback changed live allocation count"
-    );
-    assert_eq!(
-        info.bytes_current, 0,
-        "callback changed live allocation bytes"
-    );
-    info
-}
-
-fn measured_shutdown(callback: &mut prepared::Callback, output: &mut [Frame]) -> AllocationInfo {
-    measured_block(callback, output)
-}
-
 #[test]
 fn reused_candidate_rejection_is_allocation_free_and_keeps_the_active_graph()
 -> Result<(), Box<dyn Error>> {
@@ -638,10 +615,6 @@ fn conditional_fresh_runtime_publication_paths_are_callback_allocation_free()
     measured_block(&mut callback, &mut output);
     assert_eq!(control.reclaim(), 1);
     Ok(())
-}
-
-fn compare_output(actual: &[Frame], expected: &[Frame]) {
-    assert_eq!(actual, expected);
 }
 
 fn assert_session_owner(
