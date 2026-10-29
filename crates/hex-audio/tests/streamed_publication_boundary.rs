@@ -1,7 +1,8 @@
 //! Independently linked test of the real ordinary streamed publication boundary.
 #![cfg(feature = "allocation-probe")]
 use hex_audio::{
-    prepared::{FreshRuntimeCancellationResult, PublicationPolicy},
+    audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags},
+    prepared::{AdmittedPublishError, FreshRuntimeCancellationResult, PublicationPolicy},
     worker_fixture,
 };
 use hex_engine::{
@@ -141,6 +142,7 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
     let pair = stream.split().ok().unwrap();
     let (mut output, mut backend) = worker_fixture::open(48_000).unwrap();
     let control = output.publication.control().unwrap();
+    control.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
     control
         .configure_device_resource_publication_on_control(
             hex_engine::AudioStorageLedgerReservation {
@@ -191,17 +193,17 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
         project_generation: 7,
         editor_revision: 3,
     };
-    assert!(
-        control
-            .publish_with_admission_and_source_on_control(
-                compile(source.clone()),
-                PublicationPolicy::InheritRuntime,
-                context,
-                |_| Ok::<_, ()>(())
-            )
-            .is_err()
-    );
+    assert!(matches!(
+        control.publish_with_admission_and_source_on_control(
+            compile(source.clone()),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(())
+        ),
+        Err(AdmittedPublishError::Publication(_))
+    ));
     assert_eq!(control.submitted_revision(), 0);
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
     let domain = control
         .register_audio_candidate_domain_with_readiness(
             pair,
@@ -248,6 +250,17 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
         play
     );
     assert_eq!(client.status().unwrap().performance_frame.load(Acquire), 8);
+    assert_eq!(client.status().unwrap().position.load(Acquire), 8);
+    assert!(
+        std::iter::from_fn(|| client.take_audio_diagnostic()).any(|event| matches!(
+            event.kind,
+            AudioDiagnosticKind::CommandDequeued {
+                ticket,
+                action: hex_engine::PlaybackAction::Transport(PlaybackCommand::Play),
+                ..
+            } if ticket == play
+        ))
+    );
     let seek = client
         .command_with_ticket(PlaybackCommand::PlayFrom(0))
         .unwrap();
@@ -272,6 +285,7 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
             .is_err()
     );
     assert_eq!(control.submitted_revision(), revision);
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
     let fence = control.capture_fresh_runtime_fence().unwrap();
     let cancelled = control
         .publish_with_admission_and_source_on_control(
@@ -285,6 +299,7 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
         )
         .ok()
         .unwrap();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(2));
     assert_eq!(
         control.cancel_fresh_runtime_publication(cancelled),
         FreshRuntimeCancellationResult::Cancelled
@@ -300,16 +315,16 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
     );
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
-    assert!(
-        control
-            .publish_with_admission_and_source_on_control(
-                compile(source.clone()),
-                PublicationPolicy::InheritRuntime,
-                context,
-                |_| Err::<(), _>("refused")
-            )
-            .is_err()
-    );
+    assert!(matches!(
+        control.publish_with_admission_and_source_on_control(
+            compile(source.clone()),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Err::<(), _>("refused")
+        ),
+        Err(AdmittedPublishError::Admission { .. })
+    ));
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
     let wrong = control
         .publish_with_admission_and_source_on_control(
             compile(source),
@@ -332,6 +347,7 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
         Some((wrong, PlaybackHandoffRejection::RuntimeFenceChanged))
     );
     control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
     assert!(control.retire_audio_candidate_domain(domain));
     assert!(!control.audio_candidate_domain_endpoint_is_installed(domain));
     assert!(control.recover_audio_candidate_domain(domain).is_none());
@@ -347,6 +363,7 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
         std::thread::yield_now();
     }
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    assert!(!control.audio_candidate_domain_endpoint_is_installed(domain));
     client.close();
     backend.close();
     output.publication.close();
