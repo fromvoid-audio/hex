@@ -51,6 +51,9 @@ impl Prepared {
             if self.live_capture.is_some() {
                 return Err(Error::Protocol("native capture is still pending"));
             }
+            if self.parameter_page.is_some() {
+                return Err(Error::Protocol("controller page is still pending"));
+            }
             let until = end_after(self.limits.startup)?;
             let token = self.lease.cancellation.clone();
             let request = protocol::quiesce(&self.config, self.sequence)?;
@@ -290,6 +293,9 @@ impl Quiescent {
     ) -> std::result::Result<Prepared, PreparationFailure> {
         let result = (|| {
             self.instance.require_live_epoch()?;
+            if self.instance.parameter_page.is_some() {
+                return Err(Error::Protocol("controller page is still pending"));
+            }
             if self.facts.presentation_available && presentation.is_none() {
                 return Err(Error::Protocol(
                     "actual presentation contributions are unavailable",

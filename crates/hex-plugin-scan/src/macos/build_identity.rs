@@ -106,6 +106,10 @@ fn native_source() -> String {
             include_bytes!("../../native/macos_parameters.hpp"),
         ),
         (
+            "macos_parameter_page.hpp",
+            include_bytes!("../../native/macos_parameter_page.hpp"),
+        ),
+        (
             "macos_host_case.hpp",
             include_bytes!("../../native/macos_host_case.hpp"),
         ),
