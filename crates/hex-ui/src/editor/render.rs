@@ -454,6 +454,14 @@ impl Render for EditorView {
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
         self.reconcile_arrangement_focus();
+        if let Some(state) = &self.state {
+            self.track_hierarchy_indent.reconcile(
+                self.project_generation,
+                state.revision,
+                &state.project,
+            );
+        }
+
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();

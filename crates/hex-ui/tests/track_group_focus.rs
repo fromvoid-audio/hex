@@ -1,4 +1,6 @@
 //! Focused visibility contract using the same private projection as the UI.
+#[path = "../src/editor/track_hierarchy_indent.rs"]
+mod track_hierarchy_indent;
 #[path = "../src/editor/arrangement_focus/visibility.rs"]
 mod visibility;
 
@@ -44,6 +46,13 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
     let outer = group(&mut editor, inner);
     let unrelated = group(&mut editor, outside);
     let project = editor.project();
+    let mut indent = track_hierarchy_indent::HierarchyIndent::default();
+    indent.reconcile(1, 1, project);
+    assert_eq!(indent.pixels(outer), 0.0);
+    assert_eq!(indent.pixels(inner), 4.0);
+    assert_eq!(indent.pixels(inside), 8.0);
+    assert_eq!(indent.pixels(unrelated), 0.0);
+    assert_eq!(indent.pixels(outside), 4.0);
     let ranges = [(48_000, 72_000)];
     let visible = visibility::visible_tracks(project, &ranges, None);
     assert_eq!(visible, BTreeSet::from([outer, inner, inside]));
@@ -62,6 +71,14 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
         visibility::visible_tracks(project, &[], None).is_empty(),
         "empty ranges use the caller's unfiltered path"
     );
+    editor.execute(Command::UngroupTrack(inner)).unwrap();
+    indent.reconcile(1, 2, editor.project());
+    assert_eq!(indent.pixels(inside), 4.0);
+    assert_eq!(indent.pixels(outside), 4.0);
+    editor.execute(Command::UngroupTrack(outer)).unwrap();
+    // A replacement document invalidates even if revisions happen to match.
+    indent.reconcile(2, 2, editor.project());
+    assert_eq!(indent.pixels(inside), 0.0);
 }
 
 #[path = "../src/editor/arrangement_focus/fixture.rs"]

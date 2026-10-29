@@ -72,6 +72,13 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
     });
     let selector = Box::leak(format!("group-track-marker-{}", group.value()).into_boxed_str());
     assert!(visual.debug_bounds(selector).is_some());
+    for id in &ids {
+        let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());
+        assert_eq!(
+            f32::from(visual.debug_bounds(selector).unwrap().size.width),
+            4.0
+        );
+    }
     right_click(&mut visual, group);
     choose(&mut visual, "ungroup tracks");
     editor.read_with(&visual, |view, _| {
@@ -81,6 +88,10 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
             assert_eq!(project.track(*id).unwrap().parent_group(), None);
         }
     });
+    for id in &ids {
+        let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());
+        assert!(visual.debug_bounds(selector).is_none());
+    }
     visual.simulate_keystrokes("cmd-z");
     receive(&mut visual, &editor);
     editor.read_with(&visual, |view, _| {
