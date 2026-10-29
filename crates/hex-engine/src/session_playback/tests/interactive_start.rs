@@ -167,6 +167,64 @@ fn play_from_chases_a_held_mutable_note_without_replaying_the_prefix() {
 }
 
 #[test]
+fn short_session_note_refusal_reports_recovery_and_preserves_project() {
+    let one_frame = (1_u64 << 32).div_ceil(24_000);
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let project = with_test_instrument(&project(1.0, 0, one_frame), id, 0);
+    let before = project.snapshot();
+    let Err(error) = PreparedRevision::prepare_with_instrument_registry(
+        &project,
+        &BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &registry,
+    ) else {
+        panic!("short Session source must be refused");
+    };
+    assert_eq!(
+        error.0,
+        "session midi note gate is too short to guarantee one frame at the admitted tempo; lengthen the note or reduce tempo"
+    );
+    assert_eq!(project.snapshot(), before);
+
+    let mut short_loop = project.snapshot();
+    let hex_project::SessionCellContentSnapshot::Midi(clip) =
+        &mut short_loop.session.cells[0].content
+    else {
+        panic!("session midi fixture");
+    };
+    clip.source.looping = true;
+    clip.source.loop_end_raw = one_frame;
+    // Use a long gate so loop-period admission is the first refusal.
+    clip.source.notes[0].duration_raw = 1 << 32;
+    let short_loop = Project::from_snapshot(short_loop).unwrap();
+    let before_loop = short_loop.snapshot();
+    let Err(error) = PreparedRevision::prepare_with_instrument_registry(
+        &short_loop,
+        &BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &registry,
+    ) else {
+        panic!("short Session loop must be refused");
+    };
+    assert_eq!(
+        error.0,
+        "session midi loop is too short to guarantee one frame at the admitted tempo; lengthen the loop or reduce tempo"
+    );
+    assert_eq!(short_loop.snapshot(), before_loop);
+}
+
+#[test]
 fn play_from_one_frame_before_note_off_matches_one_frame_authored_note() {
     // At 120 bpm, a quarter note ends at frame 24,000. Round the independent
     // one-frame beat duration up so its note-off lands on frame one.
