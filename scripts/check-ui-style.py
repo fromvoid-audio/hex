@@ -193,11 +193,12 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/arrangement_audio_panel.rs'
             and suffix.startswith(('controls::number(', 'controls::toggle('))
         )
-        # Console column boundaries return typed, text-free drop surfaces.
+        # Console column and reorder boundaries return text-free surfaces or canvases.
         console_column_component = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid.rs'
             and suffix.startswith(('self.console_column_edge(',
-                                   'self.console_column_surface(', 'tail)'))
+                                   'self.console_column_surface(', 'self.console_reorder_layer(',
+                                   'self.track_reorder_events(', 'tail)'))
         )
         # Reverb's grouped panel passes bound controls and provider plot data;
         # titles and numeric/toggle labels normalize through theme::text.
