@@ -241,6 +241,16 @@ impl EditorView {
                             command: Command::UngroupTrack(track),
                         },
                     });
+                    menu.items.push(MenuItem {
+                        label: "delete group and tracks",
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::TrackGroup {
+                            generation,
+                            revision,
+                            command: Command::RemoveTrack(track),
+                        },
+                    });
                 }
             }
             let choices = [
@@ -695,7 +705,7 @@ impl EditorView {
                     || self.active_fade_drag.is_some()
                     || self.time_selection_gesture.is_some()
                 {
-                    self.error = Some("finish the current edit before grouping tracks".into());
+                    self.error = Some("finish the current edit before changing tracks".into());
                     cx.notify();
                     return;
                 }
@@ -1071,6 +1081,62 @@ mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
     use std::sync::Arc;
+
+    #[gpui::test]
+    fn stale_group_delete_action_cannot_remove_newer_project_tracks(cx: &mut TestAppContext) {
+        use super::super::track_reorder_ui_test::{live_tracks, receive};
+        use hex_project::TrackSelectionIds;
+        let (mut visual, editor, ids) = live_tracks(cx, 1, false);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&ids).unwrap(),
+                name: "group".into(),
+            })))
+        });
+        receive(&mut visual, &editor);
+        let group = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .iter()
+                .find(|track| track.is_group())
+                .unwrap()
+                .id()
+        });
+        let action = visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_track_context_menu(point(px(100.0), px(100.0)), Some(group), window, cx);
+                view.context_menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find(|item| item.label == "delete group and tracks")
+                    .unwrap()
+                    .action
+                    .clone()
+            })
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: "newer track".into()
+            })))
+        });
+        receive(&mut visual, &editor);
+        let before = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| view.select_context_item(action, window, cx))
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
 
     #[gpui::test]
     fn stale_group_action_cannot_edit_newer_project(cx: &mut TestAppContext) {

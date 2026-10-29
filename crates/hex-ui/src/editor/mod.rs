@@ -202,6 +202,8 @@ mod track_compact_ui_test;
 mod track_creation_ui_tests;
 mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod track_group_delete_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
