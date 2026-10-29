@@ -15,6 +15,16 @@ impl HeadlessBackend {
             errors: Some(errors),
         }
     }
+    /// Invoke the actual native error owner without opening a physical device.
+    pub fn report_device_error(&mut self) -> Result<(), hex_engine::Invalid> {
+        let owner = self
+            .errors
+            .as_mut()
+            .and_then(Guard::owner_mut)
+            .ok_or(hex_engine::Invalid("headless error callback is closed"))?;
+        owner.report();
+        Ok(())
+    }
     /// Actual callback entry with bounded caller-owned output; no owner escape.
     pub fn render(&mut self, output: &mut [hex_engine::Frame]) -> Result<(), hex_engine::Invalid> {
         let owner = self
