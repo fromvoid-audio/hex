@@ -16,8 +16,7 @@ impl PublicationControl {
         &mut self,
         extents_per_domain: usize,
     ) -> Result<(), &'static str> {
-        if self.status.reliable_action_outcomes.load(Acquire)
-            || self.status.client_exposed.load(Acquire)
+        if self.status.client_exposed.load(Acquire)
             || !self.native_custody
             || self.revision != 0
             || self.status.closing.load(Acquire)
@@ -595,6 +594,12 @@ impl Callback {
                         self.status.publish_rejected_action(
                             ticket,
                             PlaybackActionRejection::SessionNotPrepared,
+                        );
+                        self.stage_stream_outcome(
+                            ticket,
+                            action_outcomes::Outcome::Rejected(
+                                PlaybackActionRejection::SessionNotPrepared,
+                            ),
                         );
                         self.status
                             .stream_applied_command_prefix
