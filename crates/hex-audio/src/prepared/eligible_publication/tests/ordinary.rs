@@ -516,6 +516,18 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         "no graph installation before an exact render window"
     );
     assert_eq!(control.status.performance_frame.load(Acquire), 0);
+    if !keyboard && !sampler {
+        data.owner_mut().unwrap().run(|callback, _| {
+            assert_eq!(callback.stream_pending_play, Some(play));
+            callback.report_render_fault(Some(&Invalid("injected buffered failure")), 0);
+        });
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((play, PlaybackActionRejection::OutputFailed))
+        );
+        assert_eq!(control.status.recovery_position(), 0);
+        play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let output = loop {
         let output = measured_block(&mut data);
@@ -804,7 +816,36 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         assert_eq!(control.status.recovery_position(), 0);
     }
     if !sampler {
-        let cursor = control.status.position.load(Acquire);
+        let cursor = control.status.recovery_position();
+        let pending = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(1))
+            .unwrap();
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            assert!(callback.stream_action_pending());
+        });
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.report_render_fault(Some(&Invalid("injected render failure")), cursor);
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.recovery_position(), cursor);
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((pending, PlaybackActionRejection::OutputFailed))
+        );
+    }
+    if !sampler {
+        let cursor = control.status.recovery_position();
         let pending = control
             .command_with_ticket(PlaybackCommand::PlayFrom(1))
             .unwrap();

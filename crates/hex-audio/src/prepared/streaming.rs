@@ -162,6 +162,17 @@ impl Callback {
             active.clear_stream_roles(&mut self.domain_pages);
         }
     }
+    /// Cancel only already staged streamed intent. Commands not yet dequeued
+    /// retain their ordering, including a later explicit seek or user Stop.
+    pub(super) fn cancel_stream_for_fault(&mut self) {
+        self.cancel_active_stream_action_with_reason(PlaybackActionRejection::OutputFailed);
+        if let Some(ticket) = self.stream_pending_play.take() {
+            self.status
+                .publish_rejected_action(ticket, PlaybackActionRejection::OutputFailed);
+        }
+        self.invalidate_stream_readiness();
+        self.refresh_stream_schedule();
+    }
     pub(super) fn finish_pending_stream_play(&mut self) {
         let Some(ticket) = self.stream_pending_play else {
             return;
