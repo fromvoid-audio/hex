@@ -33,6 +33,19 @@ impl HeadlessBackend {
         owner.report();
         Ok(())
     }
+    /// Exercise the real callback fault transition without opening a device.
+    pub fn report_render_error(&mut self) -> Result<(), hex_engine::Invalid> {
+        let owner = self
+            .data
+            .as_mut()
+            .and_then(Guard::owner_mut)
+            .ok_or(hex_engine::Invalid("headless backend is closed"))?;
+        owner.run(|callback, status| {
+            let frame = status.position.load(std::sync::atomic::Ordering::Relaxed);
+            callback.report_render_fault(None, frame);
+        });
+        Ok(())
+    }
     /// Actual callback entry with bounded caller-owned output; no owner escape.
     pub fn render(&mut self, output: &mut [hex_engine::Frame]) -> Result<(), hex_engine::Invalid> {
         let owner = self
