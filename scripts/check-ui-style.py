@@ -186,6 +186,9 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
         ) or (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
             and suffix.startswith(('self.return_volume(', 'gain_control)'))
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
+            and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
         )
         # Clip-detail bindings return shared widgets; their labels pass through
         # theme::text in the owning component, never raw .child text.
