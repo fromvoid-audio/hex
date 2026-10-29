@@ -8998,9 +8998,11 @@ mod tests {
         old.publish(graph().0).unwrap();
         old_callback.begin_block();
         let pending = old.command_with_ticket(PlaybackCommand::Pause).unwrap();
+        assert!(!old_reader.is_retired());
         old.request_shutdown();
         old.retire_action_outcomes_on_control(&mut old_callback)
             .unwrap();
+        assert!(old_reader.is_retired());
 
         let (mut replacement, mut callback) = channel(48_000).unwrap();
         let mut reader = wire_action_outcomes(&mut replacement, &mut callback);
@@ -9128,6 +9130,7 @@ mod tests {
             )
             .unwrap()
         );
+        assert!(reader.is_retired());
         assert_eq!(
             reader.try_take(),
             Some(action_outcomes::Receipt {
@@ -9169,8 +9172,16 @@ mod tests {
             .unwrap()
         );
         assert_eq!(reader.try_take(), None);
+        assert!(
+            !reader.is_retired(),
+            "callback return alone is not quiescence"
+        );
         client.close();
         assert!(retirement.advance().unwrap());
+        assert!(
+            reader.is_retired(),
+            "retirement frontier must follow exact endpoint return"
+        );
         assert_eq!(
             reader.try_take(),
             Some(action_outcomes::Receipt {
@@ -9274,6 +9285,7 @@ mod tests {
         client.activate();
         let ticket = client.command_with_ticket(PlaybackCommand::Play).unwrap();
         retirement.fail_retained_receipts();
+        assert!(!reader.is_retired());
         assert_eq!(
             reader.failure(),
             Some(ActionOutcomeFailure::RetirementUnavailable)
@@ -9293,6 +9305,11 @@ mod tests {
                 |_| Ok(())
             )
             .unwrap()
+        );
+        assert!(reader.is_retired());
+        assert_eq!(
+            reader.failure(),
+            Some(ActionOutcomeFailure::RetirementUnavailable)
         );
         assert_eq!(
             reader.try_take(),
