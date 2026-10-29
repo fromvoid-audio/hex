@@ -334,8 +334,11 @@ dirtying an exact-source build. Do not replace it with a per-worktree checklist.
 After a focused PR passes its required checks and its merge is authenticated,
 mark its issue `ready_for_review`, then add any applicable user-run checks to the
 shared file. Group checks under a link to their Pulse issue and write each as a
-single observable `- [ ]` line. Explicitly requested reproduction may appear
-before a fix is merged; identify its actual status. Do not invent manual checks
+single independently completable, observable `- [ ]` line. Split distinct
+outcomes so the user can record partial progress; retain context needed to run
+each check. Explicitly requested reproduction may appear before a fix is merged;
+identify its actual status. Include applicable checks
+already in review without resetting their issue state. Do not invent manual checks
 for an internal-only change. State the qualified running build/source and any
 prerequisites or limits; neither a disk installation nor a headless test proves
 native acceptance. Keep the checklist aligned with the finite delivery checklist
