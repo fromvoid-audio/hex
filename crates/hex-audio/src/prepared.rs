@@ -3683,6 +3683,9 @@ impl Callback {
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
         self.recovery_position_frozen = true;
+        if self.streamed_transport_mode() {
+            self.cancel_stream_for_fault();
+        }
         self.recovery_seek_pending = None;
         self.sample_preview.invalidate_on_fault();
         self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
