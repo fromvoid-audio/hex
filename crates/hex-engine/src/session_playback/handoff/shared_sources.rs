@@ -311,43 +311,44 @@ pub(super) fn analytic_import_sources_match(
     Ok(true)
 }
 
-pub(super) fn release_disconnected_contributors(
-    runtime: &mut MutableInstrumentTrackRuntime,
+/// Compute the revision-wide source changes once before reconciling owners.
+/// Track IDs are unique, and an absent old source cannot be disconnected.
+pub(super) fn disconnected_contributors(
     previous: &PreparedRevision,
     candidate: &PreparedRevision,
-    frame: u64,
-) {
-    let disconnected = |track: TrackId| {
-        let old = previous
+) -> [Option<TrackId>; MAX_TRACKS] {
+    std::array::from_fn(|old| {
+        let track = previous
             .arrangement()
             .tracks()
-            .iter()
-            .position(|row| row.canonical_track_id() == Some(track));
+            .get(old)?
+            .canonical_track_id()?;
+        let source = previous.source_routing().source(old)?;
         let new = candidate
             .arrangement()
             .tracks()
             .iter()
             .position(|row| row.canonical_track_id() == Some(track));
-        old.and_then(|index| previous.source_routing().source(index))
-            .is_some_and(|source| {
-                new.is_none_or(|index| {
-                    candidate.source_routing().source(index) != Some(source)
-                        || candidate.source_routing().receiver_index(index).is_none()
-                })
-            })
-    };
+        new.is_none_or(|index| {
+            candidate.source_routing().source(index) != Some(source)
+                || candidate.source_routing().receiver_index(index).is_none()
+        })
+        .then_some(track)
+    })
+}
+
+pub(super) fn release_disconnected_contributors(
+    runtime: &mut MutableInstrumentTrackRuntime,
+    disconnected: &[Option<TrackId>; MAX_TRACKS],
+    frame: u64,
+) {
     runtime.reconcile_gate_deadlines_at(frame, |signature| {
-        disconnected(signature.key().track).then_some(frame)
+        disconnected
+            .contains(&Some(signature.key().track))
+            .then_some(frame)
     });
-    for track in previous
-        .arrangement()
-        .tracks()
-        .iter()
-        .filter_map(crate::Track::canonical_track_id)
-    {
-        if disconnected(track) {
-            runtime.release_live_contributor(track);
-        }
+    for &track in disconnected.iter().flatten() {
+        runtime.release_live_contributor(track);
     }
 }
 

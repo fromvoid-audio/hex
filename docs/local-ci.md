@@ -304,12 +304,13 @@ harness with a smaller test profile and explicit final symbol stripping:
 
 ```sh
 mkdir -p artifacts
-CARGO_PROFILE_TEST_DEBUG=0 cargo \
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_LTO=thin \
+  CARGO_PROFILE_TEST_CODEGEN_UNITS=1 cargo \
   --config 'profile.test.package.hex-engine.opt-level="z"' \
   --config 'profile.test.package.hex-stream.opt-level="z"' \
   --config 'profile.test.package.hex-audio.opt-level="z"' \
   rustc -p hex-audio --features allocation-probe --lib --profile test --locked \
-  --message-format=json -- -C strip=symbols > artifacts/audio-test-build.jsonl
+  --message-format=json -- -C lto=fat -C strip=symbols > artifacts/audio-test-build.jsonl
 ```
 
 Use `-p hex-stream` instead for its library tests. The Cargo JSON
@@ -318,9 +319,34 @@ whose `profile.test` is true identifies the executable in its `executable`
 field. Invoke that executable with the full test name and `--exact`; confirm
 that one test actually ran. The final rustc flag matters: the test-profile
 `strip` setting alone may result in `strip=debuginfo` for a library test harness.
-This is compiler-produced stripping; no post-build strip or re-sign step is
-excluded from the measurement. Debug assertions remain enabled. Other affected
-checks and configurations still apply.
+This uses ThinLTO for dependencies and fat LTO plus compiler-produced stripping
+for the final test target; no post-build strip or re-sign step is excluded from
+the measurement. Debug assertions remain enabled. This profile does not
+guarantee every launch meets the limit. Other affected checks and configurations
+still apply.
+
+For allocator-probe sensitivity checks, the original two tests can also be
+compiled as an optimized, separately linked executable while retaining the
+test target's debug assertions and overflow checks. The pinned counter is
+compiled with the same opt-level, debug-assertion and overflow settings as the
+ordinary debug test profile:
+
+```sh
+mkdir -p artifacts
+cargo --config 'profile.release.package.allocation-counter.opt-level=0' \
+  --config 'profile.release.package.allocation-counter.debug-assertions=true' \
+  --config 'profile.release.package.allocation-counter.overflow-checks=true' \
+  rustc -p hex-audio --features allocation-probe \
+  --test allocation_probe_calibration --release --locked --message-format=json \
+  -- -C debug-assertions=yes -C overflow-checks=yes -C strip=symbols \
+  > artifacts/allocation-calibration-build.jsonl
+```
+
+Use the JSON test artifact's `executable` path to run each calibration test
+with its full name and `--exact`. Include process startup in each wall time;
+report compilation separately. The normal test target and discovery remain
+unchanged. This is an optional measurement profile, not proof that every cold
+launch fits the limit or that the affected audio/stream tests are covered.
 
 Focused tests can form part of a reviewed change-based merge check set when its
 affected contracts, consumers and configurations are covered; an isolated passing
