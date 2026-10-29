@@ -865,6 +865,82 @@ fn compensated_arrangement_midi_capture_matches_single_frame() {
 }
 
 #[test]
+fn compensated_session_midi_matches_single_frame_across_tempo_and_relaunch() {
+    let fixture = fixture(Some((0, 48_013)), Some(1));
+    let mut editor = Editor::new(fixture.project, 16).unwrap();
+    let volume = hex_project::MidiClipVolume::new(
+        vec![
+            hex_project::MidiClipVolumePoint::linear(
+                BeatTime::ZERO,
+                hex_project::MidiClipGain::new(0.25).unwrap(),
+            ),
+            hex_project::MidiClipVolumePoint::linear(
+                beat(4),
+                hex_project::MidiClipGain::new(1.0).unwrap(),
+            ),
+        ],
+        beat(4),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip: fixture.session_clip,
+            volume,
+        })
+        .unwrap();
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: fixture.track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback
+            .apply(SessionPlaybackCommand::Seek(23_990))
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let launch = SessionPlaybackCommand::LaunchClip {
+            clip: fixture.session_clip,
+            quantization: LaunchQuantization::Immediate,
+        };
+        playback.apply(launch).unwrap();
+        let mut output = [[0.0; 2]; 1024];
+        for half in output.chunks_mut(512) {
+            for chunk in half.chunks_mut(partition) {
+                playback.render(chunk).unwrap();
+            }
+            playback.apply(launch).unwrap();
+        }
+        (
+            output,
+            playback.performance_frame(),
+            playback.arrangement_frame(),
+        )
+    };
+    let expected = render(1);
+    assert!(audible(&expected.0));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected, "partition {partition}");
+    }
+}
+
+#[test]
 fn compensated_pending_launch_crosses_its_boundary_at_the_same_sample_for_each_partition() {
     let fixture = fixture(None, None);
     let mut editor = Editor::new(fixture.project, 16).expect("editor");
