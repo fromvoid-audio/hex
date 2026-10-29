@@ -314,7 +314,26 @@ fn play_from_resets_active_mutable_state_and_repeated_starts_are_identical() {
 }
 
 #[test]
-fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs() {
+fn shared_chase_and_handoff_without_limiter() {
+    shared_chase_and_handoff(None, &[0, 127]);
+}
+
+#[test]
+fn shared_chase_immediate_handoff_with_track_limiter() {
+    shared_chase_and_handoff(Some(false), &[0]);
+}
+
+#[test]
+fn shared_chase_delayed_handoff_with_track_limiter() {
+    shared_chase_and_handoff(Some(false), &[127]);
+}
+
+#[test]
+fn shared_chase_and_handoff_with_main_limiter() {
+    shared_chase_and_handoff(Some(true), &[0, 127]);
+}
+
+fn shared_chase_and_handoff(limiter: Option<bool>, handoff_frames: &[usize]) {
     fn shared(start: u64, duration: u64, limiter: Option<bool>, pitch: u8) -> Project {
         let definition = super::source_loop_tests::mutable_definition();
         let project =
@@ -377,10 +396,7 @@ fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs
     let definition = super::source_loop_tests::mutable_definition();
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    for (limiter, first) in [None, Some(false), Some(true)]
-        .into_iter()
-        .flat_map(|limiter| [0, 127].map(|first| (limiter, first)))
-    {
+    for &first in handoff_frames {
         let project = shared(0, 1 << 32, limiter, 67);
         let mut runtime = ordinary_mutable_playback(&project, &registry);
         let latency = runtime.revision.arrangement().main_latency_frames() as usize;
