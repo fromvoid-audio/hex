@@ -109,6 +109,64 @@ fn actual_callback_finishes_before_dispatch_and_stop_discards_late_worker_comple
 }
 
 #[test]
+fn late_plugin_reply_after_audible_output_silences_host_and_cannot_resume() {
+    let (control, mut callback, transport, mut worker) = profile();
+    for _ in 0..2 {
+        assert!(
+            render(&mut callback, 8, 2, false)
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        let block = worker.receive().unwrap().unwrap();
+        worker.complete(block).unwrap();
+    }
+    let audible = render(&mut callback, 8, 2, false);
+    assert!(audible.chunks_exact(2).all(|frame| frame == [0.75, -0.5]));
+    let late = worker.receive().unwrap().unwrap();
+    assert_eq!(late.sequence, 2);
+    let still_buffered = render(&mut callback, 8, 2, false);
+    assert!(
+        still_buffered
+            .chunks_exact(2)
+            .all(|frame| frame == [0.75, -0.5])
+    );
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    assert!(transport.is_revoked());
+    assert!(control.status.render_fault.load(Acquire));
+    assert_eq!(
+        callback.output_transport_error(),
+        Some(hex_engine::Invalid(Fault::MissingOutput.message()))
+    );
+    let fault = control
+        .status
+        .render_fault_snapshot()
+        .expect("missing-output fault");
+    assert_eq!(fault.message, Fault::MissingOutput.message());
+    assert_eq!(worker.complete(late), Err(Fault::Revoked));
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    control.stop();
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    assert!(!control.status.playing.load(Acquire));
+    assert_eq!(control.status.render_fault_snapshot(), Some(fault));
+    drop(worker);
+    drop(callback);
+    drop(transport);
+    drop(control);
+}
+
+#[test]
 fn worker_failure_after_audible_pcm_silences_and_retires_on_control() {
     use std::sync::Mutex;
     use std::time::Duration;
