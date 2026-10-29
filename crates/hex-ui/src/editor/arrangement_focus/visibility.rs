@@ -79,6 +79,7 @@ pub(crate) struct Projection {
     fold_revision: u64,
     pub(crate) ranges: Rc<[(u64, u64)]>,
     pub(crate) indices: Vec<usize>,
+    pub(crate) console_indices: Vec<usize>,
     pub(crate) tracks: BTreeSet<TrackId>,
     pub(crate) clips: BTreeSet<ClipId>,
 }
@@ -109,6 +110,9 @@ fn section_intervals(project: &Project, selected: &[SectionId]) -> Rc<[(u64, u64
 impl Projection {
     pub(crate) fn folded(&self, id: TrackId) -> bool {
         self.folded.contains(&id)
+    }
+    pub(crate) fn fold_revision(&self) -> u64 {
+        self.fold_revision
     }
     pub(crate) fn filtering(&self) -> bool {
         !self.ranges.is_empty() || !self.folded.is_empty()
@@ -174,6 +178,7 @@ impl Projection {
         self.selected.extend_from_slice(selected);
         self.ranges = ranges;
         self.indices.clear();
+        self.console_indices.clear();
         self.tracks.clear();
         self.clips.clear();
         let visible = visible_tracks(project, &self.ranges, self.new_track);
@@ -188,7 +193,11 @@ impl Projection {
             if track.is_group() && ancestors.len() < hex_project::MAX_GROUP_DEPTH {
                 ancestors.push((track.id(), hidden || self.folded.contains(&track.id())));
             }
-            if hidden || (!self.ranges.is_empty() && !visible.contains(&track.id())) {
+            if hidden {
+                continue;
+            }
+            self.console_indices.push(index);
+            if !self.ranges.is_empty() && !visible.contains(&track.id()) {
                 continue;
             }
             if self.filtering() {

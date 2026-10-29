@@ -84,7 +84,13 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
     );
     let mut projection = visibility::Projection::default();
     projection.rebuild(1, 1, project, &[], None);
+    let frame_revision = projection.fold_revision();
     projection.toggle_fold(inner);
+    assert_ne!(
+        projection.fold_revision(),
+        frame_revision,
+        "fold invalidates captured geometry"
+    );
     assert!(projection.rebuild(1, 1, project, &[], None));
     assert_eq!(
         projection.tracks,
@@ -112,6 +118,16 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
     projection.toggle_fold(outer);
     projection.rebuild(1, 1, project, &[section], None);
     assert_eq!(projection.tracks, BTreeSet::from([outer]));
+    let console_tracks: Vec<_> = projection
+        .console_indices
+        .iter()
+        .map(|index| project.tracks()[*index].id())
+        .collect();
+    assert_eq!(
+        console_tracks,
+        [outer, unrelated, outside],
+        "section focus does not filter Console columns"
+    );
     projection.toggle_fold(outer);
     projection.rebuild(1, 1, project, &[section], None);
     assert_eq!(projection.tracks, BTreeSet::from([outer, inner, inside]));

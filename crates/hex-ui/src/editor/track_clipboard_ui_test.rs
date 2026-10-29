@@ -111,6 +111,42 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
             assert_eq!(view.selected_track_ids(), selected);
         });
     }
+    if mode == super::EditorMode::Session {
+        let fold = Box::leak(format!("console-group-fold-{}", group.value()).into_boxed_str());
+        let click_fold = |visual: &mut VisualTestContext| {
+            let point = visual.debug_bounds(fold).unwrap().center();
+            visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+        };
+        let before = snapshot(&visual, &editor);
+        let selected = editor.read_with(&visual, |view, _| view.selected_track_ids());
+        click_fold(&mut visual);
+        for id in &ids {
+            let selector = Box::leak(format!("session-track-{}", id.value()).into_boxed_str());
+            assert!(visual.debug_bounds(selector).is_none());
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.set_mode(super::EditorMode::Arrangement);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(ids.iter().all(|id| !view.arrangement_track_visible(*id)));
+            assert_eq!(view.selected_track_ids(), selected);
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.set_mode(super::EditorMode::Session);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        click_fold(&mut visual);
+        for id in &ids {
+            let selector = Box::leak(format!("session-track-{}", id.value()).into_boxed_str());
+            assert!(visual.debug_bounds(selector).is_some());
+        }
+    }
     right_click(&mut visual, group);
     choose(&mut visual, "ungroup tracks");
     editor.read_with(&visual, |view, _| {
@@ -152,6 +188,105 @@ fn group_track_header_menu_arrangement(cx: &mut TestAppContext) {
 #[gpui::test]
 fn group_track_header_menu_session(cx: &mut TestAppContext) {
     group_track_header_menu(cx, super::EditorMode::Session);
+}
+
+#[gpui::test]
+fn console_fold_hides_cells_navigation_and_invalidates_column_frame(cx: &mut TestAppContext) {
+    use hex_project::{Command, TrackSelectionIds};
+    use hex_session::service::Request;
+    let (mut visual, editor, ids) = live_tracks(cx, 8, false);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..2]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddScene {
+            name: "scene".into()
+        })))
+    });
+    receive(&mut visual, &editor);
+    let (group, scene) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project
+                .tracks()
+                .iter()
+                .find(|track| track.is_group())
+                .unwrap()
+                .id(),
+            project.scenes()[0].id(),
+        )
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.set_mode(super::EditorMode::Session);
+            view.selected_cell = Some((ids[0], scene));
+            view.focus.focus(window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let frame = visual.update(|window, cx| {
+        editor.read_with(cx, |view, _| {
+            super::console_columns::ColumnFrame::capture(
+                view,
+                window,
+                view.state.as_ref().unwrap().revision,
+            )
+        })
+    });
+    let fold = Box::leak(format!("console-group-fold-{}", group.value()).into_boxed_str());
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, _| {
+            assert!(
+                !frame.current(view, window),
+                "old drop geometry cannot survive a fold"
+            );
+            assert_eq!(
+                view.selected_cell,
+                Some((ids[0], scene)),
+                "fold retains hidden selection"
+            );
+        })
+    });
+    for id in &ids[..2] {
+        let cell =
+            Box::leak(format!("console-cell-{}-{}", id.value(), scene.value()).into_boxed_str());
+        assert!(visual.debug_bounds(cell).is_none());
+    }
+    let next_cell =
+        Box::leak(format!("console-cell-{}-{}", ids[2].value(), scene.value()).into_boxed_str());
+    assert!(visual.debug_bounds(next_cell).is_some());
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_cell, Some((ids[2], scene)))
+    });
+    visual.simulate_keystrokes("left");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_cell, Some((group, scene)))
+    });
+    let next_page = visual.debug_bounds("next tracks").unwrap().center();
+    visual.simulate_mouse_down(next_page, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(next_page, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| assert!(view.session_track_start > 0));
+    let last_header = Box::leak(format!("session-track-{}", ids[7].value()).into_boxed_str());
+    let last_cell =
+        Box::leak(format!("console-cell-{}-{}", ids[7].value(), scene.value()).into_boxed_str());
+    let last_edge =
+        Box::leak(format!("console-column-header-before-{}", ids[7].value()).into_boxed_str());
+    assert!(visual.debug_bounds(last_header).is_some());
+    assert!(visual.debug_bounds(last_cell).is_some());
+    assert!(visual.debug_bounds(last_edge).is_some());
 }
 
 #[gpui::test]
