@@ -233,6 +233,26 @@ fn midi_recording_confirms_short_notes_only_after_real_direct_conversion_and_sto
     assert_eq!(control.status.position.load(Acquire), 0);
 }
 #[test]
+fn device_error_aborts_a_queued_midi_take_before_the_next_callback() {
+    let (mut control, mut callback, _input, target) = fixture(48_000);
+    control.midi_recording.begin(target).unwrap();
+    control
+        .status
+        .device_fault
+        .store(true, std::sync::atomic::Ordering::Release);
+    counted(|| callback.begin_block());
+    assert!(matches!(
+        receipts(&mut control).as_slice(),
+        [Receipt::Aborted {
+            reason: AbortReason::OutputFailed,
+            last_delivered: None,
+            ..
+        }]
+    ));
+    assert!(control.midi_recording.begin(target).is_err());
+}
+
+#[test]
 fn midi_recording_conversion_failure_aborts_without_publishing_armed_or_notes() {
     let (mut control, mut callback, input, target) = fixture(48_000);
     control.midi_recording.begin(target).unwrap();

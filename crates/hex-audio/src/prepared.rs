@@ -251,6 +251,17 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
     }
 }
 
+fn recovery_cursor_action(action: PlaybackAction) -> bool {
+    matches!(
+        action,
+        PlaybackAction::Transport(
+            PlaybackCommand::Stop | PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_)
+        ) | PlaybackAction::Session(
+            hex_engine::SessionPlaybackCommand::Stop | hex_engine::SessionPlaybackCommand::Seek(_)
+        )
+    )
+}
+
 pub(crate) struct Publication {
     pcm_frames: u64,
     forwarded_pcm: bool,
@@ -493,6 +504,7 @@ pub struct Status {
     split_endpoints: AtomicBool,
     client_exposed: AtomicBool,
     submitted_revision: AtomicU64,
+    /// Latched for this output after a device error; recovery opens a new output.
     pub device_fault: AtomicBool,
     pub render_fault: AtomicBool,
     render_fault_record: crate::render_fault::RenderFaultRecord,
@@ -533,6 +545,8 @@ pub struct Status {
     rejected_revision_reason: AtomicU32,
     rejected_revision_sequence: AtomicU64,
     pub position: AtomicU64,
+    // Last callback-published cursor, frozen before fault Stop rewinds the graph.
+    recovery_position: AtomicU64,
     pub performance_frame: AtomicU64,
     pub transport_epoch: AtomicU64,
     pub gain_recording_fault: AtomicBool,
@@ -586,7 +600,9 @@ impl Status {
         self.publication_pending.store(false, Release);
     }
     pub(crate) fn preview_permitted(&self) -> bool {
-        !self.constructor_mode.load(Acquire) && !self.closing.load(Acquire)
+        !self.constructor_mode.load(Acquire)
+            && !self.closing.load(Acquire)
+            && !self.device_fault.load(Acquire)
     }
     pub(crate) fn mark_preview_used(&self) {
         self.preview_used.store(true, Release);
@@ -595,6 +611,9 @@ impl Status {
         !self.preview_used.load(Acquire)
     }
     pub(crate) fn reserve_midi_begin(&self) -> Result<(), &'static str> {
+        if self.device_fault.load(Acquire) {
+            return Err("midi recording output has failed");
+        }
         if self.closing.load(Acquire) {
             return Err("midi recording output is closing");
         }
@@ -610,6 +629,9 @@ impl Status {
         self.publication_pending.midi_finished();
     }
     pub(crate) fn reserve_gain_begin(&self) -> Result<bool, &'static str> {
+        if self.device_fault.load(Acquire) {
+            return Err("gain recording output has failed");
+        }
         if self.closing.load(Acquire) {
             return Err("gain recording output is closing");
         }
@@ -634,6 +656,9 @@ impl Status {
         self.publication_pending.legacy_gain_started();
     }
     pub(crate) fn reserve_native_parameter_input(&self) -> Result<(), &'static str> {
+        if self.device_fault.load(Acquire) {
+            return Err("native parameter input output has failed");
+        }
         if self.closing.load(Acquire) {
             return Err("native parameter input output is closing");
         }
@@ -713,6 +738,7 @@ impl Status {
             rejected_revision_reason: AtomicU32::new(0),
             rejected_revision_sequence: AtomicU64::new(0),
             position: AtomicU64::new(0),
+            recovery_position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
             transport_epoch: AtomicU64::new(1),
             gain_recording_fault: AtomicBool::new(false),
@@ -740,6 +766,17 @@ impl Status {
 }
 
 impl Status {
+    /// Last callback-published arrangement cursor, retained across a fault Stop.
+    /// A pending explicit priority Stop takes precedence and returns zero even
+    /// before the callback consumes it.
+    /// This is a recovery observation, not the current transport position or a
+    /// claim that the corresponding audio reached the physical device.
+    pub fn recovery_position(&self) -> u64 {
+        if !self.closing.load(Acquire) && self.pending_stop_marker.load(Acquire) != 0 {
+            return 0;
+        }
+        self.recovery_position.load(Acquire)
+    }
     /// Current diagnostic configuration; this observation grants no authority.
     pub fn audio_diagnostics_flags(&self) -> AudioDiagnosticsFlags {
         AudioDiagnosticsFlags::from_bits(self.diagnostics_flags.load(Relaxed))
@@ -1143,6 +1180,10 @@ pub struct Callback {
     candidate_root: crate::candidate_custody::CandidateRoot,
     commands: Consumer<QueuedCommand>,
     status: Arc<Status>,
+    recovery_position_frozen: bool,
+    recovery_seek_pending: Option<u64>,
+    device_fault_stopped: bool,
+    device_fault_fenced_in_block: bool,
     rate: u32,
     spectrum_target: spectrum_target::SpectrumTargetCallback,
     processor_audition: processor_audition::ProcessorAuditionTargetCallback,
@@ -1277,6 +1318,10 @@ pub fn channel_with_spectrum(
             retired: returning,
             commands: events,
             status,
+            recovery_position_frozen: false,
+            recovery_seek_pending: None,
+            device_fault_stopped: false,
+            device_fault_fenced_in_block: false,
             rate,
             spectrum_target: callback_target,
             processor_audition: callback_audition,
@@ -2557,6 +2602,11 @@ impl Callback {
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
         self.transport_setup_open = false;
+        self.device_fault_fenced_in_block = false;
+        if self.status.device_fault.load(Acquire) && !self.status.closing.load(Acquire) {
+            self.fence_device_fault();
+            return;
+        }
         if self.status.closing.load(Acquire) || self.status.pending_stop_marker.load(Acquire) != 0 {
             self.revoke_output_transport();
         }
@@ -3325,6 +3375,11 @@ impl Callback {
                         cancellation.finish();
                     }
                     self.publish_active_routes(true);
+                    self.recovery_seek_pending = None;
+                    if self.recovery_position_frozen && !self.status.device_fault.load(Acquire) {
+                        self.recovery_position_frozen = false;
+                        self.publish_transport();
+                    }
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
                     self.status.stream_source_changed.store(false, Release);
@@ -3447,9 +3502,25 @@ impl Callback {
         // producer admissions stay queued for the next block; a Stop arriving
         // after this swap also remains pending for the next block.
         let entry_ticket = self.status.admitted_ticket.load(Acquire);
-        let stop_marker = self.status.pending_stop_marker.swap(0, AcqRel);
+        let stop_marker = self.take_stop_marker();
         self.consume_commands_through(command_cut(entry_ticket, stop_marker));
         self.acknowledge_sampler_edit();
+    }
+
+    // Publish the user Stop's recovery cursor before clearing its marker.
+    // A racing newer marker stays pending for the next block; no callback retry.
+    fn take_stop_marker(&self) -> u64 {
+        let marker = self.status.pending_stop_marker.load(Acquire);
+        if marker != 0 {
+            if !self.status.closing.load(Acquire) {
+                self.status.recovery_position.store(0, Release);
+            }
+            let _ = self
+                .status
+                .pending_stop_marker
+                .compare_exchange(marker, 0, AcqRel, Acquire);
+        }
+        marker
     }
 
     fn trace_command_dequeued(&mut self, queued: QueuedCommand, cut: CommandCut) {
@@ -3466,29 +3537,41 @@ impl Callback {
     }
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
+        self.consume_commands_through_inner(cut, false);
+    }
+
+    fn consume_commands_through_inner(&mut self, cut: CommandCut, fault: bool) {
         if let Some(through_ticket) = cut.stop_through {
-            self.trace_audio(
-                AudioDiagnosticKind::PriorityStop { through_ticket },
-                self.status.applied_revision.load(Relaxed),
-                None,
-                0,
-            );
-            self.finish_midi_before_stop();
-            self.revoke_output_transport();
-            self.revoke_current_sampler_keyboard();
-            #[cfg(all(test, feature = "allocation-probe"))]
-            self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
-            self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
-            if let Some(mut active) = self
-                .active
-                .as_mut()
-                .and_then(ActivePublication::current_mut)
-            {
-                active
-                    .playback
-                    .apply_priority_stop(&self.status.keyboard_activation);
+            if !fault && !self.status.closing.load(Acquire) {
+                self.recovery_position_frozen = false;
+                self.status.recovery_position.store(0, Relaxed);
             }
-            self.invalidate_processor_audition_request();
+            if !fault {
+                self.trace_audio(
+                    AudioDiagnosticKind::PriorityStop { through_ticket },
+                    self.status.applied_revision.load(Relaxed),
+                    None,
+                    0,
+                );
+                self.finish_midi_before_stop();
+                self.revoke_output_transport();
+                self.revoke_current_sampler_keyboard();
+                #[cfg(all(test, feature = "allocation-probe"))]
+                self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
+                self.invalidate_gain_recording(
+                    crate::gain_recording::AbortReason::TransportChanged,
+                );
+                if let Some(mut active) = self
+                    .active
+                    .as_mut()
+                    .and_then(ActivePublication::current_mut)
+                {
+                    active
+                        .playback
+                        .apply_priority_stop(&self.status.keyboard_activation);
+                }
+                self.invalidate_processor_audition_request();
+            }
         }
         let mut consumed = None;
         for _ in 0..COMMANDS {
@@ -3503,7 +3586,18 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
-            self.trace_command_dequeued(queued, cut);
+            if !fault {
+                self.trace_command_dequeued(queued, cut);
+            }
+            if fault && sampler_edit::is_stop(queued.action) {
+                self.status.recovery_position.store(0, Release);
+            } else if fault {
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+            }
+            if fault {
+                continue;
+            }
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,
@@ -3531,6 +3625,9 @@ impl Callback {
                 {
                     match active.playback.try_apply_action(queued.action) {
                         Ok(()) => {
+                            if recovery_cursor_action(queued.action) {
+                                self.recovery_position_frozen = false;
+                            }
                             invalidate_audition =
                                 action_invalidates_processor_audition(queued.action);
                         }
@@ -3580,6 +3677,8 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.recovery_position_frozen = true;
+        self.recovery_seek_pending = None;
         self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
         self.revoke_output_transport();
         self.status.sampler_keyboard.revoke_on_callback();
@@ -3599,6 +3698,41 @@ impl Callback {
         self.publish_active_routes(false);
     }
 
+    // The internal cut is never published as a priority Stop: that marker is
+    // reserved for the user's explicit cursor-reset intent. Drain at most one
+    // bounded command prefix per callback and leave graph custody unchanged.
+    pub(crate) fn fence_device_fault(&mut self) {
+        if self.device_fault_fenced_in_block || self.status.closing.load(Acquire) {
+            return;
+        }
+        self.device_fault_fenced_in_block = true;
+        let entry = self.status.admitted_ticket.load(Acquire);
+        let user_stop = self.take_stop_marker();
+        if !self.device_fault_stopped {
+            self.device_fault_stopped = true;
+            self.stop_after_fault();
+        } else {
+            // A begin that raced the error still receives its reserved terminal.
+            self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
+            self.gain_recording
+                .abort(crate::gain_recording::AbortReason::OutputFailed);
+            self.invalidate_native_parameter_input(
+                crate::native_parameter_input::AbortReason::OutputFailed,
+            );
+        }
+        let through = entry.max(user_stop.saturating_sub(1));
+        let cut = CommandCut {
+            stop_through: Some(through),
+            process_through: through,
+        };
+        if self.streamed_transport_mode() {
+            self.consume_stream_commands_through(cut, true);
+        } else {
+            self.consume_commands_through_inner(cut, true);
+        }
+        self.acknowledge_sampler_edit();
+    }
+
     fn invalidate_processor_audition_request(&mut self) {
         if self.processor_audition.has_request_after_hard_cancel() {
             return;
@@ -3616,6 +3750,13 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.status.device_fault.load(Acquire) {
+            if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
+                self.fence_device_fault();
+            }
+            output.fill([0.0; 2]);
+            return Ok(());
+        }
         let yield_successor = self.yield_stream_successor_once;
         if !output.is_empty() {
             self.yield_stream_successor_once = false;
@@ -3766,6 +3907,7 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
@@ -3823,6 +3965,7 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
@@ -4310,6 +4453,9 @@ impl Callback {
         if let Some(ActivePublication::Candidate(active)) = self.active.as_ref() {
             if let Some((position, frame, playing)) = active.owner.test_transport() {
                 self.status.position.store(position, Relaxed);
+                if !self.recovery_position_frozen {
+                    self.status.recovery_position.store(position, Relaxed);
+                }
                 self.status.performance_frame.store(frame, Relaxed);
                 self.status.playing.store(playing, Relaxed);
             }
@@ -4327,9 +4473,11 @@ impl Callback {
                 });
         self.status.gain_recording_ready.store(ready, Release);
         if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
-            self.status
-                .position
-                .store(active.playback.position(), Relaxed);
+            let position = active.playback.position();
+            self.status.position.store(position, Relaxed);
+            if !self.recovery_position_frozen {
+                self.status.recovery_position.store(position, Relaxed);
+            }
             self.status
                 .performance_frame
                 .store(active.playback.performance_frame(), Relaxed);
@@ -6465,11 +6613,27 @@ mod tests {
             (0, 0, 0, 0),
         );
         assert!(!control.status.playing.load(Relaxed));
+        assert_eq!(control.status.position.load(Relaxed), 0);
+        assert_eq!(control.status.recovery_position(), 128);
         let fault = control.status.render_fault_snapshot().expect("fault");
         assert_eq!(fault.message, "ongoing midi query exceeds 256 edges");
         assert_eq!((fault.audio_revision, fault.frame), (revision, 128));
         callback.report_render_fault(None, 0);
         assert_eq!(control.status.render_fault_snapshot(), Some(fault));
+        assert_eq!(control.status.recovery_position(), 128);
+        control.command(PlaybackCommand::Seek(37)).expect("seek");
+        callback.begin_block();
+        assert_eq!(control.status.position.load(Relaxed), 37);
+        assert_eq!(control.status.recovery_position(), 37);
+        callback.report_render_fault(None, 37);
+        assert_eq!(control.status.recovery_position(), 37);
+        control.stop();
+        assert_eq!(control.status.recovery_position(), 0);
+        control
+            .command(PlaybackCommand::Seek(45))
+            .expect("later seek");
+        callback.begin_block();
+        assert_eq!(control.status.recovery_position(), 45);
         let (replacement, _) = spectrum_eq8_graph();
         let replacement_revision = control
             .publish_with_policy(replacement, PublicationPolicy::InstallFreshRuntime)
@@ -6481,6 +6645,7 @@ mod tests {
         );
         assert!(!control.status.render_fault.load(Acquire));
         assert!(control.status.render_fault_snapshot().is_none());
+        assert_eq!(control.status.recovery_position(), 0);
         callback.report_render_fault(None, 256);
         assert_eq!(
             control
@@ -6490,6 +6655,31 @@ mod tests {
                 .message,
             "audio output contains nonfinite samples"
         );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn device_fault_keeps_recovery_cursor_across_graph_admission() {
+        let (mut control, mut callback) = channel(48_000).expect("channel");
+        let (playback, _) = spectrum_eq8_graph();
+        control.publish(playback).expect("publish");
+        control.command(PlaybackCommand::Play).expect("play");
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 64]).expect("prefix");
+        control.status.device_fault.store(true, Release);
+        callback.stop_after_fault();
+        assert_eq!(control.status.position.load(Relaxed), 0);
+        assert_eq!(control.status.recovery_position(), 64);
+        let (replacement, _) = spectrum_eq8_graph();
+        control
+            .publish_with_policy(replacement, PublicationPolicy::InstallFreshRuntime)
+            .expect("replacement");
+        callback.begin_block();
+        assert_eq!(control.status.recovery_position(), 64);
+        control.stop();
+        assert_eq!(control.status.recovery_position(), 0);
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();

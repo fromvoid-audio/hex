@@ -655,7 +655,10 @@ fn enqueue_action(
     if sampler_edit_gate & 1 != 0 && !sampler_edit::is_stop(action) {
         return Err(action);
     }
-    if status.closing.load(Acquire) || revision == 0 {
+    if status.closing.load(Acquire)
+        || (status.device_fault.load(Acquire) && !sampler_edit::is_stop(action))
+        || revision == 0
+    {
         return Err(action);
     }
     let Some(next) = ticket.checked_add(1).filter(|ticket| *ticket != u64::MAX) else {

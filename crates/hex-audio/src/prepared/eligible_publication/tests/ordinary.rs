@@ -735,6 +735,90 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
     );
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
+    if !sampler {
+        let last_position = control.status.position.load(Acquire);
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.report_render_fault(None, last_position));
+        control.command(PlaybackCommand::PlayFrom(2)).unwrap();
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert_eq!(control.status.recovery_position(), last_position);
+        control.stop();
+        assert_eq!(control.status.recovery_position(), 0);
+        measured_block(&mut data);
+        assert_eq!(control.status.recovery_position(), 0);
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.report_render_fault(None, 0));
+        let seek = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(2))
+            .unwrap();
+        loop {
+            measured_block(&mut data);
+            if control.status.stream_applied_command_prefix.load(Acquire) >= seek {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_ne!(control.status.recovery_position(), last_position);
+        assert_eq!(
+            control.status.recovery_position(),
+            control.status.position.load(Acquire)
+        );
+    }
+    if stop_restart {
+        let last_position = control.status.position.load(Acquire);
+        assert!(last_position > 0);
+        let allocations = allocation_counter::measure(|| {
+            data.owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.report_render_fault(None, last_position));
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current,
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.position.load(Acquire), 0);
+        assert_eq!(control.status.recovery_position(), last_position);
+        assert!(!control.status.playing.load(Acquire));
+        let seek = control
+            .command_with_ticket(PlaybackCommand::Seek(12))
+            .unwrap();
+        measured_block(&mut data);
+        assert_eq!(
+            control.status.rejected_action().map(|(ticket, _)| ticket),
+            Some(seek)
+        );
+        assert_eq!(control.status.recovery_position(), last_position);
+        control.stop();
+        assert_eq!(control.status.recovery_position(), 0);
+        measured_block(&mut data);
+        assert_eq!(control.status.recovery_position(), 0);
+    }
+    if !sampler {
+        let cursor = control.status.position.load(Acquire);
+        let pending = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(1))
+            .unwrap();
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        control.status.device_fault.store(true, Release);
+        assert_eq!(measured_block(&mut data), [[0.0; 2]; 8]);
+        assert_eq!(control.status.recovery_position(), cursor);
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((pending, PlaybackActionRejection::OutputFailed))
+        );
+    }
     assert!(control.retire_audio_candidate_domain(domain));
     assert!(
         !control.audio_candidate_domain_endpoint_is_installed(domain),
