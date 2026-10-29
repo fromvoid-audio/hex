@@ -48,6 +48,15 @@ fn render(backend: &mut worker_fixture::HeadlessBackend) -> [[f32; 2]; 8] {
 }
 #[test]
 fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody() {
+    ordinary_stream_publication(false);
+}
+
+#[test]
+fn compensated_stream_publication_preserves_receipts_pcm_cancellation_and_custody() {
+    ordinary_stream_publication(true);
+}
+
+fn ordinary_stream_publication(compensated: bool) {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -79,7 +88,7 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
         .unwrap()
         .fingerprint();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
-    let Created::Imported { asset, .. } = editor
+    let Created::Imported { asset, track, .. } = editor
         .execute(Command::ImportAudioTrack {
             name: "source".into(),
             path: file.0.clone(),
@@ -89,6 +98,53 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
         .unwrap()
     else {
         panic!("asset")
+    };
+    if compensated {
+        let Created::Track(midi) = editor
+            .execute(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("midi track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track: midi,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("midi clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::ZERO,
+                duration: hex_project::BeatTime::ONE,
+                pitch: 60,
+                velocity: 90,
+                channel: 0,
+            })
+            .unwrap();
+        let limiter = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+    }
+    let expected = if compensated {
+        [[0.0; 2]; 8]
+    } else {
+        [[0.25; 2]; 8]
     };
     let metadata = |generation| {
         StreamedSourceMetadata::new(
@@ -233,7 +289,7 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
         let samples = render(&mut backend);
         let status = client.status().unwrap();
         if status.applied_revision.load(Acquire) == revision {
-            assert_eq!(samples, [[0.25; 2]; 8]);
+            assert_eq!(samples, expected);
             break;
         }
         assert_eq!(samples, [[0.0; 2]; 8]);
@@ -261,10 +317,20 @@ fn ordinary_stream_publication_preserves_receipts_pcm_cancellation_and_custody()
             } if ticket == play
         ))
     );
+    if compensated {
+        let mut heard = false;
+        for _ in 0..40 {
+            heard |= render(&mut backend)
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0);
+        }
+        assert!(heard, "compensated mix must reach the output");
+    }
     let seek = client
         .command_with_ticket(PlaybackCommand::PlayFrom(0))
         .unwrap();
-    assert_eq!(render(&mut backend), [[0.25; 2]; 8]);
+    assert_eq!(render(&mut backend), expected);
     assert_eq!(
         client
             .status()

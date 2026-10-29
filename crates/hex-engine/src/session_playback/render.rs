@@ -710,7 +710,6 @@ impl SessionPlayback {
         let mut resident_source_end = 0;
         let mut resident_source_eligible = [false; MAX_TRACKS];
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
-        let mut resident_session_batch = false;
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -763,7 +762,7 @@ impl SessionPlayback {
                 if count == 0 {
                     return Err(SessionPlaybackError::ArithmeticOverflow);
                 }
-                resident_session_batch = self.prepare_resident_sources(
+                self.prepare_resident_sources(
                     performance_frame,
                     arrangement_frame,
                     count,
@@ -882,7 +881,7 @@ impl SessionPlayback {
                     external,
                     use_resident_sources.then_some(compensated::BatchedSources {
                         index: resident_source_index,
-                        session_audio: resident_session_batch.then_some(&resident_source_eligible),
+                        audio: &resident_source_eligible,
                         analytic: &resident_analytic_eligible,
                     }),
                 )?;

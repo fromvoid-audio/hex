@@ -1841,10 +1841,9 @@ impl SessionPlayback {
         // Resident Arrangement and eligible Session audio share this window.
         // Generic streamed providers retain their original per-frame lookups.
         let mut resident_source_scratch = Vec::new();
-        if !revision.arrangement().contains_streamed_sources()
-            && compensation
-                .as_ref()
-                .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing())
+        if compensation
+            .as_ref()
+            .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing())
         {
             resident_source_scratch
                 .try_reserve_exact(arrangement_tracks.len())
