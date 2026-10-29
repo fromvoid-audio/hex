@@ -784,7 +784,8 @@ fn real_worker_keeps_simultaneous_generations_of_an_asset_separate() {
 
 #[test]
 fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_page() {
-    let (wav, _) = TestWav::stereo_pcm16(48_000, 4096);
+    let (wav, expected) = TestWav::stereo_pcm16(48_000, 4096);
+    let original = fs::read(wav.path()).expect("read original fixture");
     let asset = asset_id(4096, 48_000);
     let key = StreamSourceKey::new(31, asset);
     let verified =
@@ -801,7 +802,8 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
     .expect("identity metadata");
     let definition = SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(4096));
     let mut runtime =
-        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).expect("runtime");
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition.clone()])
+            .expect("runtime");
     runtime
         .wait_until_ready(Duration::from_secs(3))
         .expect("catalog ready");
@@ -844,8 +846,55 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
         page_index: 0
     }]));
 
+    fs::write(wav.path(), &original).expect("restore exact original bytes");
+    OpenOptions::new()
+        .write(true)
+        .open(wav.path())
+        .expect("open restored fixture")
+        .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(1)))
+        .expect("set a different modification time");
+    let page = PageKey {
+        source: key,
+        page_index: 0,
+    };
+    runtime.request_page(key, 0);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut failure_count = 0;
+    while Instant::now() < deadline && failure_count == 0 {
+        runtime.pump_ready(8);
+        failure_count = runtime.take_failures(&mut failures);
+        if failure_count == 0 {
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    assert_eq!(failure_count, 1);
+    assert_eq!(failures[0].key, key.into());
+    assert_eq!(failures[0].page_index, 0);
+    assert_eq!(
+        failures[0].kind,
+        hex_stream::StreamFailureKind::SourceChanged
+    );
+    assert!(runtime.page(key, 0).is_none());
     let report = runtime.shutdown().expect("shutdown after source refusal");
-    assert!(report.accounting_complete);
+    assert!(report.worker_joined && report.accounting_complete);
+
+    let mut recovered = StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition])
+        .expect("fresh runtime");
+    recovered
+        .wait_until_ready(Duration::from_secs(3))
+        .expect("reverified original source");
+    recovered.request_page(key, 0);
+    assert!(wait_for_pages(
+        &mut recovered,
+        &[page],
+        Duration::from_secs(3)
+    ));
+    assert_eq!(
+        recovered.page(key, 0).expect("restored page").frames,
+        expected
+    );
+    let report = recovered.shutdown().expect("shutdown after recovery");
+    assert!(report.worker_joined && report.accounting_complete);
 }
 
 #[test]
