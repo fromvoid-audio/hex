@@ -448,6 +448,7 @@ impl EditorView {
                     })
                     .map(|track| {
                         let track_id = track.id();
+                        let selected = self.track_selection.contains(track_id);
                         let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
                         let header_focus = self.track_header_focus(track_id, cx);
                         let click_focus = header_focus.clone();
@@ -470,15 +471,31 @@ impl EditorView {
                                     },
                                 ),
                             )
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.select_track(track_id, window);
-                                view.selected_cell = None;
-                                view.selected_scene = None;
-                                click_focus.focus(window);
-                                cx.notify();
-                            }))
+                            .on_click(cx.listener(
+                                move |view, event: &gpui::ClickEvent, window, cx| {
+                                    view.select_track_with_modifiers(
+                                        track_id,
+                                        event.modifiers(),
+                                        window,
+                                    );
+                                    view.selected_cell = None;
+                                    view.selected_scene = None;
+                                    click_focus.focus(window);
+                                    cx.notify();
+                                },
+                            ))
                             .debug_selector(move || format!("session-track-{}", track_id.value()))
                             .relative()
+                            .children(selected.then(|| {
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .border_1()
+                                    .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                                    .debug_selector(move || {
+                                        format!("selected-console-track-{}", track_id.value())
+                                    })
+                            }))
                             .child(
                                 div()
                                     .absolute()
@@ -512,6 +529,11 @@ impl EditorView {
                             .items_center()
                             .border_l_1()
                             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                            .bg(rgb(theme::color(if selected {
+                                theme::PaletteRole::Raised
+                            } else {
+                                theme::PaletteRole::Surface
+                            })))
                             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                             .text_xs()
                             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
