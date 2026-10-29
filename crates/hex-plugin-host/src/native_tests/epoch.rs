@@ -2,7 +2,7 @@
 use super::*;
 
 // The fixture confirms the SDK is held before checking cancellation or timeout.
-const HELD_OPERATION_TIMEOUT: Duration = Duration::from_millis(50);
+const HELD_OPERATION_TIMEOUT: Duration = Duration::from_millis(20);
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
