@@ -209,28 +209,34 @@ fn ordinary_publication_reports_changed_source_after_catalog_admission() {
 
 #[test]
 fn ordinary_resource_graph_requires_actual_catalog_and_protected_pages_and_returns_before_join() {
-    ordinary_case(false, false, false);
+    ordinary_case(false, false, false, false);
 }
 #[test]
 fn ordinary_sampler_and_streamed_clip_share_resource_and_page_custody_without_callback_allocations()
 {
-    ordinary_case(true, false, false);
+    ordinary_case(true, false, false, false);
 }
 #[test]
 fn ordinary_paused_keyboard_monitor_and_first_play_keep_resident_pcm_and_clock_semantics() {
-    ordinary_case(true, true, false);
+    ordinary_case(true, true, false, false);
 }
 #[test]
 fn grouped_file_backed_native_playback_matches_resident_oracle_without_callback_allocations() {
-    ordinary_case(false, false, true);
+    ordinary_case(false, false, true, false);
 }
 #[test]
 fn grouped_sampler_and_file_backed_sources_keep_existing_resource_custody() {
-    ordinary_case(true, false, true);
+    ordinary_case(true, false, true, false);
 }
-fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
+#[test]
+fn stop_and_restart_with_streamed_audio_and_active_sampler_match_resident_pcm() {
+    assert!(hex_engine::audio_storage_constructor_layout_supported());
+    ordinary_case(true, false, false, true);
+}
+fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: bool) {
     let _serial = serial();
-    let mut project = super::readiness::project_with_frames(8);
+    let frames = if stop_restart { 8192 } else { 8 };
+    let mut project = super::readiness::project_with_frames(frames as u64);
     let asset = project.assets().next().unwrap().id();
     let mut store = ResidentDeviceAssets::default();
     let mut session_clip = None;
@@ -250,7 +256,7 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
                 track,
                 state:
                     hex_engine::native_device_resources::current_sampler_fixture::one_shot_state(
-                        8, asset,
+                        frames, asset,
                     )
                     .unwrap(),
             })
@@ -305,13 +311,13 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
             .insert_on_control(
                 (
                     asset,
-                    hex_engine::OwnedAudioSource::try_resident(48_000, vec![[0.25; 2]; 8])
+                    hex_engine::OwnedAudioSource::try_resident(48_000, vec![[0.25; 2]; frames])
                         .ok()
                         .unwrap(),
                 ),
                 0,
                 resource_limits(),
-                8,
+                frames as u64,
                 &AtomicBool::new(false),
                 || Ok::<_, hex_engine::native_device_resources::ResourcePreparationError>(()),
             )
@@ -360,7 +366,7 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
         &project,
         &BTreeMap::from([(
             asset,
-            hex_engine::Audio::new(48_000, vec![[0.25; 2]; 8]).unwrap(),
+            hex_engine::Audio::new(48_000, vec![[0.25; 2]; frames]).unwrap(),
         )]),
         Arc::new(hex_engine::SineTable::new()),
         None,
@@ -408,7 +414,7 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
         }
         runtime
     };
-    let wav = stream_fixture::Wav::new();
+    let wav = stream_fixture::Wav::with_frames(frames as u32);
     let definition = wav.definition(asset, 11);
     let metadata = definition.metadata.clone();
     let context = hex_engine::AudioSourceContext {
@@ -496,7 +502,7 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
             |_| Ok::<_, ()>(()),
         )
         .unwrap_or_else(|_| panic!("ordinary publication"));
-    let play = if keyboard {
+    let mut play = if keyboard {
         0
     } else {
         control.command_with_ticket(PlaybackCommand::Play).unwrap()
@@ -522,6 +528,32 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
         std::thread::yield_now();
     };
     assert_eq!(output, expected);
+    if stop_restart {
+        assert!(
+            output.iter().any(|frame| frame[0] > 0.25),
+            "sampler must contribute before Stop"
+        );
+        oracle
+            .try_apply_action(hex_engine::PlaybackAction::Transport(PlaybackCommand::Stop))
+            .unwrap();
+        control.stop();
+        assert_eq!(measured_block(&mut data), [[0.0; 2]; 8]);
+        assert_eq!(control.status.position.load(Acquire), 0);
+        assert_eq!(control.status.performance_frame.load(Acquire), 0);
+        assert!(!control.status.playing.load(Acquire));
+        oracle
+            .try_apply_action(hex_engine::PlaybackAction::Transport(PlaybackCommand::Play))
+            .unwrap();
+        oracle.render(&mut expected).unwrap();
+        let restarted = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        let output = measured_block(&mut data);
+        assert_eq!(output, expected);
+        assert_eq!(
+            control.status.stream_applied_command_prefix.load(Acquire),
+            restarted
+        );
+        play = restarted;
+    }
     if !keyboard {
         assert!(std::iter::from_fn(|| control.take_audio_diagnostic()).any(|event|
             matches!(event.kind, AudioDiagnosticKind::CommandDequeued { ticket, action: PlaybackAction::Transport(PlaybackCommand::Play), .. } if ticket == play)));
