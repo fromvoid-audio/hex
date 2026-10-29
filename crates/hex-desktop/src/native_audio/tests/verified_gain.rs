@@ -401,10 +401,13 @@ fn gain_diagnostics_correlate_session_outcome_submission_and_callback_applicatio
 }
 
 #[test]
-fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
-    for session in [false, true] {
-        verified_gain_case(session);
-    }
+fn verified_arrangement_gain_reaches_callback_before_commit() {
+    verified_gain_case(false);
+}
+
+#[test]
+fn verified_session_gain_reaches_callback_before_commit() {
+    verified_gain_case(true);
 }
 fn verified_gain_case(session: bool) {
     let _native = NATIVE_FIXTURE.lock().unwrap();
@@ -823,7 +826,11 @@ fn stable_gain(h: &Harness, applied: hex_audio::prepared::AppliedAudioSource, ga
             Instant::now() < deadline,
             "verified page worker made no sustained progress"
         );
-        std::thread::sleep(Duration::from_millis(1));
+        if committed == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        } else {
+            std::thread::yield_now();
+        }
     }
 }
 

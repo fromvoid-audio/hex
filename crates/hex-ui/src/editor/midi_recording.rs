@@ -6,6 +6,10 @@ use hex_engine::midi_capture::MidiCaptureBinding;
 use hex_session::midi_recording::{MidiTake, MidiTakeBinding, RecordedMidiNote};
 use std::sync::{Arc, atomic::Ordering::Acquire};
 
+#[cfg(feature = "ui-test-support")]
+#[path = "midi_recording_pressure_fixture.rs"]
+pub(crate) mod pressure_fixture;
+
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     #[default]

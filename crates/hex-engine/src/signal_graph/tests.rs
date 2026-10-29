@@ -403,6 +403,189 @@ fn resident_compensated_windows_match_independent_loop_pcm() {
 }
 
 #[test]
+fn compensated_resident_session_loop_keeps_pcm_and_clocks_across_partitions() {
+    for count in [1, 4] {
+        let delays: Vec<&[u32]> = (0..count)
+            .map(|i| if i == 0 { &[7][..] } else { &[][..] })
+            .collect();
+        let mut f = fixture(&delays, 32);
+        let source: Vec<_> = (0..32)
+            .map(|frame| [frame as f32 / 128.0, -(frame as f32) / 256.0])
+            .collect();
+        for audio in f.media.values_mut() {
+            *audio = Audio::new(48_000, source.clone()).unwrap();
+        }
+        f.editor
+            .execute(Command::SetLoopRegion {
+                start: 16,
+                end: 32,
+                enabled: true,
+            })
+            .unwrap();
+        let Created::Scene(scene) = f
+            .editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        for &track in &f.tracks {
+            let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+            let Created::SessionClip(clip) = f
+                .editor
+                .execute(Command::CreateSessionAudioClip {
+                    track,
+                    scene,
+                    name: "loop".into(),
+                    asset,
+                    source_start: 0,
+                    source_end: 32,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            f.editor
+                .execute(Command::SetSessionAudioClipLoop {
+                    clip,
+                    loop_range: Some(hex_project::SessionAudioLoop::new(4, 12).unwrap()),
+                })
+                .unwrap();
+        }
+        let revision = prepare(&f).unwrap();
+        let mut expected = [[0.0; 2]; 137];
+        for (frame, output) in expected.iter_mut().enumerate().skip(7) {
+            let elapsed = frame - 7;
+            let source_frame = if elapsed < 12 {
+                elapsed
+            } else {
+                4 + (elapsed - 12) % 8
+            };
+            *output = source[source_frame].map(|sample| sample * count as f32);
+        }
+        for partition in [1, 7, 17, 64, 256] {
+            let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            runtime
+                .apply(SessionPlaybackCommand::LaunchScene {
+                    scene,
+                    quantization: crate::LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut actual = [[0.0; 2]; 137];
+            for block in actual.chunks_mut(partition) {
+                runtime.render(block).unwrap();
+            }
+            assert_eq!(actual, expected, "tracks {count}, partition {partition}");
+            assert_eq!(runtime.performance_frame(), 137);
+            assert_eq!(runtime.arrangement_frame(), 25);
+        }
+    }
+}
+
+#[test]
+fn resident_session_batch_stops_at_quantized_relaunch_boundary() {
+    let mut f = fixture(&[&[7], &[], &[], &[]], 32);
+    let assets: Vec<_> = f
+        .tracks
+        .iter()
+        .map(|track| f.editor.project().track(*track).unwrap().clips()[0].asset())
+        .collect();
+    for (index, asset) in assets.iter().enumerate() {
+        let value = if index == 1 {
+            [0.25, -0.5]
+        } else {
+            [0.125, -0.25]
+        };
+        f.media
+            .insert(*asset, Audio::new(48_000, vec![value; 32]).unwrap());
+    }
+    let Created::Scene(first_scene) = f
+        .editor
+        .execute(Command::AddScene {
+            name: "first".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::Scene(next_scene) = f
+        .editor
+        .execute(Command::AddScene {
+            name: "next".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    for (index, &track) in f.tracks.iter().enumerate() {
+        f.editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene: first_scene,
+                name: "first".into(),
+                asset: assets[index],
+                source_start: 0,
+                source_end: 32,
+            })
+            .unwrap();
+    }
+    let Created::SessionClip(next_clip) = f
+        .editor
+        .execute(Command::CreateSessionAudioClip {
+            track: f.tracks[0],
+            scene: next_scene,
+            name: "next".into(),
+            asset: assets[1],
+            source_start: 0,
+            source_end: 32,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    let revision = prepare(&f).unwrap();
+    let mut expected = [[0.0; 2]; 49];
+    for (frame, output) in expected.iter_mut().enumerate().skip(7) {
+        let elapsed = frame - 7;
+        let others = if elapsed < 32 { [0.5, -1.0] } else { [0.0; 2] };
+        let first = if elapsed < 10 {
+            [0.125, -0.25]
+        } else if elapsed < 42 {
+            [0.25, -0.5]
+        } else {
+            [0.0; 2]
+        };
+        *output = [others[0] + first[0], others[1] + first[1]];
+    }
+    for partition in [1, 7, 17, 48] {
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Seek(95_990)).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchScene {
+                scene: first_scene,
+                quantization: crate::LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut actual = [[0.0; 2]; 49];
+        runtime.render(&mut actual[..1]).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: next_clip,
+                quantization: crate::LaunchQuantization::FourQuarter,
+            })
+            .unwrap();
+        for chunk in actual[1..].chunks_mut(partition) {
+            runtime.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "partition {partition}");
+    }
+}
+
+#[test]
 fn resident_batch_yields_to_quantized_session_audio_at_exact_boundary() {
     let mut f = fixture(&[&[7]], 32);
     let asset = *f.media.keys().next().unwrap();

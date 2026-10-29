@@ -3943,6 +3943,7 @@ impl SessionPlayback {
         // runtime/DSP owner, including tails from earlier publications; release
         // only proofs whose exact clip has become inactive in the candidate.
         let revision = &self.revision;
+        let disconnected = shared_sources::disconnected_contributors(&previous.revision, revision);
         let release_live_input = previous
             .computer_keyboard
             .as_ref()
@@ -3964,8 +3965,7 @@ impl SessionPlayback {
             }
             shared_sources::release_disconnected_contributors(
                 runtime,
-                &previous.revision,
-                revision,
+                &disconnected,
                 previous.performance_frame,
             );
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {

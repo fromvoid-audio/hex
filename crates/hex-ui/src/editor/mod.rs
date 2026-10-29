@@ -136,6 +136,8 @@ mod midi_note_overwrite;
 mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
