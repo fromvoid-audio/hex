@@ -1052,3 +1052,17 @@ pub(crate) fn original_worker_published_blocks(
         _ => None,
     }
 }
+
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn original_worker_transport_live(
+    root: &CandidateRoot,
+    binding: Binding,
+) -> Option<bool> {
+    let work = lock(&root.0.eligible.work);
+    let bank = lock(&root.0.eligible.bank);
+    let index = bank.sources.index(binding)?;
+    match work.sources.cells[index].owner.as_ref()? {
+        Owner::Loaned(control) => Some(control.transport_is_live_on_control()),
+        _ => None,
+    }
+}

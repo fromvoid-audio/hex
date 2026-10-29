@@ -147,3 +147,127 @@ fn actual_native_held_worker_misses_pipeline_without_partial_audio_or_replay() {
         finish(&mut retirement);
     }
 }
+
+#[test]
+#[ignore = "run exactly with source-bound native receipts and HEX_ORIGINAL_INSTANCE_VARIANT=31"]
+fn actual_native_process_crash_silences_host_and_reaps_original_owner() {
+    use std::os::unix::process::ExitStatusExt;
+    // Run this ignored test by exact name in its own process. The fixture
+    // reads its fault mode from the inherited child environment; requiring it
+    // here prevents a normal SDK run from masquerading as a crash check.
+    assert_eq!(
+        std::env::var("HEX_ORIGINAL_INSTANCE_VARIANT").as_deref(),
+        Ok("31")
+    );
+    let _serial = serial();
+    // Each location owns a separate graph, worker and original helper. Run
+    // these independent cases together; each callback probe remains per-thread.
+    std::thread::scope(|scope| {
+        let cases: Vec<_> = (0..3).map(|location| scope.spawn(move || {
+        let PreparedFixture {
+            mut control,
+            mut data,
+            errors,
+            retirement,
+            binding,
+            owner,
+            ..
+        } = prepared_fixture_with_profile(location, false, "processing", 8, false);
+        let root = control.native_candidate_root();
+        let ticket = control
+            .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
+            .unwrap_or_else(|r| panic!("crashing native graph: {}", r.reason));
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut frames = [[9.0; 2]; 8];
+        let mut host = [9.0_f32; 16];
+        allocation_free(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.begin_block();
+                callback.begin_native_effect_callback(8).unwrap();
+                let rendered = callback.render(&mut frames);
+                assert!(rendered.is_ok());
+                assert!(crate::device::finish_host_chunk(
+                    callback,
+                    &mut host,
+                    &mut frames,
+                    2,
+                    &rendered,
+                    0,
+                    Instant::now()
+                ));
+            });
+        });
+        assert_eq!(host, [0.0; 16]);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match crate::candidate_custody::native_source_test_fixture::original_worker_transport_live(&root, binding) {
+                Some(false) => break,
+                Some(true) => {},
+                None => panic!("original worker custody disappeared"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "crashed worker did not revoke transport"
+            );
+            std::thread::yield_now();
+        }
+        host.fill(9.0);
+        frames.fill([9.0; 2]);
+        let mut reported_error = None;
+        allocation_free(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.begin_block();
+                let begun = callback.begin_native_effect_callback(8);
+                let rendered = begun.and_then(|()| callback.render(&mut frames));
+                reported_error = rendered.as_ref().err().map(|error| error.0);
+                assert!(reported_error.is_some());
+                assert!(!crate::device::finish_host_chunk(
+                    callback,
+                    &mut host,
+                    &mut frames,
+                    2,
+                    &rendered,
+                    8,
+                    Instant::now()
+                ));
+            });
+        });
+        assert_eq!(
+            host, [0.0; 16],
+            "whole host output must be silent for location {location}"
+        );
+        let fault = control
+            .status
+            .render_fault_snapshot()
+            .expect("crash render fault");
+        assert_eq!(Some(fault.message.as_str()), reported_error);
+        assert_eq!((fault.audio_revision, fault.frame), (1, 8));
+        control.stop();
+        assert!(!control.status.playing.load(Acquire));
+        let mut retirement = close_backend(data, errors, retirement);
+        let returned = crate::prepared::candidate_tests::recover(&mut control, &ticket);
+        assert_eq!(
+            returned.return_kind,
+            crate::AudioCandidateReturnKind::FinalActive
+        );
+        drop(returned);
+        let returned = recover(&mut control, binding);
+        assert!(returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.error, Some(hex_plugin_host::Error::Protocol(_))),
+            "crash must retain the protocol failure: {:?}",
+            returned.error
+        );
+        let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
+            panic!("crashed child must be reaped")
+        };
+        assert_eq!(disposal.status.signal(), Some(11));
+        assert!(disposal.terminal.is_none());
+        drop(control);
+        finish(&mut retirement);
+        })).collect();
+        for case in cases {
+            case.join().unwrap();
+        }
+    });
+}
