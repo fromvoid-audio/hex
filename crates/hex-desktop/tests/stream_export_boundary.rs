@@ -131,6 +131,58 @@ fn varied(files: &Files, name: &str, rate: u32, frames: u32) -> PathBuf {
     fs::write(&path, bytes).unwrap();
     path
 }
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn verified_stem_page_miss_removes_the_entire_unpublished_batch() {
+    use hex_session::service::{ExportControl, ExportSignal, Stem};
+
+    let files = Files::new();
+    let a = varied(&files, "a.wav", 48_000, 2048);
+    let b = varied(&files, "b.wav", 48_000, 2048);
+    let originals = [fs::read(&a).unwrap(), fs::read(&b).unwrap()];
+    let neighbor = files.0.join("unrelated");
+    fs::write(&neighbor, b"preserve").unwrap();
+    let before: std::collections::BTreeSet<_> = fs::read_dir(&files.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+
+    let service = offline(48_000, crate::streamed_export::test_support::missing_page);
+    let mut stems = Vec::new();
+    for (path, name) in [(&a, "a"), (&b, "b")] {
+        let imported = run(&service, Request::Import(path.clone()));
+        let track = imported.state.project.tracks().last().unwrap().id();
+        stems.push(Stem {
+            id: hex_engine::OutputCaptureId::Track(track),
+            name: name.into(),
+        });
+    }
+    let output = files.0.join("batch");
+    run(
+        &service,
+        Request::ExportRange {
+            path: output.clone(),
+            start: 0,
+            frames: Some(1024),
+            signal: ExportSignal::Stems(stems),
+            control: ExportControl::default(),
+            overwrite: false,
+        },
+    );
+    let error = exported(&service).result.unwrap_err();
+    assert!(error.contains("unexpected media page miss"), "{error}");
+    assert!(!output.exists());
+    let after: std::collections::BTreeSet<_> = fs::read_dir(&files.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(after, before, "all task-owned staging must be removed");
+    assert_eq!(fs::read(&a).unwrap(), originals[0]);
+    assert_eq!(fs::read(&b).unwrap(), originals[1]);
+    assert_eq!(fs::read(neighbor).unwrap(), b"preserve");
+}
+
 #[test]
 fn verified_export_44k_ungrouped_main_matches_resident_pcm() {
     assert_verified_export_matches_resident(44100, false, 0);
