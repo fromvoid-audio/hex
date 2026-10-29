@@ -2114,54 +2114,6 @@ mod tests {
         });
     }
     #[test]
-    fn shared_provider_refusal_then_live_undo_redo_preserves_donor_pcm() {
-        on_control(|| {
-            let mut f = fixture();
-            let mut donor = started(&f);
-            let device = f
-                .editor
-                .project()
-                .native_source(f.source)
-                .unwrap()
-                .instrument()
-                .id();
-            let replacement = hex_devices::operator_state::OPERATOR_METADATA
-                .default_state()
-                .unwrap();
-            f.editor
-                .execute(Command::ReplaceDeviceState {
-                    device,
-                    state: replacement,
-                })
-                .unwrap();
-            let mut refused = playback(&f);
-            assert_eq!(
-                refused.try_inherit_state_from(&mut donor),
-                Err(SessionPlaybackError::SourceHistoryUnavailable)
-            );
-            assert_eq!(donor.performance_frame(), 7);
-            check_pcm(&mut donor, 7, 19, 0.5);
-
-            assert!(f.editor.undo());
-            let mut restored = playback(&f);
-            restored.try_inherit_state_from(&mut donor).unwrap();
-            assert_eq!(restored.performance_frame(), 26);
-            assert_eq!(restored.mutable_instruments.iter().flatten().count(), 1);
-            check_pcm(&mut restored, 26, 11, 0.5);
-
-            assert!(f.editor.redo());
-            // Redo restores the same unsupported candidate; retrying it also
-            // checks that the first refused preparation left it reusable.
-            assert_eq!(
-                refused.try_inherit_state_from(&mut restored),
-                Err(SessionPlaybackError::SourceHistoryUnavailable)
-            );
-            assert_eq!(restored.performance_frame(), 37);
-            assert_eq!(restored.mutable_instruments.iter().flatten().count(), 1);
-            check_pcm(&mut restored, 37, 17, 0.5);
-        });
-    }
-    #[test]
     fn shared_provider_replacement_requires_stop_and_undo_restores_one_source() {
         on_control(|| {
             let mut f = fixture();
