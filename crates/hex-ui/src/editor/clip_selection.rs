@@ -23,7 +23,8 @@ impl ClipSelection {
         }
     }
     fn select(&mut self, project: &Project, track: TrackId, clip: ClipId, modifiers: Modifiers) {
-        if modifiers.shift
+        let intent = hex_widgets::RectangleSelectionPolicy::Range.intent(modifiers);
+        if let hex_widgets::RectangleSelection::Range { additive } = intent
             && let Some((anchor_track, anchor_clip)) = self.anchor
             && anchor_track == track
         {
@@ -31,7 +32,7 @@ impl ClipSelection {
             if let Some(a) = ordered.iter().position(|id| *id == anchor_clip)
                 && let Some(b) = ordered.iter().position(|id| *id == clip)
             {
-                let mut members = if modifiers.platform {
+                let mut members = if additive {
                     self.members.clone()
                 } else {
                     BTreeSet::new()
@@ -41,7 +42,11 @@ impl ClipSelection {
                 return;
             }
         }
-        if modifiers.platform {
+        if matches!(
+            intent,
+            hex_widgets::RectangleSelection::Toggle
+                | hex_widgets::RectangleSelection::Range { additive: true }
+        ) {
             let mut members = self.members.clone();
             if !members.remove(&clip) {
                 members.insert(clip);
@@ -138,7 +143,6 @@ impl EditorView {
         self.clip_selection.anchor = Some((track, clip));
         self.clip_selection.scope = Some((self.project_generation, state.revision));
         self.selected_track = Some(track);
-        self.retained_clip_detail = None;
         self.selected_clip = Some(clip);
         self.midi_selection.clear();
         self.midi_note_gesture = None;
@@ -499,5 +503,33 @@ mod tests {
             selected(&editor, &mut visual),
             BTreeSet::from([clips[0], clips[1], clips[3], clips[4]])
         );
+    }
+    #[test]
+    fn additive_range_on_another_track_preserves_toggle_fallback() {
+        let (project, clips, other) = fixture();
+        let owner = |clip| {
+            project
+                .tracks()
+                .iter()
+                .find(|track| {
+                    track.clips().iter().any(|c| c.id() == clip)
+                        || track.midi_clips().iter().any(|c| c.id() == clip)
+                })
+                .unwrap()
+                .id()
+        };
+        let mut selection = super::ClipSelection::default();
+        selection.only(owner(clips[0]), clips[0]);
+        let modifiers = Modifiers {
+            platform: true,
+            shift: true,
+            ..Default::default()
+        };
+        selection.select(&project, owner(other), other, modifiers);
+        assert_eq!(selection.members, BTreeSet::from([clips[0], other]));
+        // If the range anchor has been invalidated, command+shift still toggles.
+        selection.anchor = None;
+        selection.select(&project, owner(other), other, modifiers);
+        assert_eq!(selection.members, BTreeSet::from([clips[0]]));
     }
 }

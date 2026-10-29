@@ -1,5 +1,6 @@
 //! View-only Operator controls for sections without native DSP contracts yet.
 use super::super::{EditorView, control_style};
+use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_widgets::{
@@ -297,6 +298,7 @@ fn routing_link(
         .key_context("hex_operator_routing")
         .tooltip(|_, cx| {
             cx.new(|_| super::super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control("routing and global context"),
                 description: theme::text("routing and global context · enter or space"),
             })
             .into()
@@ -320,7 +322,7 @@ fn routing_link(
                 cx.notify();
             }
         }))
-        .on_action(cx.listener(move |view, _: &super::ActivateRouting, _, cx| {
+        .on_action(cx.trace(move |view, _: &super::ActivateRouting, _, cx| {
             if let Some(owner) = owner {
                 super::context::select_routing(view, cx, owner);
                 cx.stop_propagation();

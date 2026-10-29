@@ -1,8 +1,11 @@
 use super::*;
-use crate::{AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource};
+use crate::{AudioStorageReservation, Frame, OwnedAudioInputs, OwnedAudioSource};
 use hex_lattice_contract::{DeviceAssetReference, DeviceTypeId};
 const PCM: [[f32; 2]; 4] = [[0.25, -0.75], [-0.5, 1.0], [0.75, -0.25], [-1.0, 0.5]];
 fn ids() -> Vec<AssetId> {
+    ids_with_frames(4)
+}
+fn ids_with_frames(frames: u64) -> Vec<AssetId> {
     let mut editor =
         hex_project::Editor::new(hex_project::Project::new(44_100).unwrap(), 8).unwrap();
     (0..3)
@@ -11,7 +14,7 @@ fn ids() -> Vec<AssetId> {
                 .execute(hex_project::Command::AddAsset {
                     path: format!("source-{n}.wav").into(),
                     sample_rate: 44_100,
-                    frames: 4,
+                    frames,
                 })
                 .unwrap()
             else {
@@ -317,4 +320,82 @@ fn streamed_storage_is_not_substituted_for_original_resident_pcm() {
     ));
     assert_eq!(bank.summary(), before);
     bank.validate_unresolved_on_control().unwrap();
+}
+
+#[test]
+fn original_resource_hashes_match_scalar_protocol_at_chunk_tails() {
+    if !crate::pcm_arc::native_layout_known() {
+        assert!(OwnedAudioSource::try_resident(44_100, PCM.to_vec()).is_err());
+        eprintln!("resource hash unsupported constructor: no native ownership proof");
+        return;
+    }
+    for count in [1, 255, 256, 257, 511, 512, 513] {
+        let ids = ids_with_frames(count as u64);
+        let pcm: Vec<Frame> = (0..count)
+            .map(|i| {
+                [
+                    if i % 17 == 0 {
+                        -0.0
+                    } else {
+                        (i % 127) as f32 / 128.0 - 0.5
+                    },
+                    ((i * 19) % 127) as f32 / 128.0 - 0.5,
+                ]
+            })
+            .collect();
+        // Independent legacy byte protocol, anchored by the separate fixed
+        // Python-hashlib golden above. In particular do not normalize -0.0.
+        let mut reference = Sha256::new();
+        reference.update(b"hex.device-resource.original-stereo.v1\0");
+        reference.update(44_100_u32.to_le_bytes());
+        reference.update((count as u64).to_le_bytes());
+        for frame in &pcm {
+            for sample in frame {
+                reference.update(sample.to_bits().to_le_bytes());
+            }
+        }
+        let expected: [u8; 32] = reference.finalize().into();
+        let source = OwnedAudioSource::try_resident(44_100, pcm).ok().unwrap();
+        let inputs = OwnedAudioInputs::try_new(
+            vec![(ids[0], source)],
+            AudioStorageReservation {
+                allocation_items: 8,
+                handle_obligations: 8,
+                max_prepared_data_bytes: 4 * 1024 * 1024,
+                max_construction_data_bytes: 8 * 1024 * 1024,
+                caller_retained_bytes: 0,
+                caller_construction_bytes: 0,
+            },
+        )
+        .ok()
+        .unwrap();
+        let before = inputs.test_bank_identity();
+        let catalog = DeviceResourceCatalog::prepare_inputs_on_control(
+            &inputs,
+            &[OriginalResourceSource {
+                asset: ids[0],
+                sample_rate: 44_100,
+                frames: count as u64,
+            }],
+            ResourceCatalogReservation {
+                metadata_bytes: 65_536,
+                hash_frames: count as u64,
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let scope = catalog
+            .prepare_scope_on_control(&state(ids[0]), 4096)
+            .unwrap();
+        let view = catalog.resources_from_inputs(&inputs, &scope).unwrap();
+        let actual = view.get(0).unwrap();
+        assert_eq!(
+            actual.identity.content, expected,
+            "original frame count {count}"
+        );
+        assert_eq!(actual.sample_rate, 44_100);
+        assert_eq!(actual.pcm.frames(), count);
+        assert_eq!(inputs.test_bank_identity(), before);
+    }
+    eprintln!("resource hash boundary controls=completed");
 }

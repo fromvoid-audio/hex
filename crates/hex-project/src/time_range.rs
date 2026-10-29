@@ -98,6 +98,7 @@ struct MidiFragment {
 }
 #[derive(Debug, Clone)]
 struct FrameNote {
+    active: bool,
     start: u64,
     duration: u64,
     pitch: u8,
@@ -160,12 +161,14 @@ impl Project {
                     .0;
                 }
                 fragment.start = start - range.start;
-                if !result.assets.iter().any(|(id, _)| *id == clip.asset()) {
-                    let asset = self
-                        .asset(clip.asset())
-                        .ok_or(Invalid("selected media no longer exists"))?;
-                    reserve(&mut result.assets, 1)?;
-                    result.assets.push((clip.asset(), asset.clone()));
+                for id in clip.referenced_assets() {
+                    if !result.assets.iter().any(|(asset, _)| *asset == id) {
+                        let asset = self
+                            .asset(id)
+                            .ok_or(Invalid("selected media no longer exists"))?;
+                        reserve(&mut result.assets, 1)?;
+                        result.assets.push((id, asset.clone()));
+                    }
                 }
                 reserve(&mut result.audio, 1)?;
                 result.audio.push((row, fragment));
@@ -218,6 +221,7 @@ impl Project {
                         if note_start < note_end {
                             reserve(&mut notes, 1)?;
                             notes.push(FrameNote {
+                                active: note.active(),
                                 start: note_start - start,
                                 duration: note_end - note_start,
                                 pitch: note.pitch(),
@@ -450,6 +454,7 @@ fn paste_rows_with_source(
                 .ok_or(Invalid("pasted note is before its clip"))?;
             notes.push(MidiNote {
                 id: NoteId(0),
+                active: original.active,
                 start: note_start,
                 duration,
                 pitch: original.pitch,
@@ -458,15 +463,18 @@ fn paste_rows_with_source(
             });
         }
         let source = MidiSource {
+            content: std::sync::Arc::new(crate::MidiContent {
+                source_length: length,
+                notes,
+            }),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-            source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
-            notes,
         };
         let clip = MidiClip {
+            content_view: None,
             active: fragment.active,
             playback_offset: crate::BeatTime::ZERO,
             volume: fragment

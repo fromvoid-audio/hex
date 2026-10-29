@@ -5,8 +5,11 @@
 //! results; skipped links and per-module failures remain visible. Startup restores
 //! metadata without executing plugin code. Source bytes remain unchanged; display
 //! passes through `theme::text`. Rows retain foreign UID/module identities and support
-//! search/history in vst3/all, but expose no device insertion or playable hosting.
-//! Custom roots and native interaction acceptance remain separate.
+//! search/history in vst3/all. Explicit effect activation copies exact metadata
+//! into Session's insertion request; discovery itself never admits a source.
+//! Custom folders use the same explicit, bounded batch worker as standard folders;
+//! their results persist in the catalog, without automatic startup execution.
+//! Native interaction acceptance remains separate.
 use super::*;
 use hex_plugin_catalog::{Catalog, Row};
 
@@ -14,6 +17,7 @@ use hex_plugin_catalog::{Catalog, Row};
 enum PluginScan {
     Selected(PathBuf),
     Standard,
+    Folder(PathBuf),
     #[cfg(all(test, feature = "ui-test-support"))]
     TestFolders(Vec<PathBuf>),
 }
@@ -25,6 +29,8 @@ pub(super) struct Plugins {
     pub(super) status: String,
     pub(super) loading: bool,
     pub(super) busy: bool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) diagnostics: Option<hex_plugin_catalog::worker::ScanDiagnostics>,
     picking: bool,
     writable: bool,
     app: Option<PathBuf>,
@@ -39,6 +45,15 @@ pub(super) struct Plugins {
     test_roots: Option<Vec<PathBuf>>,
 }
 impl Plugins {
+    #[cfg(all(
+        test,
+        feature = "ui-test-support",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    pub(super) fn scan_evidence(&self) -> impl std::fmt::Debug + '_ {
+        (&self.status, &self.diagnostics, &self.catalog)
+    }
     fn replace(&mut self, catalog: Catalog) {
         self.catalog = catalog;
         self.projection.borrow_mut().take();
@@ -58,6 +73,20 @@ impl Plugins {
 }
 
 impl EditorView {
+    pub(super) fn activate_browser_plugin(
+        &mut self,
+        module: &std::path::Path,
+        cid: Option<[u8; 16]>,
+    ) {
+        let selected = cid
+            .ok_or_else(|| "select an available vst3 effect class".to_string())
+            .and_then(|cid| self.browser.plugins.catalog.select_effect(module, cid));
+        match selected {
+            Ok(selection) => self.insert_browser_plugin_effect(selection),
+            Err(error) => self.error = Some(error.into()),
+        }
+    }
+
     fn plugin_catalog_path(&self) -> PathBuf {
         self.browser
             .preferences_path
@@ -82,13 +111,20 @@ impl EditorView {
             return;
         }
         self.browser.plugins.loading = true;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.browser.plugins.diagnostics = None;
+        }
         let path = self.plugin_catalog_path();
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let (loaded, app) = cx
                 .background_executor()
                 .spawn(async move {
-                    let catalog = Catalog::load(&path);
+                    let catalog = Catalog::load(&path).and_then(|mut catalog| {
+                        catalog.refresh_sources()?;
+                        Ok(catalog)
+                    });
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let app = hex_plugin_catalog::worker::available_app();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -186,7 +222,7 @@ impl EditorView {
                             })))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|view, _, _, cx| view.pick_trusted_plugin(cx)),
+                                cx.listener(|view, _, _, cx| view.pick_trusted_plugin(false, cx)),
                             )
                             .child(theme::text("scan trusted vst3…")),
                     )
@@ -198,10 +234,10 @@ impl EditorView {
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(|view, _, _, cx| {
+                                    cx.listener(|_view, _, _, cx| {
                                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                        if let Some(cancel) = &view.browser.plugins.cancellation {
-                                            view.browser.plugins.status = if cancel.cancel() {
+                                        if let Some(cancel) = &_view.browser.plugins.cancellation {
+                                            _view.browser.plugins.status = if cancel.cancel() {
                                                 "cancel requested · waiting for scanner cleanup"
                                                     .into()
                                             } else {
@@ -237,6 +273,14 @@ impl EditorView {
                     .child(theme::text("scan trusted standard folders")),
             )
             .child(
+                div().id("scan-custom-vst3")
+                    .debug_selector(|| "browser-vst3-scan-custom".into())
+                    .text_xs().cursor_pointer()
+                    .text_color(rgb(theme::color(if can_scan { theme::PaletteRole::Text } else { theme::PaletteRole::Muted })))
+                    .on_mouse_down(MouseButton::Left, cx.listener(|view, _, _, cx| view.pick_trusted_plugin(true, cx)))
+                    .child(theme::text("scan trusted custom folder…")),
+            )
+            .child(
                 div()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -255,17 +299,24 @@ impl EditorView {
                     )),
             )
     }
-    fn pick_trusted_plugin(&mut self, cx: &mut Context<Self>) {
+    fn pick_trusted_plugin(&mut self, folder: bool, cx: &mut Context<Self>) {
         let state = &mut self.browser.plugins;
         if state.app.is_none() || !state.writable || state.loading || state.busy || state.picking {
             return;
         }
         state.picking = true;
         let response = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
+            files: !folder,
             directories: true,
             multiple: false,
-            prompt: Some("scan trusted vst3 bundle · executes plugin code".into()),
+            prompt: Some(
+                if folder {
+                    "scan trusted vst3 folder · executes plugin code"
+                } else {
+                    "scan trusted vst3 bundle · executes plugin code"
+                }
+                .into(),
+            ),
         });
         cx.spawn(async move |this, cx| {
             let picked = response.await;
@@ -274,7 +325,12 @@ impl EditorView {
                 match picked {
                     Ok(Ok(Some(paths))) if paths.len() == 1 => {
                         if let Some(path) = paths.into_iter().next() {
-                            view.scan_trusted_plugin(path, cx);
+                            if folder {
+                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                                view.start_plugin_scan(PluginScan::Folder(path), cx);
+                            } else {
+                                view.scan_trusted_plugin(path, cx);
+                            }
                         }
                     }
                     Ok(Ok(_)) => {}
@@ -323,8 +379,10 @@ impl EditorView {
             let token = cancellation.token();
             self.browser.plugins.cancellation = Some(cancellation);
             self.browser.plugins.busy = true;
+            self.browser.plugins.diagnostics = None;
             self.browser.plugins.status = match &request {
                 PluginScan::Selected(_) => "scanning selected trusted plugin…",
+                PluginScan::Folder(_) => "scanning trusted custom folder…",
                 _ => "scanning trusted standard folders…",
             }
             .into();
@@ -334,19 +392,31 @@ impl EditorView {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        match request {
+                        let mut update = match request {
                             PluginScan::Selected(path) => worker::scan(&catalog, &app, path, token),
                             PluginScan::Standard => worker::scan_standard(&catalog, &app, token),
+                            PluginScan::Folder(path) => {
+                                worker::scan_folders(&catalog, &app, &[path], token)
+                            }
                             #[cfg(all(test, feature = "ui-test-support"))]
                             PluginScan::TestFolders(roots) => {
                                 worker::scan_folders(&catalog, &app, &roots, token)
                             }
+                        };
+                        if let Some(catalog) = &mut update.catalog {
+                            if let Err(error) = catalog.refresh_sources() {
+                                update.catalog = None;
+                                update.status =
+                                    format!("plugin source inspection failed · {error}");
+                            }
                         }
+                        update
                     })
                     .await;
                 let _ = this.update(cx, |view, cx| {
                     view.browser.plugins.busy = false;
                     view.browser.plugins.cancellation = None;
+                    view.browser.plugins.diagnostics = result.diagnostics;
                     if let Some(catalog) = result.catalog {
                         view.apply_plugin_catalog(catalog, cx);
                     }
@@ -365,15 +435,20 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let key = BrowserItemKey::Plugin(row.module.clone(), row.cid);
+        let tooltip = format!("{}\n{}", row.module.display(), row.status);
         div()
             .id(("browser-vst3", index))
             .debug_selector(move || format!("browser-vst3-row-{index}"))
             .h(px(ROW_HEIGHT))
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .px_1()
             .flex()
             .items_center()
             .gap_1()
             .cursor_pointer()
+            .tooltip(move |_, cx| layout::browser_label_tooltip(&tooltip, cx))
             .bg(rgb(theme::color(
                 if self.browser.results_focused && self.browser.selected_index == index {
                     theme::PaletteRole::Hover
@@ -383,7 +458,7 @@ impl EditorView {
             )))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     let Some(current) = view.browser_history_index(&key, cx) else {
                         return;
                     };
@@ -392,6 +467,9 @@ impl EditorView {
                     view.browser.results_focused = true;
                     view.browser.results_focus.focus(window);
                     window.prevent_default();
+                    if event.click_count >= 2 {
+                        view.browser_activate(window, cx);
+                    }
                     cx.notify();
                 }),
             )
@@ -407,6 +485,9 @@ impl EditorView {
             )
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(row.status)),

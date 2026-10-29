@@ -1,6 +1,8 @@
 //! Finite hostile-wire contracts; actual SDK behavior is tested separately.
 use super::*;
-use hex_audio::plugin_transport::{Events, MidiEvent};
+#[path = "protocol_tests/conversion.rs"]
+mod conversion;
+use crate::transport::{Events, MidiEvent};
 use hex_plugin_state::{BinaryIdentity, ClassId, State};
 fn config() -> Configuration {
     Configuration {
@@ -28,6 +30,109 @@ fn config() -> Configuration {
         executable: "Contents/MacOS/fixture".into(),
         restore: None,
     }
+}
+
+#[test]
+fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state() {
+    let config = config();
+    let state = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: Some(b"live component"),
+        controller: Some(b"live controller"),
+    })
+    .unwrap();
+    for poll in [false, true] {
+        let request = live_capture_request(&config, 9, 2, poll).unwrap();
+        assert_eq!(&request[..4], if poll { b"HXVP" } else { b"HXVL" });
+        assert_eq!(&request[48..56], &9_u64.to_le_bytes());
+        assert_eq!(&request[56..64], &72_u64.to_le_bytes());
+        assert_eq!(&request[64..], &2_u64.to_le_bytes());
+        assert!(live_capture_request(&config, 9, 0, poll).is_err());
+    }
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for value in [9_u64, 72, 2] {
+        body.extend(value.to_le_bytes());
+    }
+    body.extend([0, 0, 0]);
+    assert_eq!(live_captured_state(&body, &config, 9, 2).unwrap(), None);
+    body[58] = 1;
+    body[59..61].copy_from_slice(&(state.payload().len() as u16).to_le_bytes());
+    body.extend(state.payload());
+    assert_eq!(
+        live_captured_state(&body, &config, 9, 2).unwrap(),
+        Some(state)
+    );
+    assert!(live_captured_state(&body, &config, 8, 2).is_err());
+    assert!(live_captured_state(&body, &config, 9, 1).is_err());
+    for end in 0..body.len() {
+        assert!(live_captured_state(&body[..end], &config, 9, 2).is_err());
+    }
+    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 59, 65, 69, 85, 117] {
+        let mut invalid = body.clone();
+        invalid[offset] ^= 128;
+        assert!(
+            live_captured_state(&invalid, &config, 9, 2).is_err(),
+            "offset {offset}"
+        );
+    }
+    body[58] = 0;
+    assert!(
+        live_captured_state(&body, &config, 9, 2).is_err(),
+        "pending cannot carry bytes"
+    );
+}
+
+#[test]
+fn quiescent_capture_binds_source_pcm_prefix_and_operation_before_copying_state() {
+    let config = config();
+    let state = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: Some(b"current component"),
+        controller: Some(b"current controller"),
+    })
+    .unwrap();
+    let request = capture_request(&config, 3, 2).unwrap();
+    assert_eq!(&request[..4], b"HXVC");
+    assert_eq!(&request[48..56], &3_u64.to_le_bytes());
+    assert_eq!(&request[56..64], &24_u64.to_le_bytes());
+    assert_eq!(&request[64..], &2_u64.to_le_bytes());
+    assert!(capture_request(&config, 3, 0).is_err());
+    assert!(capture_request(&config, u64::MAX, 1).is_err());
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for word in [3_u64, 24, 2] {
+        body.extend(word.to_le_bytes());
+    }
+    body.extend((state.payload().len() as u16).to_le_bytes());
+    body.extend(state.payload());
+    assert_eq!(captured_state(&body, &config, 3, 2).unwrap(), state);
+    assert!(captured_state(&body, &config, 3, 1).is_err());
+    assert!(captured_state(&body, &config, 2, 2).is_err());
+    let mut other = config.clone();
+    other.binding.epoch += 1;
+    assert!(captured_state(&body, &other, 3, 2).is_err());
+    other = config.clone();
+    other.identity.binary.info_sha256[0] ^= 1;
+    assert!(captured_state(&body, &other, 3, 2).is_err());
+    for end in 0..body.len() {
+        assert!(captured_state(&body[..end], &config, 3, 2).is_err());
+    }
+    body.push(0);
+    assert!(captured_state(&body, &config, 3, 2).is_err());
+    let absent = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: None,
+        controller: Some(b"controller only"),
+    })
+    .unwrap();
+    body.truncate(58);
+    body.extend((absent.payload().len() as u16).to_le_bytes());
+    body.extend(absent.payload());
+    assert!(
+        captured_state(&body, &config, 3, 2).is_err(),
+        "never replace confirmed component state with absence"
+    );
 }
 fn hex(s: &str) -> Vec<u8> {
     s.as_bytes()
@@ -67,6 +172,9 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
         controller: None,
     })
     .unwrap();
+    ready_body_with_state(config, &state)
+}
+fn ready_body_with_state(config: &Configuration, state: &NativeDeviceState) -> Vec<u8> {
     let mut out = Vec::new();
     stamp(&mut out, config.binding);
     out.extend(config.identity.class.bytes());
@@ -74,6 +182,7 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
     out.extend(config.quantum.to_le_bytes());
     out.extend([config.input_channels, config.output_channels]);
     out.extend(u32::MAX.to_le_bytes());
+    out.extend(0_u32.to_le_bytes());
     out.extend([1, 1]); // applied, actual contributions supplied
     out.extend(77_u32.to_le_bytes());
     out.extend(91_u32.to_le_bytes());
@@ -82,6 +191,93 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
     out.extend((state.payload().len() as u16).to_le_bytes());
     out.extend(state.payload());
     out
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn protocol_frames_allocate_once_with_exact_bounded_capacity_and_capture_fits() {
+    let mut config = config();
+    config.bundle = "b".repeat(4096);
+    config.executable = "e".repeat(4096);
+    let component = vec![0; hex_plugin_state::MAX_OPAQUE_BYTES];
+    let state = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: Some(&component),
+        controller: None,
+    })
+    .unwrap();
+    assert_eq!(
+        state.payload().len(),
+        hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES
+    );
+    config.restore = Some(state.clone());
+    let body = vec![0; CONTROL_LIMIT];
+    for presentation in [None, known()] {
+        for kind in 0..5 {
+            let mut frame = None;
+            let measured = allocation_counter::measure(|| {
+                frame = Some(
+                    match kind {
+                        0 => config.encode(),
+                        1 => config.startup_request(),
+                        2 => presentation_request(config.binding, presentation),
+                        3 => resume_request(
+                            &config,
+                            Binding {
+                                epoch: config.binding.epoch + 1,
+                                ..config.binding
+                            },
+                            presentation,
+                        ),
+                        _ => control(*b"HXVIPR01", &body),
+                    }
+                    .unwrap(),
+                );
+            });
+            let frame = frame.unwrap();
+            assert_eq!(frame.capacity(), frame.len());
+            assert!(frame.capacity() <= PACKET_LIMIT);
+            assert_eq!((measured.count_total, measured.count_current), (1, 1));
+            assert_eq!(
+                (measured.bytes_total, measured.bytes_current),
+                (frame.capacity() as u64, frame.capacity() as i64)
+            );
+        }
+    }
+    let ready_body = ready_body_with_state(&config, &state);
+    let mut ready = None;
+    let measured = allocation_counter::measure(|| {
+        ready = Some(Ready::decode(&ready_body, &config, known()).unwrap());
+    });
+    let ready = ready.unwrap();
+    assert_eq!(ready.initial_state.payload(), state.payload());
+    // The Vec copy is reclaimed while the single captured Arc group remains.
+    // Arc header/allocator layout is not guessed as DATA bytes.
+    assert_eq!((measured.count_total, measured.count_current), (2, 1));
+    assert_eq!(
+        i64::try_from(measured.bytes_total).unwrap() - measured.bytes_current,
+        state.payload().len() as i64
+    );
+    assert!(PACKET_LIMIT + 2 * state.payload().len() <= MAX_WORKING_DATA_BYTES);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn protocol_trailing_ready_and_oversized_frames_refuse_before_allocating() {
+    let config = config();
+    let mut body = ready_body(&config);
+    body.push(0);
+    let oversized = vec![0; CONTROL_LIMIT + 1];
+    let measured = allocation_counter::measure(|| {
+        assert!(matches!(
+            Ready::decode(&body, &config, known()),
+            Err(Error::Protocol("trailing control bytes"))
+        ));
+        assert!(control(*b"HXVIPR01", &oversized).is_err());
+        assert!(buffer(usize::MAX).is_err());
+    });
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
 }
 #[test]
 fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_latency() {
@@ -96,7 +292,7 @@ fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_
         Some([1, 2, 3].as_slice())
     );
     for offset in [
-        0, 2, 34, 50, 58, 60, 61, 66, 67, 68, 72, 76, 77, 78, 80, 88, 104, 136,
+        0, 2, 34, 50, 58, 60, 61, 70, 71, 72, 76, 80, 81, 82, 84, 92, 108, 140,
     ] {
         let mut wrong = body.clone();
         wrong[offset] ^= 0x80;
@@ -112,7 +308,7 @@ fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_
     trailing.push(0);
     assert!(Ready::decode(&trailing, &config, known()).is_err());
     let mut absent = body.clone();
-    absent[66] = 0;
+    absent[70] = 0;
     assert_eq!(
         Ready::decode(&absent, &config, known())
             .unwrap()
@@ -130,10 +326,11 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
         frames: 8,
         pcm: [[0.5; 2]; 256],
         events: Events::default(),
+        parameters: crate::transport::Parameters::default(),
     };
     config.validate_block(&block, 0).unwrap();
     let mut bytes = Vec::new();
-    hex_audio::plugin_transport::wire::write(&mut bytes, &block).unwrap();
+    crate::transport::wire::write(&mut bytes, &block).unwrap();
     assert_eq!(pcm(&bytes, &config, 0).unwrap().pcm[..8], block.pcm[..8]);
     let mut wrong = bytes.clone();
     wrong[16] ^= 1;
@@ -179,17 +376,19 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
     body.extend(config.quantum.to_le_bytes());
     body.extend([config.input_channels, config.output_channels]);
     body.extend(u32::MAX.to_le_bytes());
+    body.extend(0_u32.to_le_bytes());
     body.push(1);
     body.extend([0, 0, 0]);
     assert_eq!(
         Facts::decode(&body, &config).unwrap(),
         Facts {
             algorithmic_latency_frames: u32::MAX,
+            tail_frames: 0,
             presentation_available: true,
             restored: false
         }
     );
-    for offset in [0, 2, 34, 50, 82, 114, 122, 124, 125, 130, 131, 132, 133] {
+    for offset in [0, 2, 34, 50, 82, 114, 122, 124, 125, 134, 135, 136, 137] {
         let mut bad = body.clone();
         bad[offset] ^= 0x80;
         assert!(Facts::decode(&bad, &config).is_err());
@@ -236,6 +435,7 @@ fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledge
     facts.extend(config.quantum.to_le_bytes());
     facts.extend([config.input_channels, config.output_channels]);
     facts.extend(3_u32.to_le_bytes());
+    facts.extend(0_u32.to_le_bytes());
     facts.push(1); // real optional presentation interface
     facts.extend(&request[46..]);
     assert!(Facts::decode(&facts, &config).unwrap().restored);
@@ -248,7 +448,7 @@ fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledge
     let ready = ready_body(&config);
     assert!(Ready::decode(&ready, &config, known()).unwrap().restored);
     let mut missing_ack = ready;
-    missing_ack[76] = 0;
+    missing_ack[80] = 0;
     assert!(Ready::decode(&missing_ack, &config, known()).is_err());
     assert_eq!(
         config.restore.as_ref().unwrap(),
@@ -323,6 +523,7 @@ fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
     body.extend(config.quantum.to_le_bytes());
     body.extend([config.input_channels, config.output_channels]);
     body.extend(3_u32.to_le_bytes());
+    body.extend(0_u32.to_le_bytes());
     body.push(1);
     body.extend(&config.startup_request().unwrap()[46..]);
     body.extend(sequence.to_le_bytes());
@@ -335,7 +536,7 @@ fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     let body = epoch_body(&config, 3);
     let facts = quiescent_facts(&body, &config, 3).unwrap();
     assert_eq!(facts.algorithmic_latency_frames, 3);
-    for at in [2, 34, 50, 82, 114, 122, 130, 131, 134, 142] {
+    for at in [2, 34, 50, 82, 114, 122, 134, 135, 138, 146] {
         let mut bad = body.clone();
         bad[at] ^= 0x80;
         assert!(quiescent_facts(&bad, &config, 3).is_err());
@@ -370,4 +571,373 @@ fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     assert!(resumed(&unknown, &config, 3, facts, None).is_err());
     ready.push(0);
     assert!(resumed(&ready, &config, 3, facts, known()).is_err());
+}
+
+#[test]
+fn tail_facts_preserve_finite_zero_and_infinite_reports_and_fence_resumption() {
+    let config = config();
+    for tail in [0_u32, 96_000, u32::MAX] {
+        let mut body = epoch_body(&config, 3);
+        body[130..134].copy_from_slice(&tail.to_le_bytes());
+        let facts = quiescent_facts(&body, &config, 3).unwrap();
+        assert_eq!(facts.tail_frames, tail);
+        let mut ready = ready_body(&config);
+        ready[66..70].copy_from_slice(&tail.to_le_bytes());
+        assert_eq!(
+            Ready::decode(&ready, &config, known()).unwrap().tail_frames,
+            tail
+        );
+        body.extend([1, 1]);
+        body.extend(77_u32.to_le_bytes());
+        body.extend(91_u32.to_le_bytes());
+        assert!(resumed(&body, &config, 3, facts, known()).is_ok());
+        assert!(
+            resumed(
+                &body,
+                &config,
+                3,
+                Facts {
+                    tail_frames: tail ^ 1,
+                    ..facts
+                },
+                known()
+            )
+            .is_err()
+        );
+        // An old body with no tail field is not a current preparation or epoch.
+        let mut old = body.clone();
+        old.drain(130..134);
+        assert!(quiescent_facts(&old, &config, 3).is_err());
+    }
+}
+
+#[test]
+fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_values() {
+    use crate::transport::{ParameterPoint, Parameters};
+    let config = config();
+    let mut points = Parameters::default();
+    points
+        .push(ParameterPoint {
+            frame: 0,
+            id: 0,
+            normalized: 0.75,
+        })
+        .unwrap();
+    let request = flush_request(&config, 3, 2, &points).unwrap();
+    assert_eq!(request.len(), 88);
+    assert_eq!(&request[..12], b"HXVF\x02\0\0\0\0\0\x01\0");
+    assert_eq!(
+        &request[48..72],
+        &[
+            3_u64.to_le_bytes(),
+            24_u64.to_le_bytes(),
+            2_u64.to_le_bytes()
+        ]
+        .concat()
+    );
+    assert_eq!(&request[80..88], &0.75_f64.to_le_bytes());
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(3_u64.to_le_bytes());
+    body.extend(24_u64.to_le_bytes());
+    body.extend(2_u64.to_le_bytes());
+    body.push(1);
+    body.extend(1_u16.to_le_bytes());
+    body.extend(0_u32.to_le_bytes());
+    body.extend(0.75_f64.to_le_bytes());
+    let result = flushed_parameters(&body, &config, 3, 2, &points).unwrap();
+    assert_eq!(result.disposition, FlushDisposition::Applied);
+    assert_eq!(
+        result.as_slice(),
+        &[FlushedParameter {
+            id: 0,
+            normalized: 0.75
+        }]
+    );
+    for end in 0..body.len() {
+        assert!(flushed_parameters(&body[..end], &config, 3, 2, &points).is_err());
+    }
+    for (offset, value) in [
+        (2, 9),
+        (34, 4),
+        (42, 25),
+        (50, 3),
+        (58, 0),
+        (59, 129),
+        (64, 128),
+    ] {
+        let mut bad = body.clone();
+        bad[offset] = value;
+        assert!(
+            flushed_parameters(&bad, &config, 3, 2, &points).is_err(),
+            "field{offset}"
+        );
+    }
+    let mut bad = body.clone();
+    bad[65..73].copy_from_slice(&f64::NAN.to_le_bytes());
+    assert!(flushed_parameters(&bad, &config, 3, 2, &points).is_err());
+    let mut bad = body.clone();
+    bad[59..61].copy_from_slice(&2_u16.to_le_bytes());
+    bad.extend_from_slice(&body[61..]);
+    assert!(
+        flushed_parameters(&bad, &config, 3, 2, &points).is_err(),
+        "duplicate ID"
+    );
+    let empty = Parameters::default();
+    body[58] = 0;
+    body[59..61].fill(0);
+    body.truncate(61);
+    assert_eq!(
+        flushed_parameters(&body, &config, 3, 2, &empty)
+            .unwrap()
+            .disposition,
+        FlushDisposition::Empty
+    );
+    assert!(flushed_parameters(&body, &config, 3, 2, &points).is_err());
+    assert!(flush_request(&config, 0, 0, &empty).is_err());
+    let mut late = Parameters::default();
+    late.push(ParameterPoint {
+        frame: 1,
+        id: 7,
+        normalized: 0.5,
+    })
+    .unwrap();
+    assert!(flush_request(&config, 0, 1, &late).is_err());
+}
+
+#[test]
+fn edit_receipts_bind_source_prefix_operation_order_and_gesture_without_coalescing() {
+    let config = config();
+    let request = edit_request(&config, 2, 3).unwrap();
+    assert_eq!(&request[..4], b"HXVG");
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(2_u64.to_le_bytes());
+    body.extend(16_u64.to_le_bytes());
+    body.extend(3_u64.to_le_bytes());
+    body.extend(0_u16.to_le_bytes());
+    body.extend(0_u16.to_le_bytes());
+    body.extend(3_u16.to_le_bytes());
+    for (sequence, kind, value, frame) in [
+        (4_u64, 1_u32, 0.0_f64, 0_u64),
+        (5, 2, 0.75, 8),
+        (6, 3, 0.0, 8),
+    ] {
+        body.extend(sequence.to_le_bytes());
+        body.extend(4_u64.to_le_bytes());
+        body.extend(value.to_le_bytes());
+        body.extend(0_u32.to_le_bytes());
+        body.extend(kind.to_le_bytes());
+        body.extend(frame.to_le_bytes());
+    }
+    let result = parameter_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    assert_eq!(result.as_slice().len(), 3);
+    assert_eq!(result.as_slice()[1].kind, ParameterEditKind::Perform);
+    assert_eq!(result.as_slice()[1].id, 0);
+    for end in 0..body.len() {
+        assert!(parameter_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
+    }
+    for (offset, value) in [
+        (2, 2),
+        (34, 1),
+        (42, 15),
+        (50, 2),
+        (58, 25),
+        (60, 1),
+        (62, 9),
+        (64, 0),
+        (72, 0),
+        (92, 4),
+        (96, 17),
+    ] {
+        let mut bad = body.clone();
+        bad[offset] = value;
+        assert!(
+            parameter_edits(&bad, &config, 2, 3, (0, 0)).is_err(),
+            "field{offset}"
+        );
+    }
+    assert!(
+        parameter_edits(&body, &config, 2, 3, (4, 0)).is_err(),
+        "replayed sequence"
+    );
+    assert!(
+        parameter_edits(&body, &config, 2, 3, (0, 1)).is_err(),
+        "time reversal across polls"
+    );
+    let mut bad = body;
+    bad[80..88].copy_from_slice(&f64::NAN.to_le_bytes());
+    assert!(parameter_edits(&bad, &config, 2, 3, (0, 0)).is_err());
+}
+
+#[test]
+fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
+    fn text(out: &mut Vec<u8>, value: &str) {
+        let mut units = [0_u16; 128];
+        for (slot, unit) in units.iter_mut().zip(value.encode_utf16()) {
+            *slot = unit;
+        }
+        for unit in units {
+            out.extend(unit.to_le_bytes());
+        }
+    }
+    fn record(out: &mut Vec<u8>, id: u32, flags: u32) {
+        for value in [id, flags, 3, 0] {
+            out.extend(value.to_le_bytes());
+        }
+        out.extend(0.0_f64.to_le_bytes());
+        out.extend(0.25_f64.to_le_bytes());
+        out.push(1); // Explicit negative infinity, not unchecked numeric input.
+        out.extend(0_u64.to_le_bytes());
+        out.push(0);
+        out.extend(1.0_f64.to_le_bytes());
+        text(out, "gain 𝄞");
+        text(out, "gain");
+        text(out, "db");
+        out.push(3);
+        text(out, "−∞ db");
+        text(out, "sdk default");
+    }
+    let config = config();
+    let query = ParameterPageQuery {
+        first: 0,
+        revision: 9,
+        conversion: None,
+    };
+    let request = parameter_page_request(&config, 1, 7, query, false).unwrap();
+    assert_eq!(&request[..4], b"HXVM");
+    assert_eq!(&request[64..72], &7_u64.to_le_bytes());
+    assert_eq!(&request[72..74], &0_u16.to_le_bytes());
+    assert_eq!(&request[74..82], &9_u64.to_le_bytes());
+    assert!(request[82..].iter().all(|byte| *byte == 0));
+    assert_eq!(
+        &parameter_page_request(&config, 1, 7, query, true).unwrap()[..4],
+        b"HXVN"
+    );
+    let mut prefix = Vec::new();
+    stamp(&mut prefix, config.binding);
+    for value in [1_u64, 8, 7] {
+        prefix.extend(value.to_le_bytes());
+    }
+    let mut pending = prefix.clone();
+    pending.push(0);
+    assert_eq!(
+        parameter_page(&pending, &config, 1, 7, query).unwrap(),
+        ParameterPageProgress::Pending
+    );
+    let mut body = prefix.clone();
+    body.push(1);
+    body.extend(9_u64.to_le_bytes());
+    body.extend(1_u16.to_le_bytes());
+    body.extend(0_u16.to_le_bytes());
+    body.push(1);
+    record(&mut body, 0, 1);
+    let ParameterPageProgress::Page(page) = parameter_page(&body, &config, 1, 7, query).unwrap()
+    else {
+        panic!("completed metadata page")
+    };
+    assert_eq!((page.revision, page.total, page.first), (9, 1, 0));
+    let value = page.as_slice()[0];
+    assert_eq!(value.id, 0);
+    assert!(value.is_editable());
+    assert_eq!(value.plain, ParameterPlainValue::NegativeInfinity);
+    assert_eq!(value.default_plain, ParameterPlainValue::Finite(1.0));
+    assert_eq!(
+        value.title.as_utf16(),
+        "gain 𝄞".encode_utf16().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        value.display.unwrap().as_utf16(),
+        "−∞ db".encode_utf16().collect::<Vec<_>>()
+    );
+    let mut unknown = body.clone();
+    unknown[76..80].copy_from_slice(&(1_u32 << 29).to_le_bytes());
+    let ParameterPageProgress::Page(page) = parameter_page(&unknown, &config, 1, 7, query).unwrap()
+    else {
+        panic!("unknown flags remain observable")
+    };
+    assert_eq!(page.as_slice()[0].flags, 1 << 29);
+    assert!(!page.as_slice()[0].is_editable());
+
+    // Four records fit the existing control bound without truncating strings.
+    let mut full = body[..72].to_vec();
+    full[67..69].copy_from_slice(&4_u16.to_le_bytes());
+    full[71] = 4;
+    for id in [9, 0, 3, 17] {
+        record(&mut full, id, 1);
+    }
+    assert!(full.len() < CONTROL_LIMIT);
+    let ParameterPageProgress::Page(page) = parameter_page(&full, &config, 1, 7, query).unwrap()
+    else {
+        panic!("full page")
+    };
+    assert_eq!(
+        page.as_slice().iter().map(|p| p.id).collect::<Vec<_>>(),
+        [9, 0, 3, 17]
+    );
+
+    for end in 0..body.len() {
+        assert!(parameter_page(&body[..end], &config, 1, 7, query).is_err());
+    }
+    for (offset, value) in [
+        (2, 8),
+        (34, 2),
+        (42, 7),
+        (50, 8),
+        (59, 8),
+        (67, 129),
+        (69, 1),
+        (71, 5),
+        (75, 128),
+        (76, 3),
+        (83, 128),
+        (104, 4),
+        (105, 1),
+        (122, 0),
+        (890, 4),
+    ] {
+        let mut bad = body.clone();
+        bad[offset] = value;
+        assert!(
+            parameter_page(&bad, &config, 1, 7, query).is_err(),
+            "field{offset}"
+        );
+    }
+    for (offset, value) in [(88, f64::NAN), (96, f64::INFINITY), (96, 1.1)] {
+        let mut bad = body.clone();
+        bad[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        assert!(parameter_page(&bad, &config, 1, 7, query).is_err());
+    }
+    let mut invalid_utf16 = body.clone();
+    invalid_utf16[122..124].copy_from_slice(&0xD800_u16.to_le_bytes());
+    assert!(parameter_page(&invalid_utf16, &config, 1, 7, query).is_err());
+    let mut changed = prefix;
+    changed.push(2);
+    changed.extend(10_u64.to_le_bytes());
+    changed.extend(1_u16.to_le_bytes());
+    assert_eq!(
+        parameter_page(&changed, &config, 1, 7, query).unwrap(),
+        ParameterPageProgress::Changed {
+            revision: 10,
+            total: 1
+        }
+    );
+    changed[59..67].copy_from_slice(&9_u64.to_le_bytes());
+    assert!(parameter_page(&changed, &config, 1, 7, query).is_err());
+    assert!(parameter_page_request(&config, 1, 0, query, false).is_err());
+    assert!(parameter_page_request(&config, u64::MAX, 7, query, false).is_err());
+    assert!(
+        parameter_page_request(
+            &config,
+            1,
+            7,
+            ParameterPageQuery {
+                first: 1,
+                revision: 0,
+                conversion: None,
+            },
+            false
+        )
+        .is_err()
+    );
 }

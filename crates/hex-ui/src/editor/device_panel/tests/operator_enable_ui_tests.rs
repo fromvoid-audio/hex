@@ -199,8 +199,11 @@ fn operator_selector_focus_and_keyboard_navigation_do_not_replace_enable_click(
             3
         );
         assert!(
-            view.last_transport_command.is_none(),
-            "section space must not start transport"
+            matches!(
+                view.last_transport_command,
+                Some(hex_engine::PlaybackCommand::PlayFrom(_))
+            ),
+            "space in a focused section must start transport"
         );
     });
     let selector = Box::leak(format!("operator-select-{}-3", device.value()).into_boxed_str());

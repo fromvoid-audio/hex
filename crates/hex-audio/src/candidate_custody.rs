@@ -22,6 +22,8 @@ use std::{
 };
 mod eligible;
 pub(crate) use eligible::DomainEnvelope;
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
@@ -36,6 +38,12 @@ pub use eligible::{
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::{NativeEndpointBank, NativeEndpointEnvelope};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use eligible::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+};
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +56,14 @@ pub(crate) struct Stamp {
 /// Nonowning token. Abandonment cannot release a slot, owner or charge.
 pub struct AudioCandidateTicket {
     stamp: Stamp,
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) struct NativeEpochTarget(Stamp);
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl AudioCandidateTicket {
+    pub(crate) fn native_epoch_target(&self, root: u64) -> Option<NativeEpochTarget> {
+        (self.stamp.root == root).then_some(NativeEpochTarget(self.stamp))
+    }
 }
 pub struct AudioCandidateStageRefusal {
     pub reason: &'static str,
@@ -66,6 +82,10 @@ pub enum AudioCandidateReturnKind {
     NeverInstalled,
     FinalActive,
     Replaced,
+    /// Exact callback-observed native Stop, before successor construction.
+    /// This has no replacement manifest and is not terminal backend shutdown.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    StoppedForNativeEpoch,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -524,6 +544,7 @@ impl CandidateRoot {
         token: AudioCandidatePreparationToken,
         rate: u32,
         header: (u64, u64, crate::prepared::PublicationPolicy),
+        expected_context: Option<hex_engine::AudioSourceContext>,
         enqueue: impl FnOnce(QueuedEligibleCandidate),
     ) -> Result<AudioCandidateTicket, &'static str> {
         let result = self.0.eligible.stage_runtime_preparation(
@@ -535,6 +556,7 @@ impl CandidateRoot {
                 policy: header.2,
             },
             rate,
+            expected_context,
             enqueue,
         );
         crate::lifecycle::request_candidate_cleanup(self);
@@ -685,6 +707,12 @@ impl CandidateRoot {
     pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
         self.0.eligible.ingest_pages(pages)
     }
+    pub(crate) fn domain_endpoint_installed(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.endpoint_installed(token)
+    }
+    pub(crate) fn domain_has_no_graph_users(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.domain_has_no_graph_users(token)
+    }
     pub(crate) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
         self.0.eligible.domain_is_sealed(token)
     }
@@ -726,9 +754,11 @@ impl CandidateRoot {
                 first_panic: None,
             });
         }
+        drop(returns);
+        // Native source cancellation may perform control-side descriptor I/O;
+        // it must not run under the ordinary return/terminal lock.
         self.0.eligible.close();
         self.0.abandoned.store(true, Ordering::Release);
-        drop(returns);
         crate::lifecycle::request_candidate_cleanup(self);
     }
     fn drain_abandoned_on_control(&self) -> bool {
@@ -747,6 +777,13 @@ impl CandidateRoot {
                 return true;
             };
             match value {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                crate::prepared::ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.ingest_native_endpoint(endpoint) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Native(endpoint));
+                        return false;
+                    }
+                }
                 crate::prepared::ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.ingest_pages(pages) {
                         returns.held = Some(crate::prepared::ReturnedPublication::Domain(pages));
@@ -766,7 +803,8 @@ impl CandidateRoot {
                         return false;
                     }
                 }
-                crate::prepared::ReturnedPublication::Legacy(value) => {
+                crate::prepared::ReturnedPublication::Legacy(mut value) => {
+                    value.release_streams_on_control(self);
                     returns.pending = true;
                     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
                         returns.first_panic = Some(payload);
@@ -1079,6 +1117,21 @@ impl CandidateRoot {
                     && matches!(slot.phase, Phase::Accepted | Phase::Complete))
             })
     }
+    /// Lifecycle-only observation after advancement; pending takes are not
+    /// failures. Existing custody retains every failed owner and unwind payload.
+    pub(crate) fn cleanup_failed(&self) -> bool {
+        if self.0.eligible.cleanup_failed() {
+            return true;
+        }
+        if lock(&self.0.returns)
+            .as_ref()
+            .is_some_and(|r| r.first_panic.is_some())
+        {
+            return true;
+        }
+        let work = lock(&self.0.execution);
+        work.first_panic.is_some() || work.current.as_ref().is_some_and(|c| c.failed)
+    }
     /// Idle decision and flag clearing share the ingest/scheduling lock.
     pub(crate) fn job_idle(&self) -> bool {
         let mut bank = lock(&self.0.bank);
@@ -1174,6 +1227,43 @@ pub struct AudioCandidateCustodyReport {
     pub runtime_and_shared_overhead_unknown: bool,
 }
 
+impl CandidateRoot {
+    pub(crate) fn configure_ordinary_streams(
+        &self,
+        reservation: AudioCandidateDomainReservation,
+        extents: usize,
+        metadata_bytes: usize,
+    ) -> Result<(), &'static str> {
+        let ordinary = eligible::OrdinaryReservation {
+            extents,
+            metadata_bytes,
+        }
+        .validate_requested()?;
+        self.configure_domains(reservation)?;
+        self.0.eligible.configure_ordinary_streams(ordinary)
+    }
+    pub(crate) fn ordinary_streams_configured(&self) -> bool {
+        self.0.eligible.ordinary_streams_configured()
+    }
+    pub(crate) fn prepare_ordinary_streams(
+        &self,
+        playback: &hex_engine::playback::Playback,
+        revision: u64,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<Box<OrdinaryStreams>, &'static str> {
+        self.0
+            .eligible
+            .prepare_ordinary_streams(playback, revision, context)
+    }
+    pub(crate) fn release_ordinary_streams(&self, streams: Box<OrdinaryStreams>) {
+        self.0.eligible.release_ordinary_streams(streams);
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::native_sources::OrdinaryNativeReferences;
+pub(crate) use eligible::{ActiveView as StreamActiveView, OrdinaryStreams};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1248,7 +1338,14 @@ mod tests {
             });
             slot.phase = Phase::Cleaning;
         }
-        root.advance_on_control();
+        assert!(!root.cleanup_failed());
+        let status = crate::lifecycle::LifecycleStatus::new();
+        assert!(!crate::lifecycle::finish_cleanup_observed(&root, &status));
+        assert!(root.cleanup_failed());
+        assert_eq!(
+            status.failure(),
+            Some(crate::AudioLifecycleFailure::Cleanup)
+        );
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert!(root.recover(&ticket).is_none());
         assert!(lock(&root.0.bank).slots[ticket.stamp.slot].ready.is_some());

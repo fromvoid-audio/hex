@@ -53,6 +53,21 @@ pub(super) fn render_stems_using(
     stems: &[Stem],
     control: &ExportControl,
 ) -> Result<ExportReport, ExportError> {
+    render_stems_using_pages(
+        path, revision, resources, start, frames, stems, control, None,
+    )
+}
+#[allow(clippy::too_many_arguments)] // Existing batch contract plus exact control-worker pages.
+pub(super) fn render_stems_using_pages(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    stems: &[Stem],
+    control: &ExportControl,
+    pages: Option<&mut dyn PreparedExportPages>,
+) -> Result<ExportReport, ExportError> {
     render_stems_with_resources_and_hook(
         path,
         revision,
@@ -62,6 +77,7 @@ pub(super) fn render_stems_using(
         stems,
         control,
         || {},
+        pages,
     )
 }
 #[cfg(test)]
@@ -83,6 +99,7 @@ fn render_stems_with_hook(
         stems,
         control,
         before_publication,
+        None,
     )
 }
 
@@ -96,6 +113,7 @@ fn render_stems_with_resources_and_hook(
     stems: &[Stem],
     control: &ExportControl,
     before_publication: impl FnOnce(),
+    mut pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
     control.claim()?;
     if stems.is_empty()
@@ -136,7 +154,14 @@ fn render_stems_with_resources_and_hook(
             });
         }
     }
-    let mut playback = controlled::prepare_runtime(revision, resources, start, frames, control)?;
+    let mut playback = controlled::prepare_runtime_with_pages(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        pages.as_deref_mut(),
+    )?;
     let mut ordered = stems.to_vec();
     ordered.sort_by_key(|stem| match stem.id {
         OutputCaptureId::Track(id) => (0, id.value()),
@@ -176,9 +201,21 @@ fn render_stems_with_resources_and_hook(
             .map(|buffer| &mut buffer[..count])
             .collect();
         let mut capture = OutputCapture::new(&plan, &mut slices);
-        playback
-            .render_with_capture(&mut main[..count], &mut capture)
-            .map_err(ExportError::SessionRender)?;
+        if let Some(pages) = pages.as_deref_mut() {
+            pages.prepare_chunk(&playback, count, control)?;
+            playback
+                .render_with_pages_and_capture(
+                    &mut main[..count],
+                    &mut crate::pages::PageView(pages),
+                    &mut capture,
+                )
+                .map_err(ExportError::SessionRender)?;
+            pages.complete_chunk()?;
+        } else {
+            playback
+                .render_with_capture(&mut main[..count], &mut capture)
+                .map_err(ExportError::SessionRender)?;
+        }
         for (index, writer) in writers.iter_mut().enumerate() {
             let output = capture
                 .output(index)
@@ -217,6 +254,9 @@ fn render_stems_with_resources_and_hook(
             source,
         })?;
     before_publication();
+    if let Some(pages) = pages {
+        pages.finish(control)?;
+    }
     control.begin_publication()?;
     publication::rename_exclusive(&staging.path, path).map_err(|source| ExportError::Io {
         operation: "publish the stem batch without replacement",

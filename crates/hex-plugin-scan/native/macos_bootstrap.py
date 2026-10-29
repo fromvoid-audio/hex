@@ -22,7 +22,7 @@ INSTANCE_EXECUTABLE = INSTANCE_APP / "Contents/MacOS/hex-vst3-instance"
 SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.py",
            "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp",
            "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp",
-           "macos_host_messages.hpp", "macos_host.hpp", "macos_host_case.hpp", "macos_stream_case.hpp",
+           "macos_host_messages.hpp", "macos_host.hpp", "macos_parameters.hpp", "macos_parameter_page.hpp", "macos_host_case.hpp", "macos_stream_case.hpp",
            "macos_processing.hpp", "macos_processing_fixture.cpp", "macos_processing_case.hpp", "macos_bundle.hpp", "macos_state_stream.hpp", "macos_instance_wire.hpp", "macos_instance_worker.mm")
 MAX_FILE = 16 * 1024 * 1024
 
@@ -83,7 +83,7 @@ def inventory(root):
     return files
 
 
-def verify(receipt, run=False):
+def verify(receipt, run=False, expected_source_digest=None, expected_sdk_pins=None):
     receipt = receipt.resolve()
     if receipt.stat().st_size > MAX_FILE:
         raise ValueError("oversized receipt")
@@ -93,7 +93,8 @@ def verify(receipt, run=False):
     app = INSTANCE_APP if instance else APP
     if (data.get("version") != 1 or data.get("platform") != "darwin-arm64"
             or data.get("scope") not in ("original-macos-bootstrap", "native-macos-factory-discovery", "native-macos-instance")
-            or data.get("sdk_pins") != PINS or data.get("source_sha256") != source_digest()):
+            or data.get("sdk_pins") != (PINS if expected_sdk_pins is None else expected_sdk_pins)
+            or data.get("source_sha256") != (source_digest() if expected_source_digest is None else expected_source_digest)):
         raise ValueError("unsupported or stale bootstrap receipt")
     root = receipt.parent
     if data.get("package_layout") is not None:
@@ -221,14 +222,18 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
         for instrument, name, source in ((0, "effect", "macos_fixture.cpp"),
                                          (1, "instrument", "macos_fixture.cpp"),
                                          (0, "lifecycle", "macos_lifecycle_fixture.cpp"),
-                                         (0, "processing", "macos_processing_fixture.cpp")):
+                                         (0, "processing", "macos_processing_fixture.cpp"),
+                                         (0, "tail", "macos_processing_fixture.cpp"),
+                                         (0, "infinite", "macos_processing_fixture.cpp")):
             bundle = resources / "fixtures" / (name + ".vst3")
             (bundle / "Contents").mkdir(parents=True)
             info = {"CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.fixture." + name,
                     "CFBundlePackageType": "BNDL", "CFBundleVersion": "1"}
             (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info, sort_keys=True))
             binary = bundle / "Contents/MacOS/fixture"
-            compile_one(source, binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument)])
+            tail_flags = (["-DHEX_FIXTURE_RESIDUAL_ECHO=1"] if name == "tail" else
+                          ["-DHEX_FIXTURE_INFINITE_TAIL=1"] if name == "infinite" else [])
+            compile_one(source, binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument), *tail_flags])
             digests[name] = sha(binary)
         modes = ["normal", "entry-hang", "entry-crash", "enumerate-hang", "malformed-count", "malformed-string",
                  "duplicate-uid", "exit-fail", "exit-hang", "exit-crash", "flood", "open-channel-child",

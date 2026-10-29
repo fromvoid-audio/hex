@@ -23,7 +23,15 @@ fn picker_resize_width(raw: f32, maximum: f32, locked: bool) -> (f32, bool) {
     (if locked { PICKER_MIN_WIDTH } else { width }, locked)
 }
 
-const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
+const ICONS: [&str; 7] = [
+    "icons/browser-place/samples.svg",
+    "icons/browser-place/devices.svg",
+    "icons/browser-place/projects.svg",
+    "icons/browser-place/collection.svg",
+    "icons/browser-place/waveform.svg",
+    "icons/browser-place/folder.svg",
+    "icons/browser-place/search.svg",
+];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
     ("content", &["audio clip", "midi clip", "preset", "sample"]),
     ("type", &["loop", "one shot", "impulse response"]),
@@ -60,6 +68,20 @@ impl Default for BrowserLayout {
 }
 
 impl BrowserLayout {
+    pub(super) fn begin_sidebar_resize(&mut self, x: f32, initial: f32) {
+        self.sidebar_drag = Some((x, initial, initial == PICKER_MIN_WIDTH));
+    }
+    pub(super) fn update_sidebar_resize(&mut self, x: f32, width: f32) {
+        if let Some((start, initial, locked)) = self.sidebar_drag {
+            let (next, locked) = picker_resize_width(
+                initial + x - start,
+                (width - 124.0).max(PICKER_MIN_WIDTH),
+                locked,
+            );
+            self.sidebar_width = next;
+            self.sidebar_drag = Some((start, initial, locked));
+        }
+    }
     pub(super) fn history_source_available(&self, source: &BrowserSection) -> bool {
         SECTIONS
             .iter()
@@ -108,6 +130,7 @@ impl BrowserLayout {
 
 pub(super) fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpui::AnyView {
     cx.new(|_| super::super::transport::MiniTooltip {
+        kind: crate::tooltips::Kind::Identification,
         description: theme::text(label),
     })
     .into()
@@ -115,6 +138,15 @@ pub(super) fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpu
 
 fn browser_caption(value: impl AsRef<str>) -> Div {
     div().text_xs().child(theme::text(value))
+}
+
+fn browser_vector_icon(path: &'static str) -> Div {
+    div().flex().items_center().justify_center().child(
+        gpui::svg()
+            .path(path)
+            .size(px(14.0))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text))),
+    )
 }
 
 fn picker_icon(icon: Div) -> Div {
@@ -261,6 +293,7 @@ impl EditorView {
             })
             .tooltip(move |_, cx| {
                 cx.new(|_| super::super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: theme::text(if forward { "forward" } else { "back" }),
                 })
                 .into()
@@ -308,17 +341,18 @@ impl EditorView {
             .child(
                 self.browser_icon(
                     "⌗",
-                    "quantized sample input · nearest arrangement grid line · enter",
+                    "toggle input quantization · shared with midi recording · enter inserts on selected grid",
                     |view, _, cx| {
-                        view.browser.insert_quantized = !view.browser.insert_quantized;
+                        view.toggle_input_quantization();
                         cx.notify();
                     },
                     cx,
-                )
+                ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .debug_selector(|| "browser-insert-grid".to_owned())
-                .when(self.browser.insert_quantized, |button| {
-                    button.text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                }),
+                .when(
+                    self.input_quantization != hex_project::InputQuantization::Off,
+                    |button| button.text_color(rgb(theme::color(theme::PaletteRole::Primary))),
+                ),
             )
             .child(self.browser_icon(
                 "≡",
@@ -328,7 +362,7 @@ impl EditorView {
                     cx.notify();
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
             .child(self.browser_icon(
                 "⋮",
                 "show or hide tag editor",
@@ -337,7 +371,7 @@ impl EditorView {
                     cx.notify();
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
             .child(self.browser_icon(
                 "×",
                 "close browser · cmd+alt+b",
@@ -345,7 +379,7 @@ impl EditorView {
                     view.toggle_browser(window, cx);
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
     }
 
     fn browser_reveal_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -462,7 +496,7 @@ impl EditorView {
             }
             let active = self.browser.section == section;
             let icon = picker_icon(
-                browser_caption(ICONS[self.browser.layout.icons[index]])
+                browser_vector_icon(ICONS[self.browser.layout.icons[index]])
                     .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
             );
             sidebar =
@@ -601,7 +635,9 @@ impl EditorView {
                                         cx.notify();
                                     }),
                                 )
-                                .child(browser_caption(ICONS[self.browser.layout.icons[index]])),
+                                .child(browser_vector_icon(
+                                    ICONS[self.browser.layout.icons[index]],
+                                )),
                         ),
                 );
             }
@@ -708,7 +744,7 @@ impl EditorView {
             };
             let tooltip = name.to_owned();
             let icon = picker_icon(
-                browser_caption(self.browser_place_glyph(place))
+                browser_vector_icon(self.browser_place_icon_path(place))
                     .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
             );
             places = places.child(
@@ -815,61 +851,27 @@ impl EditorView {
                 "browser-sidebar-resize-line",
                 self.browser.layout.sidebar_drag.is_some(),
             ))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event, window, cx| {
+                    view.begin_browser_resize(
+                        super::resize::Divider::Sidebar,
+                        event,
+                        sidebar_width,
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |bounds, _, window, _| {
-                        let down_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
-                            if phase.bubble()
-                                && event.button == MouseButton::Left
-                                && bounds.contains(&event.position)
-                            {
-                                down_entity.update(cx, |view, cx| {
-                                    view.browser.layout.sidebar_drag = Some((
-                                        f32::from(event.position.x),
-                                        sidebar_width,
-                                        sidebar_width == PICKER_MIN_WIDTH,
-                                    ));
-                                    cx.notify();
-                                });
-                            }
-                        });
-                        let move_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                            if !phase.bubble() {
-                                return;
-                            }
-                            move_entity.update(cx, |view, cx| {
-                                if !event.dragging() {
-                                    if view.browser.layout.sidebar_drag.take().is_some() {
-                                        cx.notify();
-                                    }
-                                } else if let Some((start, initial, locked)) =
-                                    view.browser.layout.sidebar_drag
-                                {
-                                    let (next, locked) = picker_resize_width(
-                                        initial + f32::from(event.position.x) - start,
-                                        (width - 124.0).max(PICKER_MIN_WIDTH),
-                                        locked,
-                                    );
-                                    view.browser.layout.sidebar_width = next;
-                                    view.browser.layout.sidebar_drag =
-                                        Some((start, initial, locked));
-                                    cx.notify();
-                                }
-                            });
-                        });
-                        let up_entity = entity.clone();
-                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if phase.bubble() && event.button == MouseButton::Left {
-                                up_entity.update(cx, |view, cx| {
-                                    if view.browser.layout.sidebar_drag.take().is_some() {
-                                        cx.notify();
-                                    }
-                                });
-                            }
-                        });
+                    move |_, _, window, cx| {
+                        entity.read(cx).renew_browser_resize(
+                            super::resize::Divider::Sidebar,
+                            window,
+                            entity.entity_id(),
+                        );
                     },
                 )
                 .size_full(),
@@ -992,17 +994,15 @@ impl EditorView {
                 || "no item selected".into(),
                 |name| name.to_string_lossy().into_owned(),
             ),
-            _ => self
+            Some(BrowserItemKey::Device(class, id)) => self
                 .browser_visible_devices(cx)
-                .get(
-                    self.browser
-                        .selected_index
-                        .saturating_sub(self.browser_visible_entries(cx).len()),
-                )
+                .iter()
+                .find(|(candidate, entry)| *candidate == class && entry.type_id == id)
                 .map_or_else(
                     || "no item selected".into(),
                     |(_, entry)| entry.name.to_string(),
                 ),
+            None => "no item selected".into(),
         }
     }
 
@@ -1010,9 +1010,7 @@ impl EditorView {
         let entry = if self.browser.section == BrowserSection::Instruments {
             None
         } else {
-            self.browser_visible_entries(cx)
-                .get(self.browser.selected_index)
-                .cloned()
+            self.browser_selected_entry(cx)
         };
         browser_divider()
             .h(px(50.0))

@@ -916,6 +916,8 @@ fn device_comparison_review_dismiss_nonselected_menu_keeps_p_on_target(cx: &mut 
 fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     cx: &mut TestAppContext,
 ) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     use crate::editor::arrangement_seek::{PendingSeek, SeekIntent, SeekStage};
     use hex_audio::prepared::PublicationPolicy;
     use std::sync::atomic::Ordering::Acquire;
@@ -969,6 +971,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
+            section: None,
             recovery_generation: None,
             destination_frame: 128,
             start_playing: true,
@@ -1237,6 +1240,8 @@ fn device_comparison_metadata_recovery_error_preserves_real_pending_and_applied_
 }
 
 fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     use crate::editor::audio_admission::{AdmissionState, ProjectRevision};
     use std::sync::atomic::Ordering::Acquire;
     let directory = Directory::new();

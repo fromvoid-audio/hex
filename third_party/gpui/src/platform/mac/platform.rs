@@ -92,64 +92,37 @@ fn make_hidden_cursor() -> Option<StrongPtr> {
     }
 }
 
-/// Original high-contrast bracket cursor artwork; cached by `MacPlatformState`.
-fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
+// Hex owns these editable vectors; GPUI retains native cursor and hotspot custody.
+const LEFT_BRACKET_SVG: &[u8] =
+    include_bytes!("../../../../../assets/cursors/resize-left-bracket.svg");
+const RIGHT_BRACKET_SVG: &[u8] =
+    include_bytes!("../../../../../assets/cursors/resize-right-bracket.svg");
+const LOOP_SVG: &[u8] = include_bytes!("../../../../../assets/cursors/loop.svg");
+
+/// Rasterize the 24-point cursor at 2x, then let NSImage scale it to logical points.
+fn make_vector_cursor(svg: &[u8]) -> Option<StrongPtr> {
+    let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
+    if tree.size().width() != 24.0 || tree.size().height() != 24.0 {
+        return None;
+    }
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(48, 48)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(2.0, 2.0),
+        &mut pixmap.as_mut(),
+    );
+    let png = pixmap.encode_png().ok()?;
     unsafe {
-        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
+        let data: id = msg_send![class!(NSData), dataWithBytes: png.as_ptr() length: png.len()];
+        if data == nil {
+            return None;
+        }
+        let image: id = msg_send![NSImage::alloc(nil), initWithData: data];
         if image == nil {
             return None;
         }
         let image = StrongPtr::new(image);
-        let _: () = msg_send![*image, lockFocus];
-        let path: id = msg_send![class!(NSBezierPath), bezierPath];
-        if path == nil {
-            let _: () = msg_send![*image, unlockFocus];
-            return None;
-        }
-
-        let center_x = 12.0;
-        let toward = if points_left { -1.0 } else { 1.0 };
-        let bracket = if points_left { 1.0 } else { -1.0 };
-        let segments = [
-            (NSPoint::new(center_x, 4.0), NSPoint::new(center_x, 20.0)),
-            (
-                NSPoint::new(center_x, 4.0),
-                NSPoint::new(center_x + bracket * 5.0, 4.0),
-            ),
-            (
-                NSPoint::new(center_x, 20.0),
-                NSPoint::new(center_x + bracket * 5.0, 20.0),
-            ),
-            (
-                NSPoint::new(center_x, 12.0),
-                NSPoint::new(center_x + toward * 7.0, 12.0),
-            ),
-            (
-                NSPoint::new(center_x + toward * 7.0, 12.0),
-                NSPoint::new(center_x + toward * 4.0, 15.0),
-            ),
-            (
-                NSPoint::new(center_x + toward * 7.0, 12.0),
-                NSPoint::new(center_x + toward * 4.0, 9.0),
-            ),
-        ];
-        for (start, end) in segments {
-            let _: () = msg_send![path, moveToPoint: start];
-            let _: () = msg_send![path, lineToPoint: end];
-        }
-
-        let white: id = msg_send![class!(NSColor), whiteColor];
-        let _: () = msg_send![white, setStroke];
-        let _: () = msg_send![path, setLineWidth: 4.0_f64];
-        let _: () = msg_send![path, setLineCapStyle: 1_isize];
-        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
-        let _: () = msg_send![path, stroke];
-        let black: id = msg_send![class!(NSColor), blackColor];
-        let _: () = msg_send![black, setStroke];
-        let _: () = msg_send![path, setLineWidth: 1.75_f64];
-        let _: () = msg_send![path, stroke];
-        let _: () = msg_send![*image, unlockFocus];
-
+        let _: () = msg_send![*image, setSize: NSSize::new(24.0, 24.0)];
         let allocated: id = msg_send![class!(NSCursor), alloc];
         let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
         if cursor == nil {
@@ -270,6 +243,7 @@ pub(crate) struct MacPlatformState {
     hidden_cursor: Option<StrongPtr>,
     resize_left_bracket_cursor: Option<StrongPtr>,
     resize_right_bracket_cursor: Option<StrongPtr>,
+    loop_cursor: Option<StrongPtr>,
 }
 
 impl Default for MacPlatform {
@@ -303,7 +277,7 @@ impl MacPlatform {
         let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
             (None, None)
         } else {
-            (make_bracket_cursor(true), make_bracket_cursor(false))
+            (make_vector_cursor(LEFT_BRACKET_SVG), make_vector_cursor(RIGHT_BRACKET_SVG))
         };
 
         Self(Mutex::new(MacPlatformState {
@@ -330,6 +304,7 @@ impl MacPlatform {
             hidden_cursor: if headless { None } else { make_hidden_cursor() },
             resize_left_bracket_cursor,
             resize_right_bracket_cursor,
+            loop_cursor: if headless { None } else { make_vector_cursor(LOOP_SVG) },
         }))
     }
 
@@ -1106,6 +1081,7 @@ impl Platform for MacPlatform {
             let bracket_cursor = {
                 let state = self.0.lock();
                 match style {
+                    CursorStyle::Loop => state.loop_cursor.as_ref().map(|cursor| **cursor),
                     CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
                     CursorStyle::ResizeLeftBracket => state
                         .resize_left_bracket_cursor
@@ -1125,7 +1101,7 @@ impl Platform for MacPlatform {
                 CursorStyle::ClosedHand => msg_send![class!(NSCursor), closedHandCursor],
                 CursorStyle::OpenHand => msg_send![class!(NSCursor), openHandCursor],
                 CursorStyle::PointingHand => msg_send![class!(NSCursor), pointingHandCursor],
-                CursorStyle::ResizeLeftRight => msg_send![class!(NSCursor), resizeLeftRightCursor],
+                CursorStyle::ResizeLeftRight | CursorStyle::Loop => msg_send![class!(NSCursor), resizeLeftRightCursor],
                 CursorStyle::ResizeUpDown => msg_send![class!(NSCursor), resizeUpDownCursor],
                 CursorStyle::ResizeLeft => msg_send![class!(NSCursor), resizeLeftCursor],
                 CursorStyle::ResizeRight => msg_send![class!(NSCursor), resizeRightCursor],

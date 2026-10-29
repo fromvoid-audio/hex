@@ -13,9 +13,9 @@ mod device;
 // Native review examples include this module and use only a subset of its API.
 #[allow(unused_imports)]
 pub(crate) use device::{
-    DeviceActionRole, DeviceStyleRole, device_analyzer_style, device_frame_style,
-    device_header_action_style, device_identity_style, device_segment_style, device_style,
-    oscillator_identity_color,
+    DeviceActionRole, DeviceStyleRole, device_analyzer_style, device_enable_colors,
+    device_frame_style, device_header_action_style, device_identity_style, device_segment_style,
+    device_style, oscillator_identity_color,
 };
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -25,6 +25,15 @@ pub(crate) fn control_style() -> hex_widgets::ControlStyle {
     device_style(DeviceStyleRole::Control)
 }
 
+/// Shared product colors for all sample-level meters; widgets own no palette.
+pub(crate) fn meter_colors() -> hex_widgets::MeterColors {
+    hex_widgets::MeterColors {
+        signal: color(PaletteRole::Secondary),
+        near_peak: color(PaletteRole::Primary),
+        clipping: 0xe34b4b,
+    }
+}
+
 /// Common workspace action colors, resolved from the native widget palette.
 pub(crate) fn action_style() -> hex_widgets::ActionStyle {
     let style = control_style();
@@ -32,12 +41,49 @@ pub(crate) fn action_style() -> hex_widgets::ActionStyle {
         background: style.raised,
         text: readable_text(style.raised, style.text),
         hover_background: style.hover,
-        hover_text: None,
+        hover_text: Some(style.hover_text),
+    }
+}
+
+/// Brighter momentary press fill with foreground resolved against that fill.
+#[allow(dead_code)] // Consumed by the standalone native sandbox example.
+pub(crate) fn action_press_style(style: hex_widgets::ActionStyle) -> hex_widgets::ActionPressStyle {
+    let background = mix(style.background, 0xffffff, 0.22);
+    hex_widgets::ActionPressStyle {
+        background,
+        text: readable_text(background, style.text),
+    }
+}
+
+/// High-contrast time-position triangles over the ruler and Arrangement.
+pub(crate) fn time_position_marker_color() -> u32 {
+    readable_text(color(PaletteRole::Surface), 0xffffff)
+}
+
+/// Neutral four-unit bands stay visible independently of the saved palette.
+pub(crate) fn time_grid_band_color(alternate: bool) -> u32 {
+    mix(
+        color(PaletteRole::Background),
+        color(PaletteRole::Text),
+        if alternate { 0.07 } else { 0.015 },
+    )
+}
+
+/// Stronger bar ticks retain a quieter intermediate-beat hierarchy.
+pub(crate) fn ruler_tick_color(bar_start: bool, meter_marker: bool) -> u32 {
+    if meter_marker {
+        color(PaletteRole::Primary)
+    } else {
+        mix(
+            color(PaletteRole::Background),
+            color(PaletteRole::Text),
+            if bar_start { 0.55 } else { 0.3 },
+        )
     }
 }
 
 /// Shared translucency for arranger and clip-editor time ranges.
-pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.13;
+pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.22;
 
 /// Explicit track membership stays quieter than time/clip selection overlays.
 pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;
@@ -315,18 +361,20 @@ pub fn clip_fill(
 }
 
 /// Activation is independent of the persisted color flavor. Keep inactive clips
-/// visible and retain selection borders while reducing their fill saturation.
+/// fully neutral regardless of track hue, flavor or customized theme colors.
+/// Mid-gray retains readable black labels; selection remains visibly lighter.
 pub fn clip_activity_fill(
     color: hex_project::ElementColor,
     flavor: hex_project::ClipFlavor,
     selected: bool,
     active: bool,
 ) -> u32 {
-    let fill = clip_fill(color, flavor, selected);
     if active {
-        fill
+        clip_fill(color, flavor, selected)
+    } else if selected {
+        0x9a9a9a
     } else {
-        mix(self::color(PaletteRole::Surface), fill, 0.18)
+        0x888888
     }
 }
 
@@ -407,6 +455,58 @@ mod tests {
         assert_eq!(preferences(), before);
         assert_eq!(color(PaletteRole::Primary), before.primary.packed());
     }
+    #[test]
+    fn inactive_clip_surfaces_are_neutral_and_labels_remain_legible() {
+        let _restore = RestoreTheme(preferences());
+        for background in [0x101010, 0xf5f0e6, 0x2a1438] {
+            apply_preferences(hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(
+                    (background >> 16) as u8,
+                    (background >> 8) as u8,
+                    background as u8,
+                ),
+                ..hex_preferences::ThemePreferences::default()
+            });
+            for selected in [false, true] {
+                let expected = clip_activity_fill(
+                    hex_project::ElementColor::Gray,
+                    hex_project::ClipFlavor::Muted,
+                    selected,
+                    false,
+                );
+                assert_eq!(expected >> 16, expected & 0xff);
+                assert_eq!((expected >> 8) & 0xff, expected & 0xff);
+                assert!(contrast_ratio(expected, 0x000000) >= 4.5);
+                for color in hex_project::ElementColor::ALL {
+                    for flavor in [
+                        hex_project::ClipFlavor::Muted,
+                        hex_project::ClipFlavor::Accent,
+                    ] {
+                        assert_eq!(clip_activity_fill(color, flavor, selected, false), expected);
+                        assert_eq!(
+                            clip_activity_fill(color, flavor, selected, true),
+                            clip_fill(color, flavor, selected)
+                        );
+                    }
+                }
+            }
+            assert_ne!(
+                clip_activity_fill(
+                    hex_project::ElementColor::Gray,
+                    hex_project::ClipFlavor::Muted,
+                    false,
+                    false
+                ),
+                clip_activity_fill(
+                    hex_project::ElementColor::Gray,
+                    hex_project::ClipFlavor::Muted,
+                    true,
+                    false
+                )
+            );
+        }
+    }
+
     #[test]
     fn clip_flavors_remain_distinct_selected_and_legible_across_theme_surfaces() {
         let _restore = RestoreTheme(preferences());

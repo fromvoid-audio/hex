@@ -31,6 +31,17 @@ pub enum ArrangementSeekMode {
     #[default]
     LinearArrangement,
     Interactive,
+    /// Fresh playing section loop. The region must be enabled, destination must
+    /// equal its start, and start_playing must be true; malformed specs refuse.
+    SectionLoop(hex_project::LoopRegion),
+}
+
+/// Transient click intent. The loop is installed before preroll; quantization
+/// waits on the predecessor clock only after the prepared candidate is ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SectionLaunch {
+    pub region: hex_project::LoopRegion,
+    pub quantization: hex_engine::LaunchQuantization,
 }
 
 /// Control-side identity and destination for one prepared seek candidate.
@@ -77,6 +88,10 @@ struct ResidentWork {
     job: u64,
     resources: PreparedDeviceResources,
     cancelled: Arc<AtomicBool>,
+    files: Option<(
+        crate::service::ResidentFileSet,
+        crate::service::ResidentFileSeekPreparer,
+    )>,
 }
 /// Existing pending/running/ready/retired slots plus the worker's bounded local destruction.
 /// Canonical native dispatch must retain at most this many actual anchored jobs.
@@ -179,6 +194,10 @@ impl ArrangementSeekWorker {
         job: u64,
         resources: PreparedDeviceResources,
         cancelled: Arc<AtomicBool>,
+        files: Option<(
+            crate::service::ResidentFileSet,
+            crate::service::ResidentFileSeekPreparer,
+        )>,
     ) -> Result<u64, ArrangementSeekSubmitError> {
         self.submit_work(
             spec,
@@ -186,6 +205,7 @@ impl ArrangementSeekWorker {
                 job,
                 resources,
                 cancelled,
+                files,
             }),
         )
     }
@@ -380,6 +400,13 @@ fn prepare(
     cancelled: &AtomicBool,
 ) -> Result<Playback, ArrangementPrerollError> {
     match spec.mode {
+        ArrangementSeekMode::SectionLoop(region)
+            if !region.enabled()
+                || spec.destination_frame != region.start()
+                || !spec.start_playing =>
+        {
+            Err(ArrangementPrerollError::CandidatePositionMismatch)
+        }
         ArrangementSeekMode::LinearArrangement => {
             let runtime = SessionPlayback::prepare_arrangement_preroll_from_revision(
                 Arc::clone(&spec.prepared_revision),
@@ -400,6 +427,15 @@ fn prepare(
             )?;
             Playback::from_interactive_arrangement_preroll(runtime)
         }
+        ArrangementSeekMode::SectionLoop(region) => Playback::from_interactive_arrangement_preroll(
+            SessionPlayback::prepare_section_arrangement_preroll(
+                Arc::clone(&spec.prepared_revision),
+                None,
+                region,
+                spec.work_budget_frames,
+                cancelled,
+            )?,
+        ),
     }
 }
 
@@ -472,17 +508,38 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
         let (mut work, cancelled) = work;
         let job = work.resident.as_ref().map(|r| r.job);
         let result = if let Some(resident) = work.resident.take() {
-            let runtime =
-                SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
-                    Arc::clone(&work.spec.prepared_revision),
-                    &resident.resources,
-                    work.spec.destination_frame,
-                    work.spec.work_budget_frames,
-                    work.spec.start_playing,
-                    &cancelled,
-                );
-            // Keep one large constructor Result live, matching the existing preroll stack contract.
-            let result = runtime.and_then(Playback::from_interactive_arrangement_preroll);
+            let result = if let Some((sources, prepare)) = &resident.files {
+                prepare(crate::service::ResidentFileSeekRequest {
+                    spec: &work.spec,
+                    resources: &resident.resources,
+                    sources,
+                    cancelled: &cancelled,
+                })
+            } else {
+                let runtime = match work.spec.mode {
+                    ArrangementSeekMode::SectionLoop(region) => {
+                        SessionPlayback::prepare_section_arrangement_preroll(
+                            Arc::clone(&work.spec.prepared_revision),
+                            Some(&resident.resources),
+                            region,
+                            work.spec.work_budget_frames,
+                            &cancelled,
+                        )
+                    }
+                    _ => {
+                        SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                            Arc::clone(&work.spec.prepared_revision),
+                            &resident.resources,
+                            work.spec.destination_frame,
+                            work.spec.work_budget_frames,
+                            work.spec.start_playing,
+                            &cancelled,
+                        )
+                    }
+                };
+                // Keep one large constructor Result live, matching the existing preroll stack contract.
+                runtime.and_then(Playback::from_interactive_arrangement_preroll)
+            };
             drop(resident);
             result
         } else {
@@ -577,6 +634,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn section_specs_refuse_coercion_and_preserve_exact_result_metadata() {
+        let graph = prepared();
+        let worker = ArrangementSeekWorker::new().unwrap();
+        let enabled = hex_project::LoopRegion::new(0, 256, true).unwrap();
+        for (region, destination_frame, start_playing) in [
+            (enabled, 1, true),
+            (enabled, 0, false),
+            (
+                hex_project::LoopRegion::new(0, 256, false).unwrap(),
+                0,
+                true,
+            ),
+        ] {
+            let request = worker
+                .submit(ArrangementSeekSpec {
+                    mode: ArrangementSeekMode::SectionLoop(region),
+                    destination_frame,
+                    work_budget_frames: destination_frame,
+                    start_playing,
+                    ..spec(Arc::clone(&graph), 1)
+                })
+                .unwrap();
+            wait_for_ready(&worker);
+            let result = worker.try_result().unwrap();
+            assert_eq!(result.request_id, request);
+            assert_eq!(result.mode, ArrangementSeekMode::SectionLoop(region));
+            assert_eq!(
+                (result.destination_frame, result.start_playing),
+                (destination_frame, start_playing)
+            );
+            assert_eq!(
+                result.result.err(),
+                Some(ArrangementPrerollError::CandidatePositionMismatch)
+            );
+        }
+        worker
+            .submit(ArrangementSeekSpec {
+                mode: ArrangementSeekMode::SectionLoop(enabled),
+                start_playing: true,
+                ..spec(Arc::clone(&graph), 2)
+            })
+            .unwrap();
+        wait_for_ready(&worker);
+        let playback = worker.try_result().unwrap().result.unwrap();
+        assert_eq!(playback.section_loop(), Some(enabled));
+        assert_eq!(playback.position(), 0);
+        assert!(playback.playing());
+        worker.shutdown_and_join_on_control();
+    }
+
     fn wait_for_idle(worker: &ArrangementSeekWorker) {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -625,6 +733,7 @@ mod tests {
                 71,
                 resources.capture_on_control(10_000).unwrap(),
                 Arc::new(AtomicBool::new(false)),
+                None,
             )
             .unwrap();
         wait_for_ready(&worker);

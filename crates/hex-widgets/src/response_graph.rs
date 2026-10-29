@@ -26,8 +26,11 @@ pub use axes::ResponseGraphAxes;
 pub use creation_hint::ResponseGraphCreationHint;
 pub use scroll::{ResponseGraphScrollEvent, ResponseGraphScrollPhase};
 
-const MAX_CURVE_POINTS: usize = 256;
-const MAX_NODES: usize = 64;
+// Bounded dense source-envelope models, including distinct incoming/right
+// values at each of at most 1,024 authored points. Storage remains control-side.
+const MAX_CURVE_POINTS: usize = 2_050;
+const MAX_NODES: usize = 1_024;
+const MAX_ANALYZER_POINTS: usize = 256;
 const PLOT_INSET: f32 = 7.0;
 const NODE_RADIUS: f32 = 8.0;
 
@@ -86,19 +89,15 @@ impl ResponseGraphModel {
             || self.primary.len() > MAX_CURVE_POINTS
             || self.secondary.len() != self.primary.len()
             || self.analyzer.as_ref().is_some_and(|curve| {
-                curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
+                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
             })
             || self.input_analyzer.as_ref().is_some_and(|curve| {
-                curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
+                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
             })
             || self.nodes.len() > MAX_NODES
             || !valid_curve(&self.primary)
             || !valid_curve(&self.secondary)
-            || self
-                .nodes
-                .iter()
-                .enumerate()
-                .any(|(index, node)| self.nodes[..index].iter().any(|prior| prior.id == node.id))
+            || duplicate_node_ids(&self.nodes)
             || self.nodes.iter().any(|node| {
                 !node.position[0].is_finite()
                     || !node.position[1].is_finite()
@@ -110,6 +109,18 @@ impl ResponseGraphModel {
         }
         Ok(())
     }
+}
+
+fn duplicate_node_ids(nodes: &[ResponseGraphNode]) -> bool {
+    if nodes.len() > MAX_NODES {
+        return true;
+    }
+    let mut ids = [0; MAX_NODES];
+    for (slot, node) in ids.iter_mut().zip(nodes) {
+        *slot = node.id;
+    }
+    ids[..nodes.len()].sort_unstable();
+    ids[..nodes.len()].windows(2).any(|pair| pair[0] == pair[1])
 }
 
 fn valid_curve(points: &[[f32; 2]]) -> bool {
@@ -127,6 +138,8 @@ pub struct ResponseGraphAnalyzerStyle {
 
 /// Compact DSP-independent graph. The owner maps normalized graph points to
 /// domain values and sends the emitted drag phases through its normal edit API.
+/// Held node/creation input uses the shared Window pointer lease; wheel intent
+/// remains an independent stream. No canonical acknowledgement extends capture.
 pub struct ResponseGraph {
     id: SharedString,
     model: ResponseGraphModel,
@@ -288,6 +301,16 @@ impl ResponseGraph {
         }
     }
 
+    /// Borrow the accepted analyzer curves, output first then input, in normalized display
+    /// coordinates. This transfers no capture, FFT or project ownership and
+    /// does not expose the separate held node-position gesture.
+    pub fn analyzer_layers(&self) -> [Option<&[[f32; 2]]>; 2] {
+        [
+            self.model.analyzer.as_deref(),
+            self.model.input_analyzer.as_deref(),
+        ]
+    }
+
     pub fn set_model(
         &mut self,
         model: ResponseGraphModel,
@@ -421,6 +444,9 @@ impl ResponseGraph {
             }
             if self.creation_enabled && event.click_count == 1 {
                 if self.creation_drag_enabled {
+                    if !self.capture_pointer(window, cx) {
+                        return;
+                    }
                     self.press = Some(Press {
                         node_id: 0,
                         pointer_origin: position,
@@ -447,6 +473,9 @@ impl ResponseGraph {
             .iter()
             .find(|node| node.id == node_id)
             .map_or(position, |node| node.position);
+        if !self.capture_pointer(window, cx) {
+            return;
+        }
         let relative_option_y = event.modifiers.alt
             && !event.modifiers.platform
             && !event.modifiers.control
@@ -477,6 +506,31 @@ impl ResponseGraph {
         });
         cx.stop_propagation();
         cx.notify();
+    }
+
+    fn capture_pointer(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            CursorStyle::PointingHand,
+            move |event, window, cx| {
+                let _ = owner.update(cx, |graph, cx| {
+                    if let Some(event) = event.downcast_ref::<MouseMoveEvent>() {
+                        graph.pointer_move(event, window, cx);
+                    } else if let Some(event) = event.downcast_ref::<MouseUpEvent>() {
+                        graph.pointer_up(event, window, cx);
+                    }
+                    // Pointer presses already refuse parameter wheel input.
+                    // Independent wheel streams keep their normal event path.
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |graph, cx| graph.cancel(cx));
+            },
+            cx,
+        )
     }
 
     fn cancel_unfocused_creation(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
@@ -1137,7 +1191,7 @@ impl Element for ResponseGraphCaptureElement {
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) {
         let entity = self.entity.clone();
         window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
@@ -1145,26 +1199,30 @@ impl Element for ResponseGraphCaptureElement {
                 entity.update(cx, |graph, cx| graph.clear_creation_hint(cx));
             }
         });
+        let graph = self.entity.read(cx);
+        if (graph.press.is_some() || graph.drag.is_some()) && graph.focus.is_focused(window) {
+            window.renew_pointer_capture(
+                self.entity.entity_id(),
+                if graph.drag.is_some() {
+                    CursorStyle::ResizeColumn
+                } else {
+                    CursorStyle::PointingHand
+                },
+            );
+        }
+        // This is ordinary hint cleanup only; actual pointer edits use the lease.
         let entity = self.entity.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_move(event, window, cx));
-            if handled {
-                cx.stop_propagation();
-                window.refresh();
-            }
-        });
-        let entity = self.entity.clone();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if !phase.capture() {
-                return;
-            }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_up(event, window, cx));
-            if handled {
-                cx.stop_propagation();
-                window.refresh();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+            if phase.capture() {
+                entity.update(cx, |graph, cx| {
+                    if event.pressed_button.is_some()
+                        || graph
+                            .plot_bounds()
+                            .is_none_or(|plot| !plot.contains(&event.position))
+                    {
+                        graph.clear_creation_hint(cx);
+                    }
+                });
             }
         });
         let entity = self.entity.clone();
@@ -1365,3 +1423,7 @@ mod tests {
         assert_eq!(cycle_node(Some(2), 4, true), Some(1));
     }
 }
+
+#[cfg(test)]
+#[path = "response_graph/capture_tests.rs"]
+mod capture_tests;

@@ -8,6 +8,7 @@
 use hex_project::{Command, Editor};
 use hex_storage::{CURRENT_SCHEMA_VERSION, decode, encode, load_with_token, save_new};
 use serde_json::{Value, json};
+mod common;
 
 // 85e6dfe2181b9b1d9ad5bc3af34843b179a536a5
 const V34: &[u8] = include_bytes!("fixtures/migrations/schema34-85e6dfe2.json");
@@ -34,6 +35,64 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    common::restore_pre_binding_instruments(current);
+    let hierarchy: Vec<_> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|track| json!({"track":track["id"],"group":false,"parent":null}))
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("track_hierarchy"),
+        Some(json!(hierarchy))
+    );
+    let groups: Vec<_> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|track| track["audio_clips"].as_array().unwrap().iter())
+        .map(|clip| json!({"clip":clip["id"],"group":null}))
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("grouped_audio"),
+        Some(json!(groups))
+    );
+    let event_fades: Vec<_> = old["audio_event_state"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let events: Vec<_> = row["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| json!({"event":event["id"],"fade":null}))
+                .collect();
+            json!({"clip":row["clip"],"events":events})
+        })
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("audio_event_fades"),
+        Some(json!(event_fades))
+    );
+    let views: Vec<_> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|track| {
+            [("audio_clips", "audio"), ("midi_clips", "midi")]
+                .into_iter()
+                .flat_map(move |(field, kind)| {
+                    track[field].as_array().unwrap().iter().map(
+                        move |clip| json!({"clip":clip["id"],"view":{"kind":kind,"view":null}}),
+                    )
+                })
+        })
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("content_views"),
+        Some(json!(views))
+    );
     let mut activation: Vec<Value> = old["tracks"]
         .as_array()
         .unwrap()

@@ -1,5 +1,6 @@
 //! # Purpose
-//! Render fixed-block linear PCM16 WAV files and publish create-new outputs.
+//! Render fixed-block PCM16 Arrangement exports and bounded float32 source
+//! bounces, with explicit publication and ordinary prepared runtime custody.
 //!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and
@@ -30,13 +31,18 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 mod bounce;
 mod controlled;
-pub use bounce::{render_bounce_new, render_bounce_new_with_device_resources};
+pub use bounce::{
+    MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new, render_bounce_new,
+    render_bounce_new_with_device_resources,
+};
+mod pages;
+pub use pages::PreparedExportPages;
 mod publication;
 mod stems;
 pub use controlled::{
     ExportControl, ExportProgress, ExportSignal, render_prepared_controlled,
     render_prepared_controlled_with_device_resources,
-    render_prepared_with_device_resources_and_policy,
+    render_prepared_with_device_resources_and_policy, render_prepared_with_pages_and_policy,
 };
 pub use controlled::{
     control_storage_allowance, controlled_frame_count, render_control_sampler_with_policy,
@@ -59,6 +65,8 @@ pub struct ExportReport {
 #[derive(Debug)]
 pub enum ExportError {
     Cancelled,
+    /// Independent offline source preparation/verification failed before publication.
+    Media(String),
     /// Exchange committed, but displaced identity changed in the publication
     /// race. Preserve both paths; do not blindly roll back over another writer.
     PublicationConflict {
@@ -94,6 +102,7 @@ impl fmt::Display for ExportError {
                 recovery_path.display()
             ),
             Self::Cancelled => write!(f, "export cancelled"),
+            Self::Media(reason) => write!(f, "could not prepare export media: {reason}"),
             Self::Invalid(reason) => write!(f, "invalid wav export: {reason}"),
             Self::Render(source) => write!(f, "could not render wav: {source}"),
             Self::SessionRender(source) => write!(f, "could not render wav: {source}"),
@@ -134,7 +143,10 @@ impl Error for ExportError {
             Self::Io { source, .. } | Self::PublishedButNotDurable { source, .. } => Some(source),
             Self::Render(source) => Some(source),
             Self::SessionRender(source) => Some(source),
-            Self::Invalid(_) | Self::Cancelled | Self::PublicationConflict { .. } => None,
+            Self::Invalid(_)
+            | Self::Cancelled
+            | Self::Media(_)
+            | Self::PublicationConflict { .. } => None,
         }
     }
 }
@@ -263,7 +275,7 @@ fn discard_latency(renderer: &mut impl BlockRenderer, latency: u32) -> Result<()
 
 trait BlockRenderer {
     fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError>;
-    fn before_publication(&self) -> Result<(), ExportError> {
+    fn before_publication(&mut self) -> Result<(), ExportError> {
         Ok(())
     }
 }
@@ -780,7 +792,7 @@ mod tests {
                 frames.fill([0.25, -0.25]);
                 Ok(())
             }
-            fn before_publication(&self) -> Result<(), ExportError> {
+            fn before_publication(&mut self) -> Result<(), ExportError> {
                 if let Some(path) = &self.collision {
                     fs::write(path, b"concurrent writer").unwrap();
                     Ok(())

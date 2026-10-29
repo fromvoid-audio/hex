@@ -1,6 +1,14 @@
-//! Local drafts and a read-only prepared curve; the actor owns every committed edit.
+//! One active local draft and read-only prepared curves; the actor owns every
+//! committed edit. Detail and inline plots share pointer/command semantics.
+//! Inline automation owns its target independently of background clip selection;
+//! the detail lane follows the selected track only outside automation view.
+//! Released markers retain their source-stamped ordered receipt until the exact
+//! terminal and canonical state arrive in one receive; cancellation of held input
+//! never revokes already-admitted display custody.
 mod controls;
 mod paint;
+mod pending;
+use pending::PendingGain;
 #[cfg(test)]
 mod tests;
 use super::{EditorView, ViewState, viewport::Viewport};
@@ -8,7 +16,7 @@ use gpui::{Context, Entity, Subscription, Window};
 use hex_project::{BeatTime, GainPoint, TrackId};
 use hex_session::service::{GainLaneEdit, Request};
 use hex_widgets::NumericControl;
-pub(super) use paint::view;
+pub(super) use paint::{inline, view};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Draft {
@@ -16,7 +24,7 @@ pub(super) struct Draft {
     revision: u64,
     track: TrackId,
     from: Option<BeatTime>,
-    point: GainPoint,
+    pub(super) point: GainPoint,
     pointer: Option<([f32; 2], Viewport, [f32; 4])>,
 }
 struct NumericBinding {
@@ -30,6 +38,7 @@ pub(super) struct GainLane {
     plot_width: f32,
     pub(super) selected: Option<BeatTime>,
     pub(super) draft: Option<Draft>,
+    pub(super) pending: Option<PendingGain>,
     gain: Option<NumericBinding>,
     pub(super) error: Option<String>,
 }
@@ -152,7 +161,7 @@ impl EditorView {
         let busy = [&self.gain_lane.gain].into_iter().flatten().any(|binding| {
             binding.entity.read(cx).is_interacting() || binding.entity.read(cx).is_editing()
         });
-        if busy || self.gain_lane.draft.is_some() {
+        if busy || self.gain_lane.draft.is_some() || self.gain_lane.pending.is_some() {
             self.gain_lane.error = Some("finish or cancel the local draft first".into());
             return false;
         }
@@ -172,6 +181,9 @@ impl EditorView {
         // This compact editor replaces the open detail body, leaving real track rows at minimum size.
         self.clip_view_open = false;
         self.select_track(track, window);
+        self.automation_view
+            .devices
+            .clear_main(super::device_panel::DevicePanelOwner::Track(track));
         self.gain_lane.track = Some(track);
         self.gain_lane.selected = self
             .state
@@ -184,6 +196,9 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn cancel_gain_draft(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.cancel_device_automation_draft(cx) {
+            return true;
+        }
         if self.gain_recorder.blocks_edits() {
             self.cancel_gain_recording();
             cx.notify();
@@ -231,6 +246,7 @@ impl EditorView {
             return false;
         }
         if self.edit_pending()
+            || self.gain_lane.pending.is_some()
             || self.opening_project
             || self.close_prompt_open
             || self.device_gesture.snapshot().is_some()
@@ -265,6 +281,15 @@ impl EditorView {
         let Some(track) = state.project.track(draft.track) else {
             return;
         };
+        if draft
+            .from
+            .and_then(|beat| track.gain_envelope().iter().find(|p| p.beat == beat))
+            == Some(&draft.point)
+        {
+            self.gain_lane.selected = Some(draft.point.beat);
+            self.gain_lane.gain = None;
+            return;
+        }
         let points = match replacement(track.gain_envelope(), draft.from, draft.point) {
             Ok(points) => points,
             Err(reason) => {
@@ -288,14 +313,17 @@ impl EditorView {
         };
         self.gain_lane.selected = Some(draft.point.beat);
         self.gain_lane.gain = None;
-        self.enqueue(Request::GainLane {
+        self.gain_lane.pending = Some(PendingGain::new(draft, edit.clone()));
+        if !self.enqueue(Request::GainLane {
             project_generation: draft.generation,
             revision: draft.revision,
             track: draft.track,
             edit,
-        });
+        }) {
+            self.retire_pending_gain();
+        }
     }
-    fn gain_edit(&mut self, edit: GainLaneEdit, cx: &Context<Self>) {
+    pub(super) fn gain_edit(&mut self, edit: GainLaneEdit, cx: &Context<Self>) {
         if !self.gain_action_admitted(cx) || self.edit_pending() {
             self.gain_lane.error = Some("finish or cancel the local draft first".into());
             return;

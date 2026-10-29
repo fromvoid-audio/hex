@@ -12,7 +12,9 @@ pub(super) fn tempo_map(
     old: &TempoMap,
     preview: &SectionReorderPreview,
 ) -> Result<TempoMap, Invalid> {
-    if preview.is_noop() {
+    // A single global tempo has no events to move. Keep its exact Q32 clock
+    // instead of introducing synthetic splice seams (and fractional prefixes).
+    if preview.is_noop() || old.points().len() == 1 {
         return Ok(old.clone());
     }
     let mut beats: BTreeSet<_> = old.points().iter().map(|p| p.beat()).collect();
@@ -400,21 +402,8 @@ fn reorder_preview(
     if preview.is_noop() {
         return Ok(Created::None);
     }
-    // The existing engine compiles retained source loops, but does not yet
-    // admit the separate outer Once/Repeat occurrence model. A song-wide edit
-    // must refuse that capability rather than present partial playback as moved.
-    if project
-        .tracks
-        .iter()
-        .flat_map(|track| track.clips())
-        .any(|clip| {
-            clip.audio_edit()
-                .is_some_and(|edit| edit.placement.is_some())
-        })
-    {
-        return Err(Invalid(
-            "section reorder does not yet support outer audio once/repeat placements; original source loops are supported",
-        ));
+    if project.has_device_automation() {
+        return Err(Invalid(crate::AUTOMATION_EDIT_UNSUPPORTED));
     }
     let old_tempo = std::sync::Arc::new(project.tempo_map.clone());
     let frame_permutation = FramePermutation::new(&old_tempo, &preview)?;

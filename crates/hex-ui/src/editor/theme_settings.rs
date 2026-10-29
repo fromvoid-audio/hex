@@ -330,6 +330,10 @@ impl EditorView {
             self.theme_settings.focus.focus(window);
             return;
         }
+        if self.controller_input_is_open() {
+            self.close_controller_input_menu(window, cx);
+        }
+        self.prepare_controller_settings(cx);
         self.theme_settings.open = true;
         if self.theme_settings.loading {
             self.theme_settings.error = Some("loading theme settings…".into());
@@ -569,7 +573,10 @@ impl EditorView {
                 .get(&role)
                 .copied()
                 .unwrap_or(0.0);
-            picker.update(cx, |picker, cx| picker.set_external_color(rgb, hue, cx));
+            picker.update(cx, |picker, cx| {
+                picker.cancel_pointer(cx);
+                picker.set_external_color(rgb, hue, cx);
+            });
         }
         self.sync_theme_controls(cx);
         cx.notify();
@@ -852,6 +859,11 @@ impl EditorView {
         true
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn mark_theme_save_pending_for_update_test(&mut self) {
+        self.theme_settings.saving = true;
+    }
+
     pub(super) fn render_theme_settings(
         &mut self,
         cx: &mut Context<Self>,
@@ -976,6 +988,7 @@ impl EditorView {
             .text_color(rgb(style.text))
             .shadow_lg()
             .child(settings)
+            .child(self.controller_input_settings(cx))
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
             .child(content);
@@ -1024,6 +1037,7 @@ impl EditorView {
             div()
                 .id("theme settings backdrop")
                 .debug_selector(|| "theme settings backdrop".into())
+                .occlude()
                 .absolute()
                 .inset_0()
                 .flex()
@@ -1324,14 +1338,25 @@ mod tests {
             role.origin.x + role.size.width / 2.0,
             role.origin.y + role.size.height / 2.0,
         );
+        // Exercise modal occlusion independently of which settings row happens
+        // to align with the underlying ruler as sections are added or resized.
+        let overlap = point(center.x, ruler.origin.y + ruler.size.height / 2.0);
+        assert!(ruler.contains(&overlap) && panel.contains(&overlap));
+        visual.simulate_mouse_down(overlap, MouseButton::Left, Modifiers::default());
         assert!(
-            ruler.contains(&center),
-            "fixture must exercise the underlying ruler hit area"
+            !editor.read_with(cx, |view, _| view.scrub_active()),
+            "the modal surface blocks the underlying ruler"
         );
+        visual.simulate_mouse_up(overlap, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         assert!(
             !editor.read_with(cx, |view, _| view.scrub_active()),
             "modal clicks must not start an underlying seek"
+        );
+        assert!(
+            editor.read_with(cx, |view, _| view.loop_rail_gesture.is_none()),
+            "modal clicks must not capture the underlying loop rail"
         );
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
@@ -1409,6 +1434,45 @@ mod tests {
         let reloaded = hex_preferences::load_theme_preferences(&directory.0.join("theme.json"))
             .expect("saved palette reloads");
         assert_eq!(reloaded.secondary, theme::preferences().secondary);
+    }
+
+    #[gpui::test]
+    fn changing_picker_role_with_equal_rgb_retires_the_old_pointer(cx: &mut TestAppContext) {
+        let _restore = RestoreTheme(theme::preferences());
+        theme::apply_preferences(ThemePreferences::default());
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        editor.update(cx, |view, cx| {
+            view.select_theme_role(ThemeRole::Primary, cx)
+        });
+        visual.run_until_parked();
+        let field = visual.debug_bounds("theme-color-picker-field").unwrap();
+        visual.simulate_mouse_down(field.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let retained = editor.update(cx, |view, cx| {
+            let color = view.theme_settings.draft.primary;
+            // Source identity changes even when its current value is identical.
+            view.theme_settings.draft.secondary = color;
+            view.select_theme_role(ThemeRole::Secondary, cx);
+            color
+        });
+        visual.run_until_parked();
+        let moved = field.origin + point(field.size.width * 0.8, field.size.height * 0.2);
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.theme_settings.selected_role, ThemeRole::Secondary);
+            assert_eq!(view.theme_settings.draft.primary, retained);
+            assert_eq!(
+                view.theme_settings.draft.secondary, retained,
+                "an old pointer must not edit the newly selected role"
+            );
+        });
     }
 
     #[gpui::test]

@@ -6,6 +6,7 @@ use super::{
 mod current_sampler;
 mod density;
 mod gates;
+mod volume;
 use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
 pub(crate) use current_sampler::CurrentSamplerEventCustody;
 use density::admit_voice_density;
@@ -368,6 +369,19 @@ impl MidiReleaseVoice {
         retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
         transitions: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<Option<[f32; 2]>, crate::Invalid> {
+        self.sample_at_with_clock(frame, frame, contexts, retained, transitions)
+    }
+
+    /// Source age may advance while transport is paused. The parameter clock
+    /// remains musical time so a held revision ramp freezes until Play resumes.
+    pub(crate) fn sample_at_with_clock(
+        &self,
+        frame: u64,
+        parameter_frame: u64,
+        contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        transitions: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<Option<[f32; 2]>, crate::Invalid> {
         if frame < self.start_frame || frame >= self.end_frame {
             return Ok(None);
         }
@@ -376,7 +390,7 @@ impl MidiReleaseVoice {
                 contexts,
                 retained,
                 transitions,
-                frame,
+                parameter_frame,
                 frame - self.start_frame,
                 self.gate_end_frame - self.start_frame,
             )
@@ -652,6 +666,71 @@ impl MidiSpanBuffer {
 }
 
 impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn readmission_quote(&self) -> Result<(usize, usize), MidiTemplateError> {
+        let spans = self
+            .intro
+            .len()
+            .checked_add(self.repeats.len())
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let retained = std::mem::size_of::<Self>()
+            .checked_add(
+                spans
+                    .checked_mul(
+                        std::mem::size_of::<VoiceSpan>() + std::mem::size_of::<IntervalNode>(),
+                    )
+                    .ok_or(MidiTemplateError::ArithmeticOverflow)?,
+            )
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let scratch = density::current_sampler_workspace_quote(spans)
+            .map_err(|_| MidiTemplateError::ArithmeticOverflow)?;
+        Ok((retained, scratch))
+    }
+
+    pub(crate) fn retained_readmission_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.intro
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<VoiceSpan>())?,
+            )?
+            .checked_add(
+                self.repeats
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<VoiceSpan>())?,
+            )?
+            .checked_add(
+                self.intro_nodes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IntervalNode>())?,
+            )?
+            .checked_add(
+                self.repeat_nodes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IntervalNode>())?,
+            )
+    }
+
+    pub(crate) fn reprepare_for_source_on_control(
+        &self,
+        source: &PreparedMidiSourceTemplate,
+        limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    ) -> Result<Self, MidiTemplateError> {
+        let result = Self::prepare_with_bank_mode(
+            source,
+            std::sync::Arc::clone(&self.bank),
+            std::sync::Arc::clone(&self.shared_contexts),
+            self.event_source.then_some(self.release_frames),
+            self.event_source,
+            limits,
+        )?;
+        if result
+            .retained_readmission_bytes()
+            .is_none_or(|bytes| bytes > self.readmission_quote().map_or(0, |quote| quote.0))
+        {
+            return Err(MidiTemplateError::Allocation);
+        }
+        Ok(result)
+    }
     /// Prepare original sine voices and interval indexes from an already
     /// admitted ongoing source template. Authored notes are never rescanned.
     pub fn prepare(
@@ -1080,11 +1159,62 @@ impl PreparedMidiInstrumentTemplate {
         output: &mut [[f32; 2]],
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
+        self.prepare_additive_spans(context, start_frame, output.len(), buffer)?;
+        self.render_additive_spans(context, mix, start_frame, output, buffer, None)
+    }
+
+    /// Clip-owned gain uses the same effective global clock and source origin
+    /// as the note query. Template-only public rendering deliberately stays unity.
+    pub(crate) fn render_additive_with_volume<
+        T: crate::prepared_tempo::MidiTempoBreaks + ?Sized,
+    >(
+        &self,
+        context: MidiInstrumentRenderContext<'_, T>,
+        mix: PreparedTrackMix,
+        start_frame: u64,
+        output: &mut [[f32; 2]],
+        buffer: &mut MidiSpanBuffer,
+        program: Option<&crate::midi_clip_volume::PreparedMidiClipVolume>,
+    ) -> Result<(), MidiTemplateError> {
+        self.prepare_additive_spans(context, start_frame, output.len(), buffer)?;
+        if mix.muted() {
+            return Ok(());
+        }
+        // Query only actual voice windows, before touching the destination.
+        let gains = match program
+            .map(|program| {
+                volume::prepare_gains(
+                    program,
+                    context.origin,
+                    context.timing,
+                    start_frame,
+                    output.len(),
+                    buffer,
+                )
+            })
+            .transpose()
+        {
+            Ok(gains) => gains.flatten(),
+            Err(error) => {
+                buffer.len = 0;
+                return Err(error);
+            }
+        };
+        self.render_additive_spans(context, mix, start_frame, output, buffer, gains.as_ref())
+    }
+
+    fn prepare_additive_spans<T: MidiTiming + ?Sized>(
+        &self,
+        context: MidiInstrumentRenderContext<'_, T>,
+        start_frame: u64,
+        frames: usize,
+        buffer: &mut MidiSpanBuffer,
+    ) -> Result<(), MidiTemplateError> {
         if self.event_source {
             buffer.len = 0;
             return Err(MidiTemplateError::MutableEventsNotAnalytic);
         }
-        let width = match u64::try_from(output.len()) {
+        let width = match u64::try_from(frames) {
             Ok(width) => width,
             Err(_) => {
                 buffer.len = 0;
@@ -1107,12 +1237,25 @@ impl PreparedMidiInstrumentTemplate {
             context.onset_floor_exclusive,
         )?;
         buffer.suppress_carried(context.suppressions, start_frame);
+        Ok(())
+    }
+
+    fn render_additive_spans<T: MidiTiming + ?Sized>(
+        &self,
+        context: MidiInstrumentRenderContext<'_, T>,
+        mix: PreparedTrackMix,
+        start_frame: u64,
+        output: &mut [[f32; 2]],
+        buffer: &MidiSpanBuffer,
+        gains: Option<&[f64; MIDI_TEMPLATE_QUERY_FRAMES as usize]>,
+    ) -> Result<(), MidiTemplateError> {
         if mix.muted() {
             return Ok(());
         }
 
         for (frame_offset, output_frame) in output.iter_mut().enumerate() {
             let frame = start_frame + frame_offset as u64;
+            let gain = gains.map_or(1.0, |gains| gains[frame_offset]);
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
                     let Some(voice) = span.voice else { continue };
@@ -1130,6 +1273,14 @@ impl PreparedMidiInstrumentTemplate {
                                 "analytic continuation sample was refused",
                             )
                         })?;
+                    let contribution = if gain == 1.0 {
+                        contribution
+                    } else {
+                        [
+                            (f64::from(contribution[0]) * gain) as f32,
+                            (f64::from(contribution[1]) * gain) as f32,
+                        ]
+                    };
                     mix.add_frame(output_frame, contribution);
                 }
             }

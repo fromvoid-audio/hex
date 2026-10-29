@@ -194,6 +194,7 @@ fn invalid_boundary_splits_preserve_project_and_redo() {
 fn split_refuses_project_clip_limit_and_note_duplication_limit() {
     let clips: Vec<_> = (0..MAX_CLIPS)
         .map(|index| MidiClipSnapshot {
+            content_view: None,
             active: true,
             playback_offset_raw: 0,
             one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
@@ -211,7 +212,9 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
             notes: Vec::new(),
         })
         .collect();
-    let full_project = Project::from_snapshot(Snapshot {
+    let full_project = Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
@@ -223,6 +226,8 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         next_id: 2 + MAX_CLIPS as u64,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -272,6 +277,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
     let (mut editor, clip) = editor_with_clip(false, 0, 2, 2);
     let notes = (0..(MAX_NOTES / 2 + 1))
         .map(|_| hex_project::MidiNoteInsert {
+            active: true,
             start: BeatTime::ZERO,
             duration: beat(2),
             pitch: 60,

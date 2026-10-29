@@ -29,6 +29,23 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_copied_host_transport_probe_runs_at_its_owning_package(self):
+        inventory = [{"name": "hex-plugin-host", "features": {"allocation-probe": [], "test-support": []}}]
+        selected = ci.boundary_steps({
+            "affected_packages": ["hex-plugin-host"], "cargo_inventory": inventory,
+            "paths": ["crates/hex-plugin-host/src/transport.rs"],
+            "boundary": {"kind": "packages", "lint_packages": ["hex-plugin-host"],
+                         "test_packages": ["hex-plugin-host"], "tests": []},
+        })
+        probes = [s for s in selected if s.step_id == "audio-allocation-probe"]
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0].argv, ("cargo", "test", "-p", "hex-plugin-host",
+                                         "--features", "allocation-probe", "--locked"))
+        self.assertTrue(any(s.argv[:4] == ("cargo", "clippy", "-p", "hex-plugin-host")
+                            and "allocation-probe" in s.argv for s in selected))
+        self.assertFalse(any(s.step_id.startswith("feature-") and "allocation-probe" in s.argv
+                             for s in selected), "the real owning probe runs once")
+
     def test_edit_target_cli_requires_edit_plan_and_exclusive_selection(self):
         for arguments in (["--lib"], ["--profile", "full", "--lib"],
                           ["--quick", "--test", "roundtrip"], ["--lib", "--test", "roundtrip"]):
@@ -428,7 +445,8 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(plan.classify(["launch", "crates/hex-ui/src/a.rs"], inventory)[0], "rust")
         for name in ("crates/hex-ui/Cargo.toml", "crates/hex-ui/build.rs"):
             self.assertEqual(plan.classify([name], inventory)[0], "rust")
-        self.assertEqual(plan.classify(["scripts/ci_plan.py"], inventory)[0], "tooling")
+        for path in ("scripts/ci_plan.py", "scripts/ci_target_storage.py"):
+            self.assertEqual(plan.classify([path], inventory)[0], "tooling")
         self.assertEqual(plan.classify(["AGENTS.md"], inventory)[0], "metadata")
 
     def test_immutable_rename_deletion_untracked_and_prose_digest(self):
@@ -520,16 +538,21 @@ class ScopeTests(unittest.TestCase):
             ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=root))
         live_inventory = plan.cargo_inventory(metadata, root)
         path = "crates/hex-devices/src/compressor.rs"
-        # The ordinary plugin client is a new transitive audio consumer, outside
-        # the reviewed compressor-only boundary. Current selection must broaden.
+        # The copied/native client no longer depends on musical audio rendering.
+        # Changing a compressor must not select the independent client. Adding
+        # an unreviewed reverse consumer still broadens to package coverage.
         _, live_affected, _ = plan.classify([path], live_inventory)
-        self.assertIn("hex-plugin-host", live_affected)
+        self.assertNotIn("hex-plugin-host", live_affected)
         live_boundary = plan.boundary_selection(root, [path], live_inventory, live_affected)
-        self.assertEqual(live_boundary["kind"], "packages")
-        self.assertIn("hex-plugin-host", live_boundary["test_packages"])
-        # Keep the reviewed inventory fixture exercising the narrow contract and
-        # its negative controls without silently admitting that new consumer.
-        inventory = [p for p in live_inventory if p["name"] != "hex-plugin-host"]
+        self.assertEqual(live_boundary["kind"], "compressor")
+        reversed_inventory = [{**p, "dependencies": p["dependencies"] + [{"name": "hex-audio"}]}
+                              if p["name"] == "hex-plugin-host" else p for p in live_inventory]
+        _, reversed_affected, _ = plan.classify([path], reversed_inventory)
+        self.assertIn("hex-plugin-host", reversed_affected)
+        reversed_boundary = plan.boundary_selection(root, [path], reversed_inventory, reversed_affected)
+        self.assertEqual(reversed_boundary["kind"], "packages")
+        self.assertIn("hex-plugin-host", reversed_boundary["test_packages"])
+        inventory = live_inventory
         scope, affected, _ = plan.classify([path], inventory)
         self.assertEqual(scope, "rust")
         self.assertIn("hex-storage", affected)  # opaque state, no Cargo edge
@@ -937,6 +960,17 @@ class CacheIdentityTests(unittest.TestCase):
             self.assertNotEqual(old, key())
             old = key()
             env["RUSTFLAGS"] = "--cfg changed"
+            self.assertNotEqual(old, key())
+            # Target storage policy participates in the guarded CI inputs too.
+            (root / "scripts").mkdir()
+            helper = root / "scripts/ci_target_storage.py"
+            old = key()
+            helper.write_text("original storage guard")
+            self.assertNotEqual(old, key())
+            old = key()
+            stamp = helper.stat()
+            helper.write_text("modified storage guard")
+            os.utime(helper, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             self.assertNotEqual(old, key())
 
     def test_member_and_intermediate_absent_configs_change_guarded_witness(self):

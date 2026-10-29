@@ -2,6 +2,13 @@
 use super::*;
 #[test]
 fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_worker_pages() {
+    first_play(false);
+}
+#[test]
+fn grouped_closed_constructor_buffers_and_renders_verified_worker_pages() {
+    first_play(true);
+}
+fn first_play(grouped: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
@@ -10,6 +17,28 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
     let mut snapshot = project.snapshot();
     snapshot.tracks[0].devices.clear();
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let project = if grouped {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let hex_project::Created::Track(group) = editor
+            .execute(hex_project::Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        editor
+            .execute(hex_project::Command::Gain {
+                track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor.project().clone()
+    } else {
+        project
+    };
     let asset = project.assets().next().unwrap().id();
     let wav = stream_fixture::Wav::new();
     let definition = wav.definition(asset, 11);
@@ -21,7 +50,7 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
             editor_revision: 7,
         }),
     );
-    let id = owner.identity();
+    let mut id = owner.identity();
     let limits = reservation(&mut owner);
     let (mut control, mut data, errors, mut retirement) = anchored();
     control
@@ -89,7 +118,7 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
     );
     assert_eq!(control.status.applied_revision.load(Acquire), 0);
     // Caller context cannot relabel this actual prepared owner's document.
-    let ticket = control
+    let mut ticket = control
         .stage_eligible_audio_candidate(
             refused.owner,
             refused.domains,
@@ -145,7 +174,7 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    assert_eq!(output, [[0.25; 2]; 8]);
+    assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
     assert_eq!(control.status.position.load(Acquire), 8);
     assert_eq!(control.status.performance_frame.load(Acquire), 8);
     assert_eq!(
@@ -153,6 +182,76 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
         play
     );
     assert!(!control.status.stream_buffering.load(Acquire));
+    if grouped {
+        let successor = stream_fixture::owner_with_context(
+            &project,
+            wav.definition(asset, 11).metadata,
+            Some(hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: 8,
+            }),
+        );
+        let next_id = successor.identity();
+        let next = control
+            .stage_eligible_audio_candidate(
+                successor,
+                vec![domain],
+                PublicationPolicy::InheritRuntime,
+                0,
+            )
+            .ok()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while control.status.applied_revision.load(Acquire) != 2 {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|callback, _| {
+                    callback.begin_block();
+                    callback.render(&mut output).unwrap();
+                });
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        control.reclaim();
+        let retired = recover(&mut control, &ticket);
+        assert_eq!(retired.disposed.identity(), id);
+        drop(retired);
+        ticket = next;
+        id = next_id;
+        let seek = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while control.status.stream_applied_command_prefix.load(Acquire) < seek {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|callback, _| {
+                    callback.begin_block();
+                    callback.render(&mut output).unwrap();
+                });
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(output, [[0.125; 2]; 8]);
+    }
     let mut retirement = std::thread::spawn(move || {
         let mut backend = Some(());
         let mut pending = false;
@@ -626,7 +725,7 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
                 assert!(offset + frames.len() <= observed[index].len());
                 observed[index][offset..offset + frames.len()].fill(true);
             };
-            let outcome = active.render_streamed(
+            let outcome = active.stream_view().render_streamed(
                 &mut c.domain_pages,
                 false,
                 c.stream_prefix,

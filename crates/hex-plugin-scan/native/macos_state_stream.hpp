@@ -54,6 +54,10 @@ public:
     bool exclusive() const { return references.load()==1; }
     bool valid() const { return !refused.load(); }
     size_t size() const { return length; }
+    bool reset_write_on_control(size_t maximum) {
+        if (!control() || !valid() || !exclusive() || maximum>capacity) return false;
+        bytes.fill(0);limit=maximum;position=length=0;read_only=false;return true;
+    }
     bool rewind_read_only_on_control() {
         if (!control() || !valid() || !exclusive()) return false;
         read_only=true;position=0;limit=length;return true;

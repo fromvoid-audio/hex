@@ -257,7 +257,10 @@ fn track_clipboard_roundtrips_full_and_setup_only_copies_with_routes_and_history
         editor
             .execute(Command::PasteTracks {
                 clipboard,
-                before: None,
+                destination: hex_project::TrackDestination {
+                    parent_group: None,
+                    before: None,
+                },
             })
             .unwrap();
         let saved = encode(editor.project()).unwrap();

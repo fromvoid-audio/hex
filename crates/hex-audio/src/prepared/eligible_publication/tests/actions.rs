@@ -12,11 +12,40 @@ fn zero(measured: allocation_counter::AllocationInfo) {
 }
 #[test]
 fn real_seek_waits_without_commit_busy_and_pause_cancel_then_playfrom_reads_exact_page() {
+    seek_pause_stop_case(false);
+}
+#[test]
+fn grouped_stream_seek_pause_and_priority_stop_preserve_pages_and_clocks() {
+    seek_pause_stop_case(true);
+}
+fn seek_pause_stop_case(grouped: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
     }
     let project = readiness::project_with_frames(12288);
+    let project = if grouped {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let hex_project::Created::Track(group) = editor
+            .execute(hex_project::Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        editor
+            .execute(hex_project::Command::Gain {
+                track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor.project().clone()
+    } else {
+        project
+    };
     let asset = project.assets().next().unwrap().id();
     let wav =
         stream_fixture::Wav::with_samples(12288, |frame| if frame < 4096 { 8192 } else { 16384 });
@@ -61,7 +90,7 @@ fn real_seek_waits_without_commit_busy_and_pause_cancel_then_playfrom_reads_exac
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    assert_eq!(output, [[0.25; 2]; 8]);
+    assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
     let seek = control
         .command_with_ticket(PlaybackCommand::Seek(4096))
         .unwrap();
@@ -120,7 +149,7 @@ fn real_seek_waits_without_commit_busy_and_pause_cancel_then_playfrom_reads_exac
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    assert_eq!(output, [[0.5; 2]; 8]);
+    assert_eq!(output, [[if grouped { 0.25 } else { 0.5 }; 2]; 8]);
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         from
@@ -204,6 +233,7 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
             scene,
             content: hex_project::SessionCellContentSnapshot::Audio(
                 hex_project::SessionAudioClipSnapshot {
+                    loop_range: None,
                     active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
@@ -404,6 +434,7 @@ fn original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_press
             scene,
             content: hex_project::SessionCellContentSnapshot::Audio(
                 hex_project::SessionAudioClipSnapshot {
+                    loop_range: None,
                     active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,

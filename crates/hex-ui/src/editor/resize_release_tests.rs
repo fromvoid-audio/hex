@@ -18,7 +18,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
@@ -31,12 +31,32 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            Instant::now() < until,
+            "worker pending at deadline: {:?}",
+            editor.read_with(&*visual, |v, _| (
+                v.worker_requests_pending,
+                v.pending_requests.len(),
+                v.state.as_ref().map(|s| s.revision),
+                v.error.clone()
+            ))
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
+) -> (
+    super::super::external_audio_drop_ui_test::BatchFiles,
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    ClipId,
+) {
+    fixture_at_rate(cx, 48_000)
+}
+fn fixture_at_rate(
+    cx: &mut TestAppContext,
+    sample_rate: u32,
 ) -> (
     super::super::external_audio_drop_ui_test::BatchFiles,
     gpui::AnyWindowHandle,
@@ -45,10 +65,10 @@ fn fixture(
 ) {
     cx.update(super::super::bind_editor_keys);
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
-    let wav = files.wav("resize-release.wav", 48_000, 96_000);
+    let wav = files.wav("resize-release.wav", sample_rate, sample_rate * 2);
     let directory = wav.parent().unwrap();
     std::fs::create_dir(directory.join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let service = Service::new(sample_rate, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let event = next(&service);
@@ -58,7 +78,7 @@ fn fixture(
         .submit(Request::Edit(Command::MoveClip {
             clip,
             track,
-            start: 96_000,
+            start: u64::from(sample_rate) * 2,
         }))
         .unwrap();
     let event = next(&service);
@@ -460,6 +480,99 @@ fn install_pending_audio(v: &mut EditorView, clip: ClipId) -> Request {
         },
     });
     request
+}
+
+#[gpui::test]
+fn released_resize_survives_earlier_completion_until_project_replacement(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clip) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let original = visual.debug_bounds(clip_selector).unwrap();
+
+    // Hold the real later events outside the service queue so the repaint cannot
+    // consume them before the intermediate frame has completed.
+    let (replacement, terminal) = editor.update(&mut visual, |v, cx| {
+        let resize = install_pending_audio(v, clip);
+        assert!(v.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: 12_000,
+            end: 36_000,
+            enabled: true,
+        })));
+        assert!(v.enqueue(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        }));
+        assert!(v.enqueue(resize));
+        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(3));
+        let earlier = next(&v.service);
+        let replacement = next(&v.service);
+        let until = Instant::now() + Duration::from_secs(10);
+        let terminal = loop {
+            if let Ok(event) = v.service.try_event() {
+                break event;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(earlier.request_complete && !earlier.project_replaced);
+        assert!(replacement.request_complete && replacement.project_replaced);
+        assert!(terminal.request_complete && terminal.error.is_some());
+        v.receive(earlier);
+        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(2));
+        cx.notify();
+        (replacement, terminal)
+    });
+    visual.run_until_parked();
+    let preview = visual.debug_bounds("trim-live-preview").unwrap();
+    assert!(preview.size.width > original.size.width);
+    assert_eq!(
+        visual.debug_bounds(clip_selector),
+        Some(preview),
+        "the hit surface follows the painted preview"
+    );
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    editor.read_with(&visual, |v, _| {
+        let (_, displayed) = v.audio_trim_display(track, Some(clip)).unwrap();
+        assert_eq!(displayed.duration(), 120_000);
+    });
+    let extended = point(
+        original.right() + (preview.right() - original.right()) / 2.0,
+        preview.origin.y + px(20.0),
+    );
+    visual.simulate_mouse_down(extended, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(extended, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let menu = v
+            .context_menu
+            .as_ref()
+            .expect("preview extension hits the clip");
+        assert_eq!(menu.items[0].label, "use accent flavor");
+        assert!(v.pending_trim.is_some());
+    });
+    visual.simulate_keystrokes("escape");
+
+    editor.update(&mut visual, |v, cx| {
+        v.receive(replacement);
+        assert!(v.pending_trim.is_none());
+        assert!(v.state.as_ref().unwrap().project.clip(clip).is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("trim-live-preview").is_none());
+    assert!(visual.debug_bounds(clip_selector).is_none());
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        assert!(v.pending_trim.is_none());
+        assert!(v.state.as_ref().unwrap().project.clip(clip).is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("trim-live-preview").is_none());
+    assert!(visual.debug_bounds(clip_selector).is_none());
 }
 
 #[gpui::test]
@@ -1515,7 +1628,10 @@ fn resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane(cx: &mut Test
 fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, cancel: Option<u8>) {
     for other_selected in [false, true] {
         for edge in [TrimEdge::Left, TrimEdge::Right] {
-            let (_files, handle, editor, audio) = fixture(cx);
+            // Lane paint, selection and receipt custody use identical seconds
+            // and pixel geometry at 8kHz; keep real preparation off the long
+            // 48kHz DSP workload covered by the other release tests.
+            let (_files, handle, editor, audio) = fixture_at_rate(cx, 8_000);
             let mut visual = VisualTestContext::from_window(handle, cx);
             visual.update(|window, _| window.activate_window());
             let clip = if midi {
@@ -1574,10 +1690,28 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 )
             });
             editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
-            let lane = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
-            let baseline = visual
-                .rendered_border(lane)
-                .expect("actual normal lane border");
+            let lane: &'static str =
+                Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+            let divider: &'static str =
+                Box::leak(format!("lane-right-divider-{}", track.value()).into_boxed_str());
+            let lane_paint = |visual: &mut VisualTestContext| {
+                assert!(
+                    visual.rendered_border(lane).is_none(),
+                    "lane must not regain a layout-consuming or resize-feedback border"
+                );
+                let bounds = visual.debug_bounds(divider).expect("paint-only divider");
+                let lane_bounds = visual.debug_bounds(lane).unwrap();
+                assert_eq!(bounds.size.width, px(1.0));
+                assert_eq!(bounds.right(), lane_bounds.right());
+                assert_eq!(bounds.size.height, lane_bounds.size.height);
+                (
+                    visual
+                        .rendered_background(divider)
+                        .expect("actual divider paint"),
+                    bounds,
+                )
+            };
+            let baseline = lane_paint(&mut visual);
             let down = visual
                 .debug_bounds(Box::leak(
                     format!(
@@ -1616,19 +1750,17 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 visual.debug_bounds(outline).is_none(),
                 "held resizing keeps selection styling local to clips"
             );
-            let painted = visual
-                .rendered_border(lane)
-                .expect("actual held lane border");
+            let painted = lane_paint(&mut visual);
             eprintln!(
                 "RESIZE_LANE_SCENE midi={midi} shift={stretch} edge={edge:?} before={baseline:?} held={painted:?}"
             );
             assert_eq!(
                 painted.0, baseline.0,
-                "resize must not replace whole-lane border color"
+                "resize must not replace the divider color"
             );
             assert_eq!(
                 painted.1, baseline.1,
-                "resize must not add whole-lane border widths"
+                "resize must not change divider geometry"
             );
             let preview = if midi {
                 "midi-trim-live-preview"
@@ -1670,7 +1802,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
             for outside in [browser, point(target.x, foreign_lane.center().y), target] {
                 visual.simulate_mouse_move(outside, MouseButton::Left, modifiers);
                 visual.run_until_parked();
-                let source_lane = visual.rendered_border(lane).unwrap();
+                let source_lane = lane_paint(&mut visual);
                 assert_eq!(source_lane.0, baseline.0);
                 assert_eq!(source_lane.1, baseline.1);
                 assert!(
@@ -1713,7 +1845,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                     assert!(v.last_enqueued_edit.is_none());
                     assert_eq!((v.selected_track, v.selected_clip), selection);
                 });
-                let terminal_lane = visual.rendered_border(lane).unwrap();
+                let terminal_lane = lane_paint(&mut visual);
                 assert_eq!(terminal_lane.0, baseline.0);
                 assert_eq!(terminal_lane.1, baseline.1);
                 assert!(!visual.update(|_, cx| cx.has_active_drag()));
@@ -1747,7 +1879,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 }
                 p.snapshot()
             });
-            assert_eq!(visual.rendered_border(lane).unwrap().0, baseline.0);
+            assert_eq!(lane_paint(&mut visual), baseline);
             assert!(visual.debug_bounds(preview).is_none());
             visual.simulate_keystrokes("cmd-z");
             pump(&editor, &mut visual);

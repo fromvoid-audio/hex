@@ -3,12 +3,16 @@
 //! Providers receive only borrowed inventories. Runtime leases are created on control and move
 //! with their runtime, including into an outgoing tail; configuration equality never rebinds a
 //! carried voice. The revision carries a nonowning set identity, not a source owner.
+//! A retained source contributes one configuration at its explicit audio receiver;
+//! contributor tracks borrow its provider and never create a second resource lease.
 use super::{resident::NativeBankLoan, *};
 use crate::{AudioRootStorageLedger, owned_shared::OwnedShared};
 use hex_lattice::{DevicePreparationContext, NativeInstrumentRegistry, PreparedNativeInstrument};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{DeviceId, Project, TrackId};
 use std::cell::Cell;
+mod pcm;
+use pcm::{PcmPublication, PcmPublications};
 
 struct Binding {
     slot: DeviceAssetSlot,
@@ -159,12 +163,16 @@ impl PreparedDeviceResources {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| ResourcePreparationError::InvalidScope)?;
         let devices = || {
-            project.tracks().iter().filter_map(|track| {
-                track
-                    .instrument()
-                    .filter(|device| !device.state().asset_references().is_empty())
-                    .map(|device| (track.id(), device))
-            })
+            project
+                .tracks()
+                .iter()
+                .filter(|track| track.receives_source_audio())
+                .filter_map(|track| {
+                    track
+                        .instrument()
+                        .filter(|device| !device.state().asset_references().is_empty())
+                        .map(|device| (track.id(), device))
+                })
         };
         let count = devices().count();
         let (configuration_bytes, overhead) = OwnedShared::<Configuration>::declared_parts()
@@ -373,8 +381,9 @@ impl PreparedDeviceResources {
             .map(|configuration| configuration.factory_inline_bound)
     }
     /// Finite compiler scratch overlap from each resource definition's inline-only factory bound.
-    /// Registry preparation and its mutable-factory copy may coexist; retained factories are
-    /// separately selected from the actual compiled revision in the same control union.
+    /// Registry preparation, its mutable-factory copy and the audited sampler
+    /// proof may coexist. Retained owners are selected separately from the
+    /// actual compiled revision in the same control union.
     pub fn compiler_construction_allowance_bytes(&self) -> Result<usize, ResourcePreparationError> {
         self.configurations
             .iter()
@@ -384,6 +393,11 @@ impl PreparedDeviceResources {
                         configuration
                             .factory_inline_bound
                             .checked_mul(2)
+                            .and_then(|bytes| bytes.checked_add(
+                                if configuration.type_id == hex_devices::sampler::state::TYPE_ID {
+                                    hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bound()
+                                } else { 0 }
+                            ))
                             .ok_or(AudioStorageError::Overflow)?,
                     )
                     .ok_or(AudioStorageError::Overflow.into())
@@ -428,7 +442,11 @@ impl PreparedDeviceResources {
             ));
         }
         let mut count = 0usize;
-        for track in project.tracks() {
+        for track in project
+            .tracks()
+            .iter()
+            .filter(|track| track.receives_source_audio())
+        {
             let Some(device) = track
                 .instrument()
                 .filter(|device| !device.state().asset_references().is_empty())
@@ -703,7 +721,6 @@ pub struct DeviceResourceAdmission<'a> {
     playback: Option<&'a crate::playback::Playback>,
     playback_resources: Option<&'a PreparedDeviceResources>,
     batch: Option<&'a DeviceResourcePublicationBatch>,
-    legacy_pcm_frames: u64,
 }
 impl<'a> DeviceResourceAdmission<'a> {
     pub fn new(
@@ -720,7 +737,6 @@ impl<'a> DeviceResourceAdmission<'a> {
             playback: None,
             playback_resources: None,
             batch: None,
-            legacy_pcm_frames: 0,
         }
     }
     /// Borrow actual unpublished worker-owned runtime leases while an output is unavailable or
@@ -755,20 +771,37 @@ impl<'a> DeviceResourceAdmission<'a> {
         }
     }
     pub(super) fn legacy_sources(&self) -> impl Iterator<Item = &'a crate::Audio> + Clone {
-        self.revision.into_iter().flat_map(|revision| {
-            revision
-                .arrangement()
-                .tracks()
-                .iter()
-                .flat_map(|track| track.clips.iter().filter_map(|clip| clip.audio.as_ref()))
-                .chain(
-                    revision
-                        .session()
-                        .audio_clips()
-                        .iter()
-                        .filter_map(|clip| clip.resident_audio()),
-                )
-        })
+        self.revisions
+            .iter()
+            .copied()
+            .chain(self.revision)
+            .flat_map(|revision| {
+                revision
+                    .arrangement()
+                    .tracks()
+                    .iter()
+                    .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
+                    .chain(
+                        revision
+                            .session()
+                            .audio_clips()
+                            .iter()
+                            .filter_map(|c| c.resident_audio()),
+                    )
+            })
+            .chain(
+                self.books
+                    .iter()
+                    .copied()
+                    .chain(self.book)
+                    .flat_map(|book| book.pcm.sources()),
+            )
+            .chain(self.batch.into_iter().flat_map(|batch| batch.pcm.sources()))
+            .chain(
+                self.playback
+                    .into_iter()
+                    .flat_map(|playback| playback.resident_pcm_sources()),
+            )
     }
     pub(super) fn visit(
         &self,
@@ -800,6 +833,7 @@ impl<'a> DeviceResourceAdmission<'a> {
         for book in self.books.iter().copied().chain(self.book) {
             ledger.root(book, crate::AudioStorageRole::Current)?;
             ledger.vec(&book.obligations)?;
+            book.pcm.metadata(ledger)?;
             ledger.bytes(
                 crate::audio_storage::Owner::exclusive(book),
                 crate::audio_storage::Location("resource-graph-control-metadata-allowance", 0),
@@ -837,21 +871,6 @@ impl<'a> DeviceResourceAdmission<'a> {
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
-            let legacy = playback
-                .resident_pcm_capacity_frames()
-                .ok_or(AudioStorageError::Overflow)?;
-            let legacy_bytes = usize::try_from(legacy)
-                .ok()
-                .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
-                .ok_or(AudioStorageError::Overflow)?;
-            ledger.bytes(
-                crate::audio_storage::Owner::exclusive(playback),
-                crate::audio_storage::Location("unpublished-clip-pcm-capacity-allowance", 0),
-                legacy_bytes,
-            )?;
-            frames = frames
-                .checked_add(legacy)
-                .ok_or(AudioStorageError::Overflow)?;
             for lease in playback.device_resource_leases() {
                 frames = frames
                     .checked_add(lease.visit(ledger)?)
@@ -861,6 +880,7 @@ impl<'a> DeviceResourceAdmission<'a> {
         if let Some(batch) = self.batch {
             ledger.root(batch, crate::AudioStorageRole::FailedConstruction)?;
             ledger.vec(&batch.obligations)?;
+            batch.pcm.metadata(ledger)?;
             ledger.bytes(
                 crate::audio_storage::Owner::exclusive(batch),
                 crate::audio_storage::Location("resource-graph-control-metadata-allowance", 0),
@@ -872,26 +892,15 @@ impl<'a> DeviceResourceAdmission<'a> {
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
-        let legacy_bytes = usize::try_from(self.legacy_pcm_frames)
-            .ok()
-            .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
-            .ok_or(AudioStorageError::Overflow)?;
-        if let Some(book) = self.book {
-            ledger.bytes(
-                crate::audio_storage::Owner::exclusive(book),
-                crate::audio_storage::Location("ordinary-clip-pcm-capacity-allowance", 0),
-                legacy_bytes,
-            )?;
-        }
-        frames
-            .checked_add(self.legacy_pcm_frames)
-            .ok_or(AudioStorageError::Overflow)
+        Ok(frames)
     }
 }
 
 /// Output-owned immutable limits and exact outstanding resource obligations.
-/// This inventories only the resource subtree. Ordinary clip PCM remains a separately charged
-/// conservative capacity allowance, without native constructor provenance. Validated fixed inline
+/// Ordinary PCM is retained by bounded control-owned records captured before enqueue.
+/// Admission borrows their actual backing allocations, shared across publications and
+/// selected originals. Records release only after the matching graph is destroyed
+/// on control. This capacity inventory does not upgrade legacy Arc provenance. Validated fixed inline
 /// resource factories and complete MIDI handoff evidence have a separate conservative
 /// control-metadata allowance per accepted/unreturned graph; source-tail anchors never retain a
 /// whole revision. Runtime/context/DSP buffers retain their existing budgets. No whole-graph DATA
@@ -903,10 +912,12 @@ pub struct DeviceResourcePublication {
     max_obligations: usize,
     graph_control_metadata_bytes: usize,
     unreturned_graphs: usize,
+    pcm: PcmPublications,
 }
 /// Unpublished resource obligations, captured from the actual candidate on control. A refusal
 /// destroys these anchors on control while returning the unchanged candidate owner to its caller.
 struct DeviceResourcePublicationBatch {
+    pcm: PcmPublication,
     obligations: Vec<DeviceResourceLeaseObligation>,
     graph_control_metadata_bytes: usize,
 }
@@ -914,35 +925,30 @@ impl DeviceResourcePublication {
     pub fn reserve_on_control(
         reservation: crate::AudioStorageLedgerReservation,
         max_obligations: usize,
+        max_graphs: usize,
     ) -> Result<Self, ResourcePreparationError> {
         let max_obligations = max_obligations.min(reservation.handle_rows / 2);
-        Self::preflight_metadata(reservation, max_obligations, 0, 0, 0)?;
+        Self::preflight_metadata(reservation, max_obligations, 0, max_graphs, 0)?;
         let mut result = Self {
             reservation,
             obligations: Vec::new(),
             max_obligations,
             graph_control_metadata_bytes: 0,
             unreturned_graphs: 0,
+            pcm: PcmPublications::reserve(max_graphs)?,
         };
         result
             .obligations
             .try_reserve_exact(max_obligations)
             .map_err(|_| AudioStorageError::Allocation)?;
-        result.inspect(
-            &DeviceResourcePublicationBatch {
-                obligations: Vec::new(),
-                graph_control_metadata_bytes: 0,
-            },
-            0,
-        )?;
+        result.inspect(None)?;
         Ok(result)
     }
-    /// Borrow actual outstanding obligations, plus the output's separate conservative clip-PCM
-    /// allowance. This is control admission inventory, never a quiescence or retirement signal.
-    pub fn admission_on_control(&self, legacy_pcm_frames: u64) -> DeviceResourceAdmission<'_> {
+    /// Borrow outstanding resource leases and actual PCM records. This grants
+    /// neither callback quiescence nor retirement authority.
+    pub fn admission_on_control(&self) -> DeviceResourceAdmission<'_> {
         DeviceResourceAdmission {
             book: Some(self),
-            legacy_pcm_frames,
             ..DeviceResourceAdmission::default()
         }
     }
@@ -958,11 +964,13 @@ impl DeviceResourcePublication {
     fn prepare_on_control(
         &self,
         playback: &crate::playback::Playback,
-        legacy_pcm_frames: u64,
     ) -> Result<DeviceResourcePublicationBatch, ResourcePreparationError> {
-        if self.unreturned_graphs == usize::MAX {
-            return Err(AudioStorageError::Overflow.into());
+        if !self.pcm.available() {
+            return Err(ResourcePreparationError::MetadataCapacity);
         }
+        self.unreturned_graphs
+            .checked_add(1)
+            .ok_or(AudioStorageError::Overflow)?;
         let count = playback.device_resource_leases().count();
         if count > MAX_PLAYBACK_DEVICE_RESOURCE_LEASES
             || self
@@ -982,10 +990,11 @@ impl DeviceResourcePublication {
             self.reservation,
             self.obligations.capacity(),
             count,
-            legacy_pcm_frames,
+            0,
             total_control_metadata_bytes,
         )?;
         let mut batch = DeviceResourcePublicationBatch {
+            pcm: PcmPublication::capture(playback)?,
             obligations: Vec::new(),
             graph_control_metadata_bytes,
         };
@@ -1003,14 +1012,14 @@ impl DeviceResourcePublication {
                 .obligations
                 .push(lease.capture_obligation_on_control()?);
         }
-        self.inspect(&batch, legacy_pcm_frames)?;
+        self.inspect(Some(&batch))?;
         Ok(batch)
     }
     fn preflight_metadata(
         reservation: crate::AudioStorageLedgerReservation,
         retained_capacity: usize,
         batch_count: usize,
-        legacy_pcm_frames: u64,
+        graph_capacity: usize,
         graph_control_metadata_bytes: usize,
     ) -> Result<(), ResourcePreparationError> {
         let minimum = std::mem::size_of::<Self>()
@@ -1028,11 +1037,7 @@ impl DeviceResourcePublication {
                 )?)
             })
             .and_then(|bytes| {
-                bytes.checked_add(
-                    usize::try_from(legacy_pcm_frames)
-                        .ok()?
-                        .checked_mul(std::mem::size_of::<crate::Frame>())?,
-                )
+                bytes.checked_add(PcmPublications::reserved_bytes(graph_capacity).ok()?)
             })
             .and_then(|bytes| bytes.checked_add(graph_control_metadata_bytes))
             .ok_or(AudioStorageError::Overflow)?;
@@ -1045,52 +1050,31 @@ impl DeviceResourcePublication {
     }
     fn inspect(
         &self,
-        batch: &DeviceResourcePublicationBatch,
-        legacy_pcm_frames: u64,
+        batch: Option<&DeviceResourcePublicationBatch>,
     ) -> Result<crate::AudioRootStorageSummary, ResourcePreparationError> {
-        let mut ledger = AudioRootStorageLedger::try_new_on_control(self.reservation)?;
-        ledger.mutate(|ledger| {
-            ledger.root(self, crate::AudioStorageRole::Current)?;
-            ledger.vec(&self.obligations)?;
-            ledger.root(batch, crate::AudioStorageRole::FailedConstruction)?;
-            ledger.vec(&batch.obligations)?;
-            ledger.bytes(
-                crate::audio_storage::Owner::exclusive(self),
-                crate::audio_storage::Location("resource-graph-control-metadata-allowance", 0),
-                self.graph_control_metadata_bytes,
-            )?;
-            ledger.bytes(
-                crate::audio_storage::Owner::exclusive(batch),
-                crate::audio_storage::Location("resource-graph-control-metadata-allowance", 0),
-                batch.graph_control_metadata_bytes,
-            )?;
-            for obligation in self.obligations.iter().chain(&batch.obligations) {
-                obligation.visit(ledger)?;
-            }
-            let legacy_bytes = usize::try_from(legacy_pcm_frames)
-                .ok()
-                .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
-                .ok_or(AudioStorageError::Overflow)?;
-            ledger.bytes(
-                crate::audio_storage::Owner::exclusive(self),
-                crate::audio_storage::Location("ordinary-clip-pcm-capacity-allowance", 0),
-                legacy_bytes,
-            )?;
-            Ok(())
-        })?;
-        Ok(ledger.summary()?)
+        let registered = [DeviceResourceAdmission {
+            batch,
+            ..self.admission_on_control()
+        }];
+        let phase = super::DeviceResourcePhase {
+            stores: &[],
+            registered: &registered,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        Ok(super::inspect_device_resource_union(&phase, &phase, self.reservation)?.retained)
     }
     /// Reserve actual candidate obligations, then call the output's queue operation. Only a
     /// successful move commits them; refusal returns its actual candidate through the error.
     pub fn publish_on_control<T, E>(
         &mut self,
         playback: crate::playback::Playback,
-        legacy_pcm_frames: u64,
         publish: impl FnOnce(crate::playback::Playback) -> Result<T, E>,
     ) -> Result<T, DeviceResourcePublishError<E>> {
-        self.publish_admitted_on_control(playback, legacy_pcm_frames, |playback, _| {
-            publish(playback)
-        })
+        self.publish_admitted_on_control(playback, |playback, _| publish(playback))
     }
 
     /// Prepare actual prospective anchors, then synchronously lend the current book and candidate
@@ -1099,38 +1083,53 @@ impl DeviceResourcePublication {
     /// the unchanged candidate through the caller's error; queue success commits the exact batch.
     pub fn publish_admitted_on_control<T, E>(
         &mut self,
-        playback: crate::playback::Playback,
-        legacy_pcm_frames: u64,
+        mut playback: crate::playback::Playback,
         publish: impl FnOnce(crate::playback::Playback, DeviceResourceAdmission<'_>) -> Result<T, E>,
     ) -> Result<T, DeviceResourcePublishError<E>> {
-        let mut batch = match self.prepare_on_control(&playback, legacy_pcm_frames) {
+        let mut batch = match self.prepare_on_control(&playback) {
             Ok(batch) => batch,
             Err(reason) => return Err(DeviceResourcePublishError::Resources { reason, playback }),
         };
         let view = DeviceResourceAdmission {
             batch: Some(&batch),
-            ..self.admission_on_control(legacy_pcm_frames)
+            ..self.admission_on_control()
         };
+        playback.resident_pcm_publication = Some(batch.pcm.id);
         let result = publish(playback, view).map_err(DeviceResourcePublishError::Publication)?;
         // The identical sum was checked before the queue move; no fallible commit remains.
         self.unreturned_graphs += 1;
         self.graph_control_metadata_bytes += batch.graph_control_metadata_bytes;
         self.obligations.append(&mut batch.obligations);
+        self.pcm.commit(batch.pcm);
         Ok(result)
     }
 
     /// Inspect and destroy an actual returned graph on control before closing its exact leases.
     /// Migrated leases absent from that graph retain their original source obligations.
-    pub fn retire_on_control(&mut self, playback: Box<crate::playback::Playback>) {
-        self.mark_returned_on_control(&playback);
-        let metadata_bytes = playback.resource_control_metadata_bytes_on_control();
-        drop(playback);
-        self.unreturned_graphs = self.unreturned_graphs.checked_sub(1).unwrap_or(usize::MAX);
-        self.graph_control_metadata_bytes = metadata_bytes
+    pub fn retire_on_control(
+        &mut self,
+        playback: Box<crate::playback::Playback>,
+    ) -> Result<(), Box<crate::playback::Playback>> {
+        let Some(index) = self.pcm.find(playback.resident_pcm_publication) else {
+            return Err(playback);
+        };
+        let Some(graphs) = self.unreturned_graphs.checked_sub(1) else {
+            return Err(playback);
+        };
+        let Some(metadata) = playback
+            .resource_control_metadata_bytes_on_control()
             .ok()
             .and_then(|bytes| self.graph_control_metadata_bytes.checked_sub(bytes))
-            .unwrap_or(usize::MAX);
+        else {
+            return Err(playback);
+        };
+        self.mark_returned_on_control(&playback);
+        drop(playback);
+        self.pcm.release(index);
+        self.unreturned_graphs = graphs;
+        self.graph_control_metadata_bytes = metadata;
         self.release_marked_after_drop_on_control();
+        Ok(())
     }
 
     /// Mark only leases physically present in this returned Playback. An original publication's

@@ -10,6 +10,12 @@
 //! Does not own a second editable project, construct DSP or access files/audio devices from
 //! rendering. Render app-owned text through theme::text with bundled Ioskeley Mono; preserve
 //! original user data and path casing.
+pub mod assets;
+mod update;
+pub use update::{
+    UpdateAction, UpdateApproval, UpdateClient, UpdateCommand, UpdateReady, UpdateStatus,
+    UpdateWorker, channel as update_channel, install_update_client,
+};
 mod mts;
 pub use mts::install_mts_publisher;
 mod app;
@@ -19,23 +25,28 @@ mod controller_input;
 mod device_composition;
 mod diagnostics;
 pub use controller_input::install_controller_input;
-pub use diagnostics::install_session_log;
+pub use diagnostics::{install_action_diagnostics, install_audio_diagnostics, install_session_log};
 mod editor;
 mod editor_backend;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
 pub mod output_meter;
 mod theme;
+mod tooltips;
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 use hex_audio::AudioOutput;
 
 /// Open the editor with a worker-owned native audio backend.
+/// The host must install [`assets::HexAssets`] with `Application::with_assets`.
 pub fn open_editor_backend(cx: &mut App, backend: EditorBackend) -> Result<(), String> {
+    assets::validate(cx)?;
     editor::open_backend(cx, backend)
 }
 
 /// Compose the GPUI window around the backend created by the desktop entry point.
+/// The host must install [`assets::HexAssets`] with `Application::with_assets`.
 pub fn open(cx: &mut App, output: Result<AudioOutput, String>) -> Result<(), String> {
+    assets::validate(cx)?;
     theme::load_fonts(cx)?;
     cx.bind_keys([
         KeyBinding::new("space", app::TogglePlay, Some("daw")),
@@ -74,6 +85,7 @@ pub fn open_time_selection_profile(
     settings: std::path::PathBuf,
     result: std::sync::mpsc::SyncSender<Result<String, String>>,
 ) -> Result<(), String> {
+    assets::validate(cx)?;
     editor::time_selection_profile::open(cx, directory, settings, result)
 }
 
@@ -87,6 +99,41 @@ pub fn open_sampler_load_test_backend(
     directory: std::path::PathBuf,
 ) -> Result<gpui::AnyWindowHandle, String> {
     editor::sampler_load_fixture(cx, backend, root, directory)
+}
+
+/// Read-only browser insertion evidence. Neither the view nor this query owns
+/// a native endpoint, and a pending request alone grants no applied source.
+#[cfg(feature = "ui-test-support")]
+pub struct PluginEffectTestView {
+    pub state: Option<std::sync::Arc<hex_session::service::ViewState>>,
+    pub pending: bool,
+    pub queued_requests: usize,
+    /// Weak request identity only; it retains no request or native owner.
+    pub operation: Option<std::sync::Weak<hex_session::service::PluginEffectControl>>,
+    pub error: Option<String>,
+    pub selected_owner: Option<hex_session::service::PluginEffectDestination>,
+    pub status: String,
+    pub applied: Option<hex_audio::prepared::AppliedAudioSource>,
+}
+
+#[cfg(feature = "ui-test-support")]
+pub fn plugin_effect_test_view(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<PluginEffectTestView, String> {
+    editor::plugin_effect_fixture_view(window, cx)
+}
+
+/// Seed metadata for the original native-effect integration fixture beneath
+/// its owned temporary root. This does not scan, prepare or acknowledge a source.
+#[cfg(feature = "ui-test-support")]
+pub fn write_plugin_effect_test_catalog(
+    root: &std::path::Path,
+    selection: &hex_session::service::PluginEffectSelection,
+    subcategories: &str,
+    factory_flags: u32,
+) -> Result<(), String> {
+    editor::plugin_effect_fixture_catalog(root, selection, subcategories, factory_flags)
 }
 
 /// Read-only headless source metadata and peak-only table; no native owner.
@@ -126,4 +173,13 @@ pub fn sampler_midi_test_ready(
     cx: &gpui::App,
 ) -> Result<bool, String> {
     editor::sampler_midi_fixture_ready(window, cx)
+}
+
+/// Compile-time source provenance; guarded builds include the frozen tree digest.
+pub fn diagnostic_build_identity() -> &'static str {
+    concat!(
+        env!("HEX_DISPLAY_VERSION"),
+        " source=",
+        env!("HEX_DIAGNOSTIC_SOURCE")
+    )
 }

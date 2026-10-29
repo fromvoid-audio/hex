@@ -5,7 +5,7 @@ use crate::{
     InstrumentTrack, owned_shared::SharedDeclaration, shared_analytic::SharedAnalyticContextTable,
 };
 
-/// Explicit upper bounds for the existing compiler's finite, nonlooping class.
+/// Explicit upper bounds for the existing compiler's admitted finite occurrence class.
 /// Rust 1.94 stable driftsort uses max(N,48) scratch element slots beyond
 /// its <=20-element insertion path (48 = SMALL_SORT_GENERAL_SCRATCH_LEN).
 /// Pinned sources:
@@ -21,12 +21,26 @@ pub(crate) fn compiler_quote(
         .midi_clips()
         .iter()
         .filter(|clip| clip.active())
-        .try_fold(0usize, |n, c| {
-            if c.source().looping() {
-                return Err(AudioStorageError::UnsupportedGraph);
-            }
-            n.checked_add(c.notes().len())
-                .ok_or(AudioStorageError::Overflow)
+        .try_fold(0usize, |total, clip| {
+            let playback = clip
+                .source_playback()
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            clip.notes()
+                .iter()
+                .filter(|note| note.active())
+                .try_fold(total, |total, note| {
+                    let count = usize::try_from(
+                        playback
+                            .note_occurrences(note.start(), note.duration())
+                            .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                            .count(),
+                    )
+                    .map_err(|_| AudioStorageError::Overflow)?;
+                    total
+                        .checked_add(count)
+                        .filter(|n| *n <= crate::midi_compile::MAX_COMPILED_MIDI_OCCURRENCES)
+                        .ok_or(AudioStorageError::UnsupportedGraph)
+                })
         })?;
     let workspace = compiler_workspace_quote(notes, track.midi_clips().len())?;
     let (payload, overhead) = crate::owned_shared::OwnedShared::<
@@ -46,6 +60,11 @@ pub(crate) fn compiler_quote(
                 payload.checked_add(overhead)?
             })
         })
+        .ok_or(AudioStorageError::Overflow)?;
+    let retained = retained
+        .checked_add(
+            crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::closed_quote(track)?,
+        )
         .ok_or(AudioStorageError::Overflow)?;
     Ok((retained, workspace))
 }
@@ -99,7 +118,9 @@ pub(super) struct SamplerTrackConstruction {
     contexts: Option<SharedDeclaration>,
     handles: [u64; 2],
     instrument: Option<InstrumentTrack>,
+    volume_identity: Option<crate::midi_clip_volume::arrangement::ArrangementVolumeIdentity>,
     installed: bool,
+    looping_source: bool,
 }
 impl SamplerTrackConstruction {
     pub(super) fn handles(&self) -> usize {
@@ -118,12 +139,14 @@ impl SamplerTrackConstruction {
     ) -> Result<(), AudioStorageError> {
         if self.present()
             || self.instrument.is_some()
+            || self.volume_identity.is_some()
             || self.handles != [0; 2]
             || config.track != track.id()
             || track.instrument().is_none_or(|d| d.id() != config.device)
         {
             return Err(AudioStorageError::SourceMismatch);
         }
+        self.looping_source = track.midi_clips().iter().any(|c| c.active() && c.looping());
         self.track = Some(track.id());
         self.device = Some(config.device);
         self.scope = Some(scope);
@@ -133,7 +156,7 @@ impl SamplerTrackConstruction {
         self.handles = [handle()?, handle()?];
         let (contexts, paired) = contexts.clone_on_control().into_paired_parts_on_control();
         self.contexts = Some(paired);
-        self.instrument = crate::midi_compile::compile_current_sampler_track(
+        let instrument = crate::midi_compile::compile_current_sampler_track(
             project,
             track,
             &config.prepared,
@@ -141,6 +164,15 @@ impl SamplerTrackConstruction {
             &mut self.bank,
         )
         .map_err(invalid)?;
+        let volume_identity = instrument
+            .as_ref()
+            .and_then(|i| i.volumes.as_ref())
+            .map(|volumes| volumes.preparation_identity())
+            .transpose()
+            .map_err(invalid)?;
+        // All fallible preparation precedes these persistent owner moves.
+        self.instrument = instrument;
+        self.volume_identity = volume_identity;
         Ok(())
     }
     pub(super) fn install(&mut self, track: &mut Track) -> Result<(), AudioStorageError> {
@@ -158,6 +190,7 @@ impl SamplerTrackConstruction {
         track.instrument_runtime_latency = Some(0);
         track.tuning_identity = self.tuning;
         track.mutable_instrument = true;
+        track.mutable_looping_source = self.looping_source;
         self.installed = true;
         Ok(())
     }
@@ -174,7 +207,7 @@ impl SamplerTrackConstruction {
                 || track.instrument_input_gain != self.input
                 || track.instrument_output_gain != self.output
                 || !track.mutable_instrument
-                || track.mutable_looping_source
+                || track.mutable_looping_source != self.looping_source
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -193,6 +226,13 @@ impl SamplerTrackConstruction {
             {
                 return Err(AudioStorageError::UnknownStorage);
             }
+            match (instrument.volumes.as_ref(), self.volume_identity.as_ref()) {
+                (None, None) => {}
+                (Some(value), Some(identity)) if identity.matches(value) => {}
+                _ => return Err(AudioStorageError::SourceMismatch),
+            }
+        } else if self.volume_identity.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
         }
         Ok(())
     }
@@ -206,7 +246,7 @@ impl SamplerTrackConstruction {
             .as_ref()
             .and_then(|d| d.parts(&instrument.bank))
             .ok_or(AudioStorageError::UnknownStorage)?;
-        instrument
+        let bytes = instrument
             .spans
             .capacity()
             .checked_mul(std::mem::size_of::<crate::midi_compile::CompiledNoteSpan>())
@@ -220,7 +260,20 @@ impl SamplerTrackConstruction {
             })
             .and_then(|n| n.checked_add(payload))
             .and_then(|n| n.checked_add(overhead))
-            .ok_or(AudioStorageError::Overflow)
+            .ok_or(AudioStorageError::Overflow)?;
+        let mut bytes = bytes;
+        if let Some(volumes) = &instrument.volumes {
+            bytes = bytes
+                .checked_add(volumes.allocated_row_bytes().map_err(invalid)?)
+                .and_then(|n| n.checked_add(volumes.retained_control_metadata_bytes()))
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        if let Some(identity) = &self.volume_identity {
+            bytes = bytes
+                .checked_add(identity.retained_bytes()?)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        Ok(bytes)
     }
     pub(super) fn visit<'a>(
         &'a self,
@@ -232,6 +285,12 @@ impl SamplerTrackConstruction {
             return Ok(());
         };
         self.validate(track)?;
+        if let Some(volumes) = &instrument.volumes {
+            volumes.visit_storage(ledger)?;
+        }
+        if let Some(identity) = &self.volume_identity {
+            identity.visit_storage(ledger)?;
+        }
         ledger.vec(&instrument.spans)?;
         ledger.vec(&instrument.nodes)?;
         ledger.shared(
@@ -263,11 +322,13 @@ impl SamplerTrackConstruction {
         track.instrument_latency = None;
         track.instrument_runtime_latency = None;
         track.mutable_instrument = false;
+        track.mutable_looping_source = false;
         self.installed = false;
         Ok(())
     }
     pub(super) fn dispose(&mut self) {
         drop(self.instrument.take());
+        drop(self.volume_identity.take());
         self.bank = None;
         self.contexts = None;
         self.device = None;

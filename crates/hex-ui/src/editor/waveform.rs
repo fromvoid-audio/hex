@@ -1,7 +1,8 @@
 use crate::theme;
-use gpui::{Context, Div, Window, canvas, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, prelude::*, px};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
+use hex_widgets::{MAX_WAVEFORM_COLUMNS, WaveformColors, WaveformEmphasis, waveform_plot};
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use super::waveform_geometry::{
@@ -11,7 +12,6 @@ use super::waveform_geometry::{
 
 pub(super) use super::waveform_geometry::WaveformGrid;
 
-const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
 
@@ -26,7 +26,23 @@ pub(super) struct WaveformPreview<'a> {
     pub(super) prepared: Option<&'a hex_session::service::AudioClipWaveform>,
 }
 
+/// Keep inactive clip peaks readable but subordinate to active material.
+pub(super) fn clip_waveform_activity(body: Div, active: bool) -> Div {
+    body.opacity(if active { 1.0 } else { 0.4 })
+}
+
 pub(super) fn preview_waveform_view_cached(
+    request: WaveformPreview<'_>,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    grid: Option<WaveformGrid>,
+) -> Option<Div> {
+    preview_waveform_view_cached_inner(request, visible_start, visible_end, cache, grid)
+        .map(|body| clip_waveform_activity(body, request.preview.active()))
+}
+
+fn preview_waveform_view_cached_inner(
     request: WaveformPreview<'_>,
     visible_start: u64,
     visible_end: u64,
@@ -44,6 +60,17 @@ pub(super) fn preview_waveform_view_cached(
         return None;
     }
     if let Some(edit) = preview.audio_edit() {
+        // Placement sampling owns repeat wraps for both ordinary crop/loop
+        // changes and canonical Shift-Warp root retiming.
+        if edit.placement.is_some() {
+            return super::waveform_loop::loop_waveform_view(
+                request,
+                visible_start,
+                visible_end,
+                cache,
+                grid,
+            );
+        }
         if original
             .audio_edit()
             .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))
@@ -60,6 +87,71 @@ pub(super) fn preview_waveform_view_cached(
         // A crop shares the immutable full processing root. A changed root must
         // supply its own validated preview projection, never raw-asset peaks.
         if !Arc::ptr_eq(&old.domain, &edit.domain) {
+            return None;
+        }
+        if let (Some(before), Some(after)) = (old.content_view, edit.content_view) {
+            let prepared = prepared?;
+            if prepared.offset != 0
+                || prepared.length != original.duration()
+                || u64::try_from(prepared.waveform.source_frames).ok()? != original.duration()
+                || before.window.reversed != after.window.reversed
+            {
+                return None;
+            }
+            let a = hex_project::AudioViewProjection::new(original, tempo).ok()?;
+            let b = hex_project::AudioViewProjection::new(preview, tempo).ok()?;
+            // Retain accepted finite output. Never treat its already-directed
+            // PCM peaks as the full forward processing root a second time.
+            let same_base = before.base_view_start == after.base_view_start
+                && before.base_view_end == after.base_view_end
+                && before.base_placement == after.base_placement;
+            let linear = before.base_placement.is_none() && after.base_placement.is_none();
+            if !(same_base || linear) || a.root_origin() != b.root_origin() {
+                return None;
+            }
+            let displacement = b.base_reference_start() - a.base_reference_start();
+            let elapsed = if before.window.reversed {
+                i128::from(before.window.end) - i128::from(after.window.end) - displacement
+            } else {
+                i128::from(after.window.start) + displacement - i128::from(before.window.start)
+            };
+            let current = |clip: &Clip, edit: &hex_project::AudioClipEdit| {
+                edit.reference_start_raw()
+                    .unwrap_or(i128::from(clip.start()))
+            };
+            if current(preview, edit) - current(original, old) != elapsed {
+                return None;
+            }
+            let (timeline_origin, root_offset) = if elapsed >= 0 {
+                let elapsed = u64::try_from(elapsed).ok()?;
+                if elapsed >= before.window.length().ok()? {
+                    return None;
+                }
+                (
+                    preview.start(),
+                    a.frame_at_elapsed(elapsed)
+                        .ok()?
+                        .checked_sub(original.start())?,
+                )
+            } else {
+                // Outward extension has no accepted peaks outside this range.
+                // Keep the known finite PCM visible at its existing position.
+                (original.start(), 0)
+            };
+            return Some(timeline_waveform_view_cached(
+                Arc::clone(&prepared.waveform),
+                WaveformMapping::Prepared {
+                    timeline_origin,
+                    root_offset,
+                    gain: preview.gain(),
+                },
+                visible_start,
+                visible_end,
+                cache,
+                grid,
+            ));
+        }
+        if old.content_view.is_some() || edit.content_view.is_some() {
             return None;
         }
         let (old_origin, old_length, old_offset, _) = old.projected_domain(tempo).ok()?;
@@ -113,17 +205,20 @@ pub(super) fn prepared_waveform_view_cached(
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
-    waveform_canvas(
-        Arc::clone(&prepared.waveform),
-        WaveformMapping::Prepared {
-            timeline_origin: clip.start(),
-            root_offset: prepared.offset,
-            gain: clip.gain(),
-        },
-        visible_start,
-        visible_end,
-        Some(cache),
-        None,
+    clip_waveform_activity(
+        waveform_canvas(
+            Arc::clone(&prepared.waveform),
+            WaveformMapping::Prepared {
+                timeline_origin: clip.start(),
+                root_offset: prepared.offset,
+                gain: clip.gain(),
+            },
+            visible_start,
+            visible_end,
+            Some(cache),
+            None,
+        ),
+        clip.active(),
     )
 }
 
@@ -154,16 +249,19 @@ pub(super) fn waveform_view_cached(
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
-    waveform_canvas(
-        Arc::clone(waveform),
-        WaveformMapping::Clip {
-            clip: clip.clone(),
-            timeline_origin: clip.start(),
-        },
-        visible_start,
-        visible_end,
-        Some(cache),
-        None,
+    clip_waveform_activity(
+        waveform_canvas(
+            Arc::clone(waveform),
+            WaveformMapping::Clip {
+                clip: clip.clone(),
+                timeline_origin: clip.start(),
+            },
+            visible_start,
+            visible_end,
+            Some(cache),
+            None,
+        ),
+        clip.active(),
     )
 }
 
@@ -189,6 +287,7 @@ pub(super) fn waveform_source_segment_gain_view_cached(
     visible_start: u64,
     visible_end: u64,
     gain: hex_project::ClipGain,
+    detail: bool,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
     waveform_canvas(
@@ -196,6 +295,7 @@ pub(super) fn waveform_source_segment_gain_view_cached(
         WaveformMapping::GainedSource {
             timeline_origin,
             gain,
+            detail,
         },
         visible_start,
         visible_end,
@@ -218,22 +318,32 @@ pub(super) fn waveform_canvas(
     grid: Option<WaveformGrid>,
 ) -> Div {
     let mapping = mapping.clone();
-    waveform_surface(canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
+    waveform_plot(
+        move |paint| {
+            #[cfg(all(test, feature = "ui-test-support"))]
+            if grid.is_some() && super::navigation_metrics::waveforms_suppressed() {
+                // Keep the actual canvas/layout/clip controls in the diagnostic
+                // profile while excluding waveform preparation and submission.
+                return None;
+            }
+            #[cfg(all(test, feature = "ui-test-support"))]
+            let _navigation_timer = super::navigation_metrics::Timer::start(
+                super::navigation_metrics::Stage::WaveformProvider,
+            );
+            let bounds = paint.bounds;
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
             if visible_start >= visible_end || width <= 0.0 || height <= 0.0 {
-                return;
+                return None;
             }
-            let columns = waveform_column_count(width, window.scale_factor());
+            let columns = waveform_column_count(width, paint.scale);
             let geometry = cache.as_ref().and_then(|cache| {
                 let request = WaveformGeometryRequest {
                     mapping: &mapping,
                     visible_start,
                     visible_end,
                     bounds,
-                    scale: window.scale_factor(),
+                    scale: paint.scale,
                     columns,
                     grid,
                 };
@@ -251,30 +361,23 @@ pub(super) fn waveform_canvas(
                 )
                 .map(Arc::new)
             });
-            if let Some(geometry) = geometry {
-                #[cfg(all(test, feature = "ui-test-support"))]
+            #[cfg(all(test, feature = "ui-test-support"))]
+            if let Some(geometry) = &geometry {
                 if let Some(cache) = &cache
                     && let Ok(mut cache) = cache.try_borrow_mut()
                 {
-                    cache.record_paint(bounds, window.content_mask().bounds, &geometry);
-                }
-                for channel in &geometry.channels {
-                    window.paint_path(
-                        channel.centerline.clone(),
-                        rgb(theme::color(theme::PaletteRole::Border)),
-                    );
-                    window.paint_path(channel.waveform.clone(), rgb(0x000000));
+                    cache.record_paint(bounds, paint.mask, geometry);
                 }
             }
+            geometry
         },
-    ))
-}
-
-fn waveform_surface<T: 'static>(canvas: gpui::Canvas<T>) -> Div {
-    div()
-        .absolute()
-        .inset_0()
-        .children([canvas.absolute().inset_0()])
+        WaveformColors {
+            waveform: 0x000000,
+            inactive: 0x000000,
+            centerline: theme::color(theme::PaletteRole::Border),
+        },
+        WaveformEmphasis::Uniform,
+    )
 }
 
 pub(super) fn waveform_column_count(width: f32, scale: f32) -> usize {
@@ -614,24 +717,41 @@ pub(super) fn button(
     tooltip: &'static str,
     id: (&'static str, u64),
 ) -> gpui::Stateful<Div> {
-    button_with_style(label, tooltip, id, theme::action_style())
+    button_surface(
+        hex_widgets::action(theme::text(label), theme::action_style()),
+        tooltip,
+        id,
+    )
 }
 
 /// Tooltip/identity adapter; stateful callers resolve their hover colors before
 /// the shared widget is built, rather than installing a second GPUI hover style.
-pub(super) fn button_with_style(
+pub(super) fn toggle_button_with_style(
     label: &'static str,
     tooltip: &'static str,
     id: (&'static str, u64),
     style: hex_widgets::ActionStyle,
 ) -> gpui::Stateful<Div> {
-    hex_widgets::action(theme::text(label), style)
+    button_surface(
+        hex_widgets::toggle_action(theme::text(label), style),
+        tooltip,
+        id,
+    )
+}
+
+fn button_surface(
+    surface: Div,
+    tooltip: &'static str,
+    id: (&'static str, u64),
+) -> gpui::Stateful<Div> {
+    surface
         .id(id)
         .w(px(19.0))
         .h(px(21.0))
         .text_xs()
         .tooltip(move |_, cx| {
             cx.new(|_| ClipTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 name: tooltip.to_string(),
             })
             .into()
@@ -639,21 +759,13 @@ pub(super) fn button_with_style(
 }
 
 pub(super) struct ClipTooltip {
+    pub(super) kind: crate::tooltips::Kind,
     pub(super) name: String,
 }
 
 impl Render for ClipTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .font_family(theme::FONT_FAMILY)
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(&self.name))
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::tooltips::view(&self.kind, &self.name, cx)
     }
 }
 
@@ -672,7 +784,7 @@ mod tests {
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn waveform_canvas_paints_full_clip_extent(cx: &mut gpui::TestAppContext) {
-        use gpui::{IntoElement, point, size};
+        use gpui::{IntoElement, div, point, size};
         use std::{cell::Cell, rc::Rc};
 
         let visual = cx.add_empty_window();
@@ -687,12 +799,18 @@ mod tests {
                         .w(px(width))
                         .h(px(44.0))
                         .relative()
-                        .children([waveform_surface(canvas(
-                            |_, _, _| (),
-                            move |bounds, _, _, _| {
-                                result.set(Some(bounds));
+                        .children([waveform_plot(
+                            move |paint| {
+                                result.set(Some(paint.bounds));
+                                None::<Rc<hex_widgets::WaveformGeometry>>
                             },
-                        ))])
+                            WaveformColors {
+                                waveform: 0,
+                                inactive: 0,
+                                centerline: 0,
+                            },
+                            WaveformEmphasis::Uniform,
+                        )])
                         .into_element()
                 },
             );

@@ -25,8 +25,17 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.gain_recorder.blocks_edits() {
-            self.error = Some("finish or cancel gain recording before closing".into());
+        if self.update_blocks_close() {
+            self.error = Some("update preparation is still in progress".into());
+            cx.notify();
+            return false;
+        }
+        if self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits() {
+            self.error = Some(if self.gain_recorder.has_retained_take() {
+                "retry or explicitly discard the retained gain take before closing".into()
+            } else {
+                "finish or cancel gain recording before closing".into()
+            });
             cx.notify();
             return false;
         }
@@ -48,6 +57,8 @@ impl EditorView {
         if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, false);
             false
+        } else if self.prepare_update_quit(false, cx) {
+            false
         } else {
             self.cancel_browser_sample_playback();
             self.stop();
@@ -56,8 +67,17 @@ impl EditorView {
     }
 
     pub(super) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.gain_recorder.blocks_edits() {
-            self.error = Some("finish or cancel gain recording before quitting".into());
+        if self.update_blocks_close() {
+            self.error = Some("update preparation is still in progress".into());
+            cx.notify();
+            return;
+        }
+        if self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits() {
+            self.error = Some(if self.gain_recorder.has_retained_take() {
+                "retry or explicitly discard the retained gain take before quitting".into()
+            } else {
+                "finish or cancel gain recording before quitting".into()
+            });
             cx.notify();
             return;
         }
@@ -78,6 +98,8 @@ impl EditorView {
         }
         if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, true);
+        } else if self.prepare_update_quit(false, cx) {
+            // Wait for the verified helper before closing this window.
         } else {
             self.cancel_browser_sample_playback();
             self.stop();
@@ -94,6 +116,7 @@ impl EditorView {
             self.opening_project,
             self.export_pending,
             self.device_gesture_pending()
+                || self.pending_plugin_effect.is_some()
                 || self.device_panel.has_pending_draft(cx)
                 || self.tuning.client.snapshot().is_some(),
         )
@@ -133,10 +156,14 @@ impl EditorView {
         let editor = cx.entity();
         cx.spawn(async move |_, cx| {
             let discard = answer.await.ok() == Some(1);
-            if let Err(error) = cx.update_window(handle, |_, window, cx| {
-                editor.update(cx, |view, cx| {
+            if let Err(error) = cx.update_window(handle, move |_, window, cx| {
+                let preparing_update = editor.update(cx, |view, cx| {
                     view.close_prompt_open = false;
                     if discard {
+                        if view.update_armed() {
+                            return view.prepare_update_quit(true, cx);
+                        }
+                        view.cancel_plugin_effect();
                         view.cancel_browser_sample_playback();
                         if let Some(control) = &view.export_control {
                             control.cancel();
@@ -145,8 +172,12 @@ impl EditorView {
                     } else {
                         cx.notify();
                     }
+                    false
                 });
-                if discard {
+                // Release the prompt's extra handle inside this app update,
+                // so removing the last window also flushes editor/Service drops.
+                drop(editor);
+                if discard && !preparing_update {
                     window.remove_window();
                     if quit {
                         cx.quit();

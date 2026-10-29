@@ -538,12 +538,32 @@ fn pause_empty_render_stop_all_and_seek_have_distinct_transport_effects() {
     playback.render(&mut output).expect("initial render");
     assert_eq!(playback.performance_frame(), 31);
 
+    let mut released = SessionPlayback::new(Arc::clone(&fixture.revision)).expect("release oracle");
+    released
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip: fixture.session_clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    released.apply(SessionPlaybackCommand::Play).unwrap();
+    released.render(&mut [[0.0; 2]; 31]).unwrap();
+    released
+        .apply(SessionPlaybackCommand::StopTrack {
+            track: fixture.track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
     playback
         .apply(SessionPlaybackCommand::Pause)
         .expect("pause");
     output.fill([7.0; 2]);
     playback.render(&mut output).expect("paused render");
-    assert_eq!(output, [[0.0; 2]; 31]);
+    let mut expected_release = [[0.0; 2]; 31];
+    released.render(&mut expected_release).unwrap();
+    assert_eq!(
+        output, expected_release,
+        "pause releases notes through the existing source instead of freezing its audio"
+    );
     let frame = playback.performance_frame();
     playback.render(&mut []).expect("empty render");
     assert_eq!(playback.performance_frame(), frame);
@@ -717,6 +737,62 @@ fn four_quarter_launch_replaces_pending_action_per_track_and_exact_boundary_is_i
             clip: fixture.session_clip
         })
     );
+}
+
+#[test]
+fn compensated_pending_launch_crosses_its_boundary_at_the_same_sample_for_each_partition() {
+    let fixture = fixture(None, None);
+    let mut editor = Editor::new(fixture.project, 16).expect("editor");
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .expect("limiter state");
+    editor
+        .execute(Command::InsertDevice {
+            track: fixture.track,
+            before: None,
+            state: limiter,
+        })
+        .expect("track limiter");
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .expect("prepared revision"),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).expect("kernel");
+        playback
+            .apply(SessionPlaybackCommand::Seek(95_990))
+            .expect("seek");
+        playback.apply(SessionPlaybackCommand::Play).expect("play");
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: fixture.session_clip,
+                quantization: LaunchQuantization::FourQuarter,
+            })
+            .expect("queue launch");
+        let mut output = [[0.0; 2]; 512];
+        for block in output.chunks_mut(partition) {
+            playback.render(block).expect("render");
+        }
+        assert_eq!(
+            playback.owner(fixture.track),
+            Some(SessionPlaybackOwner::Session {
+                clip: fixture.session_clip
+            })
+        );
+        output
+    };
+    let expected = render(1);
+    assert!(audible(&expected));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected);
+    }
 }
 
 #[test]
@@ -1527,7 +1603,7 @@ fn legacy_promotion_does_not_fence_an_already_disabled_instrument() {
         .as_mut()
         .expect("MIDI track has an instrument slot")
         .bypassed = true;
-    let muted_project = Project::from_snapshot(snapshot).expect("valid disabled instrument");
+    let muted_project = Project::from_legacy_snapshot(snapshot).expect("valid disabled instrument");
     let muted_revision = Arc::new(
         PreparedRevision::prepare(
             &muted_project,
@@ -1633,11 +1709,20 @@ fn legacy_promotion_validates_session_time_before_render_or_launch() {
 #[test]
 fn exhausted_legacy_clock_keeps_finite_playback_but_refuses_session_promotion() {
     let fixture = fixture(Some((0, 48_000)), None);
-    let project = Arc::clone(fixture.revision.arrangement());
+    // Exhaust the performance clock by rendering a tiny real loop near the
+    // numeric limit. An absolute post-loop seek no longer normalizes backwards.
+    let project = Arc::new(
+        hex_engine::Project::with_loop_region(
+            48_000,
+            fixture.revision.arrangement().tracks().to_vec(),
+            Some(hex_project::LoopRegion::new(u64::MAX - 8, u64::MAX - 4, true).unwrap()),
+        )
+        .unwrap(),
+    );
     let mut legacy = Playback::from_shared(project);
-    legacy.apply(PlaybackCommand::Seek(u64::MAX));
+    legacy.apply(PlaybackCommand::Seek(u64::MAX - 7));
     legacy.apply(PlaybackCommand::Play);
-    let mut output = [[0.0; 2]; 1];
+    let mut output = [[0.0; 2]; 8];
     legacy.render(&mut output).expect("legacy finite render");
     assert_eq!(legacy.performance_frame(), u64::MAX);
     assert!(legacy.performance_clock_exhausted());

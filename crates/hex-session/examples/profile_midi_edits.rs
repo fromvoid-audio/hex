@@ -20,6 +20,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
                 next_id += 1;
                 MidiNoteSnapshot {
                     id,
+                    active: true,
                     start_raw: (note * 4) << 32,
                     duration_raw: 1 << 32,
                     pitch: 48 + (index % 36) as u8,
@@ -29,6 +30,8 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -43,6 +46,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
                 active: true,
                 playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
@@ -62,7 +66,9 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             sends: Vec::new(),
         });
     }
-    Project::from_snapshot(Snapshot {
+    Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),

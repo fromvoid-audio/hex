@@ -118,6 +118,8 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
     }
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::grouped_audio::require_legacy_compatible(project)?;
+    super::content_views::require_legacy_compatible(project)?;
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
     visit(&mut snapshot, |clip, active, offset| {
@@ -133,7 +135,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         Ok(())
     })?;
     let legacy =
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
     let base = crate::encode_document(&super::midi_one_shot::encode(&legacy)?)?;
     let mut value: serde_json::Value = serde_json::from_slice(&base)?;
     let object = value
@@ -183,7 +185,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "clip activation references a missing clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
 }
 
 #[cfg(test)]
@@ -253,12 +255,12 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        Project::from_snapshot(snapshot).unwrap()
+        Project::from_legacy_snapshot(snapshot).unwrap()
     }
     #[test]
     fn activation40_complete_roundtrip_and_historical39_defaults() {
         let project = fixture();
-        let bytes = crate::encode(&project).unwrap();
+        let bytes = crate::encode_document(&encode(&project).unwrap()).unwrap();
         assert_eq!(crate::decode(&bytes).unwrap(), project);
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["version"], 40);
@@ -275,7 +277,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let neutral = Project::from_snapshot(neutral).unwrap();
+        let neutral = Project::from_legacy_snapshot(neutral).unwrap();
         let old = crate::encode_document(&super::super::midi_one_shot::encode(&neutral).unwrap())
             .unwrap();
         assert_eq!(crate::decode(&old).unwrap(), neutral);

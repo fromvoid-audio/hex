@@ -181,6 +181,53 @@ pub(super) fn duplicate(project: &mut Project, section: SectionId) -> Result<Cre
     Ok(Created::ArrangementSection(copy_id))
 }
 
+/// Both established transforms run only on the Editor's isolated candidate;
+/// a failed insertion cannot publish the intermediate adjacent copy or history.
+pub(super) fn duplicate_at(
+    project: &mut Project,
+    section: SectionId,
+    target: SectionId,
+    after: bool,
+) -> Result<Created, Invalid> {
+    section_index(project, target)?;
+    let Created::ArrangementSection(copy) = duplicate(project, section)? else {
+        return Err(Invalid("section duplication produced no identity"));
+    };
+    if after {
+        super::reorder::reorder_after(project, copy, target)?;
+    } else {
+        super::reorder::reorder(project, copy, target)?;
+    }
+    Ok(Created::ArrangementSection(copy))
+}
+
+pub(super) fn preview_duplicate_at(
+    project: &Project,
+    section: SectionId,
+    target: SectionId,
+    after: bool,
+) -> Result<SectionSplicePreview, Invalid> {
+    section_index(project, target)?;
+    let layout = preview_duplicate(project, section)?;
+    let copy = layout
+        .sections
+        .iter()
+        .find(|s| s.id == SectionId(0))
+        .ok_or(Invalid("section copy preview is missing"))?;
+    let target = layout
+        .sections
+        .iter()
+        .find(|s| s.id == target)
+        .ok_or(Invalid("arrangement destination no longer exists"))?;
+    let insertion = if after { target.end } else { target.start };
+    let reordered =
+        super::preview_reorder_at(copy, insertion, &layout.sections, &layout.tempo_map)?;
+    Ok(SectionSplicePreview {
+        sections: reordered.sections,
+        tempo_map: reordered.tempo_map,
+    })
+}
+
 #[derive(Clone)]
 enum TransformPurpose {
     Delete(SectionId),
@@ -404,18 +451,8 @@ fn apply_transform(
     transform: Transform,
     purpose: TransformPurpose,
 ) -> Result<(), Invalid> {
-    if project
-        .tracks
-        .iter()
-        .flat_map(|track| track.clips())
-        .any(|clip| {
-            clip.audio_edit()
-                .is_some_and(|edit| edit.placement.is_some())
-        })
-    {
-        return Err(Invalid(
-            "section splice does not yet support outer audio once/repeat placements; original source loops are supported",
-        ));
+    if project.has_device_automation() {
+        return Err(Invalid(crate::AUTOMATION_EDIT_UNSUPPORTED));
     }
     let mut next_id = project.next_id;
     let purpose = match purpose {
@@ -532,6 +569,11 @@ fn apply_transform(
 }
 
 fn transformed_tempo(old: &TempoMap, transform: Transform) -> Result<TempoMap, Invalid> {
+    // Duplicating music cannot change a single global tempo. Preserve its exact
+    // clock, including fractional BPMs, rather than adding same-tempo seams.
+    if matches!(transform, Transform::Duplicate { .. }) && old.points().len() == 1 {
+        return Ok(old.clone());
+    }
     let start = transform.start();
     let end = transform.end();
     let length = transform.length();

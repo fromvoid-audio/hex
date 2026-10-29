@@ -24,6 +24,12 @@ pub(crate) struct Send {
     pub gain: f32,
     pub edge: usize,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackOutput {
+    Main { edge: usize },
+    Group { target: usize, edge: usize },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TrackPlan {
     pub id: Option<TrackId>,
@@ -34,7 +40,7 @@ pub(crate) struct TrackPlan {
     pub source_input: usize,
     pub audio_merge: usize,
     pub generator_merge: Option<usize>,
-    pub main: usize,
+    pub output: TrackOutput,
     pub sends: Vec<Send>,
     pub audio_feeds: Vec<Send>,
 }
@@ -59,6 +65,8 @@ pub(crate) struct SignalGraph {
     pub tracks: Vec<TrackPlan>,
     pub returns: Vec<ReturnPlan>,
     pub owner_order: Vec<Owner>,
+    track_indices: Vec<(TrackId, usize)>,
+    has_group_outputs: bool,
     pub main: usize,
     pub main_devices: Vec<usize>,
     pre_main_edges: Vec<usize>,
@@ -96,11 +104,90 @@ impl Builder {
     }
 }
 impl SignalGraph {
+    /// Resolve the prepared stage's origin in this actual graph. Project device
+    /// identities are unique; no caller-provided latency becomes authority.
+    pub(crate) fn parameter_arrival(
+        &self,
+        input: crate::NativeParameterInputTarget,
+    ) -> Result<u32, Invalid> {
+        let node = self
+            .typed
+            .binary_search(&NodeId::Device(input.identity().device_id()))
+            .ok()
+            .and_then(|index| self.plan.nodes().get(index))
+            .ok_or(Invalid("parameter stage is absent from the signal graph"))?;
+        Ok(match input.target() {
+            hex_lattice_contract::DeviceAutomationTarget::HostOutputGain => {
+                node.output_arrival_frames
+            }
+            _ => node.input_arrival_frames,
+        })
+    }
     pub(crate) fn prepare(
         project: &Project,
         feeds: &[(usize, usize, f32)],
         canonical: &hex_project::Project,
     ) -> Result<Option<Arc<Self>>, Invalid> {
+        Ok(Some(Arc::new(Self::prepare_value(
+            project, feeds, canonical,
+        )?)))
+    }
+    /// The same private topology constructor, retained by closed preparation.
+    /// No caller Arc or copied graph declaration can enter this path.
+    pub(crate) fn prepare_owned(
+        project: &Project,
+        feeds: &[(usize, usize, f32)],
+        canonical: &hex_project::Project,
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
+        Ok(crate::owned_shared::OwnedShared::new_owned(
+            Self::prepare_value(project, feeds, canonical)?,
+        ))
+    }
+    fn prepare_value(
+        project: &Project,
+        feeds: &[(usize, usize, f32)],
+        canonical: &hex_project::Project,
+    ) -> Result<Self, Invalid> {
+        // Bound transient builder/lookup contexts before their first allocation.
+        // BTree nodes are control-only opaque construction contexts, never
+        // retained DATA or callback owners. No allocator/RSS claim is made.
+        let devices = project
+            .tracks
+            .iter()
+            .map(|t| t.device_chain.len())
+            .chain(project.return_buses.iter().map(|r| r.device_chain.len()))
+            .try_fold(project.main_device_chain.len(), |n, count| {
+                n.checked_add(count)
+            })
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let generators = project
+            .tracks
+            .iter()
+            .filter(|t| t.instrument_slot_enabled())
+            .count();
+        let nodes = project
+            .tracks
+            .len()
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(project.return_buses.len().checked_mul(2)?))
+            .and_then(|n| n.checked_add(devices))
+            .and_then(|n| n.checked_add(generators))
+            .and_then(|n| n.checked_add(1))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let sends = project
+            .tracks
+            .iter()
+            .try_fold(0usize, |n, t| n.checked_add(t.sends.len()))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let edges = nodes
+            .checked_sub(1)
+            .and_then(|n| n.checked_add(sends))
+            .and_then(|n| n.checked_add(feeds.len()))
+            .and_then(|n| n.checked_add(canonical.audio_feeds().len()))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        if nodes > MAX_COMPENSATION_NODES || edges > MAX_COMPENSATION_EDGES {
+            return Err(error(CompensationError::GraphLimit));
+        }
         let mut builder = Builder::default();
         let mut tracks = Vec::new();
         for (index, track) in project.tracks.iter().enumerate() {
@@ -153,7 +240,7 @@ impl SignalGraph {
                 source_input,
                 audio_merge,
                 generator_merge,
-                main: 0,
+                output: TrackOutput::Main { edge: 0 },
                 sends: Vec::new(),
                 audio_feeds: Vec::new(),
             });
@@ -186,8 +273,38 @@ impl SignalGraph {
             });
         }
         let main = builder.node(NodeId::Main, Some(0));
-        for (index, track) in tracks.iter_mut().enumerate() {
-            track.main = builder.edge(track.fader, main);
+        // Resolve canonical parent IDs once during preparation. Each track owns
+        // exactly one default output; authored feeds remain separate edges.
+        for index in 0..tracks.len() {
+            let parent = match tracks[index].id {
+                Some(id) => canonical
+                    .track(id)
+                    .ok_or(Invalid("canonical track is missing"))?
+                    .parent_group(),
+                None => None,
+            };
+            let target = parent
+                .map(|id| {
+                    tracks
+                        .iter()
+                        .position(|candidate| candidate.id == Some(id))
+                        .ok_or(Invalid("group output target is missing"))
+                })
+                .transpose()?;
+            let from = tracks[index].fader;
+            let output = if let Some(target) = target {
+                let input = builder.edges[tracks[target].source_input].1;
+                TrackOutput::Group {
+                    target,
+                    edge: builder.edge(from, input),
+                }
+            } else {
+                TrackOutput::Main {
+                    edge: builder.edge(from, main),
+                }
+            };
+            let track = &mut tracks[index];
+            track.output = output;
             for send in &project.tracks[index].sends {
                 let input = *inputs
                     .get(send.return_index)
@@ -335,7 +452,11 @@ impl SignalGraph {
             track.source_input = edge_index(track.source_input)?;
             track.audio_merge = edge_index(track.audio_merge)?;
             track.generator_merge = track.generator_merge.map(edge_index).transpose()?;
-            track.main = edge_index(track.main)?;
+            match &mut track.output {
+                TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => {
+                    *edge = edge_index(*edge)?;
+                }
+            }
             for send in track.sends.iter_mut().chain(&mut track.audio_feeds) {
                 send.edge = edge_index(send.edge)?;
             }
@@ -370,7 +491,23 @@ impl SignalGraph {
         }
         order.sort_by_key(|(node, _)| ranks[*node]);
         let owner_order = order.into_iter().map(|(_, owner)| owner).collect();
+        let has_group_outputs = tracks
+            .iter()
+            .any(|track| matches!(track.output, TrackOutput::Group { .. }));
+        let mut track_indices = Vec::new();
+        track_indices
+            .try_reserve_exact(tracks.len())
+            .map_err(|_| Invalid("could not reserve signal track index"))?;
+        track_indices.extend(
+            tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, track)| track.id.map(|id| (id, index))),
+        );
+        track_indices.sort_unstable_by_key(|(id, _)| *id);
         let graph = Self {
+            track_indices,
+            has_group_outputs,
             main: node_index(main)?,
             main_devices,
             pre_main_edges,
@@ -390,26 +527,38 @@ impl SignalGraph {
                 "signal graph tables exceed the compensation budget",
             ));
         }
-        Ok(Some(Arc::new(graph)))
+        Ok(graph)
     }
     pub(crate) fn table_bytes(&self) -> Option<usize> {
+        size_of::<Self>()
+            .checked_add(2 * size_of::<usize>())?
+            .checked_add(self.nested_bytes()?)
+    }
+    pub(crate) fn nested_bytes(&self) -> Option<usize> {
         let Self {
             plan,
             tracks,
             returns,
             owner_order,
+            track_indices,
+            has_group_outputs: _,
             main: _,
             main_devices,
             pre_main_edges,
             typed,
         } = self;
-        let mut total = size_of::<Self>()
-            .checked_add(2 * size_of::<usize>())?
-            .checked_add(plan.storage_bytes().ok()?)?
+        let mut total = plan
+            .storage_bytes()
+            .ok()?
             .checked_add(typed.capacity().checked_mul(size_of::<NodeId>())?)?
             .checked_add(tracks.capacity().checked_mul(size_of::<TrackPlan>())?)?
             .checked_add(returns.capacity().checked_mul(size_of::<ReturnPlan>())?)?
-            .checked_add(owner_order.capacity().checked_mul(size_of::<Owner>())?)?;
+            .checked_add(owner_order.capacity().checked_mul(size_of::<Owner>())?)?
+            .checked_add(
+                track_indices
+                    .capacity()
+                    .checked_mul(size_of::<(TrackId, usize)>())?,
+            )?;
         total = total.checked_add(main_devices.capacity().checked_mul(size_of::<usize>())?)?;
         total = total.checked_add(pre_main_edges.capacity().checked_mul(size_of::<usize>())?)?;
         for track in tracks {
@@ -435,11 +584,226 @@ impl SignalGraph {
     /// compensated execution follow the actual latency/typed-routing requirement.
     pub(crate) fn needs_runtime(&self) -> bool {
         self.plan.max_latency_frames() != 0
+            || self.has_group_outputs
             || self
                 .tracks
                 .iter()
                 .any(|track| !track.audio_feeds.is_empty())
             || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
+    }
+    pub(crate) fn has_group_outputs(&self) -> bool {
+        self.has_group_outputs
+    }
+    /// Stable ID lookup is prepared off callback; the returned slot belongs to
+    /// this exact immutable graph and its matching Arrangement track inventory.
+    pub(crate) fn track_index(&self, id: TrackId) -> Option<usize> {
+        self.track_indices
+            .binary_search_by_key(&id, |(track, _)| *track)
+            .ok()
+            .and_then(|index| self.track_indices.get(index).map(|(_, slot)| *slot))
+    }
+    /// Retained post-fader tails may enter a successor graph only while every
+    /// destination on their original default path still names the same owner.
+    pub(crate) fn same_default_path(&self, other: &Self, mut id: TrackId) -> bool {
+        for _ in 0..=self.tracks.len() {
+            let Some(a) = self
+                .track_index(id)
+                .and_then(|index| self.tracks.get(index))
+            else {
+                return false;
+            };
+            let Some(b) = other
+                .track_index(id)
+                .and_then(|index| other.tracks.get(index))
+            else {
+                return false;
+            };
+            let parent = |graph: &Self, output: TrackOutput| match output {
+                TrackOutput::Main { .. } => Some(None),
+                TrackOutput::Group { target, .. } => graph
+                    .tracks
+                    .get(target)
+                    .and_then(|track| track.id)
+                    .map(Some),
+            };
+            let Some(next) = parent(self, a.output) else {
+                return false;
+            };
+            if Some(next) != parent(other, b.output) {
+                return false;
+            }
+            match next {
+                Some(parent) => id = parent,
+                None => return true,
+            }
+        }
+        false
+    }
+    /// An in-flight child tail cannot be fed into a replacement ancestor
+    /// processor chain after its predecessor has been detached. Require the
+    /// actual prepared ancestor chains to remain identical before transfer.
+    pub(crate) fn same_tail_path(
+        &self,
+        other: &Self,
+        old: &Project,
+        new: &Project,
+        mut id: TrackId,
+    ) -> bool {
+        if !self.same_default_path(other, id) {
+            return false;
+        }
+        for _ in 0..self.tracks.len() {
+            let Some(plan) = self
+                .track_index(id)
+                .and_then(|index| self.tracks.get(index))
+            else {
+                return false;
+            };
+            let TrackOutput::Group { target, .. } = plan.output else {
+                return true;
+            };
+            let Some(parent) = self.tracks.get(target).and_then(|track| track.id) else {
+                return false;
+            };
+            let Some(a) = self
+                .track_index(parent)
+                .and_then(|index| old.tracks.get(index))
+            else {
+                return false;
+            };
+            let Some(b) = other
+                .track_index(parent)
+                .and_then(|index| new.tracks.get(index))
+            else {
+                return false;
+            };
+            if a.device_chain.len() != b.device_chain.len()
+                || !a
+                    .device_chain
+                    .iter()
+                    .zip(b.device_chain.iter())
+                    .all(|(a, b)| {
+                        // Foreign binding metadata alone does not prove an
+                        // endpoint lease. Let the predecessor drain instead.
+                        !matches!(
+                            a.definition,
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        ) && !matches!(
+                            b.definition,
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        ) && a.device_id == b.device_id
+                            && a.device_type == b.device_type
+                            && a.bypassed == b.bypassed
+                            && a.matrix == b.matrix
+                            && a.configuration == b.configuration
+                            && a.automation == b.automation
+                    })
+            {
+                return false;
+            }
+            id = parent;
+        }
+        false
+    }
+    /// The closed streamed constructor may enumerate zero-latency group routes
+    /// using the same source frontier as its per-frame render. Authored feeds
+    /// remain outside that constructor's admitted graph class.
+    pub(crate) fn supports_closed_group_stream(&self) -> bool {
+        self.plan.max_latency_frames() == 0
+            && self.has_group_outputs
+            && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
+            && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
+    }
+    /// Serial Main latency needs clock history, but does not require rendering
+    /// all upstream sources and effects one sample at a time. Typed audio feeds
+    /// and pre-Main latency still use the general compensated routing kernel.
+    pub(crate) fn needs_upstream_frame_routing(&self) -> bool {
+        self.main_latency() != 0
+            || self.has_group_outputs
+            || self
+                .tracks
+                .iter()
+                .any(|track| !track.audio_feeds.is_empty())
+            || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
+    }
+    /// With no pre-Main latency or typed feeds, these graphs retain transport
+    /// stamps only: every pre-Main edge has zero delay and owns no pending PCM.
+    /// Inserting/removing zero-latency effects may change node/edge indices, but
+    /// cannot invalidate those stamps. DSP history still follows device owners
+    /// in the Session handoff; this is only compensation-history compatibility.
+    /// Independent owners may also acquire different topological ranks when a
+    /// serial node is added. Compare semantic routing, not those generated ranks.
+    fn clock_only_compatible(&self, other: &Self) -> bool {
+        !self.needs_upstream_frame_routing()
+            && !other.needs_upstream_frame_routing()
+            && self.same_routing(other)
+    }
+    /// A first compensated epoch may start with empty rings only when the old
+    /// graph owns no delay history and semantic routes have not changed. DSP
+    /// quiescence and source/clock continuity are independently checked by Session.
+    pub(crate) fn can_start_compensation_from(&self, other: &Self) -> bool {
+        !other.needs_runtime()
+            && self.tracks.iter().all(|track| {
+                matches!(track.output, TrackOutput::Main { .. }) && track.audio_feeds.is_empty()
+            })
+            && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
+            && self.same_routing(other)
+    }
+    /// Existing output may enter fresh delay rings unchanged. Only processors
+    /// moved behind a new latency (or removed from this owner) need to be quiet:
+    /// their old residual output has no corresponding new origin during fill.
+    pub(crate) fn can_start_chain_from(
+        &self,
+        nodes: &[usize],
+        old: &Self,
+        old_nodes: &[usize],
+        chain: &hex_lattice::NativeRuntimeChain,
+    ) -> bool {
+        if chain.is_empty() {
+            return true; // Fused stateless matrices own no residual output.
+        }
+        old_nodes.len() == chain.len()
+            && old_nodes.iter().enumerate().all(|(index, &old_node)| {
+                let unchanged_origin = old
+                    .typed
+                    .get(old_node)
+                    .and_then(|id| self.typed.binary_search(id).ok())
+                    .filter(|node| nodes.contains(node))
+                    .and_then(|node| self.plan.nodes().get(node))
+                    .is_some_and(|node| {
+                        node.input_arrival_frames == 0 && node.output_arrival_frames == 0
+                    });
+                unchanged_origin || chain.committed_range_is_quiescent(index..index + 1)
+            })
+    }
+    fn same_routing(&self, other: &Self) -> bool {
+        self.tracks.len() == other.tracks.len()
+            && self.returns.len() == other.returns.len()
+            && self.tracks.iter().zip(&other.tracks).all(|(a, b)| {
+                a.id == b.id
+                    && std::mem::discriminant(&a.output) == std::mem::discriminant(&b.output)
+                    && match (a.output, b.output) {
+                        (
+                            TrackOutput::Group { target: a, .. },
+                            TrackOutput::Group { target: b, .. },
+                        ) => a == b,
+                        _ => true,
+                    }
+                    && a.sends
+                        .iter()
+                        .map(|send| send.target)
+                        .eq(b.sends.iter().map(|send| send.target))
+            })
+            && self.returns.iter().zip(&other.returns).all(|(a, b)| {
+                a.id == b.id
+                    && a.feeds
+                        .iter()
+                        .map(|send| send.target)
+                        .eq(b.feeds.iter().map(|send| send.target))
+            })
+    }
+    fn history_compatible(&self, other: &Self) -> bool {
+        self.clock_only_compatible(other) || self.pre_main_compatible(other)
     }
     pub(crate) fn pre_main_compatible(&self, other: &Self) -> bool {
         if self.tracks.len() != other.tracks.len()
@@ -459,6 +823,7 @@ impl SignalGraph {
         };
         if !self.tracks.iter().zip(&other.tracks).all(|(a, b)| {
             a.id == b.id
+                && a.output == b.output
                 && same_edges(&a.sends, &b.sends)
                 && same_edges(&a.audio_feeds, &b.audio_feeds)
         }) || !self.returns.iter().zip(&other.returns).all(|(a, b)| {
@@ -615,15 +980,44 @@ impl SignalRuntime {
         }
         Ok(runtime)
     }
+    #[cfg(test)]
+    pub(crate) fn test_input_address(&self) -> usize {
+        self.inputs.as_ptr() as usize
+    }
     pub(crate) fn storage_bytes(&self) -> Option<usize> {
         self.storage_bytes_with_graph(&self.graph)
     }
+    pub(crate) fn visit_fresh_candidate_storage<'a>(
+        &'a self,
+        graph: &'a Arc<SignalGraph>,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        // A fresh runtime has both original fields pointing at this actual
+        // constructor graph. Later history rebinds retain separate origins.
+        if !Arc::ptr_eq(graph, &self.graph) || !Arc::ptr_eq(graph, &self.delay_graph) {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        ledger.existing_shared(
+            &self.graph,
+            Owner::exclusive(self),
+            Location("compensation-graph", 0),
+        )?;
+        ledger.existing_shared(
+            &self.delay_graph,
+            Owner::exclusive(self),
+            Location("compensation-delay-graph", 0),
+        )?;
+        ledger.vec(&self.inputs)?;
+        ledger.vec(&self.main)?;
+        self.delays.visit_owned_candidate_storage(ledger)
+    }
     pub(crate) fn can_continue_pre_main(&self, other: &Self) -> bool {
-        self.graph.pre_main_compatible(&other.graph)
+        self.graph.history_compatible(&other.graph)
             && self.delays.is_closed()
             && other.delays.is_closed()
-            && self.delay_graph.pre_main_compatible(&self.graph)
-            && other.delay_graph.pre_main_compatible(&other.graph)
+            && self.delay_graph.history_compatible(&self.graph)
+            && other.delay_graph.history_compatible(&other.graph)
     }
     pub(crate) fn horizon(&self) -> u32 {
         self.delays.history_horizon()
@@ -631,29 +1025,32 @@ impl SignalRuntime {
     pub(crate) fn can_copy_from(&self, other: &Self) -> bool {
         self.can_continue_pre_main(other)
             && self.horizon() >= other.horizon()
-            && self
-                .delay_graph
-                .pre_main_edges
-                .iter()
-                .zip(&other.delay_graph.pre_main_edges)
-                .all(|(to, from)| {
-                    self.delays
-                        .can_copy_edge_history_from(*to, &other.delays, *from)
-                })
+            && (self.delay_graph.clock_only_compatible(&other.delay_graph)
+                || self
+                    .delay_graph
+                    .pre_main_edges
+                    .iter()
+                    .zip(&other.delay_graph.pre_main_edges)
+                    .all(|(to, from)| {
+                        self.delays
+                            .can_copy_edge_history_from(*to, &other.delays, *from)
+                    }))
     }
     pub(crate) fn copy_from(&mut self, other: &Self) -> Result<(), Invalid> {
         if !self.can_copy_from(other) {
             return Err(Invalid("signal history mapping is incompatible"));
         }
-        for (to, from) in self
-            .delay_graph
-            .pre_main_edges
-            .iter()
-            .zip(&other.delay_graph.pre_main_edges)
-        {
-            self.delays
-                .copy_edge_history_from(*to, &other.delays, *from)
-                .map_err(error)?;
+        if !self.delay_graph.clock_only_compatible(&other.delay_graph) {
+            for (to, from) in self
+                .delay_graph
+                .pre_main_edges
+                .iter()
+                .zip(&other.delay_graph.pre_main_edges)
+            {
+                self.delays
+                    .copy_edge_history_from(*to, &other.delays, *from)
+                    .map_err(error)?;
+            }
         }
         self.delays
             .copy_stamp_history_from(&other.delays)
@@ -661,8 +1058,8 @@ impl SignalRuntime {
     }
     pub(crate) fn can_rebind_graph(&self, graph: &Arc<SignalGraph>) -> bool {
         self.delays.is_closed()
-            && self.graph.pre_main_compatible(graph)
-            && self.delay_graph.pre_main_compatible(graph)
+            && self.graph.history_compatible(graph)
+            && self.delay_graph.history_compatible(graph)
             && graph.plan.max_latency_frames() <= self.horizon()
     }
     pub(crate) fn storage_bytes_with_graph(&self, graph: &Arc<SignalGraph>) -> Option<usize> {
@@ -692,6 +1089,25 @@ impl SignalRuntime {
         }
         self.graph = graph;
         Ok(())
+    }
+    pub(crate) fn route_track_output(
+        &mut self,
+        index: usize,
+        frame: Frame,
+    ) -> Result<Frame, Invalid> {
+        let output = self.graph.tracks[index].output;
+        let edge = match output {
+            TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => edge,
+        };
+        let routed = self.edge(edge, frame)?;
+        match output {
+            TrackOutput::Main { .. } => self.main[index] = routed,
+            TrackOutput::Group { target, .. } => {
+                self.inputs[target][0] += routed[0];
+                self.inputs[target][1] += routed[1];
+            }
+        }
+        Ok(routed)
     }
     pub(crate) fn edge(&mut self, index: usize, frame: Frame) -> Result<Frame, Invalid> {
         let mut frames = [frame];
@@ -730,38 +1146,50 @@ impl SignalRuntime {
         offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.process_main_with_foreign(
+            chain,
+            frames,
+            offset,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+            None,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_main_with_foreign(
+        &self,
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        frames: &mut [Frame],
+        offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+    ) -> Result<(), Invalid> {
         if frames.len() != 1 || chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
         }
         for (index, node) in self.graph.main_devices.iter().copied().enumerate() {
-            let clock = OriginClock(
-                self.delays
-                    .stamp_at_delay(self.graph.plan.nodes()[node].input_arrival_frames),
-            );
-            if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_clock(
-                    index..index + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    &mut |owner, device, kind, phase, offset, frames| {
-                        observer(
-                            crate::PostNodeIdentity::new(owner, device, kind),
-                            phase,
-                            offset,
-                            frames,
-                        );
-                    },
-                )
-            } else {
-                chain.process_range_with_clock(index..index + 1, frames, Some(&clock))
-            }
-            .map_err(|_| Invalid("main effect runtime failed"))?;
-            if self
-                .delays
-                .stamp_at_delay(self.graph.plan.nodes()[node].output_arrival_frames)
-                .is_none()
-            {
+            let planned = &self.graph.plan.nodes()[node];
+            let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
+            let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
+            let output_clock = OriginClock(output_stamp);
+            crate::native_parameter_input::process_range_with_external(
+                input.as_deref_mut(),
+                external,
+                chain,
+                index..index + 1,
+                frames,
+                offset,
+                Some(&clock),
+                Some(&output_clock),
+                planned.input_arrival_frames,
+                planned.output_arrival_frames,
+                foreign,
+                observer,
+            )?;
+            if output_stamp.is_none() {
                 frames.fill([0.0; 2]);
             }
         }
@@ -773,23 +1201,55 @@ impl SignalRuntime {
         index: usize,
         track: &Track,
         chain: &mut hex_lattice::NativeRuntimeChain,
+        audio: Frame,
+        generator: Frame,
+        offset: usize,
+        metered: bool,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<Frame, Invalid> {
+        self.process_track_with_foreign(
+            index,
+            track,
+            chain,
+            audio,
+            generator,
+            offset,
+            metered,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+            None,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_track_with_foreign(
+        &mut self,
+        index: usize,
+        track: &Track,
+        chain: &mut hex_lattice::NativeRuntimeChain,
         mut audio: Frame,
         mut generator: Frame,
         offset: usize,
         metered: bool,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<Frame, Invalid> {
         audio = self.edge(self.graph.tracks[index].source_input, audio)?;
         audio[0] += self.inputs[index][0];
         audio[1] += self.inputs[index][1];
         let slot = track.instrument_position();
-        self.effects(
+        self.effects_with_foreign(
             &self.graph.tracks[index].devices[..slot],
             chain,
             0,
             &mut audio,
             offset,
+            foreign,
             observer,
+            input.as_deref_mut(),
+            external,
         )?;
         track.apply_instrument_input_gain(std::slice::from_mut(&mut audio));
         if metered {
@@ -813,13 +1273,16 @@ impl SignalRuntime {
         if metered {
             track.instrument_meter.observe_output(&[mixed]);
         }
-        self.effects(
+        self.effects_with_foreign(
             &self.graph.tracks[index].devices[slot..],
             chain,
             slot,
             &mut mixed,
             offset,
+            foreign,
             observer,
+            input,
+            external,
         )?;
         Ok(mixed)
     }
@@ -832,40 +1295,52 @@ impl SignalRuntime {
         offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.effects_with_foreign(
+            nodes,
+            chain,
+            start,
+            frame,
+            offset,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+            None,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn effects_with_foreign(
+        &self,
+        nodes: &[usize],
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        start: usize,
+        frame: &mut Frame,
+        offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+    ) -> Result<(), Invalid> {
         for (local, &node) in nodes.iter().enumerate() {
-            let clock = OriginClock(
-                self.delays
-                    .stamp_at_delay(self.graph.plan.nodes()[node].input_arrival_frames),
-            );
+            let planned = &self.graph.plan.nodes()[node];
+            let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
+            let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
+            let output_clock = OriginClock(output_stamp);
             let frames = std::slice::from_mut(frame);
-            if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_clock(
-                    start + local..start + local + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    &mut |owner, device, kind, phase, offset, frames| {
-                        observer(
-                            crate::PostNodeIdentity::new(owner, device, kind),
-                            phase,
-                            offset,
-                            frames,
-                        )
-                    },
-                )
-            } else {
-                chain.process_range_with_clock(
-                    start + local..start + local + 1,
-                    frames,
-                    Some(&clock),
-                )
-            }
-            .map_err(|_| Invalid("compensated native device range is invalid"))?;
-            if self
-                .delays
-                .stamp_at_delay(self.graph.plan.nodes()[node].output_arrival_frames)
-                .is_none()
-            {
+            crate::native_parameter_input::process_range_with_external(
+                input.as_deref_mut(),
+                external,
+                chain,
+                start + local..start + local + 1,
+                frames,
+                offset,
+                Some(&clock),
+                Some(&output_clock),
+                planned.input_arrival_frames,
+                planned.output_arrival_frames,
+                foreign,
+                observer,
+            )?;
+            if output_stamp.is_none() {
                 *frame = [0.0; 2];
             }
         }
@@ -874,6 +1349,12 @@ impl SignalRuntime {
 }
 pub(crate) struct OriginClock(pub(crate) Option<TransportStamp>);
 impl hex_lattice::NativeInstrumentClock for OriginClock {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        if offset != 0 {
+            return None;
+        }
+        self.0.and_then(|stamp| stamp.tempo_micro_bpm)
+    }
     fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
         if offset != 0 {
             return None;

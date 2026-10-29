@@ -136,7 +136,7 @@ fn converted_source_compiles_against_project_rate_playback_metadata() {
 }
 
 #[test]
-fn solo_compilation_keeps_mix_order_mute_precedence_and_block_partition() {
+fn solo_compilation_keeps_mix_order_solo_precedence_and_block_partition() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let mut assets = Vec::new();
     let mut tracks = Vec::new();
@@ -199,7 +199,7 @@ fn solo_compilation_keeps_mix_order_mute_precedence_and_block_partition() {
         })
         .unwrap();
     let muted_solo = render(editor.project(), &[8]);
-    assert_eq!(muted_solo, [[2.0, -2.0]; 8]);
+    assert_eq!(muted_solo, [[3.0, -3.0]; 8]);
 
     editor
         .execute(Command::Mute {
@@ -207,6 +207,23 @@ fn solo_compilation_keeps_mix_order_mute_precedence_and_block_partition() {
             muted: true,
         })
         .unwrap();
-    let silent_solos = render(editor.project(), &[8]);
-    assert_eq!(silent_solos, [[0.0; 2]; 8]);
+    assert_eq!(render(editor.project(), &[8]), [[3.0, -3.0]; 8]);
+    for (track, expected) in [(tracks[0], 2.0), (tracks[1], 3.0)] {
+        editor
+            .execute(Command::ToggleSolo {
+                track,
+                exclusive: false,
+            })
+            .unwrap();
+        assert_eq!(render(editor.project(), &[8]), [[expected, -expected]; 8]);
+    }
+    // Removing the final solo restores both authored mutes; only track three
+    // remains audible, and its ordinary mute must still suppress it.
+    editor
+        .execute(Command::Mute {
+            track: tracks[2],
+            muted: true,
+        })
+        .unwrap();
+    assert_eq!(render(editor.project(), &[8]), [[0.0; 2]; 8]);
 }

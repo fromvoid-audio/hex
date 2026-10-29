@@ -132,6 +132,41 @@ impl RuntimeRef<'_> {
             Self::Eligible(p) => p.session_route_status(index),
         }
     }
+    pub(super) fn midi_capture_render(
+        &self,
+        take_id: u64,
+    ) -> Result<Option<hex_engine::midi_capture::MidiCaptureRender<'_>>, Invalid> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_render(take_id),
+            Self::Eligible(p) => p.midi_capture_render(take_id),
+        }
+    }
+    pub(super) fn midi_capture_finish_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<hex_engine::midi_capture::MidiCaptureFault> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_finish_fault(take_id),
+            Self::Eligible(p) => p.midi_capture_finish_fault(take_id),
+        }
+    }
+    pub(super) fn midi_capture_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<hex_engine::midi_capture::MidiCaptureFault> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_fault(take_id),
+            Self::Eligible(p) => p.midi_capture_fault(take_id),
+        }
+    }
+    pub(super) fn native_parameter_input_target(
+        &self,
+    ) -> Option<hex_engine::NativeParameterInputTarget> {
+        match self {
+            Self::Legacy(p) => p.native_parameter_input_target(),
+            Self::Eligible(p) => p.native_parameter_input_target(),
+        }
+    }
     pub(super) fn gain_recording_ready(&self, track: u64) -> bool {
         match self {
             Self::Legacy(p) => p.gain_recording_ready(track),
@@ -159,6 +194,57 @@ impl RuntimeMut<'_> {
         match self {
             Self::Legacy(p) => RuntimeRef::Legacy(p),
             Self::Eligible(p) => RuntimeRef::Eligible(p),
+        }
+    }
+    pub(super) fn native_parameter_input_target(
+        &self,
+    ) -> Option<hex_engine::NativeParameterInputTarget> {
+        self.read().native_parameter_input_target()
+    }
+    pub(super) fn set_native_parameter_input(
+        &mut self,
+        operation: hex_lattice::NativeTransientOperation,
+    ) -> Result<(), Invalid> {
+        match self {
+            Self::Legacy(p) => p.set_native_parameter_input(operation),
+            Self::Eligible(p) => p.set_native_parameter_input(operation),
+        }
+    }
+    pub(super) fn invalidate_native_parameter_input(&mut self) {
+        match self {
+            Self::Legacy(p) => p.invalidate_native_parameter_input(),
+            Self::Eligible(p) => p.invalidate_native_parameter_input(),
+        }
+    }
+    pub(super) fn take_native_parameter_application(
+        &mut self,
+    ) -> Option<hex_engine::NativeParameterApplication> {
+        match self {
+            Self::Legacy(p) => p.take_native_parameter_application(),
+            Self::Eligible(p) => p.take_native_parameter_application(),
+        }
+    }
+    pub(super) fn position(&self) -> u64 {
+        self.read().position()
+    }
+    pub(super) fn arm_midi_capture(
+        &mut self,
+        binding: hex_engine::midi_capture::MidiCaptureBinding,
+        clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<hex_engine::midi_capture::MidiCaptureClock, Invalid> {
+        match self {
+            Self::Legacy(p) => p.arm_midi_capture(binding, clock),
+            Self::Eligible(p) => p.arm_midi_capture(binding, clock),
+        }
+    }
+    pub(super) fn finish_midi_capture(&mut self, take_id: u64) {
+        match self {
+            Self::Legacy(p) => {
+                let _ = p.finish_midi_capture(take_id);
+            }
+            Self::Eligible(p) => {
+                let _ = p.finish_midi_capture(take_id);
+            }
         }
     }
     pub(super) fn sample_rate(&self) -> u32 {
@@ -204,21 +290,22 @@ impl RuntimeMut<'_> {
             }
         }
     }
-    pub(super) fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
-        match self {
-            Self::Legacy(p) => p.render(output),
-            Self::Eligible(p) => p.render(output),
-        }
-    }
     pub(super) fn render_with_signal_observers(
         &mut self,
         output: &mut [Frame],
         observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
         project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
     ) -> Result<(), Invalid> {
-        match self {
-            Self::Legacy(p) => p.render_with_signal_observers(output, observer, project),
-            Self::Eligible(p) => p.render_with_signal_observers(output, observer, project),
+        match (self, foreign) {
+            (Self::Legacy(p), Some(foreign)) => {
+                p.render_with_foreign_processors(output, None, observer, project, foreign)
+            }
+            (Self::Eligible(p), Some(foreign)) => {
+                p.render_with_foreign_processors(output, None, observer, project, foreign)
+            }
+            (Self::Legacy(p), None) => p.render_with_signal_observers(output, observer, project),
+            (Self::Eligible(p), None) => p.render_with_signal_observers(output, observer, project),
         }
     }
     pub(super) fn clear_gain_recording_override(&mut self) {

@@ -1,16 +1,24 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod limiter;
+mod plugins;
+mod recovery;
 mod resident_authoring;
 mod resident_bounce;
+mod resident_eq_creation;
 mod resident_export;
+mod resident_grouping;
 mod resident_lifecycle;
 mod resident_preview;
+mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
 mod sampler;
+mod stream_export;
 mod track_clipboard;
 mod track_reorder;
+mod verified_gain;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
 use hex_session::service::{Event, Request};
@@ -51,6 +59,8 @@ struct Observation {
         hex_engine::AudioCandidateIdentity,
         hex_engine::AudioCandidateIdentity,
     )>,
+    received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
+    replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     fail_gain_open: bool,
     expire_gain_fence: bool,
     cancel_edit_after_seal: Option<Arc<AtomicBool>>,
@@ -213,6 +223,16 @@ impl ObservedSink {
     }
 }
 impl WorkerAudioSink for ObservedSink {
+    fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
+        self.inner.streamed_exporter()
+    }
+
+    fn resident_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
+        self.inner.resident_runtime_loop(context)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
@@ -323,6 +343,13 @@ impl WorkerAudioSink for ObservedSink {
         }
         self.inner.canonical_changed(source);
     }
+    fn verified_track_gain_source(
+        &mut self,
+        source: Arc<hex_session::service::VerifiedTrackGainSource>,
+    ) {
+        self.inner.verified_track_gain_source(Arc::clone(&source));
+        self.observation.lock().unwrap().received_verified_gain = Some(source);
+    }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
         let mut observation = self.observation.lock().unwrap();
@@ -356,10 +383,16 @@ impl WorkerAudioSink for ObservedSink {
         self.inner
             .prepare_sampler_keyboard(context, output, epoch, track, device)
     }
-    fn begin_section_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
-        self.inner.begin_section_edit(context)
+    fn begin_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+        allow_playing: bool,
+    ) -> Result<(), String> {
+        self.inner.begin_section_edit(context, allow_playing)
     }
-    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+    fn section_edit_ready(
+        &mut self,
+    ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
         self.inner.section_edit_ready()
     }
     fn cancel_section_edit(&mut self) {
@@ -430,6 +463,10 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.restart_audio(generation, request)
     }
     fn poll(&mut self) {
+        let replay = self.observation.lock().unwrap().replay_verified_gain.take();
+        if let Some(source) = replay {
+            self.inner.verified_track_gain_source(source);
+        }
         let hook = self.observation.lock().unwrap().pause_poll.take();
         if let Some((entered, release)) = hook {
             entered.send(()).unwrap();
@@ -783,10 +820,22 @@ impl Drop for Harness {
 
 #[test]
 fn failed_output_setup_keeps_canonical_editing_and_saving_available() {
+    for retained_failure in [false, true] {
+        unavailable_output_keeps_canonical_editing_and_saving_available(retained_failure);
+    }
+}
+
+fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_failure: bool) {
     let files = Files::new();
     let (events, audio_events) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
-    sink.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
+    if retained_failure {
+        sink.lifecycle_status = Some(|| Some(hex_audio::AudioLifecycleFailure::Retirement));
+        sink.output_factory = Some(Box::new(|_| panic!("failed retirement must not reopen")));
+    } else {
+        sink.lifecycle_status = Some(|| None);
+        sink.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
+    }
     let recovery = files.0.join("untitled.hex-journal");
     let service = Service::with_audio_sink_and_native_reservation(
         32,
@@ -1680,6 +1729,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap()
     else {
@@ -1723,6 +1773,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InstallFreshRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap()
     else {
@@ -1742,6 +1793,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap_err();
     assert!(refused.error.contains("observation is waiting"));
@@ -1824,6 +1876,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
                 ResidentPublicationPolicy::InheritRuntime,
                 0,
                 &mut admit,
+                None,
             )
             .unwrap();
         assert!(matches!(
@@ -1853,6 +1906,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap_err();
     assert!(refused.error.contains("observation retirement is waiting"));
@@ -1865,7 +1919,8 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             second_metadata,
             ResidentPublicationPolicy::InheritRuntime,
             0,
-            &mut admit
+            &mut admit,
+            None,
         )
         .unwrap(),
         ResidentPublicationAcceptance::Submitted { .. }

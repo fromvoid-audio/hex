@@ -7,6 +7,10 @@
 //! containing this owned map must be retired away from the callback so its
 //! backing point and prefix vectors are never freed there.
 use hex_project::{BeatTime, LoopRegion, MAX_TEMPO_POINTS, TempoMap};
+mod borrowed;
+pub(crate) use borrowed::CanonicalMidiTiming;
+mod breaks;
+pub(crate) use breaks::{MidiTempoBreaks, TempoBreaks};
 mod persistent;
 
 /// Maximum canonical tempo segments admitted into a prepared graph.
@@ -47,8 +51,13 @@ impl std::fmt::Display for PreparedTempoError {
 }
 
 /// Small event-boundary timing contract shared by canonical and periodic maps.
-/// Callers should use it at block/event boundaries, never per sample.
+/// Beat conversion is for block/event boundaries. The optional local-tempo
+/// query also serves native effects at sample offsets through a bounded map lookup.
 pub trait MidiTiming {
+    /// Optional exact local tempo, excluding any constant beat-origin shift.
+    fn tempo_micro_bpm_at_frame(&self, _frame: u64) -> Option<u32> {
+        None
+    }
     fn sample_rate(&self) -> u32;
     fn max_micro_bpm(&self) -> u64;
     fn beat_to_frame(&self, beat: BeatTime) -> Result<u64, PreparedTempoError>;
@@ -152,19 +161,7 @@ impl PreparedTempoMap {
     }
 
     pub(crate) fn same_map(&self, other: &Self) -> bool {
-        self.canonical == other.canonical
-    }
-
-    fn max_micro_bpm_in_range(&self, start: BeatTime, end: BeatTime) -> u32 {
-        let active = self.canonical.tempo_at(start).micro_bpm();
-        self.canonical
-            .points()
-            .iter()
-            .filter(|point| point.beat() >= start && point.beat() < end)
-            .map(|point| point.tempo().micro_bpm())
-            .max()
-            .unwrap_or(active)
-            .max(active)
+        self.canonical.proves_same_clock(&other.canonical)
     }
 
     /// Convert a Q32.32 quarter-note beat to its canonical nearest frame.
@@ -196,6 +193,11 @@ impl PreparedTempoMap {
 }
 
 impl MidiTiming for PreparedTempoMap {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        SessionBaseTimingView::Canonical(self)
+            .micro_bpm_at_frame(frame)
+            .ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.sample_rate()
     }
@@ -270,8 +272,10 @@ impl PreparedPeriodicSessionTempo {
                 ))?;
         let denominator = u128::from(frame_period) << 32;
         let rate = numerator / denominator + u128::from(numerator % denominator != 0);
-        let loop_max = map.max_micro_bpm_in_range(start_beat, end_beat);
-        let admitted_max_micro_bpm = u64::try_from(rate.max(u128::from(loop_max)))
+        // The same published source can also play a canonical first pass from
+        // a cursor beyond the loop. Admit both reachable clocks on control;
+        // this upper bound does not change the periodic mapping itself.
+        let admitted_max_micro_bpm = u64::try_from(rate.max(u128::from(map.max_micro_bpm())))
             .map_err(|_| PreparedTempoError::InvalidLoop("session tempo loop rate overflow"))?;
         Ok(Self {
             start_frame,
@@ -374,6 +378,9 @@ impl AnchoredSessionTempoView<'_> {
 }
 
 impl MidiTiming for AnchoredSessionTempoView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.base.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.base.sample_rate()
     }
@@ -482,6 +489,11 @@ impl PeriodicSessionTempoView<'_> {
 }
 
 impl MidiTiming for PeriodicSessionTempoView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        SessionBaseTimingView::Periodic(*self)
+            .micro_bpm_at_frame(frame)
+            .ok()
+    }
     fn sample_rate(&self) -> u32 {
         self.canonical.sample_rate()
     }
@@ -587,6 +599,9 @@ pub(crate) enum SessionBaseTimingView<'a> {
 }
 
 impl MidiTiming for SessionBaseTimingView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         match self {
             Self::Canonical(map) => map.sample_rate(),
@@ -666,6 +681,9 @@ impl<'a> SessionTimingView<'a> {
 }
 
 impl MidiTiming for SessionTimingView<'_> {
+    fn tempo_micro_bpm_at_frame(&self, frame: u64) -> Option<u32> {
+        self.micro_bpm_at_frame(frame).ok()
+    }
     fn sample_rate(&self) -> u32 {
         match self {
             Self::Canonical(map) => map.sample_rate(),
@@ -966,7 +984,9 @@ mod tests {
         let loop_region = LoopRegion::new(1_237, 91_111, true).unwrap();
         let cycle = PreparedPeriodicSessionTempo::prepare(&prepared, loop_region).unwrap();
         let view = cycle.view(&prepared);
-        assert_eq!(view.max_micro_bpm(), 150_000_000);
+        // Admission covers a later absolute cursor too; the coordinate checks
+        // below still prove that the 600 BPM marker never enters loop cycles.
+        assert_eq!(view.max_micro_bpm(), 600_000_000);
 
         assert_eq!(view.beat_to_frame(cycle.start_beat()).unwrap(), 1_237);
         assert_eq!(view.beat_to_frame(cycle.end_beat()).unwrap(), 91_111);

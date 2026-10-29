@@ -5,6 +5,11 @@
 //! use the sibling splice planner. Inner edges keep other markers fixed; shared
 //! edges keep the pair's outer span fixed. Crossed time becomes empty. Marker
 //! merging preserves the earliest identity/name/color and all musical material.
+//! Marker moves retain their identity/length and carve destination overlap from
+//! other markers. A lone surviving fragment retains its identity; on an interior
+//! cut the left retains it and the right receives a fresh identity/name/color copy.
+//! Marker edge resizing uses the same carving law; isolated range/content edge
+//! resizing still refuses overlap instead of carving neighbors.
 //! Marker splitting retains the left identity and gives the adjoining right
 //! marker a fresh ID with matching name/color, without editing any musical data.
 //! Reordering cuts `[start,end)` and inserts it before/after the target's original
@@ -14,8 +19,11 @@
 //! beat interval. Authored tempo/meter points remain present even when their
 //! values match neighbors. Synthetic meter anchors are added only where the
 //! effective signature changes; equal-meter section seams do not restart bars.
-//! The session/transport owner excludes active playback/recording
-//! and pending commits before canonical preparation.
+//! Destination copies compose the adjacent-copy and stable-ID reorder laws in
+//! one private candidate; display previews compose only markers and tempo.
+//! The session/transport owner fences structural publication. Reorders/copies
+//! may preserve active playback; resizing/deleting retain their stopped rules.
+//! Recording and pending commits remain excluded before canonical preparation.
 //! Audio sample intervals use the exact integer-frame cut/insert permutation.
 //! Musical audio retains its full original processing context, with at most one
 //! sample of explicit placement residual for nearest-frame tempo-prefix phase.
@@ -23,9 +31,11 @@
 //! require rebasing these roots refuse explicitly. Uncut MIDI retains source
 //! and loop metadata; boundary crossings reuse the finite canonical split law,
 //! including retriggered carried gates and materialized source-beat volume.
-//! Original source loops are supported. The separate outer Once/Repeat view
-//! placement capability refuses until its engine occurrence path can preserve
-//! the complete song edit; it is never silently flattened or partly moved.
+//! Original source loops and finite outer Once/Repeat views retain their full
+//! processing clock, crop, phase and silent tails. Musical outer views translate
+//! the old integer-frame projection to their new onset, including internal repeat
+//! and directed-read seams; splits trim that same saved clock before relocation.
+//! Later global tempo replacement returns warped roots to live processing.
 //! Every fragment is planned from the original state; Editor owns one atomic
 //! preparation/history transition and preserves the original on any failure.
 use crate::{BeatTime, Command, Created, ElementColor, Invalid, Project, SectionId};
@@ -222,40 +232,56 @@ impl Project {
         source: &ArrangementSection,
         insertion: BeatTime,
     ) -> Result<SectionReorderPreview, Invalid> {
-        let destination = if insertion >= source.end {
-            BeatTime::from_raw(insertion.raw() - (source.end.raw() - source.start.raw()))
-        } else {
-            insertion
-        };
-        let mut result = SectionReorderPreview {
-            source_start: source.start,
-            source_end: source.end,
-            insertion_beat: insertion,
-            destination_start: destination,
-            sections: Vec::new(),
-            tempo_map: self.tempo_map.clone(),
-        };
-        result
-            .sections
-            .try_reserve_exact(self.arrangement_sections.len())
-            .map_err(|_| Invalid("could not reserve arrangement section preview"))?;
-        for old in &self.arrangement_sections {
-            let mut new = old.clone();
-            new.start = result.map_beat(old.start)?;
-            new.end = BeatTime::from_raw(
-                new.start
-                    .raw()
-                    .checked_add(old.end.raw() - old.start.raw())
-                    .ok_or(Invalid("section end overflow"))?,
-            );
-            result.sections.push(new);
-        }
-        result.sections.sort_by_key(|s| s.start);
-        result.tempo_map = reorder::tempo_map(self.tempo_map(), &result)?;
-        validate(&result.sections, &result.tempo_map)?;
-        Ok(result)
+        preview_reorder_at(
+            source,
+            insertion,
+            &self.arrangement_sections,
+            &self.tempo_map,
+        )
     }
 }
+// Metadata-only composition also serves copy insertion; no project/PCM clone
+// or audio preparation belongs in a pointer preview.
+fn preview_reorder_at(
+    source: &ArrangementSection,
+    insertion: BeatTime,
+    sections: &[ArrangementSection],
+    tempo: &crate::TempoMap,
+) -> Result<SectionReorderPreview, Invalid> {
+    let destination = if insertion >= source.end {
+        BeatTime::from_raw(insertion.raw() - (source.end.raw() - source.start.raw()))
+    } else {
+        insertion
+    };
+    let mut result = SectionReorderPreview {
+        source_start: source.start,
+        source_end: source.end,
+        insertion_beat: insertion,
+        destination_start: destination,
+        sections: Vec::new(),
+        tempo_map: tempo.clone(),
+    };
+    result
+        .sections
+        .try_reserve_exact(sections.len())
+        .map_err(|_| Invalid("could not reserve arrangement section preview"))?;
+    for old in sections {
+        let mut new = old.clone();
+        new.start = result.map_beat(old.start)?;
+        new.end = BeatTime::from_raw(
+            new.start
+                .raw()
+                .checked_add(old.end.raw() - old.start.raw())
+                .ok_or(Invalid("section end overflow"))?,
+        );
+        result.sections.push(new);
+    }
+    result.sections.sort_by_key(|s| s.start);
+    result.tempo_map = reorder::tempo_map(tempo, &result)?;
+    validate(&result.sections, &result.tempo_map)?;
+    Ok(result)
+}
+
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
     match command {
         Command::AddArrangementSection {
@@ -281,6 +307,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             Ok(Created::ArrangementSection(id))
         }
         Command::ReorderSectionBefore { section, before } => reorder(project, section, before),
+        Command::MoveArrangementSectionMarker { section, start } => {
+            marker_move::apply(project, section, start)
+        }
+        Command::ResizeArrangementSectionMarker {
+            section,
+            edge,
+            boundary,
+        } => marker_move::resize(project, section, edge, boundary),
         Command::ReorderSectionAfter { section, after } => reorder_after(project, section, after),
         Command::ResizeArrangementSection {
             section,
@@ -300,6 +334,11 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         } => splice::resize_isolated(project, section, edge, boundary),
         Command::DeleteArrangementSection(section) => splice::delete(project, section),
         Command::DuplicateArrangementSection(section) => splice::duplicate(project, section),
+        Command::DuplicateArrangementSectionAt {
+            section,
+            target,
+            after,
+        } => splice::duplicate_at(project, section, target, after),
         Command::SplitArrangementSection { section, at } => {
             let (right, mut sections) = project.preview_section_split(section, at)?;
             let id = SectionId(project.allocate_id()?);
@@ -354,6 +393,7 @@ mod meter;
 mod reorder;
 use reorder::{reorder, reorder_after};
 
+mod marker_move;
 mod shared_boundary;
 mod splice;
 pub use splice::SectionSplicePreview;
@@ -365,6 +405,14 @@ impl Project {
         command: &Command,
     ) -> Result<SectionSplicePreview, Invalid> {
         match command {
+            Command::MoveArrangementSectionMarker { section, start } => {
+                marker_move::preview(self, *section, *start)
+            }
+            Command::ResizeArrangementSectionMarker {
+                section,
+                edge,
+                boundary,
+            } => marker_move::preview_resize(self, *section, *edge, *boundary),
             Command::ResizeArrangementSection {
                 section,
                 edge,
@@ -385,6 +433,11 @@ impl Project {
             Command::DuplicateArrangementSection(section) => {
                 splice::preview_duplicate(self, *section)
             }
+            Command::DuplicateArrangementSectionAt {
+                section,
+                target,
+                after,
+            } => splice::preview_duplicate_at(self, *section, *target, *after),
             Command::SplitArrangementSection { section, at } => {
                 let (_, sections) = self.preview_section_split(*section, *at)?;
                 Ok(SectionSplicePreview {

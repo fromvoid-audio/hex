@@ -7,6 +7,7 @@ use crate::{MidiTiming, midi_compile::MidiEventKind};
 mod current_sampler;
 mod density;
 mod origin;
+mod readmission;
 pub use origin::SessionMidiOrigin;
 mod spans;
 use density::{DensityEnvelope, DensityEvent, admit_density};
@@ -129,15 +130,16 @@ pub(crate) fn session_source_note_has_occurrence(
     offset: BeatTime,
     note: &MidiNote,
 ) -> bool {
-    source_note_has_repeat_occurrence(source, note)
-        || source_note_has_intro_occurrence(source, note)
-            && note
-                .start()
-                .raw()
-                .saturating_add(note.duration().raw())
-                .min(source.effective_end().raw())
-                .saturating_sub(source.source_start().raw())
-                > offset.raw()
+    note.active()
+        && (source_note_has_repeat_occurrence(source, note)
+            || source_note_has_intro_occurrence(source, note)
+                && note
+                    .start()
+                    .raw()
+                    .saturating_add(note.duration().raw())
+                    .min(source.effective_end().raw())
+                    .saturating_sub(source.source_start().raw())
+                    > offset.raw())
 }
 
 fn source_note_has_intro_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
@@ -342,7 +344,15 @@ impl PreparedMidiSourceTemplate {
                 .map_err(|_| MidiTemplateError::LoopPeriodTooShortForAdmission)?;
         }
 
-        let note_count = if active { source_data.notes().len() } else { 0 };
+        let note_count = if active {
+            source_data
+                .notes()
+                .iter()
+                .filter(|note| note.active())
+                .count()
+        } else {
+            0
+        };
         let max_edges = note_count
             .checked_mul(4)
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
@@ -372,7 +382,11 @@ impl PreparedMidiSourceTemplate {
                     .map_err(|error| MidiTemplateError::InvalidSource(error.0))?,
             )
         };
-        for note in source_data.notes().iter().filter(|_| active) {
+        for note in source_data
+            .notes()
+            .iter()
+            .filter(|note| active && note.active())
+        {
             let note_start = note.start().raw();
             let note_end = note_start
                 .checked_add(note.duration().raw())

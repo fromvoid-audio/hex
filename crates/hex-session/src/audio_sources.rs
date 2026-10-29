@@ -8,6 +8,7 @@
 //! silently refreshing changed bytes. Document generation, semantic source epoch and native
 //! catalog generation are distinct. These facts cannot grant a catalog lease, constructor owner or
 //! page readiness, and unavailable waveform data must not become fabricated peaks.
+mod file_waveform;
 use crate::{AssetId, Audio, SessionError};
 use hex_engine::{PreparedRevision, PreparedSessionInventory, compile::PreparedAudioSource};
 use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits};
@@ -28,8 +29,9 @@ pub enum DocumentAudioMode {
     Resident,
     VerifiedStreaming,
 }
-/// Metadata-only preparation bounds, independent of resident duration. The
-/// desktop supplies existing source/catalog limits; no native admission follows.
+/// Metadata-only preparation bounds, independent of resident duration. An ordinary
+/// document may also reserve these for file-backed clip bindings without changing
+/// its document mode. No native custody, publication or readiness follows.
 #[derive(Clone, Copy, Debug)]
 pub struct SourcePlanReservation {
     pub reader: VerifiedWavReaderLimits,
@@ -58,10 +60,19 @@ impl SourcePlanReservation {
 }
 /// Complete immutable binding captured by verification on the Session worker.
 /// Native workers independently reopen and verify this expected fingerprint.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct VerifiedAudioFile {
     facts: Arc<VerifiedAudioFileFacts>,
+    // Derived display cache is deliberately excluded from complete file-fact
+    // equality. It cannot refresh a fingerprint or confer source authority.
+    waveform: Option<Arc<hex_media::waveform::Waveform>>,
 }
+impl PartialEq for VerifiedAudioFile {
+    fn eq(&self, other: &Self) -> bool {
+        self.facts == other.facts
+    }
+}
+impl Eq for VerifiedAudioFile {}
 #[derive(Debug, PartialEq, Eq)]
 struct VerifiedAudioFileFacts {
     path: PathBuf,
@@ -107,6 +118,7 @@ impl VerifiedAudioFile {
                 limits,
                 manifest_bytes: reader.page_manifest_bytes(),
             }),
+            waveform: None,
         })
     }
     pub fn path(&self) -> &Path {
@@ -192,11 +204,10 @@ impl MediaBank {
         project: &Project,
     ) -> Result<(), hex_engine::Invalid> {
         for track in project.tracks() {
-            if track
-                .clips()
-                .iter()
-                .any(|clip| self.device_only.contains(&clip.asset()))
-            {
+            if track.clips().iter().any(|clip| {
+                clip.referenced_assets()
+                    .any(|asset| self.device_only.contains(&asset))
+            }) {
                 return Err(hex_engine::Invalid(
                     "device-only source needs an accounted clip derivative",
                 ));
@@ -233,6 +244,143 @@ impl MediaBank {
         if self.verified.is_empty() {
             return PreparedRevision::prepare(project, &self.resident, table, previous);
         }
+        let sources = self.prepared_sources()?;
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            project, &sources, self.epoch, table, previous,
+        )
+    }
+
+    /// Full ordinary resource preparation shares the same verified bindings as semantic
+    /// compilation. This owns no reader/page endpoint and grants no native readiness.
+    #[cfg(test)] // Builtin-only fixture convenience; production supplies explicit catalog/effect context.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_with_device_resources(
+        &self,
+        project: &Project,
+        table: Arc<hex_engine::SineTable>,
+        previous: Option<&PreparedSessionInventory>,
+        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<PreparedRevision, hex_engine::Invalid> {
+        self.prepare_with_device_resources_and_catalog(
+            project,
+            table,
+            previous,
+            transforms,
+            resources,
+            scan_frames,
+            cancel,
+            None,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_with_device_resources_and_catalog(
+        &self,
+        project: &Project,
+        table: Arc<hex_engine::SineTable>,
+        previous: Option<&PreparedSessionInventory>,
+        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        catalog: Option<(
+            u64,
+            &BTreeMap<AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
+        )>,
+        effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
+    ) -> Result<PreparedRevision, hex_engine::Invalid> {
+        self.validate_clip_sources(project)?;
+        if self.verified.is_empty() {
+            if let Some(effects) = effects {
+                return effects.prepare_registered_revision(
+                    project,
+                    &self.resident,
+                    table,
+                    previous,
+                    transforms,
+                    resources,
+                    scan_frames,
+                    cancel,
+                );
+            }
+            return PreparedRevision::prepare_with_device_resources(
+                project,
+                &self.resident,
+                table,
+                previous,
+                transforms,
+                resources,
+                scan_frames,
+                cancel,
+            );
+        }
+        let (generation, sources) = if let Some((generation, metadata)) = catalog {
+            if generation == 0 {
+                return Err(hex_engine::Invalid(
+                    "ordinary native catalog generation unavailable",
+                ));
+            }
+            let mut sources: BTreeMap<_, _> = self
+                .resident
+                .iter()
+                .map(|(id, audio)| (*id, PreparedAudioSource::Resident(audio.clone())))
+                .collect();
+            for (id, actual) in metadata {
+                let file = self.verified.get(id).ok_or(hex_engine::Invalid(
+                    "ordinary native source is not captured",
+                ))?;
+                let expected = file.source_metadata(*id, generation)?;
+                if actual.as_ref() != &expected {
+                    return Err(hex_engine::Invalid("ordinary native file metadata differs"));
+                }
+                sources.insert(*id, PreparedAudioSource::Streamed(Arc::clone(actual)));
+            }
+            (generation, sources)
+        } else {
+            (self.epoch, self.prepared_sources()?)
+        };
+        if let Some(effects) = effects {
+            return effects.prepare_registered_source_revision(
+                project,
+                &sources,
+                generation,
+                table,
+                previous,
+                transforms,
+                resources,
+                scan_frames,
+                cancel,
+            );
+        }
+        PreparedRevision::prepare_with_prepared_audio_sources_and_device_resources(
+            project,
+            &sources,
+            generation,
+            table,
+            previous,
+            transforms,
+            resources,
+            scan_frames,
+            cancel,
+        )
+    }
+
+    pub(crate) fn required_verified_sources(
+        &self,
+        project: &Project,
+    ) -> Vec<(AssetId, &VerifiedAudioFile)> {
+        self.verified.iter().filter_map(|(id, file)| {
+            let arrangement = project.tracks().iter().any(|track| track.clips().iter().any(|clip| clip.asset() == *id));
+            let session = project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.asset() == *id));
+            (arrangement || session).then_some((*id, file))
+        }).collect()
+    }
+    fn prepared_sources(
+        &self,
+    ) -> Result<BTreeMap<AssetId, PreparedAudioSource>, hex_engine::Invalid> {
         let mut sources: BTreeMap<_, _> = self
             .resident
             .iter()
@@ -244,8 +392,13 @@ impl MediaBank {
                 PreparedAudioSource::Streamed(Arc::new(source.source_metadata(*id, self.epoch)?)),
             );
         }
-        PreparedRevision::prepare_with_prepared_audio_sources(
-            project, &sources, self.epoch, table, previous,
-        )
+        Ok(sources)
     }
+}
+
+/// Recovery-only verified facts. Original device banks retain their independent
+/// authenticated reconstruction boundary; these files contain no resident PCM.
+pub(crate) struct ReconstructedFileSources {
+    pub reservation: SourcePlanReservation,
+    pub files: BTreeMap<AssetId, VerifiedAudioFile>,
 }

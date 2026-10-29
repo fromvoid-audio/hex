@@ -53,7 +53,16 @@
 //! type tokens remain unknown; names, substring matches and flags never infer a type.
 //! Nonempty class vendor metadata overrides the factory vendor. Type/vendor search
 //! and restart retain original metadata bytes. These are reported discovery labels;
-//! no row is a playable or insertable device. Custom roots remain separate.
+//! no row is a playable or insertable device. Custom folders use the same bounded
+//! explicit scan; only results persist, with no automatic folder execution.
+//!
+//! Background browser reload/publication revalidates retained bundle and executable
+//! bytes through the scanner's bounded source reader, one module at a time. Missing,
+//! linked or changed files produce transient unavailable/rescan labels; they never
+//! rewrite last-good metadata, persistent scan failures or the catalog file. These
+//! observations are not admission authority: the host must revalidate at use time.
+//! Duplicate CIDs remain distinct explicit module/CID rows in path/CID order; no
+//! arbitrary replacement is chosen when a path disappears or a binary changes.
 //! Cache data never authorizes future plugin instance admission; the processing host
 //! must verify current source and resources. Catalog version2 is the current format;
 //! unsupported older alpha files remain intact with a visible error, without migration.
@@ -65,6 +74,7 @@
 //! Dynamic/discardable or unknown factory flags retain historical metadata only;
 //! rows explicitly require a rescan. Stored inventory never establishes future
 //! cacheable class availability or authorizes processing admission.
+mod resolve;
 pub mod roots;
 pub mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -73,7 +83,7 @@ pub mod worker;
 use hex_plugin_scan::{Discovery, PUBLIC_SDK, SDK, macos::report::Report};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
 };
 
@@ -95,12 +105,15 @@ pub struct Entry {
 pub struct Catalog {
     version: u32,
     pub entries: Vec<Entry>,
+    #[serde(skip)]
+    source_errors: BTreeMap<PathBuf, String>,
 }
 impl Default for Catalog {
     fn default() -> Self {
         Self {
             version: 2,
             entries: Vec::new(),
+            source_errors: BTreeMap::new(),
         }
     }
 }
@@ -275,6 +288,7 @@ impl Catalog {
                 entry.last_good = Some(report);
                 entry.source = Some(source);
                 entry.failure = None;
+                next.source_errors.remove(&path);
             }
             Err(error) => {
                 entry.failure = Some(error.chars().take(128).collect());
@@ -295,6 +309,19 @@ pub struct Row {
     pub vendor: String,
     pub status: String,
 }
+/// Exact copied metadata for an explicit effect activation request. This is
+/// neither source admission nor permission to reuse a cached executable: the
+/// processing owner must inspect the selected module again, compare both
+/// digests/class and retain its actual native preparation through the terminal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectSelection {
+    pub module: PathBuf,
+    pub cid: [u8; 16],
+    pub class_name: String,
+    pub executable_relative_path: String,
+    pub executable_sha256: String,
+    pub info_sha256: String,
+}
 fn reported_kind(class: &hex_plugin_scan::Class) -> &'static str {
     let mut instrument = false;
     let mut effect = false;
@@ -313,6 +340,85 @@ fn reported_kind(class: &hex_plugin_scan::Class) -> &'static str {
 }
 
 impl Catalog {
+    /// Capture one explicit module/CID without filesystem work or code loading.
+    /// Duplicate CIDs in different modules never select a replacement. Unknown
+    /// type tokens, stale/error rows and dynamic inventories require a fresh
+    /// successful scan; original last-good records remain untouched.
+    pub fn select_effect(&self, module: &Path, cid: [u8; 16]) -> Result<EffectSelection, String> {
+        self.validate()?;
+        let entry = self
+            .entries
+            .iter()
+            .find(|entry| entry.path == module)
+            .ok_or("selected vst3 module is no longer in the catalog")?;
+        if entry.failure.is_some() || self.source_errors.contains_key(module) {
+            return Err("selected vst3 source is unavailable; rescan before insertion".into());
+        }
+        let report = entry
+            .last_good
+            .as_ref()
+            .ok_or("selected vst3 module has no successful scan")?;
+        let discovery = report
+            .discovery
+            .as_ref()
+            .ok_or("selected vst3 classes are unavailable")?;
+        if !discovery.cacheable() {
+            return Err("selected vst3 inventory requires a rescan before insertion".into());
+        }
+        let class = discovery
+            .classes
+            .iter()
+            .find(|class| class.cid == cid)
+            .ok_or("selected vst3 class is no longer in the catalog")?;
+        if class.category != "Audio Module Class"
+            || !class
+                .subcategories
+                .as_ref()
+                .is_some_and(|categories| categories.split('|').any(|token| token == "Fx"))
+        {
+            return Err("selected vst3 class is not a reported effect".into());
+        }
+        let executable = report
+            .executable
+            .as_ref()
+            .ok_or("selected vst3 executable is unavailable")?;
+        Ok(EffectSelection {
+            module: entry.path.clone(),
+            cid,
+            class_name: class.name.clone(),
+            executable_relative_path: executable.relative_path.clone(),
+            executable_sha256: executable.sha256.clone(),
+            info_sha256: report.bundle.info_sha256.clone(),
+        })
+    }
+
+    /// Background control only: inspect saved sources without executing code or
+    /// changing persistent metadata. Uses the existing per-file byte/path bounds,
+    /// sequentially for at most MAX_MODULES; no filesystem work occurs in `rows`.
+    /// A later successful refresh clears transient errors, but never a scan failure.
+    /// This observation does not authorize loading a module after this call returns.
+    pub fn refresh_sources(&mut self) -> Result<(), String> {
+        self.validate()?;
+        self.source_errors.clear();
+        for entry in &self.entries {
+            let Some(report) = &entry.last_good else {
+                continue;
+            };
+            let result = match &report.executable {
+                Some(executable) => report
+                    .bundle
+                    .executable_unchanged(executable)
+                    .map_err(|e| e.to_string()),
+                None => Err("catalog executable missing".into()),
+            };
+            if let Err(error) = result {
+                self.source_errors
+                    .insert(entry.path.clone(), error.chars().take(128).collect());
+            }
+        }
+        Ok(())
+    }
+
     /// Pure metadata projection; deliberately no filesystem work or code loading.
     pub fn rows(&self, query: &str) -> Vec<Row> {
         let query = query.to_lowercase();
@@ -368,13 +474,25 @@ impl Catalog {
                                 } else {
                                     String::new()
                                 };
-                                format!("{state}vst3 {kind} · hosting unavailable")
+                                let source = self.source_errors.get(&entry.path).map_or_else(
+                                    String::new,
+                                    |error| {
+                                        format!("source unavailable · rescan required · {error} · ")
+                                    },
+                                );
+                                let action = if matches!(kind, "effect" | "instrument and effect") {
+                                    "enter to insert · source validation required"
+                                } else {
+                                    "hosting unavailable"
+                                };
+                                format!("{source}{state}vst3 {kind} · {action}")
                             },
                         });
                     }
                 }
             }
         }
+        rows.sort_by(|a, b| (&a.module, a.cid).cmp(&(&b.module, b.cid)));
         rows
     }
 }
@@ -473,6 +591,283 @@ mod tests {
             },
         }
     }
+    fn effect_report(path: PathBuf, categories: &str) -> Report {
+        let mut value = report(path);
+        let class = &mut value.discovery.as_mut().unwrap().classes[0];
+        class.class_flags = Some(0);
+        class.subcategories = Some(categories.into());
+        class.class_vendor = Some("Original Vendor".into());
+        class.class_version = Some("1".into());
+        class.class_sdk_version = Some("3.8".into());
+        value
+    }
+
+    #[test]
+    fn saved_effect_resolution_requires_exact_unique_cacheable_identity() {
+        let f = Fixture::new();
+        let first = f.module();
+        let mut catalog = Catalog::default();
+        catalog
+            .record(
+                first.clone(),
+                Ok((effect_report(first.clone(), "Fx"), "e".repeat(40))),
+            )
+            .unwrap();
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        assert_eq!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .unwrap()
+                .module,
+            first
+        );
+        for (cid, executable, info) in [
+            ([2; 16], [0xdd; 32], [0xcc; 32]),
+            ([1; 16], [0xee; 32], [0xcc; 32]),
+            ([1; 16], [0xdd; 32], [0xee; 32]),
+        ] {
+            assert!(catalog.resolve_effect(cid, executable, info).is_err());
+        }
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+        let second = f.0.join("Second.vst3");
+        catalog
+            .record(
+                second.clone(),
+                Ok((effect_report(second, "Fx"), "e".repeat(40))),
+            )
+            .unwrap();
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+        catalog.entries.pop();
+        catalog.entries[0].failure = Some("last scan failed".into());
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .is_err()
+        );
+        catalog.entries[0].failure = None;
+        catalog.entries[0]
+            .last_good
+            .as_mut()
+            .unwrap()
+            .discovery
+            .as_mut()
+            .unwrap()
+            .factory_flags = 8;
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn effect_selection_captures_only_the_explicit_module_and_class() {
+        let f = Fixture::new();
+        let first = f.module();
+        let second = f.0.join("Second.vst3");
+        let mut catalog = Catalog::default();
+        catalog
+            .record(
+                first.clone(),
+                Ok((effect_report(first.clone(), "Fx|Delay"), "e".repeat(40))),
+            )
+            .unwrap();
+        let mut other = effect_report(second.clone(), "Fx");
+        other.executable.as_mut().unwrap().sha256 = "f".repeat(64);
+        catalog
+            .record(second.clone(), Ok((other, "e".repeat(40))))
+            .unwrap();
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        let selected = catalog.select_effect(&second, [1; 16]).unwrap();
+        assert_eq!(selected.module, second);
+        assert_eq!(selected.cid, [1; 16]);
+        assert_eq!(selected.class_name, "Original Processor");
+        assert_eq!(selected.executable_relative_path, "Contents/MacOS/Original");
+        assert_eq!(selected.executable_sha256, "f".repeat(64));
+        assert_eq!(selected.info_sha256, "c".repeat(64));
+        assert_eq!(
+            catalog
+                .select_effect(&first, [1; 16])
+                .unwrap()
+                .executable_sha256,
+            "d".repeat(64)
+        );
+        assert!(catalog.select_effect(&first, [2; 16]).is_err());
+        assert!(
+            catalog
+                .select_effect(&f.0.join("Missing.vst3"), [1; 16])
+                .is_err()
+        );
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+        // Invalid duplicate paths/classes cannot turn a selection into an
+        // arbitrary first-match lookup, even with manually supplied metadata.
+        catalog.entries.push(catalog.entries[0].clone());
+        assert!(catalog.select_effect(&first, [1; 16]).is_err());
+    }
+
+    #[test]
+    fn effect_selection_requires_exact_reported_effect_and_cacheable_inventory() {
+        let f = Fixture::new();
+        let path = f.module();
+        for (categories, accepted) in [
+            ("Fx", true),
+            ("Fx|Instrument", true),
+            ("Instrument|Synth", false),
+            ("MyFx", false),
+            ("fx", false),
+            ("", false),
+        ] {
+            let mut catalog = Catalog::default();
+            catalog
+                .record(
+                    path.clone(),
+                    Ok((effect_report(path.clone(), categories), "e".repeat(40))),
+                )
+                .unwrap();
+            assert_eq!(
+                catalog.select_effect(&path, [1; 16]).is_ok(),
+                accepted,
+                "{categories}"
+            );
+        }
+        let mut catalog = Catalog::default();
+        let mut dynamic = effect_report(path.clone(), "Fx");
+        dynamic.discovery.as_mut().unwrap().factory_flags = 1;
+        catalog
+            .record(path.clone(), Ok((dynamic, "e".repeat(40))))
+            .unwrap();
+        assert!(catalog.select_effect(&path, [1; 16]).is_err());
+    }
+
+    #[test]
+    fn effect_selection_refuses_unavailable_or_last_good_error_without_rewriting_it() {
+        let f = Fixture::new();
+        let path = f.module();
+        let mut catalog = Catalog::default();
+        catalog
+            .record(
+                path.clone(),
+                Ok((effect_report(path.clone(), "Fx"), "e".repeat(40))),
+            )
+            .unwrap();
+        catalog
+            .source_errors
+            .insert(path.clone(), "changed executable".into());
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        assert!(catalog.select_effect(&path, [1; 16]).is_err());
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+        catalog.source_errors.clear();
+        catalog
+            .record(path.clone(), Err("rescan failed".into()))
+            .unwrap();
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        assert!(catalog.select_effect(&path, [1; 16]).is_err());
+        assert!(catalog.entries[0].last_good.is_some());
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+    }
+
+    #[test]
+    fn source_refresh_detects_changed_and_moved_duplicates_without_rewriting_last_good() {
+        let f = Fixture::new();
+        // Structural Mach-O bytes only; this test never creates executable code.
+        let mut bytes: Vec<u8> = [0xfeed_facf_u32, 0x0100_000c, 0, 8, 1, 8, 0, 0, 0, 8]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        bytes.push(0);
+        let first = f.0.join("A.vst3");
+        let second = f.0.join("B.vst3");
+        for path in [&first, &second] {
+            fs::create_dir_all(path.join("Contents/MacOS")).unwrap();
+            fs::write(path.join("Contents/Info.plist"), b"original metadata").unwrap();
+            fs::write(path.join("Contents/MacOS/Original"), &bytes).unwrap();
+        }
+        let snapshot = |path: &Path| {
+            let mut value = report(path.to_path_buf());
+            value.bundle = Bundle::inspect(path).unwrap();
+            value.executable = Some(value.bundle.admit("Contents/MacOS/Original").unwrap());
+            value
+        };
+        storage::update(&f.catalog(), |catalog| {
+            for path in [&second, &first] {
+                catalog.record(path.clone(), Ok((snapshot(path), "e".repeat(40))))?;
+            }
+            // A valid input's array order cannot determine duplicate selection.
+            catalog.entries.reverse();
+            Ok(())
+        })
+        .unwrap();
+        let saved = fs::read(f.catalog()).unwrap();
+        let mut catalog = Catalog::load(&f.catalog()).unwrap();
+        let original = serde_json::to_vec(&catalog).unwrap();
+        catalog.refresh_sources().unwrap();
+        let rows = catalog.rows("");
+        assert_eq!(
+            rows.iter().map(|r| &r.module).collect::<Vec<_>>(),
+            vec![&first, &second]
+        );
+        assert_eq!(rows[0].cid, rows[1].cid);
+        assert!(
+            rows.iter()
+                .all(|r| !r.status.contains("source unavailable"))
+        );
+
+        let executable = first.join("Contents/MacOS/Original");
+        let mut changed = bytes.clone();
+        *changed.last_mut().unwrap() = 1; // Same size, same valid header, different hash.
+        fs::write(&executable, changed).unwrap();
+        catalog.refresh_sources().unwrap();
+        let rows = catalog.rows("");
+        assert!(rows[0].status.contains("selected executable changed"));
+        assert!(rows[0].status.contains("rescan required"));
+        assert!(!rows[1].status.contains("source unavailable"));
+        assert_eq!(
+            serde_json::to_vec(&catalog).unwrap(),
+            original,
+            "freshness is not persistent scan state"
+        );
+
+        let moved = f.0.join("C.vst3");
+        fs::rename(&second, &moved).unwrap();
+        catalog.refresh_sources().unwrap();
+        assert!(catalog.rows("")[1].status.contains("source unavailable"));
+        assert_eq!(
+            fs::read(f.catalog()).unwrap(),
+            saved,
+            "no deletion or implicit rescan on move"
+        );
+        catalog
+            .record(moved.clone(), Ok((snapshot(&moved), "e".repeat(40))))
+            .unwrap();
+        let rows = catalog.rows("");
+        assert_eq!(rows.len(), 3, "historical identity stays recoverable");
+        assert_eq!(rows[1].module, second);
+        assert_eq!(rows[2].module, moved);
+        assert_eq!(rows[1].cid, rows[2].cid);
+        assert!(rows[1].status.contains("source unavailable"));
+        assert!(!rows[2].status.contains("source unavailable"));
+
+        fs::write(executable, &bytes).unwrap();
+        catalog
+            .record(first.clone(), Err("explicit rescan refused".into()))
+            .unwrap();
+        catalog.refresh_sources().unwrap();
+        let row = &catalog.rows("")[0];
+        assert!(
+            !row.status.contains("source unavailable"),
+            "freshness recovers when bytes return"
+        );
+        assert!(
+            row.status.contains("last good · explicit rescan refused"),
+            "source restoration cannot erase scan failure"
+        );
+    }
+
     #[test]
     fn reported_types_use_exact_sdk_tokens_and_survive_restart_without_guesses() {
         let fixture = Fixture::new();
@@ -498,7 +893,11 @@ mod tests {
             let loaded = Catalog::load(&fixture.catalog()).unwrap();
             assert_eq!(
                 loaded.rows("")[0].status,
-                format!("vst3 {expected} · hosting unavailable")
+                if matches!(categories, "Fx|Delay" | "Fx|Instrument") {
+                    format!("vst3 {expected} · enter to insert · source validation required")
+                } else {
+                    format!("vst3 {expected} · hosting unavailable")
+                }
             );
             assert_eq!(loaded.rows("CLASS VENDOR")[0].vendor, "Class Vendor");
             assert_eq!(loaded.rows(expected).len(), 1);

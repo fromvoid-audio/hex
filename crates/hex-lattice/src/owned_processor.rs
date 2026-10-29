@@ -10,6 +10,15 @@ use std::{any::Any, sync::Arc};
 /// Control-prepared owned transaction factory, independent of the legacy twin
 /// factory. Construction is fallible and finishes before audio publication.
 pub trait PreparedOwnedProcessorRuntime: Send + Sync {
+    fn parameter_automation_descriptor(
+        &self,
+        _parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterDescriptor> {
+        None
+    }
+    fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
+        false
+    }
     fn runtime_version(&self) -> u32;
     /// Entire owner plus both histories, all buffers and reserved capacities.
     /// Shared prepared configuration is accounted by its separate control owner.
@@ -24,11 +33,51 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
 /// resource. A transaction may span arbitrarily many/large borrowed segments;
 /// providers must not impose a hidden callback-size or write-journal limit.
 ///
-/// Processing is infallible after admission, including an absent musical clock;
-/// clock-dependent laws must define that case explicitly. Providers needing a
-/// fallible per-segment capability are unsupported by this initial contract.
+/// Ordinary processing is infallible after admission, including an absent
+/// musical clock. Automation delivery may refuse invalid borrowed values or
+/// derived controls through the existing host transaction; missing origin is
+/// an explicit immutable-base fallback, never an error.
 /// Host render failure invokes rollback after all earlier speculative segments.
 pub trait OwnedProcessorRuntime: Any + Send {
+    fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
+        false
+    }
+    fn process_block_with_automation(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+        _automation: &dyn crate::NativeParameterAutomation,
+        _resources: &dyn crate::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn process_bypassed_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        automation: &dyn crate::NativeParameterAutomation,
+        resources: &dyn crate::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let dry = *frame;
+            let shifted = clock.map(|clock| crate::OffsetClock { clock, offset });
+            let values = crate::OffsetAutomation {
+                values: automation,
+                offset,
+            };
+            let result = self.process_block_with_automation(
+                std::slice::from_mut(frame),
+                shifted
+                    .as_ref()
+                    .map(|clock| clock as &dyn NativeInstrumentClock),
+                &values,
+                resources,
+            );
+            *frame = dry;
+            result?;
+        }
+        Ok(())
+    }
     fn fixed_storage_pair_bytes(&self) -> Option<usize>;
     /// Reopening must abandon prior speculative work, preserving committed PCM.
     fn begin_block(&mut self);
@@ -68,6 +117,11 @@ pub trait OwnedProcessorRuntime: Any + Send {
     fn commit_block(&mut self);
     fn rollback_block(&mut self);
     fn reset(&mut self);
+    /// One-way notification after validated ownership moves into a residual
+    /// output bank. A provider may release a freeze/sustain so removal cannot
+    /// leave an endlessly sounding effect. It must preserve existing history,
+    /// remain allocation-free and never change persisted authoring state.
+    fn begin_output_tail(&mut self) {}
     fn committed_is_quiescent(&self) -> bool;
     fn speculative_is_quiescent(&self) -> bool;
     /// Explicit live-copy authorization. False preserves the old applied graph;
@@ -76,6 +130,18 @@ pub trait OwnedProcessorRuntime: Any + Send {
         false
     }
     fn inherit_from(&mut self, _previous: &dyn OwnedProcessorRuntime) {}
+    /// Commit-phase alternative when the host exclusively owns a retiring
+    /// donor. It follows the same preflight as inherit_from. Providers may swap
+    /// preallocated histories instead of copying them; the donor must not be
+    /// rendered afterward. All allocations stay owned by these two objects and
+    /// retire through the existing host path. No method may free storage here.
+    fn transfer_history_from(&mut self, previous: &mut dyn OwnedProcessorRuntime) {
+        self.inherit_from(previous);
+    }
+    /// Optional private mutable downcast for a provider's ownership transfer.
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
     fn can_retarget_parameters_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
         false
     }
@@ -87,6 +153,11 @@ pub trait OwnedProcessorRuntime: Any + Send {
         None
     }
     fn as_any(&self) -> &dyn Any;
+    /// Drain committed provider telemetry only; never expose speculative work.
+    /// This callback-side operation is bounded, allocation-free and infallible.
+    fn take_dynamics_meter(&mut self) -> Option<crate::DynamicsMeter> {
+        None
+    }
 }
 
 /// Exactly one prepared processing capability. Legacy byte declarations remain
@@ -95,37 +166,63 @@ pub trait OwnedProcessorRuntime: Any + Send {
 pub enum PreparedProcessorFactory {
     Legacy(Arc<dyn PreparedNativeProcessor>),
     Owned(Arc<dyn PreparedOwnedProcessorRuntime>),
+    /// Borrowed staged graph capability; never an owned rollbackable DSP facade.
+    Foreign(crate::PreparedForeignProcessor),
 }
 impl PreparedProcessorFactory {
+    pub fn parameter_automation_descriptor(
+        &self,
+        parameter: hex_lattice_contract::ParameterId,
+    ) -> Option<hex_lattice_contract::ParameterDescriptor> {
+        match self {
+            Self::Legacy(v) => v.parameter_automation_descriptor(parameter),
+            Self::Owned(v) => v.parameter_automation_descriptor(parameter),
+            Self::Foreign(_) => None,
+        }
+    }
+    pub fn supports_parameter_automation(
+        &self,
+        parameter: hex_lattice_contract::ParameterId,
+    ) -> bool {
+        match self {
+            Self::Legacy(value) => value.supports_parameter_automation(parameter),
+            Self::Owned(value) => value.supports_parameter_automation(parameter),
+            Self::Foreign(_) => false,
+        }
+    }
     pub fn runtime_version(&self) -> u32 {
         match self {
             Self::Legacy(v) => v.runtime_version(),
             Self::Owned(v) => v.runtime_version(),
+            Self::Foreign(_) => 1,
         }
     }
     pub fn declared_pair_bytes(&self) -> Option<usize> {
         match self {
             Self::Legacy(v) => v.declared_runtime_bytes().checked_mul(2),
             Self::Owned(v) => Some(v.declared_pair_bytes()),
+            Self::Foreign(_) => Some(0), // scalar declaration is already inline; host charges actual endpoints
         }
     }
     pub fn output_tail(&self) -> OutputTail {
         match self {
             Self::Legacy(v) => v.output_tail(),
             Self::Owned(v) => v.output_tail(),
+            Self::Foreign(value) => value.output_tail(),
         }
     }
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
         match self {
             Self::Legacy(v) => v.algorithmic_latency_frames(),
             Self::Owned(v) => v.algorithmic_latency_frames(),
+            Self::Foreign(v) => Some(v.total_latency_frames()),
         }
     }
     /// Control-side legacy preview capability, when actually supported.
     pub fn frequency_response_at_hz(&self, hz: f32) -> Option<[f32; 2]> {
         match self {
             Self::Legacy(v) => v.frequency_response_at_hz(hz),
-            Self::Owned(_) => None,
+            Self::Owned(_) | Self::Foreign(_) => None,
         }
     }
 }
@@ -134,6 +231,7 @@ impl PreparedProcessorFactory {
 /// and convert once on control; there is no positional factory sidecar.
 #[derive(Clone)]
 pub struct PreparedRuntimeInstance {
+    pub automation: crate::PreparedParameterAutomation,
     pub meter: Arc<DeviceMeter>,
     pub owner: ProcessorChainOwner,
     pub device_id: u64,
@@ -146,7 +244,7 @@ pub struct PreparedRuntimeInstance {
 }
 impl PreparedRuntimeInstance {
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
-        if self.bypassed {
+        if self.bypassed && !matches!(self.definition, Some(PreparedProcessorFactory::Foreign(_))) {
             Some(0)
         } else {
             self.definition.as_ref().map_or(
@@ -159,6 +257,7 @@ impl PreparedRuntimeInstance {
 impl From<PreparedProcessorInstance> for PreparedRuntimeInstance {
     fn from(value: PreparedProcessorInstance) -> Self {
         Self {
+            automation: Default::default(),
             meter: value.meter,
             owner: value.owner,
             device_id: value.device_id,
@@ -181,7 +280,7 @@ impl PreparedProcessorFactory {
     pub fn legacy(&self) -> Option<&Arc<dyn PreparedNativeProcessor>> {
         match self {
             Self::Legacy(value) => Some(value),
-            Self::Owned(_) => None,
+            Self::Owned(_) | Self::Foreign(_) => None,
         }
     }
     pub fn is_owned(&self) -> bool {

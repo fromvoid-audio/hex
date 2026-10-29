@@ -31,6 +31,22 @@ pub(super) struct BindingPresentation {
     pub(super) compact_toggle_width: f32,
 }
 
+// Translate view-only host control keys into neutral lane targets. The Session
+// adapter also normalizes legacy parameter-gesture keys before canonical edits;
+// reserved widget IDs never enter provider/model persistence.
+fn automation_target(
+    parameter: hex_lattice_contract::ParameterId,
+) -> hex_lattice_contract::DeviceAutomationTarget {
+    use hex_lattice_contract::DeviceAutomationTarget as Target;
+    if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
+        Target::HostInputGain
+    } else if parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
+        Target::HostOutputGain
+    } else {
+        Target::Parameter(parameter)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct CapturedBinding {
     generation: u64,
@@ -186,9 +202,12 @@ pub(super) enum ControlPresentation {
     MicroDial,
     InlineValue,
     DeviceMeters,
+    MeterFader,
+    ChoiceDial,
     CompactButton,
     CompactSelector,
     CompactWideSelector,
+    CompactSegments { columns: usize },
 }
 
 #[derive(Clone, Copy, Default)]
@@ -336,7 +355,7 @@ pub(super) fn render_parameter(
             })
             .unwrap_or(false)
     });
-    match view.device_panel.controls.get(&key) {
+    let rendered = match view.device_panel.controls.get(&key) {
         Some(ParameterControl::Float { entity, .. }) => {
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
@@ -394,6 +413,7 @@ pub(super) fn render_parameter(
                     hex_widgets::INLINE_VALUE_HEIGHT,
                 ),
                 ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
+                ControlPresentation::MeterFader => (60.0, 154.0),
                 _ => (136.0, 26.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
@@ -496,14 +516,46 @@ pub(super) fn render_parameter(
                 });
             }
             let (width, height) = match presentation {
+                ControlPresentation::ChoiceDial => (64.0, 52.0),
                 ControlPresentation::CompactSelector => (64.0, 14.0),
                 ControlPresentation::CompactWideSelector => (120.0, 14.0),
+                ControlPresentation::CompactSegments { columns } => (
+                    64.0,
+                    values.len().div_ceil(columns.max(1)) as f32 * 16.0 - 2.0,
+                ),
                 _ => (136.0, 22.0),
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
         }
         None => unsupported_parameter(descriptor.label),
-    }
+    };
+    let menu_binding = CapturedBinding {
+        generation,
+        owner: view.device_panel.owner,
+        key,
+        identity,
+        descriptor,
+    };
+    rendered.capture_any_mouse_down(cx.listener(
+        move |view, event: &gpui::MouseDownEvent, window, cx| {
+            if event.button == gpui::MouseButton::Right
+                && menu_binding.current(view, false)
+                && view
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == revision)
+                && view.open_parameter_automation_menu(
+                    event.position,
+                    key.device,
+                    automation_target(key.parameter),
+                    window,
+                    cx,
+                )
+            {
+                cx.stop_propagation();
+            }
+        },
+    ))
 }
 
 fn create_parameter_control(
@@ -549,7 +601,7 @@ fn create_parameter_control(
     match (descriptor.kind, value) {
         (ParameterKind::Float { min, max, unit }, ParameterValue::Float(value)) if min < max => {
             let default = match descriptor.default {
-                ParameterValue::Float(default) => f64::from(default),
+                ParameterValue::Float(default) => default,
                 _ => return None,
             };
             let scale = match descriptor.presentation {
@@ -560,9 +612,9 @@ fn create_parameter_control(
                 ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
-            let mut spec = NumericSpec::new(
-                f64::from(min),
-                f64::from(max),
+            let mut spec = NumericSpec::new_f32(
+                min,
+                max,
                 default,
                 scale,
                 2,
@@ -577,6 +629,7 @@ fn create_parameter_control(
                 ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
                 ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
                 ControlPresentation::DeviceMeters => NumericControlPresentation::DeviceMeters,
+                ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
                 _ => NumericControlPresentation::HorizontalSlider,
             };
             let config = NumericControlConfig::new(
@@ -596,6 +649,7 @@ fn create_parameter_control(
                 },
             );
             let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
+            entity.update(cx, |control, _| control.set_commit_unchanged_text(true));
             let target = GestureTarget::DeviceParameter {
                 device: key.device,
                 parameter: key.parameter,
@@ -625,7 +679,27 @@ fn create_parameter_control(
                     if !is_current(view) {
                         return;
                     }
+                    if event.phase == NumericEventPhase::Begin {
+                        view.remember_automation_parameter(
+                            key.device,
+                            automation_target(key.parameter),
+                        );
+                    }
                     let value = ParameterValue::Float(event.value as f32);
+                    if event.phase == NumericEventPhase::Commit
+                        && event_lease.get().is_none()
+                        && view.device_gesture.snapshot().is_none()
+                    {
+                        let result = view
+                            .begin_device_gesture(target, value)
+                            .and_then(|_| view.change_device_gesture(value))
+                            .and_then(|_| view.finish_device_gesture(value));
+                        if let Err(error) = result {
+                            view.error = Some(error.into());
+                        }
+                        cx.notify();
+                        return;
+                    }
                     if let Err(error) = dispatch_bound_numeric_gesture(
                         view,
                         target,
@@ -699,13 +773,11 @@ fn create_parameter_control(
                     }
                     return;
                 }
+                view.remember_automation_parameter(key.device, automation_target(key.parameter));
                 let value = ParameterValue::Bool(event.checked);
                 view.device_panel.pending_values.insert(target, value);
-                if !view.enqueue_device_barrier(Request::SetDeviceParameter {
-                    device: target.device,
-                    parameter: target.parameter,
-                    value,
-                }) {
+                if !view.manual_device_parameter_request(target.device, target.parameter, value)
+                        .is_ok_and(|request| view.enqueue_device_barrier(request)) {
                     view.device_panel.pending_values.remove(&target);
                 }
                 cx.notify();
@@ -740,6 +812,8 @@ fn create_parameter_control(
                 ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
             ) {
                 SelectorAppearance::CompactSelector
+            } else if presentation == ControlPresentation::ChoiceDial {
+                SelectorAppearance::CompactDial
             } else {
                 SelectorAppearance::Standard
             };
@@ -747,6 +821,11 @@ fn create_parameter_control(
                 .ok()?
                 .with_accessibility_name(theme::text(display_label.unwrap_or(descriptor.label)))
                 .with_appearance(appearance);
+            let config = if let ControlPresentation::CompactSegments { columns } = presentation {
+                config.with_segment_columns(columns).ok()?
+            } else {
+                config
+            };
             let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
             let target = key;
             let event_values = values.clone();
@@ -760,13 +839,11 @@ fn create_parameter_control(
                     if !finalize_controls(view, cx) {
                         return;
                     }
+                    view.remember_automation_parameter(key.device, automation_target(key.parameter));
                     let value = ParameterValue::Choice(value);
                     view.device_panel.pending_values.insert(target, value);
-                    if !view.enqueue_device_barrier(Request::SetDeviceParameter {
-                        device: target.device,
-                        parameter: target.parameter,
-                        value,
-                    }) {
+                    if !view.manual_device_parameter_request(target.device, target.parameter, value)
+                        .is_ok_and(|request| view.enqueue_device_barrier(request)) {
                         view.device_panel.pending_values.remove(&target);
                     }
                     cx.notify();

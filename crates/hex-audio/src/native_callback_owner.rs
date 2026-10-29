@@ -420,7 +420,11 @@ pub(crate) struct NativeRetirement {
     client: Option<Box<crate::prepared::ClientEndpoints>>,
     publication: Option<Box<crate::prepared::PublicationControl>>,
     completed_stream_handle: bool,
+    scalar_release_status: Option<usize>,
     domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_sources: [Option<crate::candidate_custody::NativeEndpointEnvelope>;
+        hex_lattice::MAX_STATEFUL_PROCESSORS],
     final_active: Option<crate::candidate_custody::FinalActiveReturn>,
     root: crate::candidate_custody::CandidateRoot,
 }
@@ -444,7 +448,10 @@ impl NativeRetirement {
             client: None,
             publication: None,
             completed_stream_handle: false,
+            scalar_release_status: None,
             domain_pages: std::array::from_fn(|_| None),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_sources: std::array::from_fn(|_| None),
             final_active: None,
             root,
         }
@@ -501,11 +508,6 @@ impl NativeRetirement {
             }
             self.endpoint_states[1] = Disposal::Received;
         }
-        if self.endpoint_states[1] == Disposal::Received {
-            self.endpoint_states[1] = Disposal::Pending;
-            drop(self.publication.take());
-            self.endpoint_states[1] = Disposal::Complete;
-        }
         if self.endpoint_states[0] == Disposal::Unreceived && terminals.client.ready() {
             self.client = terminals.client.take();
             if self.client.is_none() {
@@ -513,12 +515,26 @@ impl NativeRetirement {
             }
             self.endpoint_states[0] = Disposal::Received;
         }
+        Ok(())
+    }
+    /// Independent from possibly poisoned endpoint/callback owners. First publication wins.
+    pub(crate) fn fail_scalar_receipts(&self) {
+        if let Some(endpoints) = self.terminals.as_ref().and_then(|t| t.endpoints.as_ref()) {
+            endpoints.receipts.fail();
+        }
+    }
+    fn dispose_endpoints(&mut self) {
+        // Abandon worker publication before any graph cleanup, preserving existing custody.
+        if self.endpoint_states[1] == Disposal::Received {
+            self.endpoint_states[1] = Disposal::Pending;
+            drop(self.publication.take());
+            self.endpoint_states[1] = Disposal::Complete;
+        }
         if self.endpoint_states[0] == Disposal::Received {
             self.endpoint_states[0] = Disposal::Pending;
             drop(self.client.take());
             self.endpoint_states[0] = Disposal::Complete;
         }
-        Ok(())
     }
     pub(crate) fn advance(&mut self) -> Result<bool, ()> {
         if self.states.contains(&Disposal::Pending)
@@ -531,13 +547,45 @@ impl NativeRetirement {
             if self.data.is_some() || self.errors.is_some() {
                 return Err(());
             }
-            let Some(terminals) = self.terminals.as_mut() else {
-                return Err(());
-            };
-            if !terminals.receive_into(&mut self.data, &mut self.errors)? {
+            let terminals = self.terminals.as_mut().ok_or(())?;
+            if terminals.receive_into(&mut self.data, &mut self.errors)? {
+                let data = self.data.as_ref().ok_or(())?;
+                let errors = self.errors.as_ref().ok_or(())?;
+                if !data.callback.belongs_to_candidate_root(&self.root)
+                    || !data.callback.matches_native_status(&data.status)
+                    || !Arc::ptr_eq(&data.status, &errors.status)
+                {
+                    return Err(());
+                }
+                self.scalar_release_status = Some(Arc::as_ptr(&data.status) as usize);
+                self.states = [Disposal::Received; 2];
+            }
+        }
+        let retaining = self
+            .client
+            .as_ref()
+            .is_some_and(|c| c.retained_receipt_target.is_some());
+        if retaining {
+            if self.scalar_release_status.is_none() || !self.completed_stream_handle {
                 return Ok(false);
             }
-            self.states = [Disposal::Received; 2];
+            let client = self.client.as_mut().ok_or(())?;
+            if !self.scalar_release_status.is_some_and(|identity| {
+                client.matches_retired_scalar_output(identity, self.root.root_id())
+            }) {
+                return Err(());
+            }
+            // No destructor precedes the copied result for a selected retired client.
+            self.terminals
+                .as_ref()
+                .and_then(|t| t.endpoints.as_ref())
+                .ok_or(())?
+                .receipts
+                .collect(client);
+        }
+        self.dispose_endpoints();
+        if self.states[0] == Disposal::Unreceived {
+            return Ok(false);
         }
         if self.states[0] == Disposal::Received {
             let Some(data) = self.data.as_mut() else {
@@ -548,6 +596,18 @@ impl NativeRetirement {
             }
             if !data.callback.drain_candidate_custody_on_control() {
                 return Ok(false);
+            }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if data.callback.has_native_source_endpoints() {
+                if !self.completed_stream_handle {
+                    return Ok(false);
+                }
+                if !data
+                    .callback
+                    .extract_native_source_endpoints_on_control(&mut self.native_sources)
+                {
+                    return Err(());
+                }
             }
             if data.callback.has_domain_pages() {
                 if !self.completed_stream_handle {
@@ -576,6 +636,18 @@ impl NativeRetirement {
                     return Err(());
                 }
             }
+            if data.callback.has_active_ordinary_streams() {
+                if !self.completed_stream_handle {
+                    return Ok(false);
+                }
+                if !data.callback.release_final_ordinary_streams_on_control(
+                    &FinalReleaseAuthority {
+                        root: self.root.root_id(),
+                    },
+                ) {
+                    return Err(());
+                }
+            }
             self.states[0] = Disposal::Pending;
             drop(self.data.take());
             self.states[0] = Disposal::Complete;
@@ -590,6 +662,15 @@ impl NativeRetirement {
         }
         if self.states != [Disposal::Complete; 2] {
             return Err(());
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        for index in 0..self.native_sources.len() {
+            if let Some(endpoint) = self.native_sources[index].take()
+                && let Err(endpoint) = self.root.ingest_native_endpoint(endpoint)
+            {
+                self.native_sources[index] = Some(endpoint);
+                return Ok(false);
+            }
         }
         for index in 0..self.domain_pages.len() {
             if let Some(pages) = self.domain_pages[index].take()
@@ -610,7 +691,7 @@ impl NativeRetirement {
         // Graph/domain work progresses even while the UI client remains live.
         // Only complete normal endpoint destruction can release the whole
         // native resource extent and its exclusive device lease.
-        let graphs_complete = self.root.finish_on_control();
+        let graphs_complete = crate::lifecycle::finish_retirement_cleanup(&self.root);
         let endpoints_complete = self.endpoint_states == [Disposal::Complete; 2];
         if endpoints_complete {
             self.terminals = None;

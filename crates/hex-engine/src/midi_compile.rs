@@ -12,25 +12,6 @@ use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
 use std::sync::Arc;
 
-/// Metadata ownership lands before the prepared clip-volume render consumer.
-/// Every project preparation path must refuse authored curves in the meantime;
-/// silently compiling unity would publish a different musical result.
-pub(crate) fn require_supported_clip_volume(project: &Project) -> Result<(), Invalid> {
-    if project
-        .tracks()
-        .iter()
-        .flat_map(|track| track.midi_clips())
-        .any(|clip| !clip.volume().points().is_empty())
-        || project.session_cells().iter().any(|cell| {
-            matches!(cell.content(),
-            hex_project::SessionCellContent::Midi(clip) if !clip.volume().points().is_empty())
-        })
-    {
-        return Err(Invalid("midi clip volume playback is not prepared"));
-    }
-    Ok(())
-}
-
 pub const MAX_MIDI_EVENT_EDGES: usize = 131_072;
 /// Maximum prepared MIDI note occurrences across the entire project.
 pub const MAX_COMPILED_MIDI_OCCURRENCES: usize = 65_536;
@@ -43,6 +24,8 @@ pub(crate) struct MutableInstrumentLimits {
     pub(crate) max_events_per_query: usize,
     pub(crate) max_active_occurrences: usize,
     pub(crate) max_release_tail_frames: u64,
+    /// Both immutable host declarations are required for exact per-note volume.
+    pub(crate) supports_clip_volume: bool,
 }
 
 impl MutableInstrumentLimits {
@@ -64,6 +47,8 @@ impl MutableInstrumentLimits {
             max_events_per_query,
             max_active_occurrences,
             max_release_tail_frames: factory.max_release_tail_frames(),
+            supports_clip_volume: factory.supports_occurrence_gain()
+                && factory.supports_active_occurrence_ids(),
         })
     }
 }
@@ -140,7 +125,7 @@ pub(crate) fn count_project_occurrences(project: &Project) -> Result<usize, Inva
         .filter(|clip| clip.active())
     {
         let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
-        for note in clip.notes() {
+        for note in clip.notes().iter().filter(|note| note.active()) {
             let count = source
                 .note_occurrences(note.start(), note.duration())
                 .map_err(|error| Invalid(error.0))?
@@ -166,6 +151,9 @@ fn append_clip(
     events: &mut Vec<(usize, CompiledMidiEvent)>,
 ) -> Result<(), Invalid> {
     for_each_clip_occurrence(project, clip, |note, iteration, onset, off, _, _| {
+        if !note.active() {
+            return Ok(());
+        }
         for (frame, kind) in [
             (onset, MidiEventKind::NoteOn),
             (off, MidiEventKind::NoteOff),
@@ -216,7 +204,10 @@ fn for_each_clip_occurrence(
                 .tempo_map()
                 .beat_to_frame(BeatTime::from_raw(off_raw))
                 .map_err(|_| Invalid("midi note offset exceeds frame range"))?;
-            if off <= onset {
+            // An inactive authored note remains available to the editor but
+            // produces no gate. Its valid beat duration may quantize to zero
+            // frames without making the playable project unpreparable.
+            if off < onset || (off == onset && note.active()) {
                 return Err(Invalid("midi note duration quantizes to zero frames"));
             }
             visit(
@@ -341,6 +332,27 @@ fn compile_instrument_track_with_empty_bank(
     if track.midi_clips().is_empty() {
         return Ok(None);
     }
+    let volumes = if track
+        .midi_clips()
+        .iter()
+        .any(|clip| !clip.volume().is_unity())
+    {
+        let max =
+            crate::PreparedTempoMap::validate_canonical(project.tempo_map(), project.sample_rate())
+                .map_err(|_| Invalid("invalid clip volume preparation timing"))?;
+        let timing =
+            crate::prepared_tempo::CanonicalMidiTiming::for_validated(project.tempo_map(), max);
+        crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::prepare(
+            project, track, &timing,
+        )?
+    } else {
+        None
+    };
+    if volumes.is_some() && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume) {
+        return Err(Invalid(
+            "clip volume is unsupported by this mutable instrument mode",
+        ));
+    }
     let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::empty_keys();
     let mut clip_counts = Vec::new();
     clip_counts
@@ -349,6 +361,7 @@ fn compile_instrument_track_with_empty_bank(
     let mut span_count = 0_usize;
     for clip in track.midi_clips() {
         let mut clip_count = 0_usize;
+        let mut playable_count = 0_usize;
         let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
         for note in clip.notes() {
             let count = source
@@ -357,7 +370,7 @@ fn compile_instrument_track_with_empty_bank(
                 .count();
             let count = usize::try_from(count)
                 .map_err(|_| Invalid("compiled midi occurrence count overflow"))?;
-            if clip.active() && count != 0 && instrument.is_some() {
+            if clip.active() && note.active() && count != 0 && instrument.is_some() {
                 crate::midi_note_bank::PreparedMidiNoteBank::add_key(
                     &mut keys,
                     note.pitch(),
@@ -367,9 +380,14 @@ fn compile_instrument_track_with_empty_bank(
             clip_count = clip_count
                 .checked_add(count)
                 .ok_or(Invalid("compiled midi occurrence count overflow"))?;
+            if note.active() {
+                playable_count = playable_count
+                    .checked_add(count)
+                    .ok_or(Invalid("compiled midi occurrence count overflow"))?;
+            }
         }
         span_count = span_count
-            .checked_add(if clip.active() { clip_count } else { 0 })
+            .checked_add(if clip.active() { playable_count } else { 0 })
             .ok_or(Invalid("compiled midi occurrence count overflow"))?;
         clip_counts.push(clip_count);
     }
@@ -494,7 +512,7 @@ fn compile_instrument_track_with_empty_bank(
                 emitted = emitted
                     .checked_add(1)
                     .ok_or(Invalid("compiled midi occurrence count overflow"))?;
-                if clip.active() && instrument.is_some() {
+                if clip.active() && note.active() && instrument.is_some() {
                     let (sampler_index, end) = if mutable {
                         let tail = mutable_limits
                             .ok_or(Invalid("mutable instrument limits are missing"))?
@@ -575,6 +593,7 @@ fn compile_instrument_track_with_empty_bank(
         bank: bank.unwrap_or_else(empty_bank),
         shared_contexts,
         mutable,
+        volumes,
     }))
 }
 
@@ -769,6 +788,7 @@ mod declared_capacity_tests {
             max_events_per_query: events,
             max_active_occurrences: voices,
             max_release_tail_frames: 0,
+            supports_clip_volume: false,
         }
     }
 

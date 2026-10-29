@@ -400,6 +400,7 @@ fn materialize_shifted_midi(
                 .ok_or(Invalid("shifted midi note collapsed"))?;
             notes.push(MidiNote {
                 id: NoteId(project.allocate_id()?),
+                active: note.active(),
                 start: BeatTime::from_raw(relative),
                 duration: BeatTime::from_raw(duration),
                 pitch: note.pitch(),
@@ -420,6 +421,7 @@ fn materialize_shifted_midi(
         destination_end_frame,
     )?;
     Ok(MidiClip {
+        content_view: None,
         active: original.active,
         playback_offset: crate::BeatTime::ZERO,
         volume,
@@ -429,13 +431,15 @@ fn materialize_shifted_midi(
         start,
         length,
         source: Arc::new(MidiSource {
+            content: std::sync::Arc::new(crate::MidiContent {
+                source_length: length,
+                notes,
+            }),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-            source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
-            notes,
         }),
     })
 }

@@ -8,6 +8,7 @@
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "macos_host.hpp"
+#include "macos_parameter_page.hpp"
 #include "macos_processing.hpp"
 #include "macos_state_stream.hpp"
 #include "pluginterfaces/vst/ivstmessage.h"
@@ -215,11 +216,23 @@ public:
     // One initial stopped capture; later project restore/capture transactions
     // must reuse the same actual instance owner, not create a competing state path.
     bool capture_initial_state_on_control(CapturedState& result) {
-        if (![NSThread isMainThread] || !configured || !active || processing.load() ||
-            component_stream || controller_stream || quarantined.load()) return false;
+        return capture_state_on_control(result,true);
+    }
+    // Existing activated instance, including concurrent realtime processing as
+    // permitted by IComponent::getState. The main lane owns these streams;
+    // the protocol must finish capture before epoch changes or teardown.
+    // Reuse only exclusive control streams; never initialize/synchronize the
+    // controller again or replace the original startup capture.
+    bool capture_current_state_on_control(CapturedState& result) {
+        return capture_state_on_control(result,false) && result.component;
+    }
+private:
+    bool capture_state_on_control(CapturedState& result,bool initial) {
+        if (![NSThread isMainThread] || !configured || !active || (initial && processing.load()) || quarantined.load() ||
+            (initial && (component_stream || controller_stream))) return false;
         CapturedState captured{};
-        component_stream=new(std::nothrow) StateStream(StateStream::capacity);
-        if (!component_stream) return false;
+        if(initial) component_stream=new(std::nothrow) StateStream(StateStream::capacity);
+        if (!component_stream || (!initial && !component_stream->reset_write_on_control(StateStream::capacity))) return false;
         const auto first=component->getState(component_stream);
         if (!component_stream->valid() || !component_stream->exclusive()) return false;
         if (first==kResultOk) {
@@ -227,15 +240,15 @@ public:
             std::copy_n(component_stream->bytes.begin(),captured.component_bytes,captured.bytes.begin());
         } else if (first!=kNotImplemented && first!=kResultFalse) return false;
         if (controller) {
-            if (!restored && captured.component) {
+            if (initial && !restored && captured.component) {
                 if (!component_stream->rewind_read_only_on_control() ||
                     controller->setComponentState(component_stream)!=kResultOk ||
                     !component_stream->valid() || !component_stream->exclusive()) return false;
                 if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
                     host->refusal_flags()) return false;
             }
-            controller_stream=new(std::nothrow) StateStream(StateStream::capacity-captured.component_bytes);
-            if (!controller_stream) return false;
+            if(initial) controller_stream=new(std::nothrow) StateStream(StateStream::capacity-captured.component_bytes);
+            if (!controller_stream || (!initial && !controller_stream->reset_write_on_control(StateStream::capacity-captured.component_bytes))) return false;
             const auto second=controller->getState(controller_stream);
             if (!controller_stream->valid() || !controller_stream->exclusive()) return false;
             if (second==kResultOk) {
@@ -245,6 +258,7 @@ public:
         }
         result=captured;return true;
     }
+public:
 
     enum class PresentationResult { Absent, Applied, Refused, InvalidState };
     // SDK optional UI-thread & Activated interface. The graph/control owner
@@ -276,6 +290,13 @@ public:
     std::optional<uint32> reported_latency_on_control() const {
         if (![NSThread isMainThread] || !configured || !active || processing.load()) return std::nullopt;
         return processor->getLatencySamples();
+    }
+
+    // The SDK permits getTailSamples on the UI lane after setup. Keep it at
+    // the same quiescent, main-lane fence as latency; no Hex callback calls SDK.
+    std::optional<uint32> reported_tail_on_control() const {
+        if (![NSThread isMainThread] || !configured || !active || processing.load()) return std::nullopt;
+        return processor->getTailSamples();
     }
 
     bool start_processing() {
@@ -313,7 +334,8 @@ public:
         if (count<0 || count>64) return FlushResult::InvalidData;
         if (!count) return FlushResult::Empty;
         processing_thread=std::this_thread::get_id();
-        if (processor->process(data)!=kResultOk) { processing_fault.store(true); return FlushResult::Refused; }
+        const ProcessingShape shape(data);
+        if (processor->process(data)!=kResultOk || !shape.unchanged(data)) { processing_fault.store(true); return FlushResult::Refused; }
         return FlushResult::Applied;
     }
     bool stop_processing() {
@@ -332,6 +354,29 @@ public:
     const ParameterSnapshot* parameter_snapshot() const {
         return host?host->snapshot():nullptr;
     }
+    bool parameter_page_on_control(const ControllerQuery& query,ControllerParameterPage& result) {
+        if(![NSThread isMainThread]) return false;
+        return opened && host && !quarantined.load() &&
+            controller_page(controller,host->snapshot(),query,result);
+    }
+    ProcessingParameterSnapshot processing_parameters_on_control() const {
+        return host?host->processing_snapshot_on_control():ProcessingParameterSnapshot{};
+    }
+    void refresh_processing_parameters(ProcessingParameterSnapshot& current) {
+        if(host) host->refresh_processing_snapshot(current);
+    }
+    bool publish_parameter_feedback(ParameterFeedback& pending) {
+        return host && host->publish_parameter_feedback(pending);
+    }
+    bool synchronize_parameter_feedback_on_control() {
+        return opened && host && !quarantined.load() && host->synchronize_parameter_feedback(controller);
+    }
+    bool peek_parameter_edit(EditEvent& result) const { return host && host->peek_edit(result); }
+    void consume_parameter_edit() { if(host) host->consume_edit(); }
+    uint32 ready_parameter_edits() const { return host?host->ready_parameter_edits():0; }
+    uint32 pending_parameter_edits() const { return host?host->pending_parameter_edits():0; }
+    uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
+    void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
 
     bool close() {

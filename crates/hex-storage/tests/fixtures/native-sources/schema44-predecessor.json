@@ -1,0 +1,175 @@
+{
+  "accented_clips": [],
+  "arrangement_sections": [],
+  "asset_sources": [
+    {
+      "asset": 1,
+      "original": null
+    }
+  ],
+  "assets": [
+    {
+      "conversion_version": 1,
+      "id": 1,
+      "path": "Original Sample.wav",
+      "playback_frames": 17,
+      "source_frames": 16,
+      "source_sample_rate": 44100
+    }
+  ],
+  "audio_clip_state": [],
+  "audio_event_fades": [],
+  "audio_event_state": [],
+  "audio_feeds": [],
+  "clip_activation": [],
+  "clip_names": [],
+  "content_views": [],
+  "device_assets": [
+    {
+      "comparison": null,
+      "device": 6,
+      "references": []
+    }
+  ],
+  "fade_curve_positions": [],
+  "fade_shapes": [],
+  "format": "hex-project",
+  "grouped_audio": [],
+  "import_provenance": null,
+  "loop_region": null,
+  "main_devices": [],
+  "master_gain": 1.0,
+  "meter_points": [
+    {
+      "beat_raw": 0,
+      "denominator": 4,
+      "numerator": 4
+    }
+  ],
+  "midi_clip_volumes": {
+    "clips": []
+  },
+  "midi_one_shot_boundaries": [],
+  "midi_routes": [],
+  "next_id": 7,
+  "return_tracks": [],
+  "routing": [],
+  "sample_rate": 48000,
+  "session": {
+    "cells": [],
+    "scenes": []
+  },
+  "tempo_points": [
+    {
+      "beat_raw": 0,
+      "micro_bpm": 120000000
+    }
+  ],
+  "track_colors": [
+    {
+      "color": "violet",
+      "track": 5
+    }
+  ],
+  "track_hierarchy": [
+    {
+      "group": false,
+      "parent": null,
+      "track": 5
+    }
+  ],
+  "tracks": [
+    {
+      "audio_clips": [],
+      "balance": 0.0,
+      "devices": [],
+      "gain": 1.0,
+      "gain_envelope": [],
+      "gain_touch_epoch": 0,
+      "gain_touch_spans": [],
+      "id": 5,
+      "instrument": {
+        "bypassed": false,
+        "id": 6,
+        "input_gain_millidb": 0,
+        "output_gain_millidb": 0,
+        "payload": [],
+        "state_version": 1,
+        "type_id": "hex.instrument.sine"
+      },
+      "instrument_position": 0,
+      "midi_clips": [],
+      "muted": false,
+      "name": "existing track",
+      "sends": [],
+      "soloed": false
+    }
+  ],
+  "tuning": {
+    "audition": {
+      "attack_ms": 10.0,
+      "level": 0.25,
+      "release_ms": 900.0,
+      "waveform": "triangle"
+    },
+    "enabled": false,
+    "scale": {
+      "cents": [
+        0.0,
+        100.0,
+        200.0,
+        300.0,
+        400.0,
+        500.0,
+        600.0,
+        700.0,
+        800.0,
+        900.0,
+        1000.0,
+        1100.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "count": 12,
+      "period_cents": 1200.0,
+      "root_degree": 9,
+      "root_hz": 440.0,
+      "root_key": 69
+    }
+  },
+  "version": 44
+}

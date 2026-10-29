@@ -155,6 +155,7 @@ impl SessionAssembly {
                 asset: _,
                 source_start: _,
                 source_end: _,
+                loop_range: _,
                 gain: _,
                 source,
             }) = clip

@@ -98,10 +98,15 @@ impl Channel {
                 if wanted == 12 {
                     let magic = &out.bytes[..8];
                     if ![
-                        b"HXVIFA02",
-                        b"HXVIRD03",
-                        b"HXVIQF01",
-                        b"HXVIRR01",
+                        b"HXVIFA03",
+                        b"HXVIRD04",
+                        b"HXVIQF02",
+                        b"HXVIRR02",
+                        b"HXVICS01",
+                        b"HXVIFL01",
+                        b"HXVIGE01",
+                        b"HXVIMD01",
+                        b"HXVLCA01",
                         b"HXVIER01",
                         b"HXVITR01",
                     ]
@@ -126,10 +131,20 @@ impl Channel {
                 }
                 if wanted == 64 && (&out.bytes[..4] == b"HXVB" || &out.bytes[..4] == b"HXVE") {
                     let frames = usize::from(u16::from_le_bytes([out.bytes[6], out.bytes[7]]));
-                    if frames > 256 || out.bytes[8..10] != [0, 0] {
+                    let version = u16::from_le_bytes([out.bytes[4], out.bytes[5]]);
+                    let parameters =
+                        usize::from(u16::from_le_bytes([out.bytes[10], out.bytes[11]]));
+                    if frames > crate::transport::MAX_FRAMES
+                        || out.bytes[8..10] != [0, 0]
+                        || !matches!(version, 1 | 2)
+                        || (version == 1 && parameters != 0)
+                        || parameters > crate::transport::MAX_PARAMETER_POINTS
+                        || out.bytes[12..16] != [0; 4]
+                        || (parameters != 0 && (frames == 0 || &out.bytes[..4] != b"HXVB"))
+                    {
                         return Err(Error::Protocol("unsupported instance PCM extent or events"));
                     }
-                    wanted = 64 + frames * 8;
+                    wanted = 64 + frames * 8 + parameters * 16;
                     if wanted == 64 {
                         return Ok(());
                     }
@@ -203,8 +218,65 @@ fn remaining(until: Instant) -> Result<Duration> {
 mod tests {
     use super::*;
     #[test]
+    fn parameter_packet_framing_consumes_exact_payload_without_eating_the_successor() {
+        use crate::transport::{Block, Events, ParameterPoint, Parameters};
+        use hex_lattice_contract::ForeignProcessorBinding;
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let mut block = Block {
+            binding: ForeignProcessorBinding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            sequence: 0,
+            first_frame: 0,
+            frames: 8,
+            pcm: [[0.5; 2]; crate::transport::MAX_FRAMES],
+            events: Events::default(),
+            parameters: Parameters::default(),
+        };
+        block
+            .parameters
+            .push(ParameterPoint {
+                frame: 7,
+                id: 0,
+                normalized: 0.125,
+            })
+            .unwrap();
+        crate::transport::wire::write(&mut peer, &block).unwrap();
+        block.parameters = Parameters::default();
+        block.sequence = 1;
+        block.first_frame = 8;
+        crate::transport::wire::write(&mut peer, &block).unwrap();
+        drop(peer);
+        let mut channel = Channel::new(stream).unwrap();
+        let mut packet = Packet::new();
+        let until = end_after(Duration::from_secs(2)).unwrap();
+        channel.read(&mut packet, until, &mut || Ok(())).unwrap();
+        let first = crate::transport::wire::read(&mut packet.data())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first.parameters.as_slice(),
+            &[ParameterPoint {
+                frame: 7,
+                id: 0,
+                normalized: 0.125
+            }]
+        );
+        assert_eq!(packet.len, 64 + 8 * 8 + 16);
+        channel.read(&mut packet, until, &mut || Ok(())).unwrap();
+        let second = crate::transport::wire::read(&mut packet.data())
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.sequence, 1);
+        assert!(second.parameters.as_slice().is_empty());
+        assert_eq!(packet.len, 64 + 8 * 8);
+    }
+    #[test]
     fn hostile_frames_refuse_before_unbounded_reads_or_allocation() {
-        let mut oversized = b"HXVIRD03".to_vec();
+        let mut oversized = b"HXVIRD04".to_vec();
         oversized.extend(u32::MAX.to_le_bytes());
         let mut events = vec![0; 64];
         events[..4].copy_from_slice(b"HXVB");
@@ -239,7 +311,7 @@ mod tests {
         let mut body = Vec::new();
         protocol::stamp(
             &mut body,
-            hex_audio::plugin_transport::Binding {
+            hex_lattice_contract::ForeignProcessorBinding {
                 root: 1,
                 instance: 2,
                 graph: 3,
@@ -263,6 +335,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(packet.data(), expected);
+        assert_eq!(packet.magic(), b"HXVITR01");
+        assert_eq!(packet.body().unwrap(), body);
         channel.reject_queued_after_reap().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::*;
+    #[test]
+    fn control_send_close_and_expired_deadline_keep_bounded_socket_semantics() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let mut channel = Channel::new(stream).unwrap();
+        let bytes = protocol::control(*b"HXVIST01", &[]).unwrap();
+        channel
+            .send(
+                &bytes,
+                end_after(Duration::from_secs(1)).unwrap(),
+                &mut || Ok(()),
+            )
+            .unwrap();
+        let mut received = vec![0; bytes.len()];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(received, bytes);
+        let expired = Instant::now();
+        pause(expired);
+        assert!(matches!(
+            channel.send(&bytes, expired, &mut || Ok(())),
+            Err(Error::Timeout)
+        ));
+        channel.close();
+        assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
     }
 }

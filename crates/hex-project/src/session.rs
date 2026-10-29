@@ -6,6 +6,31 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// Stable scene intent captured before asynchronous Console work. Insert(None)
+/// explicitly appends one row; an existing row is never inferred from selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionSceneTarget {
+    Existing(SceneId),
+    Insert { before: Option<SceneId> },
+}
+impl SessionSceneTarget {
+    pub fn validate(self, project: &crate::Project) -> Result<(), Invalid> {
+        let scene = match self {
+            Self::Existing(scene) => Some(scene),
+            Self::Insert { before } => {
+                if project.scenes().len() >= MAX_SCENES {
+                    return Err(Invalid("scene limit reached"));
+                }
+                before
+            }
+        };
+        if scene.is_some_and(|id| !project.scenes().iter().any(|scene| scene.id() == id)) {
+            return Err(Invalid("console scene no longer exists"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scene {
     pub(crate) id: SceneId,
@@ -31,7 +56,49 @@ pub struct SessionMidiClip {
     pub(crate) volume: crate::MidiClipVolume,
 }
 
-/// Frame-anchored, one-shot audio source assigned to one Session cell.
+/// Positive half-open cycle in asset playback frames, independent of launch time.
+/// A launch plays source_start..end, then repeats start..end. The retained
+/// source_end may include a release tail outside the cycle; stopping a cell
+/// follows the existing route-release contract rather than playing that tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionAudioLoop {
+    start: u64,
+    end: u64,
+}
+impl SessionAudioLoop {
+    pub fn new(start: u64, end: u64) -> Result<Self, Invalid> {
+        if start >= end {
+            return Err(Invalid("console audio loop must have positive length"));
+        }
+        Ok(Self { start, end })
+    }
+    pub fn start(self) -> u64 {
+        self.start
+    }
+    pub fn end(self) -> u64 {
+        self.end
+    }
+    pub fn validate_source(self, source_start: u64, source_end: u64) -> Result<(), Invalid> {
+        if source_start >= self.end || self.end > source_end {
+            return Err(Invalid("console audio loop is outside its source window"));
+        }
+        Ok(())
+    }
+    /// Bounded constant-work lookup, including arbitrarily late launches.
+    /// Returns None for a mismatched source start; never adds elapsed to an
+    /// absolute source position before reducing it into the positive cycle.
+    pub fn frame_at(self, source_start: u64, elapsed: u64) -> Option<u64> {
+        let first = self.end.checked_sub(source_start).filter(|n| *n > 0)?;
+        if elapsed < first {
+            source_start.checked_add(elapsed)
+        } else {
+            Some(self.start + (elapsed - first) % (self.end - self.start))
+        }
+    }
+}
+
+/// Frame-anchored audio source assigned to one Session cell. A missing loop
+/// preserves one-shot playback; an explicit loop retains source/intro/tail PCM.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAudioClip {
     pub(crate) active: bool,
@@ -41,6 +108,7 @@ pub struct SessionAudioClip {
     pub(crate) asset: crate::AssetId,
     pub(crate) source_start: u64,
     pub(crate) source_end: u64,
+    pub(crate) loop_range: Option<SessionAudioLoop>,
     pub(crate) gain: crate::ClipGain,
 }
 impl SessionAudioClip {
@@ -65,6 +133,9 @@ impl SessionAudioClip {
     }
     pub fn gain(&self) -> crate::ClipGain {
         self.gain
+    }
+    pub fn loop_range(&self) -> Option<SessionAudioLoop> {
+        self.loop_range
     }
     pub fn source_end(&self) -> u64 {
         self.source_end
@@ -248,95 +319,28 @@ pub(crate) fn apply(
                     asset,
                     source_start,
                     source_end,
+                    loop_range: None,
                     gain: crate::ClipGain::UNITY,
                 }),
             });
             Ok(Created::SessionClip(id))
         }
         Command::CopyArrangementAudioClipToSession { source, scene } => {
-            let (track, original) = project
-                .tracks
-                .iter()
-                .find_map(|track| {
-                    track
-                        .clips()
-                        .iter()
-                        .find(|clip| clip.id() == source)
-                        .map(|clip| (track.id(), clip.clone()))
-                })
-                .ok_or(Invalid("arrangement audio clip no longer exists"))?;
-            if original.audio_edit().is_some() {
-                return Err(Invalid(
-                    "transformed or musically anchored arrangement audio cannot yet transfer to an unwarped session one-shot",
-                ));
-            }
-            require_known_cell_key(project, track, scene)?;
-            ensure_empty(project, track, scene)?;
-            ensure_clip_room(project, 1)?;
-            reserve_cell(project)?;
-            let id = ClipId(project.allocate_id()?);
-            let name = original.name().to_owned();
-            crate::edit::name_valid(&name)?;
-            project.session.cells.push(SessionCell {
-                track,
-                scene,
-                content: SessionCellContent::Audio(SessionAudioClip {
-                    active: original.active,
-                    flavor: original.flavor,
-                    id,
-                    name,
-                    gain: original.gain(),
-                    asset: original.asset(),
-                    source_start: original.source_offset(),
-                    source_end: original
-                        .source_offset()
-                        .checked_add(original.source_length())
-                        .ok_or(Invalid("source end overflow"))?,
-                }),
-            });
-            Ok(Created::SessionClip(id))
+            copy_arrangement_audio_to_session(project, source, scene, None)
         }
         Command::CopyArrangementMidiToSession { source, scene } => {
-            let (track, source_note_count) = project
-                .tracks
-                .iter()
-                .find_map(|track| {
-                    track
-                        .midi_clips()
-                        .iter()
-                        .find(|clip| clip.id == source)
-                        .map(|clip| (track.id, clip.notes().len()))
-                })
-                .ok_or(Invalid("arrangement midi clip no longer exists"))?;
-            require_known_cell_key(project, track, scene)?;
-            ensure_empty(project, track, scene)?;
-            ensure_clip_room(project, 1)?;
-            ensure_note_room(project, source_note_count)?;
-            reserve_cell(project)?;
-            let original = project
-                .midi_clip(source)
-                .ok_or(Invalid("arrangement midi clip no longer exists"))?
-                .clone();
-            let id = ClipId(project.allocate_id()?);
-            let mut source = original.source.as_ref().clone();
-            for note in &mut source.notes {
-                note.id = NoteId(project.allocate_id()?);
-            }
-            project.session.cells.push(SessionCell {
-                track,
-                scene,
-                content: SessionCellContent::Midi(SessionMidiClip {
-                    active: original.active,
-                    playback_offset: original.playback_offset,
-                    flavor: original.flavor,
-                    id,
-                    name: original.name.clone(),
-                    volume: original.volume.clone(),
-                    source: Arc::new(source),
-                }),
-            });
-            Ok(Created::SessionClip(id))
+            copy_arrangement_midi_to_session(project, source, scene, None)
         }
+        Command::CopyArrangementAudioClipToNewSessionTrack {
+            source,
+            before_track,
+            scene,
+        } => copy_to_new_session_track(project, source, before_track, scene, false),
+        Command::CopyArrangementMidiToNewSessionTrack {
+            source,
+            before_track,
+            scene,
+        } => copy_to_new_session_track(project, source, before_track, scene, true),
         Command::MoveSessionCell {
             from_track,
             from_scene,
@@ -450,6 +454,22 @@ pub(crate) fn apply(
             });
             Ok(Created::SessionClip(id))
         }
+        Command::SetSessionAudioClipLoop { clip, loop_range } => {
+            let item = project
+                .session
+                .cells
+                .iter_mut()
+                .find_map(|cell| match &mut cell.content {
+                    SessionCellContent::Audio(item) if item.id == clip => Some(item),
+                    _ => None,
+                })
+                .ok_or(Invalid("session audio clip no longer exists"))?;
+            if let Some(range) = loop_range {
+                range.validate_source(item.source_start, item.source_end)?;
+            }
+            item.loop_range = loop_range;
+            Ok(Created::None)
+        }
         Command::SetSessionAudioClipSource {
             clip,
             asset,
@@ -463,6 +483,9 @@ pub(crate) fn apply(
                 .asset(asset)
                 .ok_or(Invalid("session audio asset no longer exists"))?;
             validate_audio_source(source_start, source_end, media.playback_frames())?;
+            if let Some(range) = project.session_audio_clip(clip).and_then(|c| c.loop_range) {
+                range.validate_source(source_start, source_end)?;
+            }
             let target_cell = project.session.cells.iter_mut().find(|cell| matches!(&cell.content, SessionCellContent::Audio(item) if item.id == clip)).ok_or(Invalid("session audio clip no longer exists"))?;
             if let SessionCellContent::Audio(item) = &mut target_cell.content {
                 item.asset = asset;
@@ -547,7 +570,9 @@ pub(crate) fn apply(
                 })
                 .ok_or(Invalid("session midi clip no longer exists"))?;
             let source = Arc::make_mut(&mut target.source);
-            source.source_length = source_length;
+            if source.source_length != source_length {
+                source.source_length = source_length;
+            }
             source.source_start = source_start;
             source.loop_start = loop_start;
             source.loop_end = loop_end;
@@ -683,13 +708,15 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     name,
                     volume: clip.volume.clone(),
                     source: Arc::new(MidiSource {
+                        content: std::sync::Arc::new(crate::MidiContent {
+                            source_length: source.source_length,
+                            notes,
+                        }),
                         one_shot_boundary: source.one_shot_boundary,
-                        source_length: source.source_length,
                         source_start: source.source_start,
                         loop_start: source.loop_start,
                         loop_end: source.loop_end,
                         looping: source.looping,
-                        notes,
                     }),
                 })
             }
@@ -706,6 +733,7 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     asset: clip.asset,
                     source_start: clip.source_start,
                     source_end: clip.source_end,
+                    loop_range: clip.loop_range,
                     gain: clip.gain,
                 })
             }
@@ -870,6 +898,159 @@ fn ensure_note_room(project: &crate::Project, additional: usize) -> Result<(), I
     } else {
         Ok(())
     }
+}
+
+// Keep the copy law shared: source processing refusal, fresh identities and all
+// source-owned metadata are independent of which normal track receives it.
+fn copy_arrangement_audio_to_session(
+    project: &mut crate::Project,
+    source: ClipId,
+    scene: SceneId,
+    destination: Option<TrackId>,
+) -> Result<Created, Invalid> {
+    let (track, original) = project
+        .tracks
+        .iter()
+        .find_map(|track| {
+            track
+                .clips()
+                .iter()
+                .find(|clip| clip.id() == source)
+                .map(|clip| (track.id(), clip.clone()))
+        })
+        .ok_or(Invalid("arrangement audio clip no longer exists"))?;
+    if original.audio_edit().is_some() {
+        return Err(Invalid(
+            "transformed or musically anchored arrangement audio cannot yet transfer to an unwarped session one-shot",
+        ));
+    }
+    let track = destination.unwrap_or(track);
+    require_known_cell_key(project, track, scene)?;
+    ensure_empty(project, track, scene)?;
+    ensure_clip_room(project, 1)?;
+    reserve_cell(project)?;
+    let id = ClipId(project.allocate_id()?);
+    let name = original.name().to_owned();
+    crate::edit::name_valid(&name)?;
+    project.session.cells.push(SessionCell {
+        track,
+        scene,
+        content: SessionCellContent::Audio(SessionAudioClip {
+            active: original.active,
+            flavor: original.flavor,
+            id,
+            name,
+            loop_range: None,
+            gain: original.gain(),
+            asset: original.asset(),
+            source_start: original.source_offset(),
+            source_end: original
+                .source_offset()
+                .checked_add(original.source_length())
+                .ok_or(Invalid("source end overflow"))?,
+        }),
+    });
+    Ok(Created::SessionClip(id))
+}
+fn copy_arrangement_midi_to_session(
+    project: &mut crate::Project,
+    source: ClipId,
+    scene: SceneId,
+    destination: Option<TrackId>,
+) -> Result<Created, Invalid> {
+    require_forward_arrangement_midi(project, source)?;
+    let (track, source_note_count) = project
+        .tracks
+        .iter()
+        .find_map(|track| {
+            track
+                .midi_clips()
+                .iter()
+                .find(|clip| clip.id == source)
+                .map(|clip| (track.id, clip.notes().len()))
+        })
+        .ok_or(Invalid("arrangement midi clip no longer exists"))?;
+    let track = destination.unwrap_or(track);
+    require_known_cell_key(project, track, scene)?;
+    ensure_empty(project, track, scene)?;
+    ensure_clip_room(project, 1)?;
+    ensure_note_room(project, source_note_count)?;
+    reserve_cell(project)?;
+    let original = project
+        .midi_clip(source)
+        .ok_or(Invalid("arrangement midi clip no longer exists"))?
+        .clone();
+    let id = ClipId(project.allocate_id()?);
+    let mut source = original.source.as_ref().clone();
+    for note in &mut source.notes {
+        note.id = NoteId(project.allocate_id()?);
+    }
+    project.session.cells.push(SessionCell {
+        track,
+        scene,
+        content: SessionCellContent::Midi(SessionMidiClip {
+            active: original.active,
+            playback_offset: original.playback_offset,
+            flavor: original.flavor,
+            id,
+            name: original.name.clone(),
+            volume: original.volume.clone(),
+            source: Arc::new(source),
+        }),
+    });
+    Ok(Created::SessionClip(id))
+}
+fn require_forward_arrangement_midi(
+    project: &crate::Project,
+    source: ClipId,
+) -> Result<(), Invalid> {
+    if project
+        .midi_clip(source)
+        .is_some_and(|clip| clip.content_view().is_some())
+    {
+        return Err(Invalid(
+            "directed arrangement midi cannot yet transfer to an ongoing session clip; use a forward clip",
+        ));
+    }
+    Ok(())
+}
+fn copy_to_new_session_track(
+    project: &mut crate::Project,
+    source: ClipId,
+    before_track: Option<TrackId>,
+    scene: SessionSceneTarget,
+    midi: bool,
+) -> Result<Created, Invalid> {
+    // Refuse before allocating a track, scene or fresh source identities.
+    if midi {
+        require_forward_arrangement_midi(project, source)?;
+    }
+    scene.validate(project)?;
+    let name = if midi {
+        project.midi_clip(source).map(|clip| clip.name().to_owned())
+    } else {
+        project.clip(source).map(|clip| clip.name().to_owned())
+    }
+    .ok_or(Invalid("arrangement source no longer exists"))?;
+    let track = crate::edit::insert_track_before(project, name, before_track)?;
+    let scene = match scene {
+        SessionSceneTarget::Existing(scene) => scene,
+        SessionSceneTarget::Insert { before } => {
+            let name = format!("scene {}", project.scenes().len() + 1);
+            let Created::Scene(scene) =
+                apply(project, crate::Command::InsertScene { name, before })?
+            else {
+                return Err(Invalid("console insertion did not create a scene"));
+            };
+            scene
+        }
+    };
+    if midi {
+        copy_arrangement_midi_to_session(project, source, scene, Some(track))?;
+    } else {
+        copy_arrangement_audio_to_session(project, source, scene, Some(track))?;
+    }
+    Ok(Created::Track(track))
 }
 
 #[cfg(test)]

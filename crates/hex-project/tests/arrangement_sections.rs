@@ -122,6 +122,109 @@ fn events(project: &Project) -> Vec<(u64, u64, u8)> {
     out.sort();
     out
 }
+
+#[test]
+fn section_drag_copies_use_stable_destinations_fresh_identity_and_one_history_step() {
+    for (copy_chorus, target_chorus, after, intro, chorus, copy_range) in [
+        (false, false, false, (4, 6), (9, 12), (2, 4)),
+        (false, false, true, (2, 4), (9, 12), (4, 6)),
+        (false, true, false, (2, 4), (9, 12), (7, 9)),
+        (false, true, true, (2, 4), (7, 10), (10, 12)),
+        (true, false, false, (5, 7), (10, 13), (2, 5)),
+        (true, false, true, (2, 4), (10, 13), (4, 7)),
+    ] {
+        let (mut editor, a, c) = fixture();
+        let source = if copy_chorus { c } else { a };
+        let original = editor
+            .project()
+            .arrangement_section(source)
+            .unwrap()
+            .clone();
+        let before = editor.project().clone();
+        let command = Command::DuplicateArrangementSectionAt {
+            section: source,
+            target: if target_chorus { c } else { a },
+            after,
+        };
+        assert!(command.requires_section_publication());
+        let preview = editor
+            .project()
+            .preview_arrangement_section_edit(&command)
+            .unwrap();
+        let Created::ArrangementSection(copy) = editor.execute(command).unwrap() else {
+            panic!("copy identity");
+        };
+        assert!(copy != a && copy != c);
+        for (id, range) in [(a, intro), (c, chorus), (copy, copy_range)] {
+            let marker = editor.project().arrangement_section(id).unwrap();
+            assert_eq!((marker.start(), marker.end()), (b(range.0), b(range.1)));
+        }
+        let copied = editor.project().arrangement_section(copy).unwrap();
+        assert_eq!(
+            (copied.name(), copied.color()),
+            (original.name(), original.color())
+        );
+        let shape = |markers: &[hex_project::ArrangementSection]| {
+            markers
+                .iter()
+                .map(|s| (s.name().to_owned(), s.color(), s.start(), s.end()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shape(preview.sections()),
+            shape(editor.project().arrangement_sections())
+        );
+        assert_eq!(preview.tempo_map(), editor.project().tempo_map());
+        let after = editor.project().clone();
+        assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+        assert!(editor.undo());
+        let mut restored = editor.project().snapshot();
+        assert!(
+            restored.next_id >= after.snapshot().next_id,
+            "undo must not reuse allocated IDs"
+        );
+        restored.next_id = before.snapshot().next_id;
+        assert_eq!(restored, before.snapshot());
+        assert!(
+            !editor.can_undo(),
+            "copy and insertion share one history entry"
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+    }
+}
+
+#[test]
+fn stale_section_copy_destinations_preserve_the_project_and_redo() {
+    let (mut editor, source, stale) = fixture();
+    editor
+        .execute(Command::RemoveArrangementSection(stale))
+        .unwrap();
+    editor
+        .execute(Command::RenameArrangementSection {
+            section: source,
+            name: "temporary".into(),
+        })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().snapshot();
+    for (section, target) in [(source, stale), (stale, source)] {
+        let command = Command::DuplicateArrangementSectionAt {
+            section,
+            target,
+            after: true,
+        };
+        assert!(
+            editor
+                .project()
+                .preview_arrangement_section_edit(&command)
+                .is_err()
+        );
+        assert!(editor.execute(command).is_err());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.can_redo());
+    }
+}
 #[test]
 fn metadata_is_marker_only_and_overlap_refusals_preserve_redo() {
     let (mut e, a, c) = fixture();
@@ -529,7 +632,7 @@ fn bounded_gain_splice_and_dense_midi_expansion_fail_without_consuming_source_or
 }
 
 #[test]
-fn unsupported_outer_audio_placements_refuse_transactionally_instead_of_partial_song_edits() {
+fn outer_audio_placements_section_edits_are_atomic_and_retain_history() {
     for mode in [
         hex_project::AudioViewMode::Once,
         hex_project::AudioViewMode::Repeat,
@@ -537,6 +640,8 @@ fn unsupported_outer_audio_placements_refuse_transactionally_instead_of_partial_
         let (seed, a, c) = fixture();
         let clip = seed.project().tracks()[0].clips()[0].clone();
         let mut edit = clip.audio_event_root();
+        edit.view_start = 271;
+        edit.view_end = 4_271;
         edit.placement = Some(hex_project::AudioViewPlacement {
             mode,
             outer_length: hex_project::AudioDomainClock::Frames(clip.duration()),
@@ -544,26 +649,45 @@ fn unsupported_outer_audio_placements_refuse_transactionally_instead_of_partial_
         });
         let mut snapshot = seed.project().snapshot();
         snapshot.tracks[0].audio_clips_mut().unwrap()[0].edit = Some(edit);
-        let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
-        let before = e.project().snapshot();
-        let mut prepared = false;
-        let error = e
-            .execute_prepared::<(), hex_project::Invalid>(
-                Command::ReorderSectionBefore {
-                    section: c,
-                    before: a,
-                },
-                |_| {
-                    prepared = true;
-                    Ok(())
-                },
-            )
+        let seed = Project::from_snapshot(snapshot).unwrap();
+        for command in [
+            Command::ReorderSectionBefore {
+                section: c,
+                before: a,
+            },
+            Command::DuplicateArrangementSection(a),
+            Command::DeleteArrangementSection(a),
+            Command::ResizeArrangementSection {
+                section: a,
+                edge: hex_project::TrimEdge::Left,
+                length: b(3),
+            },
+        ] {
+            let mut e = Editor::new(seed.clone(), 8).unwrap();
+            let before = e.project().snapshot();
+            let mut prepared = false;
+            e.execute_prepared::<(), hex_project::Invalid>(command.clone(), |_| {
+                prepared = true;
+                Err(hex_project::Invalid("injected preparation refusal"))
+            })
             .unwrap_err();
-        assert!(error.0.contains("outer audio once/repeat"));
-        assert!(!prepared);
-        assert_eq!(e.project().snapshot(), before);
-        assert!(!e.can_undo());
-        assert!(!e.can_redo());
+            assert!(prepared);
+            assert_eq!(e.project().snapshot(), before);
+            assert!(!e.can_undo());
+            e.execute(command).unwrap();
+            let after = e.project().snapshot();
+            assert_ne!(after, before);
+            assert_eq!(
+                Project::from_snapshot(after.clone()).unwrap().snapshot(),
+                after
+            );
+            assert!(e.undo());
+            let mut undone = e.project().snapshot();
+            undone.next_id = before.next_id;
+            assert_eq!(undone, before);
+            assert!(e.redo());
+            assert_eq!(e.project().snapshot(), after);
+        }
     }
 }
 
@@ -1294,7 +1418,7 @@ fn shared_seam_preserves_outer_span_and_markers_or_clears_only_crossed_music_ato
                 boundary,
                 marker_only,
             };
-            assert_eq!(command.requires_stopped_section_edit(), !marker_only);
+            assert_eq!(command.requires_section_publication(), !marker_only);
             let preview = editor
                 .project()
                 .preview_arrangement_section_edit(&command)
@@ -1493,7 +1617,7 @@ fn marker_split_preserves_music_and_left_identity_with_one_history_step() {
         section: id,
         at: b(3),
     };
-    assert!(!command.requires_stopped_section_edit());
+    assert!(!command.requires_section_publication());
     let preview = editor
         .project()
         .preview_arrangement_section_edit(&command)
@@ -1893,6 +2017,45 @@ fn section_splices_preserve_effective_mixed_meter_on_all_retained_content() {
                     old.meter_map().meter_at(beat),
                     "duplicated meter at {beat:?}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn moving_and_duplicating_sections_preserve_a_single_global_tempo_clock() {
+    for rate in [8_000, 44_100, 48_000] {
+        for micro_bpm in [120_000_000, 143_000_000, 180_000_000] {
+            let mut editor = Editor::new(Project::new(rate).unwrap(), 32).unwrap();
+            editor
+                .execute(Command::SetProjectTempo {
+                    tempo: Tempo::new(micro_bpm).unwrap(),
+                })
+                .unwrap();
+            let first = section(&mut editor, "first", 0, 2);
+            let last = section(&mut editor, "last", 4, 7);
+            let clock = editor.project().tempo_map().clone();
+            for command in [
+                Command::ReorderSectionAfter {
+                    section: first,
+                    after: last,
+                },
+                Command::ReorderSectionBefore {
+                    section: first,
+                    before: last,
+                },
+                Command::DuplicateArrangementSection(first),
+            ] {
+                editor.execute(command).unwrap();
+                assert_eq!(
+                    editor.project().tempo_map(),
+                    &clock,
+                    "global tempo is not a splice event"
+                );
+                assert!(editor.undo());
+                assert_eq!(editor.project().tempo_map(), &clock);
+                assert!(editor.redo());
+                assert_eq!(editor.project().tempo_map(), &clock);
             }
         }
     }

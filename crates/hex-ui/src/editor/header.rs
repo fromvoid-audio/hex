@@ -5,6 +5,18 @@ use std::path::Path;
 
 pub(super) const TITLE_HEIGHT: f32 = 22.0;
 pub(super) const TOOLBAR_HEIGHT: f32 = 26.0;
+// Keep every transport action, full view name and useful output status at the
+// minimum window width. Reserve the wide line for the longest input policy,
+// position readout and output/loading indicators as well as fixed controls.
+pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_200.0;
+pub(super) fn toolbar_height(width: f32) -> f32 {
+    if width < WIDE_TOOLBAR_MIN_WIDTH {
+        // Two full rows plus the existing bottom divider.
+        TOOLBAR_HEIGHT * 2.0 + 1.0
+    } else {
+        TOOLBAR_HEIGHT
+    }
+}
 pub(super) const CONTROL_SIZE: f32 = 20.0;
 
 pub(super) fn project_title(document_path: Option<&Path>) -> String {
@@ -65,6 +77,7 @@ pub(super) fn title_bar(
                 .cursor_pointer()
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: tooltip.into(),
                     })
                     .into()
@@ -142,7 +155,7 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .flex_shrink_0()
         .flex()
         .items_center()
-        .gap(px(1.0))
+        // Contiguous compact controls keep the audio status readable at minimum width.
         // The toolbar is below the title row and does not need the traffic-light inset.
         .pr_2()
         .border_b_1()
@@ -270,6 +283,9 @@ mod ui_tests {
             let changelog = visual
                 .debug_bounds("open-changelog")
                 .expect("changelog button");
+            let help = visual
+                .debug_bounds("help-tooltip-toggle")
+                .expect("help button");
             let toolbar = visual
                 .debug_bounds("editor-toolbar")
                 .expect("compact toolbar row");
@@ -294,21 +310,25 @@ mod ui_tests {
             let title_center = f32::from(title_label.origin.x + title_label.size.width / 2.0);
             let window_center = f32::from(window.origin.x + window.size.width / 2.0);
             assert!((f32::from(title.size.height) - super::TITLE_HEIGHT).abs() < 1.0);
-            assert!((f32::from(toolbar.size.height) - super::TOOLBAR_HEIGHT).abs() < 1.0);
+            assert!(
+                (f32::from(toolbar.size.height)
+                    - super::toolbar_height(f32::from(window.size.width)))
+                .abs()
+                    < 1.0
+            );
             assert!((toolbar_top - title_bottom).abs() < 1.0);
             assert!((title_center - window_center).abs() < 1.0);
             assert!(title_label.origin.x + title_label.size.width + px(8.0) <= version.origin.x);
             assert!(version.size.width > px(0.0));
             assert!(
-                (f32::from(
-                    window.origin.x + window.size.width - changelog.origin.x - changelog.size.width
-                ) - 8.0)
+                (f32::from(window.origin.x + window.size.width - help.origin.x - help.size.width)
+                    - 8.0)
                     .abs()
                     < 1.0
             );
             assert!(version.origin.y >= title.origin.y);
             assert!(version.origin.y + version.size.height <= title.origin.y + title.size.height);
-            // Changelog is the rightmost control; Log remains its compact neighbor.
+            // Help is rightmost; Changelog and Log retain their compact neighbors.
             assert_eq!(
                 debug.origin.x - (version.origin.x + version.size.width),
                 px(4.0)
@@ -317,6 +337,13 @@ mod ui_tests {
                 changelog.origin.x - (debug.origin.x + debug.size.width),
                 px(4.0)
             );
+            assert_eq!(
+                help.origin.x - (changelog.origin.x + changelog.size.width),
+                px(4.0)
+            );
+            assert_eq!(help.size, gpui::size(px(20.0), px(20.0)));
+            assert!(help.origin.y >= title.origin.y);
+            assert!(help.bottom() <= title.bottom());
             assert!(changelog.size.width > px(0.0));
             assert_eq!(changelog.size.height, px(super::CONTROL_SIZE));
             assert!(changelog.origin.y >= title.origin.y);
@@ -370,7 +397,9 @@ mod ui_tests {
     fn compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces(
         cx: &mut TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use super::super::EditorMode;
+        use hex_project::InputQuantization::{Adaptive, Off, Sixteenth};
         let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
             cx,
             Project::new(48_000).unwrap(),
@@ -424,10 +453,27 @@ mod ui_tests {
                         cx.notify();
                     })
                 });
-                for width in [880.0, 881.0, 960.0, 1440.0, 880.0] {
+                for (width, input) in [
+                    (880.0, Off),
+                    (881.0, Adaptive),
+                    (960.0, Sixteenth),
+                    (999.0, Adaptive),
+                    (1_000.0, Off),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH - 1.0, Adaptive),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Adaptive),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Off),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Sixteenth),
+                    (1440.0, Adaptive),
+                    (880.0, Off),
+                ] {
+                    editor.update(&mut visual, |view, cx| {
+                        view.set_input_quantization(input);
+                        cx.notify();
+                    });
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+                    assert_eq!(toolbar.size.height, px(super::toolbar_height(width)));
                     let name = visual
                         .debug_bounds(match mode {
                             EditorMode::Arrangement => "arrange view",
@@ -449,10 +495,30 @@ mod ui_tests {
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
-                    for selector in ["arrange-zoom-fit", "arrange-zoom-back"] {
+                    let policy = visual.debug_bounds("input-quantization").unwrap();
+                    let label_chars = format!("in {} ▾", input.label()).chars().count();
+                    assert!(
+                        policy.size.width >= name.size.width * (label_chars as f32 / 12.0),
+                        "the complete input policy label remains visible"
+                    );
+                    for selector in [
+                        "arrange-zoom-fit",
+                        "arrange-zoom-back",
+                        "section-autoplay-toggle",
+                        "global-launch-quantization",
+                        "input-quantization",
+                        "section-focus-control",
+                    ] {
                         let control = visual.debug_bounds(selector).unwrap();
                         assert!(control.size.width >= px(19.0) && control.size.height >= px(20.0));
-                        assert!(control.left() >= toolbar.left() && control.right() <= name.left());
+                        assert!(
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
+                                && (control.bottom() <= name.top()
+                                    || control.right() <= name.left())
+                        );
                     }
                     for selector in [
                         "project tuning · cmd+alt+t",
@@ -467,7 +533,10 @@ mod ui_tests {
                             size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
                         );
                         assert!(
-                            control.left() >= toolbar.left() && control.right() <= toolbar.right()
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
                         );
                     }
                     editor.read_with(&visual, |view, _| {
@@ -478,6 +547,7 @@ mod ui_tests {
                 }
             }
         }
+        editor.update(&mut visual, |view, _| view.audio = None);
     }
     #[gpui::test]
     fn compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators(
@@ -532,7 +602,17 @@ mod ui_tests {
                     v.set_mode(mode);
                     cx.notify();
                 });
-                for width in [880.0, 881.0, 960.0, 1440.0, 880.0] {
+                for width in [
+                    880.0,
+                    881.0,
+                    960.0,
+                    999.0,
+                    1_000.0,
+                    super::WIDE_TOOLBAR_MIN_WIDTH - 1.0,
+                    super::WIDE_TOOLBAR_MIN_WIDTH,
+                    1440.0,
+                    880.0,
+                ] {
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
@@ -590,7 +670,10 @@ mod ui_tests {
                             size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
                         );
                         assert!(
-                            control.left() >= toolbar.left() && control.right() <= toolbar.right()
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
                         );
                     }
                     editor.read_with(&visual, |v, _| {

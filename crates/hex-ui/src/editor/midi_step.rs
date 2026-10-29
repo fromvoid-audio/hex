@@ -51,6 +51,7 @@ impl EditorView {
         let mut chord = [None; 128];
         for note in computer {
             chord[usize::from(note.pitch)].get_or_insert(MidiNoteInsert {
+                active: true,
                 start: BeatTime::from_raw(cursor),
                 duration: BeatTime::from_raw(duration),
                 pitch: note.pitch,
@@ -61,6 +62,7 @@ impl EditorView {
         if let Some((notes, floor, channel)) = hardware {
             for note in notes.after(floor) {
                 chord[usize::from(note.pitch)].get_or_insert(MidiNoteInsert {
+                    active: true,
                     start: BeatTime::from_raw(cursor),
                     duration: BeatTime::from_raw(duration),
                     pitch: note.pitch,

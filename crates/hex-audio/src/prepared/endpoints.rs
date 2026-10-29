@@ -5,13 +5,15 @@ use super::*;
 use crate::native_callback_owner::{Guard, Terminal, reserve};
 
 pub struct Client {
-    endpoints: Guard<ClientEndpoints>,
+    pub(super) endpoints: Guard<ClientEndpoints>,
+    pub(super) retired_receipts: Option<Arc<retired_scalar_receipts::Mailbox>>,
     worker_owned_publication: bool,
 }
 pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
 }
 pub(crate) struct ClientEndpoints {
+    diagnostics: audio_diagnostics::TraceReader,
     pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
@@ -19,13 +21,17 @@ pub(crate) struct ClientEndpoints {
     commands: Producer<QueuedCommand>,
     spectrum_target: spectrum_target::SpectrumTargetControl,
     processor_audition: processor_audition::ProcessorAuditionTargetControl,
-    gain_recording: crate::gain_recording::Control,
+    pub(super) gain_recording: crate::gain_recording::Control,
+    pub(super) native_parameter_input: crate::native_parameter_input::Control,
+    pub(crate) retained_receipt_target: Option<ScalarReceiptTarget>,
+    midi_recording: crate::midi_recording::Control,
     pub(super) status: Arc<Status>,
     command_ticket: u64,
     #[cfg(all(test, feature = "allocation-probe"))]
     probe: Option<crate::native_callback_owner::DropProbe>,
 }
 pub(crate) struct EndpointTerminals {
+    pub(crate) receipts: retired_scalar_receipts::ReceiptPublisher,
     pub(crate) client: Terminal<ClientEndpoints>,
     pub(crate) publication: Terminal<PublicationControl>,
 }
@@ -35,11 +41,14 @@ impl Control {
         spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
     ) -> (Client, WorkerControl, EndpointTerminals) {
         let Self {
+            diagnostics,
             sample_preview,
             commands,
             spectrum_target,
             processor_audition,
             gain_recording,
+            native_parameter_input,
+            midi_recording,
             command_ticket,
             mut publication,
         } = self;
@@ -52,7 +61,9 @@ impl Control {
             .map(Arc::clone)
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
         publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
+        let (retired_receipts, receipts) = retired_scalar_receipts::channel();
         let (endpoints, client) = reserve(ClientEndpoints {
+            diagnostics,
             output_identity,
             sample_preview,
             resident_forwarding,
@@ -61,8 +72,11 @@ impl Control {
             spectrum_target,
             processor_audition,
             gain_recording,
+            native_parameter_input,
+            midi_recording,
             status,
             command_ticket,
+            retained_receipt_target: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             probe: None,
         });
@@ -70,10 +84,12 @@ impl Control {
         (
             Client {
                 endpoints,
+                retired_receipts: Some(retired_receipts),
                 worker_owned_publication: false,
             },
             WorkerControl { endpoint },
             EndpointTerminals {
+                receipts,
                 client,
                 publication,
             },
@@ -151,6 +167,16 @@ impl Client {
     pub(crate) fn owner_ref(&self) -> Option<&ClientEndpoints> {
         self.endpoints.owner_ref()
     }
+    /// Control/UI configuration only; trace data is never an audio ACK.
+    pub fn set_audio_diagnostics(&self, flags: AudioDiagnosticsFlags) {
+        if let Some(status) = self.status() {
+            status.diagnostics_flags.store(flags.bits(), Relaxed);
+        }
+    }
+    /// Take one Copy record without a wait. Callers must bound each poll.
+    pub fn take_audio_diagnostic(&mut self) -> Option<AudioDiagnosticEvent> {
+        self.endpoints.owner_mut()?.diagnostics.pop()
+    }
     /// A borrowed observation, with no cloneable Status/endpoint owner escape.
     pub fn status(&self) -> Option<&Status> {
         self.endpoints.owner_ref().map(|e| e.status.as_ref())
@@ -164,6 +190,7 @@ impl Client {
     }
     pub fn close(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
+            endpoints.midi_recording.cancel();
             endpoints.status.closing.store(true, Release);
             endpoints.stop();
         }
@@ -286,6 +313,82 @@ impl Client {
             e.sample_preview.reclaim();
         }
     }
+    pub fn midi_target(&self) -> Option<crate::midi_recording::Target> {
+        self.endpoints
+            .owner_ref()
+            .and_then(|e| e.midi_recording.target())
+    }
+    pub fn midi_begin(
+        &mut self,
+        target: crate::midi_recording::Target,
+    ) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .midi_recording
+            .begin(target)
+    }
+    pub fn midi_finish(&self) {
+        if let Some(e) = self.endpoints.owner_ref() {
+            e.midi_recording.finish();
+        }
+    }
+    pub fn midi_cancel(&self) {
+        if let Some(e) = self.endpoints.owner_ref() {
+            e.midi_recording.cancel();
+        }
+    }
+    pub fn midi_receipt(&mut self) -> Option<crate::midi_recording::Receipt> {
+        self.endpoints
+            .owner_mut()
+            .and_then(|e| e.midi_recording.try_receipt())
+    }
+    pub fn native_parameter_target(&self) -> Option<crate::native_parameter_input::Target> {
+        self.endpoints
+            .owner_ref()
+            .and_then(|e| e.native_parameter_input.target())
+    }
+    pub fn native_parameter_begin(
+        &mut self,
+        target: crate::native_parameter_input::Target,
+        value: hex_lattice::NativeTransientValue,
+    ) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .native_parameter_input
+            .begin(target, value)
+    }
+    pub fn native_parameter_change(
+        &mut self,
+        value: hex_lattice::NativeTransientValue,
+    ) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .native_parameter_input
+            .change(value)
+    }
+    pub fn native_parameter_release(&mut self) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .native_parameter_input
+            .release()
+    }
+    pub fn native_parameter_cancel(&mut self) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .native_parameter_input
+            .cancel()
+    }
+    pub fn native_parameter_receipt(&mut self) -> Option<crate::native_parameter_input::Receipt> {
+        self.endpoints
+            .owner_mut()?
+            .native_parameter_input
+            .try_receipt()
+    }
     pub fn gain_target(&self) -> Option<crate::gain_recording::Target> {
         self.endpoints
             .owner_ref()
@@ -401,6 +504,33 @@ impl Client {
             .owner_ref()
             .and_then(|e| e.spectrum_target.desired())
     }
+    /// Current complete analyzer membership for this guarded output incarnation.
+    pub fn spectrum_desired_targets(&self) -> Option<&spectrum_target::SpectrumTargets> {
+        self.endpoints
+            .owner_ref()
+            .map(|e| e.spectrum_target.desired_targets())
+    }
+    pub fn spectrum_set_targets(
+        &mut self,
+        requests: &[spectrum_target::SpectrumTargetRequest],
+    ) -> Result<spectrum_target::TargetUpdate, spectrum_target::TargetError> {
+        self.endpoints
+            .owner_mut()
+            .ok_or(spectrum_target::TargetError::OutputClosed)?
+            .spectrum_target
+            .set_targets(requests)
+    }
+    /// Fresh independent pairs, filtered by this endpoint's exact desired tokens,
+    /// generation, rate and publication floors. The bounded cache lives on control.
+    pub fn spectrum_latest_pairs(&mut self) -> Vec<crate::spectrum_worker::PublishedSpectra> {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return Vec::new();
+        };
+        let Some(reader) = endpoints.spectrum_reader.as_mut() else {
+            return Vec::new();
+        };
+        reader.try_latest_pairs_at(Instant::now(), endpoints.spectrum_target.desired_targets())
+    }
     pub fn spectrum_select(
         &mut self,
         identity: PostNodeIdentity,
@@ -487,6 +617,7 @@ impl Drop for Client {
 }
 impl ClientEndpoints {
     fn stop(&self) {
+        self.midi_recording.finish();
         self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status
@@ -500,6 +631,13 @@ impl ClientEndpoints {
         self.spectrum_reader
             .as_ref()
             .map_or(Some(None), |reader| reader.native_identity().map(Some))
+    }
+    pub(crate) fn matches_retired_scalar_output(
+        &self,
+        status_identity: usize,
+        output: u64,
+    ) -> bool {
+        Arc::as_ptr(&self.status) as usize == status_identity && self.output_identity == output
     }
     pub(crate) fn matches(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
@@ -566,5 +704,6 @@ pub(super) fn constructor_endpoint_storage_quote() -> Option<usize> {
         >())?
         .checked_add(std::mem::size_of::<Client>())?
         .checked_add(std::mem::size_of::<WorkerControl>())?
-        .checked_add(resident_forwarding::constructor_storage_quote())
+        .checked_add(resident_forwarding::constructor_storage_quote())?
+        .checked_add(retired_scalar_receipts::storage_bytes())
 }

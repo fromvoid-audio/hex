@@ -49,6 +49,7 @@ struct CellSlot {
     handle: u64,
     start: u64,
     end: u64,
+    loop_range: Option<hex_project::SessionAudioLoop>,
     gain: hex_project::ClipGain,
     name: String,
     owner: Option<OwnedAudioSource>,
@@ -176,8 +177,11 @@ impl SessionSourceConstruction {
         generation: u64,
         bank: &OwnedAudioInputs,
         arrangement_handles: usize,
+        effects: bool,
     ) -> Result<(), AudioStorageError> {
-        if !crate::native_device_resources::current_sampler::validate_project(project)? {
+        if !crate::native_device_resources::current_sampler::validate_project_with_effects(
+            project, effects,
+        )? {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         self.reserve_scoped(project, generation, bank, arrangement_handles, true)
@@ -313,6 +317,7 @@ impl SessionSourceConstruction {
                 handle: handle()?,
                 start: clip.source_start(),
                 end: clip.source_end(),
+                loop_range: clip.loop_range(),
                 gain: clip.gain(),
                 name: String::new(),
                 owner: None,
@@ -545,6 +550,7 @@ impl SessionSourceConstruction {
                 handle: _,
                 start: _,
                 end: _,
+                loop_range: _,
                 gain: _,
                 name,
                 owner,

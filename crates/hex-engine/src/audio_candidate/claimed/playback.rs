@@ -1,6 +1,8 @@
 //! Bounded operations on the same closed constructor runtime. No Playback,
 //! owning root handle or mutable DSP provider escapes through this facade.
 use super::*;
+mod stream_view;
+pub use stream_view::StreamPlayback;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioCandidateRuntimeStatus {
@@ -90,6 +92,24 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_signal_observers(output, observer, project)
     }
+    /// Stage native effects through the original closed runtime and sampler
+    /// sources. Success is not output acceptance; the audio owner alone accepts
+    /// the complete converted physical callback. No finite renderer fallback.
+    pub fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        let Some(runtime) = self.current_runtime_mut() else {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+            return Err(crate::Invalid("candidate runtime is not current"));
+        };
+        runtime.render_with_foreign_processors(output, pages, observer, project, foreign)
+    }
     pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
         self.current_playback()
             .is_some_and(|p| p.project_output_supported(tracks))
@@ -177,7 +197,7 @@ impl ClaimedAudioCandidateRuntime {
         &mut self,
         prepared: &crate::PreparedStreamAction,
         maximum_frames: usize,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
     ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
         if !prepared.matches_owner(self.identity(), self.source_context()) {
             return Err(crate::Invalid("stream action owner differs"));
@@ -190,7 +210,7 @@ impl ClaimedAudioCandidateRuntime {
         &mut self,
         due: u64,
         maximum_frames: usize,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), crate::Invalid>,
     ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
         self.current_playback_mut()
             .ok_or(crate::Invalid("stream current owner missing"))?
@@ -217,6 +237,65 @@ impl ClaimedAudioCandidateRuntime {
         };
         playback.set_device_metering(enabled);
         true
+    }
+    pub fn arm_midi_capture(
+        &mut self,
+        binding: crate::midi_capture::MidiCaptureBinding,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<crate::midi_capture::MidiCaptureClock, crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .arm_midi_capture(binding, clock)
+    }
+    pub fn midi_capture_finish_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.current_playback()?.midi_capture_finish_fault(take_id)
+    }
+    pub fn midi_capture_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.current_playback()?.midi_capture_fault(take_id)
+    }
+    pub fn finish_midi_capture(
+        &mut self,
+        take_id: u64,
+    ) -> Result<crate::midi_capture::MidiCaptureClock, crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .finish_midi_capture(take_id)
+    }
+    pub fn midi_capture_render(
+        &self,
+        take_id: u64,
+    ) -> Result<Option<crate::midi_capture::MidiCaptureRender<'_>>, crate::Invalid> {
+        self.current_playback()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .midi_capture_render(take_id)
+    }
+    pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
+        self.current_playback()?.native_parameter_input_target()
+    }
+    pub fn set_native_parameter_input(
+        &mut self,
+        operation: hex_lattice::NativeTransientOperation,
+    ) -> Result<(), crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .set_native_parameter_input(operation)
+    }
+    pub fn invalidate_native_parameter_input(&mut self) {
+        if let Some(playback) = self.current_playback_mut() {
+            playback.invalidate_native_parameter_input();
+        }
+    }
+    pub fn take_native_parameter_application(
+        &mut self,
+    ) -> Option<crate::NativeParameterApplication> {
+        self.current_playback_mut()?
+            .take_native_parameter_application()
     }
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.current_playback()

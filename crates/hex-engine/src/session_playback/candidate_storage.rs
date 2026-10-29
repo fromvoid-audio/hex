@@ -19,19 +19,25 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            native_parameter_state,
             compensation,
             device_metering: _,
             revision,
+            transient_loop: _,
+            midi_admission,
             periodic_tempo: _,
             anchor: _,
+            interactive_start_frame: _,
             historical_floor: _,
             route_historical_floors: _,
+            source_voice_envelopes: _,
             routes,
             route_scratch,
             device_chains,
             return_chains,
             main_chain,
             return_scratch,
+            meter_cells,
             return_effect_tails,
             mutable_instruments,
             mutable_onsets,
@@ -62,14 +68,15 @@ impl SessionPlayback {
             arrangement_frame: _,
             arrangement_loop_pass: _,
             playing: _,
+            monitor_source_releases: _,
             linear_arrangement_export,
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
         } = self;
-        if live_expression.is_some()
+        if midi_admission.is_some()
+            || live_expression.is_some()
             || computer_keyboard.is_some()
-            || compensation.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
             || mutable_instruments
@@ -92,16 +99,44 @@ impl SessionPlayback {
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        // Ordinary scalar preparation has not acquired this closed constructor's
+        // source obligations. It must use ordinary publication with exact catalogs.
+        if native_parameter_state
+            .as_deref()
+            .is_some_and(|state| state.scalar.is_some())
+            || revision.scalar_automation.is_some()
+        {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        if native_parameter_state.is_some() != revision.native_parameter_input_target().is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if let Some(state) = native_parameter_state.as_deref() {
+            if !state.is_empty() {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+            l.bytes(
+                Owner::exclusive(state),
+                Location("native-parameter-input-state", 0),
+                Self::native_parameter_input_state_bytes(),
+            )?;
+        }
         l.existing_shared(
             revision,
             Owner::exclusive(revision),
             Location("session-revision", 0),
+        )?;
+        l.bytes(
+            Owner::exclusive(spans.as_ref()),
+            Location("session-midi-span-buffer", 0),
+            std::mem::size_of::<MidiSpanBuffer>(),
         )?;
         l.vec(routes)?;
         l.vec(route_scratch)?;
         l.vec(device_chains)?;
         l.vec(return_chains)?;
         l.vec(return_scratch)?;
+        l.vec(meter_cells)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
         for (index, runtime) in mutable_instruments.iter().enumerate() {
@@ -150,9 +185,22 @@ impl SessionPlayback {
         for (chain, track) in device_chains.iter().zip(tracks) {
             chain_storage(chain, &track.device_chain, l)?;
         }
-        // Returns stay memoryless/empty in the selected constructor class.
-        for chain in return_chains {
-            chain_storage(chain, &[], l)?;
+        if return_chains.len() != revision.arrangement().return_buses.len() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        for (chain, bus) in return_chains
+            .iter()
+            .zip(&revision.arrangement().return_buses)
+        {
+            chain_storage(chain, &bus.device_chain, l)?;
+        }
+        if let Some(compensation) = compensation {
+            let graph = revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            compensation.visit_fresh_candidate_storage(graph, l)?;
         }
         chain_storage(main_chain, &revision.arrangement().main_device_chain, l)?;
         Ok(())
@@ -174,32 +222,64 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
-        if prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID
+        let (ids, lanes, points) = entry.automation().storage_vectors();
+        l.vec(ids)?;
+        l.vec(lanes)?;
+        l.vec(points)?;
+        let foreign = match &prepared.definition {
+            Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
+            _ => None,
+        };
+        if (foreign.is_none()
+            && !crate::native_effect_storage::is_closed_type(prepared.device_type))
+            || entry.foreign_processor() != foreign
             || !entry.matches_prepared_runtime_storage(prepared)
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
-        let (primary, scratch) = (entry.primary_payload_bytes(), entry.scratch_payload_bytes());
-        match (primary, scratch, prepared.definition.is_some()) {
-            (Some(primary), Some(scratch), true) => {
-                if !entry
-                    .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>()
-                {
-                    return Err(AudioStorageError::UnsupportedGraph);
+        if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>()
+        {
+            for (runtime, object_tag, ring_tag) in [
+                (primary, "runtime-primary", "reverb-primary-ring"),
+                (scratch, "runtime-scratch", "reverb-scratch-ring"),
+            ] {
+                let storage = runtime
+                    .control_storage()
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                l.bytes(
+                    Owner::exclusive(chain),
+                    Location(object_tag, index),
+                    storage.inline_bytes,
+                )?;
+                for (ring, bytes) in storage.heap_bytes.into_iter().enumerate() {
+                    let key = index
+                        .checked_mul(hex_devices::reverb::RUNTIME_HEAP_ALLOCATIONS)
+                        .and_then(|n| n.checked_add(ring))
+                        .ok_or(AudioStorageError::Overflow)?;
+                    l.bytes(Owner::exclusive(chain), Location(ring_tag, key), bytes)?;
                 }
-                l.bytes(
-                    Owner::exclusive(chain),
-                    Location("runtime-primary", index),
-                    primary,
-                )?;
-                l.bytes(
-                    Owner::exclusive(chain),
-                    Location("runtime-scratch", index),
-                    scratch,
-                )?;
             }
-            (None, None, false) => {}
-            _ => return Err(AudioStorageError::UnknownStorage),
+        } else {
+            match (
+                crate::native_effect_storage::pair_bytes(&entry)?,
+                prepared.definition.is_some(),
+            ) {
+                (None, true) if foreign.is_some() => {}
+                (Some((primary, scratch)), true) if foreign.is_none() => {
+                    l.bytes(
+                        Owner::exclusive(chain),
+                        Location("runtime-primary", index),
+                        primary,
+                    )?;
+                    l.bytes(
+                        Owner::exclusive(chain),
+                        Location("runtime-scratch", index),
+                        scratch,
+                    )?;
+                }
+                (None, false) => {}
+                _ => return Err(AudioStorageError::UnknownStorage),
+            }
         }
         l.existing_shared(
             &prepared.meter,

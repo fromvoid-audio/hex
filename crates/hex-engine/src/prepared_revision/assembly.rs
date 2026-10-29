@@ -52,6 +52,7 @@ pub(crate) struct RevisionAssembly {
     reserved_bytes: usize,
     reserved: bool,
     current_sampler_scope: Option<u64>,
+    native_parameter_input: Option<crate::device_automation::NativeParameterInputTarget>,
     extraction_attempted: [bool; 4],
     extracted: usize,
     #[cfg(test)]
@@ -124,13 +125,12 @@ impl RevisionAssembly {
         Ok(owner.arc())
     }
 
-    pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
-        self.reserve_with_sampler(project, None)
-    }
-    pub(crate) fn reserve_with_sampler(
+    pub(crate) fn reserve_with_sampler_and_effects(
         &mut self,
         project: &hex_project::Project,
         scope: Option<u64>,
+        effects: bool,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()
@@ -147,24 +147,25 @@ impl RevisionAssembly {
             return Err(Error::Capacity);
         }
         if scope.is_some() {
-            if !crate::native_device_resources::current_sampler::validate_project(project)? {
+            if !crate::native_device_resources::current_sampler::validate_project_with_effects(
+                project, effects,
+            )? {
                 return Err(Error::UnsupportedGraph);
             }
         } else {
             // Empty mutable descriptors are permitted only for this exhaustive class.
             for track in project.tracks() {
                 if track.instrument().is_some()
-                    || track
-                        .devices()
-                        .iter()
-                        .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                    || track.devices().iter().any(|d| {
+                        !effects && d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                    })
                     || !track.midi_clips().is_empty()
                 {
                     return Err(Error::UnsupportedGraph);
                 }
             }
             for bus in project.return_tracks() {
-                if !bus.devices().is_empty() {
+                if !effects && !bus.devices().is_empty() {
                     return Err(Error::UnsupportedGraph);
                 }
             }
@@ -179,6 +180,7 @@ impl RevisionAssembly {
             }
         }
         self.current_sampler_scope = scope;
+        self.native_parameter_input = native_input;
         self.reserved_bytes = 0;
         for parts in [
             OwnedShared::<PlaybackProject>::declared_parts(),
@@ -193,6 +195,10 @@ impl RevisionAssembly {
                 .and_then(|n| n.checked_add(overhead))
                 .ok_or(Error::Overflow)?;
         }
+        self.reserved_bytes = self
+            .reserved_bytes
+            .checked_add(crate::PreparedSourceRouting::construction_bytes(project))
+            .ok_or(Error::Overflow)?;
         self.reserved = true;
         for index in 0..4 {
             self.handles[index] = crate::audio_only_inputs::handle()?;
@@ -211,6 +217,7 @@ impl RevisionAssembly {
             .map(|o| o.as_ref())
             .or(self.revision_value.as_ref());
         if let Some(PreparedRevision {
+            source_routing: _,
             resource_scope,
             device_resource_scope,
             tuning_family: _,
@@ -220,9 +227,14 @@ impl RevisionAssembly {
             mutable_track_revisions,
             authored_midi_sources,
             gain_recording_track,
+            native_parameter_input,
+            scalar_automation,
         }) = revision
         {
-            if *resource_scope != self.current_sampler_scope || device_resource_scope.is_some() {
+            if *resource_scope != self.current_sampler_scope
+                || device_resource_scope.is_some()
+                || scalar_automation.is_some()
+            {
                 return Err(Error::UnsupportedGraph);
             }
             if self.arrangement.is_some()
@@ -232,6 +244,7 @@ impl RevisionAssembly {
                 || self.session_value.is_some()
                 || self.preview_value.is_some()
                 || gain_recording_track.is_some()
+                || *native_parameter_input != self.native_parameter_input
                 || mutable_track_revisions.capacity() != 0
                 || authored_midi_sources.capacity() != 0
                 || self.mutable_descriptors.capacity() != 0
@@ -325,6 +338,7 @@ impl RevisionAssembly {
         &mut self,
         arrangement: &mut ArrangementClips,
         session: &mut SessionAssembly,
+        source_routing: crate::PreparedSourceRouting,
     ) -> Result<(), Error> {
         if !self.reserved
             || self.handles.contains(&0)
@@ -374,6 +388,7 @@ impl RevisionAssembly {
         ) {
             (Some(arrangement), Some(session), Some(midi_preview)) => {
                 self.revision_value = Some(PreparedRevision {
+                    source_routing,
                     resource_scope: self.current_sampler_scope,
                     device_resource_scope: None,
                     tuning_family: TuningContinuationFamily::fresh()
@@ -384,6 +399,8 @@ impl RevisionAssembly {
                     mutable_track_revisions: Vec::new(),
                     authored_midi_sources: Vec::new(),
                     gain_recording_track: None,
+                    native_parameter_input: self.native_parameter_input,
+                    scalar_automation: None,
                 });
             }
             (arrangement, session, preview) => {
@@ -434,6 +451,7 @@ impl RevisionAssembly {
             self.extracted += 1;
         }
         if let Some(PreparedRevision {
+            source_routing: _,
             resource_scope: _,
             device_resource_scope: _,
             tuning_family: _,
@@ -443,6 +461,8 @@ impl RevisionAssembly {
             mutable_track_revisions,
             authored_midi_sources: _,
             gain_recording_track: _,
+            native_parameter_input: _,
+            scalar_automation: _,
         }) = self.revision_value.take()
         {
             self.arrangement = Some(arrangement);
@@ -473,6 +493,7 @@ impl RevisionAssembly {
             session.restore_revision(&mut self.session_value);
         }
         self.current_sampler_scope = None;
+        self.native_parameter_input = None;
         self.reserved = false;
         self.handles = [0; 4];
         self.reserved_bytes = 0;
@@ -534,6 +555,7 @@ impl RevisionAssembly {
             current_sampler_scope: _,
             extraction_attempted: _,
             extracted: _,
+            native_parameter_input: _,
             #[cfg(test)]
                 fail_after: _,
             #[cfg(test)]
@@ -555,6 +577,7 @@ impl RevisionAssembly {
             .or(revision_value.as_ref())
         {
             let PreparedRevision {
+                source_routing,
                 resource_scope: _,
                 device_resource_scope: _,
                 tuning_family: _,
@@ -564,7 +587,10 @@ impl RevisionAssembly {
                 mutable_track_revisions,
                 authored_midi_sources,
                 gain_recording_track: _,
+                native_parameter_input: _,
+                scalar_automation: _,
             } = revision;
+            source_routing.visit_storage(l)?;
             l.vec(mutable_track_revisions)?;
             // This constructor class never admits ordinary authored-evidence children.
             if authored_midi_sources.capacity() != 0 {

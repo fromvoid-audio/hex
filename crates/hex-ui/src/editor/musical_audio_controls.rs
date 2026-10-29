@@ -29,6 +29,35 @@ pub(super) fn warp_command(
         command(&state.project, clip, Action::Warp)
     }
 }
+/// A numeric pitch draft preserves the former relative selected-clip semantics.
+/// Project/session retain canonical validation and audio preparation; this UI
+/// constructs their existing commands without owning a separate pitch model.
+pub(super) fn pitch_command(
+    project: &hex_project::Project,
+    clip: ClipId,
+    value: f64,
+    multiple: bool,
+) -> Result<hex_project::Command, hex_project::Invalid> {
+    if !value.is_finite() || value.fract() != 0. || !(-4800.0..=4800.0).contains(&value) {
+        return Err(hex_project::Invalid(
+            "pitch must be whole cents between -4800 and 4800",
+        ));
+    }
+    let source = project
+        .clip(clip)
+        .ok_or(hex_project::Invalid("audio clip no longer exists"))?;
+    let current = source.audio_edit().map_or(0, |e| e.domain.pitch_cents);
+    let delta = (value as i16)
+        .checked_sub(current)
+        .ok_or(hex_project::Invalid(
+            "pitch change is outside the supported range",
+        ))?;
+    if multiple {
+        actions::selection_command(project, clip, Action::Pitch(delta))
+    } else {
+        command(project, clip, Action::Pitch(delta))
+    }
+}
 /// Selected-clip stretch controls stay above the scrollable source fields.
 pub(super) fn warp_header(
     view: &mut EditorView,
@@ -60,14 +89,7 @@ pub(super) fn warp_header(
             decay,
         } = mode
         {
-            controls = controls.child(beats_controls(
-                capture,
-                preserve,
-                tail,
-                decay,
-                view.edit_pending(),
-                cx,
-            ));
+            controls = controls.child(beats_controls(capture, preserve, tail, decay, false, cx));
         } else {
             controls = controls.child(musical_control_label(&format!(
                 "algorithm · {}",
@@ -85,7 +107,7 @@ pub(super) fn warp_header(
                         capture,
                         mode_name(*choice),
                         Action::SelectMode(index),
-                        view.edit_pending(),
+                        false,
                         cx,
                     )
                     .flex_1()
@@ -118,20 +140,11 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     };
     let edit = clip.audio_edit();
     let domain = edit.map(|e| e.domain.as_ref());
-    let pitch = domain.map_or(0, |d| d.pitch_cents);
     let active = domain.is_some_and(|d| d.warp_enabled);
     let mode = domain
         .and_then(|d| d.warp.as_ref())
         .map_or(modes()[0], |w| w.mode);
     controls = controls.child(musical_control_label("musical audio"));
-    controls = controls.child(musical_control_row(
-        capture,
-        format!("pitch {pitch:+} ct"),
-        Action::Pitch(-100),
-        Action::Pitch(100),
-        view.edit_pending() || (active && mode == WarpMode::RePitch),
-        cx,
-    ));
     controls = controls.child(button(
         capture,
         if edit.is_some_and(|e| e.live_musical_start().is_some()) {
@@ -140,7 +153,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
             "anchor · frames"
         },
         Action::Anchor,
-        view.edit_pending(),
+        false,
         cx,
     ));
     if active {
@@ -156,7 +169,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     format!("grain {grain_ms} ms"),
                     Action::Grain(-5),
                     Action::Grain(5),
-                    view.edit_pending(),
+                    false,
                     cx,
                 ))
             }
@@ -170,7 +183,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     format!("grain {grain_ms} ms"),
                     Action::Grain(-5),
                     Action::Grain(5),
-                    view.edit_pending(),
+                    false,
                     cx,
                 ));
                 controls = controls.child(musical_control_row(
@@ -178,14 +191,14 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     format!("jitter {fluctuation}%"),
                     Action::Fluctuation(-10),
                     Action::Fluctuation(10),
-                    view.edit_pending(),
+                    false,
                     cx,
                 ));
                 controls = controls.child(button(
                     capture,
                     &format!("seed {seed} · next"),
                     Action::Seed,
-                    view.edit_pending(),
+                    false,
                     cx,
                 ));
             }
@@ -196,7 +209,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     format!("formants {formants}%"),
                     Action::Formants(-10),
                     Action::Formants(10),
-                    view.edit_pending(),
+                    false,
                     cx,
                 ));
                 controls = controls.child(musical_control_row(
@@ -204,7 +217,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     format!("envelope {envelope}"),
                     Action::Resolution(-32),
                     Action::Resolution(32),
-                    view.edit_pending(),
+                    false,
                     cx,
                 ));
             }
@@ -232,7 +245,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
             capture,
             "add warp marker",
             Action::MarkerAdd,
-            view.edit_pending(),
+            false,
             cx,
         ));
         for (index, marker) in warp.markers.iter().enumerate().skip(first).take(PAGE) {
@@ -246,7 +259,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     "source frame".into(),
                     Action::MarkerFrame(index, -1),
                     Action::MarkerFrame(index, 1),
-                    view.edit_pending(),
+                    false,
                     cx,
                 ));
             }
@@ -259,7 +272,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     ),
                     Action::MarkerBeat(index, -1),
                     Action::MarkerBeat(index, 1),
-                    view.edit_pending(),
+                    false,
                     cx,
                 ));
             }
@@ -268,7 +281,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     capture,
                     "remove marker",
                     Action::MarkerRemove(index),
-                    view.edit_pending(),
+                    false,
                     cx,
                 ));
             }
@@ -279,7 +292,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
         capture,
         "add source gain point",
         Action::EnvelopeAdd,
-        view.edit_pending(),
+        false,
         cx,
     ));
     if let Some(domain) = domain {
@@ -289,7 +302,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                 format!("src {}", point.frame),
                 Action::EnvelopeFrame(index, -1),
                 Action::EnvelopeFrame(index, 1),
-                view.edit_pending(),
+                false,
                 cx,
             ));
             controls = controls.child(musical_control_row(
@@ -297,14 +310,14 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                 format!("gain {:.2}×", f64::from(point.gain_q16) / 65_536.0),
                 Action::EnvelopeGain(index, -1),
                 Action::EnvelopeGain(index, 1),
-                view.edit_pending(),
+                false,
                 cx,
             ));
             controls = controls.child(button(
                 capture,
                 "remove gain point",
                 Action::EnvelopeRemove(index),
-                view.edit_pending(),
+                false,
                 cx,
             ));
         }
@@ -412,6 +425,7 @@ fn musical_control_row(
         .child(musical_control_label(&value).flex_1())
         .child(button(capture, "+", plus, disabled, cx))
 }
+// Busy admission is checked at input time; only semantic unavailability dims.
 fn button(
     capture: Capture,
     value: &str,
@@ -419,7 +433,12 @@ fn button(
     disabled: bool,
     cx: &mut Context<EditorView>,
 ) -> gpui::Stateful<Div> {
-    hex_widgets::action(theme::text(value), theme::action_style())
+    let surface = if matches!(action, Action::Warp) {
+        hex_widgets::toggle_action(theme::text(value), theme::action_style())
+    } else {
+        hex_widgets::action(theme::text(value), theme::action_style())
+    };
+    surface
         .id(gpui::ElementId::Name(
             format!("musical-{}-{}", capture.clip.value(), action_key(action)).into(),
         ))

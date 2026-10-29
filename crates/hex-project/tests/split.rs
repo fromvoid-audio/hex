@@ -144,7 +144,9 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
     assert_eq!(looping.project().clip(right).unwrap().source_length(), 8);
     assert_eq!(looping.project().clip(right).unwrap().source_phase(), 4);
 
-    let full_project = Project::from_snapshot(Snapshot {
+    let full_project = Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
@@ -164,6 +166,8 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -243,7 +247,9 @@ fn missing_clip_split_is_transactional() {
 
 #[test]
 fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
-    let project = Project::from_snapshot(Snapshot {
+    let project = Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
@@ -263,6 +269,8 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),

@@ -182,6 +182,36 @@ fn operator_modulation_allocations(
     harmonics: bool,
     companion: Option<u32>,
 ) -> Result<(), Box<dyn Error>> {
+    operator_modulation_with_volume(
+        lfo_sync,
+        filter,
+        activate_later,
+        feedback,
+        harmonics,
+        companion,
+        false,
+    )
+}
+
+#[test]
+fn clip_volume_render_retarget_releases_and_shutdown_allocate_and_free_nothing()
+-> Result<(), Box<dyn Error>> {
+    for (sync, harmonics) in [(None, false), (Some(false), false), (Some(true), true)] {
+        operator_modulation_with_volume(sync, true, true, true, harmonics, None, true)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)] // Existing fixture dimensions plus opt-in clip-volume owner.
+fn operator_modulation_with_volume(
+    lfo_sync: Option<bool>,
+    filter: bool,
+    activate_later: bool,
+    feedback: bool,
+    harmonics: bool,
+    companion: Option<u32>,
+    volume: bool,
+) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
         name: "operator feedback allocation".into(),
@@ -291,6 +321,31 @@ fn operator_modulation_allocations(
         })?;
     }
 
+    if volume {
+        use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+        editor.execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: MidiClipVolume::new(
+                vec![
+                    MidiClipVolumePoint::linear(BeatTime::ZERO, MidiClipGain::new(0.25)?),
+                    MidiClipVolumePoint::linear(
+                        BeatTime::from_ratio(1, 8)?,
+                        MidiClipGain::new(0.75)?,
+                    ),
+                    MidiClipVolumePoint {
+                        beat: BeatTime::from_ratio(1, 4)?,
+                        incoming: MidiClipGain::new(0.5)?,
+                        value: MidiClipGain::new(1.5)?,
+                    },
+                ],
+                BeatTime::from_quarters(8)?,
+            )?,
+        })?;
+        editor.execute(Command::SetMidiClipGain {
+            clip,
+            gain: hex_project::ClipGain::new(24_000)?,
+        })?;
+    }
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),

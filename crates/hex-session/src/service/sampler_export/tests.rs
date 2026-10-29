@@ -450,6 +450,7 @@ pub(crate) fn direct_sampler(files: &Files) -> (Session, ServiceExportSnapshot) 
 pub(crate) fn job(snapshot: &ServiceExportSnapshot, path: PathBuf) -> ExportJob {
     ExportJob {
         job_id: 0,
+        streamed: None,
         sources: None,
         resources: None,
         revision: 0,
@@ -474,6 +475,15 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
         wait.recv().unwrap();
     });
     let mut lane = ExportLane::new(work_tx, finished_rx, worker);
+    // Drop before lane: even a failed admission assertion must release the
+    // test worker before ExportLane joins it during unwinding.
+    struct StopWorker(mpsc::SyncSender<()>);
+    impl Drop for StopWorker {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let _stop_worker = StopWorker(stop);
     let mut first = job(&snapshot, files.output.clone());
     lane.prepare_job(
         &mut first,
@@ -552,7 +562,6 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
     assert!(lane.submit(accepted).is_err());
     assert!(lane.active.is_none());
     assert!(!files.output.exists());
-    stop.send(()).unwrap();
 }
 
 #[test]

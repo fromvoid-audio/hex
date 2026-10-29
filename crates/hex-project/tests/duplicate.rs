@@ -174,7 +174,9 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             fade: hex_project::ClipFade::neutral(1).unwrap(),
         })
         .collect();
-    let full = Project::from_snapshot(Snapshot {
+    let full = Project::from_legacy_snapshot(Snapshot {
+        aliases: Default::default(),
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
@@ -194,6 +196,8 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),

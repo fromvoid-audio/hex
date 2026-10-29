@@ -232,3 +232,34 @@ fn track_clipboard_full_midi_copy_renders_both_independent_instruments_across_no
     }
     assert!(signal, "actual prepared instrument output was exercised");
 }
+
+#[test]
+fn grouping_commits_and_undo_redo_preserve_canonical_hierarchy() {
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "child".into(),
+        }),
+    );
+    let track = added.state.project.tracks()[0].id();
+    let grouped = run(
+        &service,
+        Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        }),
+    );
+    assert!(grouped.state.project.has_group_tracks());
+    let undone = run(&service, Request::Undo);
+    let mut before = added.state.project.snapshot();
+    // Undo preserves the monotonic identity high-water mark.
+    before.next_id = grouped.state.project.snapshot().next_id;
+    assert_eq!(undone.state.project.snapshot(), before);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        grouped.state.project.snapshot()
+    );
+}

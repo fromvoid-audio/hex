@@ -32,16 +32,43 @@ pub enum MidiOneShotBoundary {
     LoopEnd,
 }
 
-/// Independently-owned MIDI event source shared by Arrangement and Session clips.
+/// Authored notes and their finite source extent. Playback windows belong to
+/// `MidiSource`, so changing a window can retain this immutable content backing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MidiContent {
+    pub(crate) source_length: BeatTime,
+    pub(crate) notes: Vec<MidiNote>,
+}
+impl MidiContent {
+    pub fn source_length(&self) -> BeatTime {
+        self.source_length
+    }
+    pub fn notes(&self) -> &[MidiNote] {
+        &self.notes
+    }
+}
+
+/// Effective MIDI source: immutable content with independent playback markers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSource {
-    pub(crate) source_length: BeatTime,
+    pub(crate) content: Arc<MidiContent>,
     pub(crate) source_start: BeatTime,
     pub(crate) loop_start: BeatTime,
     pub(crate) loop_end: BeatTime,
     pub(crate) looping: bool,
     pub(crate) one_shot_boundary: MidiOneShotBoundary,
-    pub(crate) notes: Vec<MidiNote>,
+}
+
+impl std::ops::Deref for MidiSource {
+    type Target = MidiContent;
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
+}
+impl std::ops::DerefMut for MidiSource {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.content)
+    }
 }
 
 /// Stable owning key for detecting an unchanged copy-on-write source.
@@ -57,18 +84,26 @@ impl MidiSourceIdentity {
     /// PCM, allocation identity, exclusive ownership, or a closed-storage proof.
     pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
         std::mem::size_of::<MidiSource>()
+            .checked_add(std::mem::size_of::<MidiContent>())?
             .checked_add(
                 self.0
                     .notes
                     .capacity()
                     .checked_mul(std::mem::size_of::<MidiNote>())?,
             )?
-            .checked_add(2usize.checked_mul(std::mem::size_of::<usize>())?)?
+            .checked_add(4usize.checked_mul(std::mem::size_of::<usize>())?)?
             .checked_add(
                 std::mem::align_of::<usize>()
                     .max(std::mem::align_of::<MidiSource>())
                     .checked_sub(1)?,
             )
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    std::mem::align_of::<usize>()
+                        .max(std::mem::align_of::<MidiContent>())
+                        .checked_sub(1)?,
+                )
+            })
     }
 }
 impl PartialEq for MidiSourceIdentity {
@@ -133,13 +168,15 @@ impl MidiSource {
     }
     pub(crate) fn defaults(length: BeatTime) -> Self {
         Self {
-            source_length: length,
+            content: Arc::new(MidiContent {
+                source_length: length,
+                notes: Vec::new(),
+            }),
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
             one_shot_boundary: MidiOneShotBoundary::SourceEnd,
-            notes: Vec::new(),
         }
     }
 }
@@ -148,6 +185,7 @@ impl MidiSource {
 /// identity, and a separately shared clip-owned source-beat volume curve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClip {
+    pub(crate) content_view: Option<crate::ContentWindow>,
     pub(crate) active: bool,
     pub(crate) playback_offset: BeatTime,
     pub(crate) name: String,
@@ -161,6 +199,7 @@ pub struct MidiClip {
 /// Metadata-only edge candidate. A silent source prefix is materialized only on commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiClipTrim {
+    content_view: Option<crate::ContentWindow>,
     playback_offset: BeatTime,
     start: BeatTime,
     length: BeatTime,
@@ -220,6 +259,49 @@ impl MidiClip {
         validate_clip(self.start, self.length)?;
         self.source_playback()?;
         let start = self.start.raw();
+        if let Some(view) = self.content_view {
+            let end = start
+                .checked_add(self.length.raw())
+                .ok_or(Invalid("midi end overflow"))?;
+            let (new_start, new_end) = match edge {
+                crate::TrimEdge::Left => (beat.raw(), end),
+                crate::TrimEdge::Right => (start, beat.raw()),
+            };
+            let length = new_end
+                .checked_sub(new_start)
+                .filter(|n| *n > 0)
+                .ok_or(Invalid("midi trim must retain positive length"))?;
+            let delta = i128::from(new_start) - i128::from(start);
+            let raw_end = if view.reversed {
+                i128::from(view.end) - delta
+            } else {
+                i128::from(view.start) + delta + i128::from(length)
+            };
+            let raw_start = raw_end - i128::from(length);
+            let rewind = u64::try_from((-raw_start).max(0))
+                .map_err(|_| Invalid("midi directed trim overflow"))?;
+            let source_start=self.source_start().raw().checked_sub(rewind).ok_or(Invalid("midi extension precedes retained source; a forward clip can add a blank prefix"))?;
+            let window = crate::ContentWindow::new(
+                u64::try_from(raw_start + i128::from(rewind))
+                    .map_err(|_| Invalid("midi directed trim overflow"))?,
+                u64::try_from(raw_end + i128::from(rewind))
+                    .map_err(|_| Invalid("midi directed trim overflow"))?,
+                view.reversed,
+            )?;
+            let offset = self
+                .playback_offset
+                .raw()
+                .checked_add(rewind)
+                .ok_or(Invalid("midi directed trim offset overflow"))?;
+            return Ok(MidiClipTrim {
+                content_view: Some(window),
+                playback_offset: BeatTime::from_raw(offset),
+                start: BeatTime::from_raw(new_start),
+                length: BeatTime::from_raw(length),
+                source_start: BeatTime::from_raw(source_start),
+                source_prefix: BeatTime::ZERO,
+            });
+        }
         let end = start
             .checked_add(self.length.raw())
             .ok_or(Invalid("midi timeline end overflow"))?;
@@ -259,6 +341,7 @@ impl MidiClip {
                 .checked_add(new_end - new_start)
                 .ok_or(Invalid("midi playback window end overflow"))?;
             return Ok(MidiClipTrim {
+                content_view: None,
                 playback_offset: BeatTime::from_raw(new_offset),
                 start: BeatTime::from_raw(new_start),
                 length: BeatTime::from_raw(new_end - new_start),
@@ -333,6 +416,7 @@ impl MidiClip {
                 .ok_or(Invalid("midi source prefix overflow"))
         };
         let preview = MidiClipTrim {
+            content_view: None,
             playback_offset: BeatTime::ZERO,
             start: BeatTime::from_raw(new_start),
             length: BeatTime::from_raw(new_end - new_start),
@@ -389,10 +473,16 @@ impl MidiClip {
     }
 
     /// Return the validated finite source mapping used by playback compilers.
+    pub fn content_view(&self) -> Option<crate::ContentWindow> {
+        self.content_view
+    }
     pub fn source_playback(&self) -> Result<MidiSourcePlayback, Invalid> {
-        self.source
+        let playback = self
+            .source
             .playback_for_duration(self.length)?
-            .with_playback_offset(self.playback_offset)
+            .with_playback_offset(self.playback_offset)?;
+        self.content_view
+            .map_or(Ok(playback), |view| playback.with_content_window(view))
     }
 }
 impl std::ops::Deref for MidiClip {
@@ -411,6 +501,7 @@ impl std::ops::DerefMut for MidiClip {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiNote {
     pub(crate) id: NoteId,
+    pub(crate) active: bool,
     pub(crate) start: BeatTime,
     pub(crate) duration: BeatTime,
     pub(crate) pitch: u8,
@@ -420,6 +511,9 @@ pub struct MidiNote {
 impl MidiNote {
     pub fn id(&self) -> NoteId {
         self.id
+    }
+    pub fn active(&self) -> bool {
+        self.active
     }
     pub fn start(&self) -> BeatTime {
         self.start
@@ -535,6 +629,9 @@ pub(crate) fn validate_note(
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
     match command {
+        Command::ResizeMidiClipView { clip, operation } => {
+            crate::midi_loop_resize::apply(project, clip, operation)
+        }
         Command::AddMidiTrack { name } => {
             let id = crate::edit::insert_track_before(project, name, None)?;
             Ok(Created::Track(id))
@@ -561,6 +658,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .track(track)
                 .ok_or(Invalid("track no longer exists"))?;
             let incoming = MidiClip {
+                content_view: None,
                 active: true,
                 playback_offset: crate::BeatTime::ZERO,
                 name: "clip".into(),
@@ -616,6 +714,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     note.start = shifted(note.start)?;
                 }
             }
+            target.content_view = preview.content_view;
             target.start = preview.start;
             target.length = preview.length;
             target.playback_offset = preview.playback_offset;
@@ -640,6 +739,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?
                 .clone();
+            if original.content_view.is_some() {
+                return crate::clip_reverse::split_midi(project, track, original, beat);
+            }
             let end = original
                 .start
                 .raw()
@@ -703,6 +805,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     if kept_start < kept_end {
                         notes.push(MidiNote {
                             id: NoteId(0),
+                            active: note.active,
                             start: BeatTime::from_raw(kept_start - beat.raw()),
                             duration: BeatTime::from_raw(kept_end - kept_start),
                             pitch: note.pitch,
@@ -748,6 +851,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let mut left = original;
             left.length = left_length;
             let right = MidiClip {
+                content_view: None,
                 active: left.active,
                 playback_offset: crate::BeatTime::ZERO,
                 name: left.name.clone(),
@@ -757,13 +861,15 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 length: right_length,
                 volume: right_volume,
                 source: Arc::new(MidiSource {
+                    content: std::sync::Arc::new(crate::MidiContent {
+                        source_length: right_length,
+                        notes,
+                    }),
                     one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-                    source_length: right_length,
                     source_start: BeatTime::ZERO,
                     loop_start: BeatTime::ZERO,
                     loop_end: right_length,
                     looping: false,
-                    notes,
                 }),
             };
             let clips = &mut project.track_mut(track)?.content.midi_clips;
@@ -804,8 +910,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 )?;
             }
             let mut target = target.clone();
+            target.content_view = target
+                .content_view
+                .map(|view| view.resized(0, length.raw()))
+                .transpose()?;
             target.length = length;
-            target.source_length = source_length;
+            if target.source_length != source_length {
+                target.source_length = source_length;
+            }
             target.source_start = source_start;
             target.loop_start = loop_start;
             target.loop_end = loop_end;
@@ -826,6 +938,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 clip,
                 Vec::new(),
                 vec![crate::MidiNoteInsert {
+                    active: true,
                     start,
                     duration,
                     pitch,
@@ -904,6 +1017,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             for update in &notes {
                 removed.push(update.note);
                 authored.push(crate::MidiNoteInsert {
+                    active: true,
                     start: update.start,
                     duration: update.duration,
                     pitch: update.pitch,
@@ -928,6 +1042,25 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 apply_note_update(note, update);
             }
             crate::midi_note_overwrite::retain_gates(target, &plan.retained)?;
+            Ok(Created::None)
+        }
+        Command::SetMidiNotesActive {
+            clip,
+            notes,
+            active,
+        } => {
+            let source = project
+                .midi_source(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let indices = note_indices(source, notes.iter().copied())?;
+            let source = project.midi_source_mut(clip)?;
+            for index in indices {
+                let note = source
+                    .notes
+                    .get_mut(index)
+                    .ok_or(Invalid("midi note no longer exists"))?;
+                note.active = active;
+            }
             Ok(Created::None)
         }
         Command::RemoveMidiNote(note) => {
@@ -1090,7 +1223,7 @@ fn apply_note_update(note: &mut MidiNote, update: MidiNoteUpdate) {
     note.velocity = update.velocity;
 }
 
-fn clip_count(project: &Project) -> usize {
+pub(crate) fn clip_count(project: &Project) -> usize {
     project
         .tracks
         .iter()
@@ -1109,20 +1242,32 @@ fn clip_count(project: &Project) -> usize {
             .count()
 }
 pub(crate) fn note_count(project: &Project) -> usize {
-    project
-        .tracks
-        .iter()
-        .flat_map(Track::midi_clips)
-        .map(|c| c.source.notes.len())
-        .sum::<usize>()
+    let shared: usize = project
+        .aliases
+        .sources
+        .values()
+        .map(|content| match content {
+            crate::clip_alias::Content::Midi(content) => content.notes.len(),
+            _ => 0,
+        })
+        .sum();
+    shared
+        + project
+            .tracks
+            .iter()
+            .flat_map(Track::midi_clips)
+            .filter(|clip| project.clip_alias(clip.id).is_none())
+            .map(|clip| clip.notes().len())
+            .sum::<usize>()
         + project
             .session
             .cells
             .iter()
             .map(|cell| match &cell.content {
-                crate::SessionCellContent::Midi(clip) => clip.source.notes.len(),
-                crate::SessionCellContent::Audio(_) => 0,
-                crate::SessionCellContent::Stop => 0,
+                crate::SessionCellContent::Midi(clip) if project.clip_alias(clip.id).is_none() => {
+                    clip.source.notes.len()
+                }
+                _ => 0,
             })
             .sum::<usize>()
 }
@@ -1162,6 +1307,26 @@ pub(crate) fn materialize_overwrite_ranges(
     original: &MidiClip,
     ranges: &[(u64, u64)],
 ) -> Result<Vec<MidiClip>, Invalid> {
+    materialize_overwrite_ranges_inner(original, ranges, None)
+}
+
+/// Frame-based overwrite retains only the audible part of a clipped occurrence.
+/// A generated remainder with both edges in the same frame has no surviving
+/// playback. Unclipped authored notes remain intact, including invalid gates
+/// that the engine must refuse. Beat-only section edits keep their existing law.
+pub(crate) fn materialize_overwrite_frame_ranges(
+    original: &MidiClip,
+    ranges: &[(u64, u64)],
+    tempo: &crate::TempoMap,
+) -> Result<Vec<MidiClip>, Invalid> {
+    materialize_overwrite_ranges_inner(original, ranges, Some(tempo))
+}
+
+fn materialize_overwrite_ranges_inner(
+    original: &MidiClip,
+    ranges: &[(u64, u64)],
+    frame_clipping: Option<&crate::TempoMap>,
+) -> Result<Vec<MidiClip>, Invalid> {
     let mut fragments = Vec::new();
     fragments
         .try_reserve_exact(ranges.len())
@@ -1173,6 +1338,7 @@ pub(crate) fn materialize_overwrite_ranges(
                 .ok_or(Invalid("midi retained range must be positive"))?,
         );
         fragments.push(MidiClip {
+            content_view: None,
             active: original.active,
             playback_offset: crate::BeatTime::ZERO,
             name: original.name.clone(),
@@ -1193,13 +1359,15 @@ pub(crate) fn materialize_overwrite_ranges(
                 ),
             )?,
             source: Arc::new(MidiSource {
+                content: std::sync::Arc::new(crate::MidiContent {
+                    source_length: length,
+                    notes: Vec::new(),
+                }),
                 one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
-                source_length: length,
                 source_start: BeatTime::ZERO,
                 loop_start: BeatTime::ZERO,
                 loop_end: length,
                 looping: false,
-                notes: Vec::new(),
             }),
         });
     }
@@ -1223,6 +1391,13 @@ pub(crate) fn materialize_overwrite_ranges(
                 let kept_start = absolute_start.max(start);
                 let kept_end = absolute_end.min(end);
                 if kept_start < kept_end {
+                    if (kept_start != absolute_start || kept_end != absolute_end)
+                        && let Some(tempo) = frame_clipping
+                        && tempo.beat_to_frame(BeatTime::from_raw(kept_start))?
+                            == tempo.beat_to_frame(BeatTime::from_raw(kept_end))?
+                    {
+                        continue;
+                    }
                     generated = generated
                         .checked_add(1)
                         .filter(|n| *n <= MAX_NOTES)
@@ -1235,6 +1410,7 @@ pub(crate) fn materialize_overwrite_ranges(
                         .map_err(|_| Invalid("could not reserve midi overwrite notes"))?;
                     source.notes.push(MidiNote {
                         id: NoteId(0),
+                        active: note.active,
                         start: BeatTime::from_raw(kept_start - start),
                         duration: BeatTime::from_raw(kept_end - kept_start),
                         pitch: note.pitch,
@@ -1299,3 +1475,7 @@ mod retained_metadata_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "midi_content_tests.rs"]
+mod content_tests;

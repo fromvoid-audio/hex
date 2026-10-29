@@ -13,6 +13,7 @@ pub struct ResidentArrangementSeekIntent {
     pub project_revision: u64,
     pub destination_frame: u64,
     pub start_playing: bool,
+    pub section: Option<crate::arrangement_seek::SectionLaunch>,
     pub fence: ResidentFreshRuntimeFence,
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
@@ -123,7 +124,26 @@ impl Lane {
         {
             return Err("seek target changed or was cancelled".into());
         }
+        if intent.section.is_some_and(|section| {
+            !section.region.enabled()
+                || section.region.start() != intent.destination_frame
+                || !intent.start_playing
+        }) {
+            return Err("section launch requires its exact enabled loop start".into());
+        }
         let selected = selected_source(&intent, current, admission.preview)?;
+        let files = selected
+            .file_sources
+            .as_ref()
+            .map(|sources| {
+                sink.resident_file_seek_preparer()
+                    .map(|prepare| (sources.clone(), prepare))
+                    .ok_or_else(|| "file-backed seek preparation is unavailable".to_string())
+            })
+            .transpose()?;
+        let file_storage = selected.file_sources.as_ref().map_or(Ok(0), |sources| {
+            sink.resident_file_seek_storage_bytes(&selected.prepared, sources)
+        })?;
         let index = self
             .active
             .iter()
@@ -132,10 +152,25 @@ impl Lane {
         let limits = session
             .native_reservation
             .ok_or("resident resource reservation unavailable")?;
-        let runtime =
-            hex_engine::SessionPlayback::linear_export_runtime_allowance(&selected.prepared)
-                .map_err(|e| e.to_string())?;
-        let input_capture = selected.inputs.capture_bytes().map_err(|e| e.to_string())?;
+        let runtime = intent
+            .section
+            .map_or_else(
+                || hex_engine::SessionPlayback::interactive_runtime_allowance(&selected.prepared),
+                |section| {
+                    hex_engine::SessionPlayback::section_runtime_allowance(
+                        &selected.prepared,
+                        section.region,
+                    )
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        let input_capture = selected
+            .inputs
+            .capture_bytes()
+            .map_err(|e| e.to_string())?
+            .checked_add(std::mem::size_of_val(&files))
+            .and_then(|n| n.checked_add(file_storage))
+            .ok_or("seek storage allowance overflow")?;
         let capture_quote = selected
             .resources
             .metadata_bytes()
@@ -178,7 +213,21 @@ impl Lane {
             .metadata_bytes()
             .map_err(|e| format!("seek preparation: {e:?}"))?
             .checked_add(
-                hex_engine::SessionPlayback::linear_export_runtime_allowance(&selected.prepared)
+                intent
+                    .section
+                    .map_or_else(
+                        || {
+                            hex_engine::SessionPlayback::interactive_runtime_allowance(
+                                &selected.prepared,
+                            )
+                        },
+                        |section| {
+                            hex_engine::SessionPlayback::section_runtime_allowance(
+                                &selected.prepared,
+                                section.region,
+                            )
+                        },
+                    )
                     .map_err(|e| format!("seek preparation: {e:?}"))?,
             )
             .and_then(|bytes| bytes.checked_add(input_capture))
@@ -213,7 +262,11 @@ impl Lane {
             .ok_or("seek worker unavailable")?
             .submit_resident(
                 ArrangementSeekSpec {
-                    mode: ArrangementSeekMode::Interactive,
+                    mode: intent
+                        .section
+                        .map_or(ArrangementSeekMode::Interactive, |section| {
+                            ArrangementSeekMode::SectionLoop(section.region)
+                        }),
                     generation: intent.project_generation,
                     revision: intent.project_revision,
                     prepared_revision: Arc::clone(&selected.prepared),
@@ -224,6 +277,7 @@ impl Lane {
                 job,
                 capture,
                 Arc::clone(&intent.cancelled),
+                files,
             )
             .map_err(|e| format!("seek worker refused: {e:?}"))?;
         drop(registered);
@@ -232,6 +286,7 @@ impl Lane {
             job,
             intent,
             snapshot: resident_audio::Snapshot {
+                file_sources: selected.file_sources.clone(),
                 prepared: Arc::clone(&selected.prepared),
                 resources: anchor,
                 inputs: selected.inputs.clone(),
@@ -330,7 +385,13 @@ impl Lane {
                                 .prepared
                                 .arrangement_seek_requires_preroll(),
                         },
-                        ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
+                        job.intent.section.map_or(
+                            ResidentPublicationPolicy::FreshIfUnchanged(job.intent.fence),
+                            |section| ResidentPublicationPolicy::SectionWhenReady {
+                                fence: job.intent.fence,
+                                quantization: section.quantization,
+                            },
+                        ),
                         &job.intent.cancelled,
                     )
                     .map_err(|e| e.to_string())

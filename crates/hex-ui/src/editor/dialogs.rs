@@ -41,7 +41,10 @@ pub(super) fn install_project_actions(cx: &mut gpui::App) {
             cx.defer(move |cx| {
                 let _ = window.update(cx, |_, window, cx| {
                     if let Some(Some(view)) = window.root::<EditorView>() {
-                        view.update(cx, |view, cx| handler(view, window, cx));
+                        view.update(cx, |view, cx| {
+                            let _scope = crate::diagnostics::action_scope(cx, A::name_for_type());
+                            handler(view, window, cx);
+                        });
                     }
                 });
             });
@@ -166,7 +169,7 @@ impl EditorView {
             || self.close_prompt_open
             || self.saving_project
             || self.save_dialog_open
-            || self.gain_recorder.blocks_edits()
+            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
         {
             self.error =
                 Some("finish the current project action before opening another project".into());
@@ -213,7 +216,7 @@ impl EditorView {
             || self.close_prompt_open
             || self.saving_project
             || self.save_dialog_open
-            || self.gain_recorder.blocks_edits()
+            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
         {
             return;
         }
