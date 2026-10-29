@@ -14,6 +14,7 @@ pub struct WorkerControl {
 }
 pub(crate) struct ClientEndpoints {
     diagnostics: audio_diagnostics::TraceReader,
+    action_admission: Option<action_outcomes::Admission>,
     pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
@@ -32,6 +33,7 @@ pub(crate) struct ClientEndpoints {
 }
 pub(crate) struct EndpointTerminals {
     pub(crate) receipts: retired_scalar_receipts::ReceiptPublisher,
+    pub(crate) action_failure: Option<action_outcomes::FailureSignal>,
     pub(crate) client: Terminal<ClientEndpoints>,
     pub(crate) publication: Terminal<PublicationControl>,
 }
@@ -42,6 +44,7 @@ impl Control {
     ) -> (Client, WorkerControl, EndpointTerminals) {
         let Self {
             diagnostics,
+            action_admission,
             sample_preview,
             commands,
             spectrum_target,
@@ -62,8 +65,12 @@ impl Control {
             .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
         publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
         let (retired_receipts, receipts) = retired_scalar_receipts::channel();
+        let action_failure = action_admission
+            .as_ref()
+            .map(action_outcomes::Admission::failure_signal);
         let (endpoints, client) = reserve(ClientEndpoints {
             diagnostics,
+            action_admission,
             output_identity,
             sample_preview,
             resident_forwarding,
@@ -90,6 +97,7 @@ impl Control {
             WorkerControl { endpoint },
             EndpointTerminals {
                 receipts,
+                action_failure,
                 client,
                 publication,
             },
@@ -235,6 +243,7 @@ impl Client {
         }
         enqueue_action(
             &mut endpoints.commands,
+            &mut endpoints.action_admission,
             &mut endpoints.command_ticket,
             &endpoints.status,
             endpoints.status.submitted_revision.load(Acquire),
@@ -616,6 +625,20 @@ impl Drop for Client {
     }
 }
 impl ClientEndpoints {
+    pub(crate) fn has_action_admission(&self) -> bool {
+        self.action_admission.is_some()
+    }
+    pub(crate) fn action_admission_identity(&self) -> Option<usize> {
+        self.action_admission
+            .as_ref()
+            .map(action_outcomes::Admission::identity)
+    }
+    pub(super) fn take_action_admission(&mut self) -> Option<action_outcomes::Admission> {
+        self.action_admission.take()
+    }
+    pub(super) fn restore_action_admission(&mut self, admission: action_outcomes::Admission) {
+        self.action_admission = Some(admission);
+    }
     fn stop(&self) {
         self.midi_recording.finish();
         self.status.keyboard_activation.revoke_reserved_prefix();
@@ -645,6 +668,7 @@ impl ClientEndpoints {
 }
 fn enqueue_action(
     commands: &mut Producer<QueuedCommand>,
+    admission: &mut Option<action_outcomes::Admission>,
     ticket: &mut u64,
     status: &Status,
     revision: u64,
@@ -664,13 +688,21 @@ fn enqueue_action(
     let Some(next) = ticket.checked_add(1).filter(|ticket| *ticket != u64::MAX) else {
         return Err(action);
     };
-    commands
-        .push(QueuedCommand {
-            ticket: next,
-            action,
-            sampler_edit_gate,
-        })
-        .map_err(|PushError::Full(q)| q.action)?;
+    if let Some(admission) = admission.as_mut()
+        && !admission.reserve(next)
+    {
+        return Err(action);
+    }
+    if let Err(PushError::Full(queued)) = commands.push(QueuedCommand {
+        ticket: next,
+        action,
+        sampler_edit_gate,
+    }) {
+        if let Some(admission) = admission.as_mut() {
+            admission.rollback(next);
+        }
+        return Err(queued.action);
+    }
     *ticket = next;
     status.admitted_ticket.store(next, Release);
     if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
@@ -688,6 +720,7 @@ pub(super) fn legacy_enqueue(
 ) -> Result<u64, PlaybackAction> {
     enqueue_action(
         &mut control.commands,
+        &mut control.action_admission,
         &mut control.command_ticket,
         &control.publication.status,
         control.publication.revision,

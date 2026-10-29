@@ -17,7 +17,8 @@ impl PublicationControl {
         extents_per_domain: usize,
         max_metadata_bytes: usize,
     ) -> Result<(), &'static str> {
-        if self.device_resources.is_none()
+        if self.status.reliable_action_outcomes.load(Acquire)
+            || self.device_resources.is_none()
             || self.status.client_exposed.load(Acquire)
             || !self.native_custody
             || self.revision != 0

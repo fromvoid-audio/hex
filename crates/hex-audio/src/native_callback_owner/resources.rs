@@ -62,6 +62,7 @@ pub(crate) struct NativeCandidateBoundary {
     error_cell: usize,
     endpoint_cells: Option<[usize; 2]>,
     receipt_mailbox: Option<usize>,
+    action_ledger: Option<usize>,
     data_bytes: usize,
     anchored: bool,
     channels: ChannelStorage,
@@ -111,6 +112,7 @@ impl NativeCandidateBoundary {
             error_cell,
             endpoint_cells: None,
             receipt_mailbox: None,
+            action_ledger: data.callback.action_writer_identity(),
             data_bytes,
             anchored: false,
             channels,
@@ -127,6 +129,7 @@ impl NativeCandidateBoundary {
         let control = publication.owner_ref()?;
         if control.native_candidate_root().root_id() != self.root
             || !client.owner_ref()?.matches(&control.status)
+            || client.owner_ref()?.action_admission_identity() != self.action_ledger
         {
             return None;
         }
@@ -166,7 +169,7 @@ impl NativeCandidateBoundary {
         self.channels = self.channels.plus(ChannelStorage {
             data_bytes: 0,
             shared_groups: 2,
-            shared_handles: 5,
+            shared_handles: 5 + usize::from(self.action_ledger.is_some()),
         })?;
         Some(self)
     }
@@ -186,6 +189,11 @@ impl NativeCandidateBoundary {
                 .zip(endpoints.publication.cell.as_ref())
                 .is_some_and(|(client, publication)| {
                     self.receipt_mailbox == Some(endpoints.receipts.identity())
+                        && self.action_ledger
+                            == endpoints
+                                .action_failure
+                                .as_ref()
+                                .map(|signal| signal.identity())
                         && expected
                             == [
                                 Arc::as_ptr(client) as usize,

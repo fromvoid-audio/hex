@@ -16,7 +16,8 @@ impl PublicationControl {
         &mut self,
         extents_per_domain: usize,
     ) -> Result<(), &'static str> {
-        if self.status.client_exposed.load(Acquire)
+        if self.status.reliable_action_outcomes.load(Acquire)
+            || self.status.client_exposed.load(Acquire)
             || !self.native_custody
             || self.revision != 0
             || self.status.closing.load(Acquire)
