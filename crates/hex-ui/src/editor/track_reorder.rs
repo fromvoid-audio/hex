@@ -1,9 +1,9 @@
-//! View-only ordinary-track insertion feedback. Returns and Main remain pinned.
+//! View-only track insertion and group-target feedback. Returns and Main remain pinned.
 //!
 //! Pointer motion reads the variable-height list's logical scroll position and
 //! bounded row metadata; it never clones the project, prepares audio or moves a
 //! track. Release sends one source-stamped worker request. The final insertion
-//! line stays owned by its exact ordinary receipt until canonical installation.
+//! line or group target stays owned by its exact receipt until canonical installation.
 //! A name press remains a normal Click candidate until the existing drag threshold.
 //! Only moved input claims the Window lease; pending receipt feedback never renews it.
 use super::{
@@ -15,7 +15,7 @@ use gpui::{
     Context, Div, MouseButton, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, Window, canvas, div,
     prelude::*, px, rgb,
 };
-use hex_project::{TrackId, TrackSelectionIds};
+use hex_project::{TrackDestination, TrackId, TrackSelectionIds};
 use hex_session::service::{Event, Request};
 use std::time::{Duration, Instant};
 
@@ -47,16 +47,17 @@ impl Gesture {
             >= 4.0
     }
 }
-#[derive(Clone, Copy)]
-struct Destination {
-    before: Option<TrackId>,
+#[derive(Clone, Copy, PartialEq)]
+enum Destination {
+    Gap(Option<TrackId>),
+    Group(TrackId),
 }
 #[derive(Clone, Copy, PartialEq)]
 struct PaintedGap {
     generation: u64,
     revision: u64,
     track: TrackId,
-    before: Option<TrackId>,
+    destination: Destination,
     scroll: (usize, f32),
 }
 struct Pending {
@@ -303,14 +304,26 @@ impl EditorView {
             return None;
         }
         let tracks = self.state.as_ref()?.project.tracks();
+        let header_left = bounds.left + (bounds.width - self.track_header_width()).max(0.0);
         let top = self.track_scroll.list.logical_scroll_top();
         let mut row_y = bounds.top - f32::from(top.offset_in_item);
         let mut index = top.item_ix;
-        for (_, track) in self
+        for (canonical_index, track) in self
             .arrangement_tracks(&self.state.as_ref()?.project)
             .skip(index)
         {
             let height = self.track_height(track.id());
+            if track.is_group()
+                && x >= header_left
+                && row_y >= bounds.top
+                && row_y + height <= bounds.top + bounds.height
+                && y >= row_y + 4.0
+                && y < row_y + height * 0.75
+            {
+                return source
+                    .permits_group(canonical_index, track.id())
+                    .then_some(Destination::Group(track.id()));
+            }
             if y < row_y + height / 2.0 {
                 break;
             }
@@ -325,9 +338,7 @@ impl EditorView {
         if row_y < bounds.top || row_y > bounds.top + bounds.height {
             return None;
         }
-        Some(Destination {
-            before: tracks.get(index).map(|t| t.id()),
-        })
+        Some(Destination::Gap(tracks.get(index).map(|t| t.id())))
     }
 
     fn update_track_reorder(&mut self, position: gpui::Point<gpui::Pixels>) -> bool {
@@ -353,7 +364,7 @@ impl EditorView {
             generation: g.generation,
             revision: g.revision,
             track: g.track,
-            before: g.destination?.before,
+            destination: g.destination?,
             scroll: (top.item_ix, f32::from(top.offset_in_item)),
         })
     }
@@ -383,12 +394,24 @@ impl EditorView {
                 destination,
                 receipt: Receipt::new(g.generation),
             });
-            if !self.enqueue(Request::ReorderTracks {
-                project_generation: g.generation,
-                revision: g.revision,
-                tracks: g.tracks,
-                before: destination.before,
-            }) {
+            let request = match destination {
+                Destination::Gap(before) => Request::ReorderTracks {
+                    project_generation: g.generation,
+                    revision: g.revision,
+                    tracks: g.tracks,
+                    before,
+                },
+                Destination::Group(group) => Request::ReparentTracks {
+                    project_generation: g.generation,
+                    revision: g.revision,
+                    tracks: g.tracks,
+                    destination: TrackDestination {
+                        parent_group: Some(group),
+                        before: None,
+                    },
+                },
+            };
+            if !self.enqueue(request) {
                 self.retire_pending_track_reorder();
             }
         }
@@ -450,7 +473,11 @@ impl EditorView {
         let bounds = self.arrangement_bounds?;
         let state = self.state.as_ref()?;
         let tracks = self.arrangement_track_indices();
-        let index = match destination.before {
+        let target = match destination {
+            Destination::Gap(before) => before,
+            Destination::Group(group) => Some(group),
+        };
+        let index = match target {
             Some(id) => tracks
                 .iter()
                 .position(|i| state.project.tracks().get(*i).is_some_and(|t| t.id() == id))?,
@@ -469,6 +496,19 @@ impl EditorView {
         }
         if y < 0.0 || y > bounds.height {
             return None;
+        }
+        if let Destination::Group(group) = destination {
+            return Some(
+                div()
+                    .debug_selector(|| "track-group-drop-target".into())
+                    .absolute()
+                    .right_0()
+                    .w(px(self.track_header_width()))
+                    .top(px(y))
+                    .h(px(self.track_height(group)))
+                    .border_2()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Secondary))),
+            );
         }
         Some(
             div()
@@ -560,7 +600,44 @@ impl EditorView {
         let Some(p) = &self.track_reorder.pending else {
             return false;
         };
-        matches!(request, Request::ReorderTracks { project_generation, revision, tracks, before } if p.receipt.is_queued() && *project_generation==p.generation && *revision==p.revision && tracks==&p.tracks && *before==p.destination.before)
+        if !p.receipt.is_queued() {
+            return false;
+        }
+        match (request, p.destination) {
+            (
+                Request::ReorderTracks {
+                    project_generation,
+                    revision,
+                    tracks,
+                    before,
+                },
+                Destination::Gap(target),
+            ) => {
+                *project_generation == p.generation
+                    && *revision == p.revision
+                    && tracks == &p.tracks
+                    && *before == target
+            }
+            (
+                Request::ReparentTracks {
+                    project_generation,
+                    revision,
+                    tracks,
+                    destination,
+                },
+                Destination::Group(group),
+            ) => {
+                *project_generation == p.generation
+                    && *revision == p.revision
+                    && tracks == &p.tracks
+                    && *destination
+                        == TrackDestination {
+                            parent_group: Some(group),
+                            before: None,
+                        }
+            }
+            _ => false,
+        }
     }
     pub(super) fn track_reorder_submitted(&mut self) {
         if let Some(p) = self.track_reorder.pending.as_mut() {

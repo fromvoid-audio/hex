@@ -187,6 +187,203 @@ pub(super) fn receive(visual: &mut VisualTestContext, editor: &gpui::Entity<Edit
     visual.run_until_parked();
 }
 #[gpui::test]
+fn dropping_on_folded_group_reparents_and_keeps_target_until_ack(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..1]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let (group, before) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project.tracks().iter().find(|t| t.is_group()).unwrap().id(),
+            project.snapshot(),
+        )
+    });
+    let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let from = bounds(&mut visual, ids[2]).center();
+    let target = bounds(&mut visual, group).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-group-drop-target").is_some());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("track-group-drop-target").is_some(),
+        "pending target must remain painted"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    receive(&mut visual, &editor);
+    assert!(visual.debug_bounds("track-group-drop-target").is_none());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[2])
+                .unwrap()
+                .parent_group(),
+            Some(group)
+        );
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    // A directly adjacent root can enter an empty group at the same flat boundary.
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RemoveTrack(ids[0]))))
+    });
+    receive(&mut visual, &editor);
+    let from = bounds(&mut visual, ids[1]).center();
+    let target = bounds(&mut visual, group).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-group-drop-target").is_some());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[1])
+                .unwrap()
+                .parent_group(),
+            Some(group)
+        );
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[ids[1]]).unwrap(),
+            name: "nested".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let nested = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group() && track.parent_group() == Some(group))
+            .unwrap()
+            .id()
+    });
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let from = bounds(&mut visual, ids[2]).center();
+    let target = bounds(&mut visual, nested).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-group-drop-target").is_some());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[2])
+                .unwrap()
+                .parent_group(),
+            Some(nested)
+        )
+    });
+}
+
+#[gpui::test]
+fn group_drop_refusal_keeps_target_until_terminal_installation(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..1]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let group = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap()
+            .id()
+    });
+    // Let the worker advance without delivering its new revision to this view.
+    editor.update(&mut visual, |view, _| {
+        view.service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "other".into(),
+            }))
+            .unwrap();
+        assert!(next(&view.service).error.is_none());
+    });
+    let from = bounds(&mut visual, ids[1]).center();
+    let target = bounds(&mut visual, group).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let highlight = visual.debug_bounds("track-group-drop-target").unwrap();
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let terminal = editor.update(&mut visual, |view, _| next(&view.service));
+    assert!(terminal.request_complete && terminal.error.is_some());
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("track-group-drop-target"),
+            Some(highlight)
+        );
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-group-drop-target").is_none());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.track_reorder_active());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[1])
+                .unwrap()
+                .parent_group(),
+            None
+        );
+    });
+}
+
+#[gpui::test]
 fn group_drag_never_paints_its_own_subtree_as_a_destination(cx: &mut TestAppContext) {
     use hex_project::TrackSelectionIds;
     use hex_session::service::Request;
