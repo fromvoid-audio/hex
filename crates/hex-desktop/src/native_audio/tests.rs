@@ -582,7 +582,9 @@ impl Harness {
             if slot.is_some() {
                 return Ok(None);
             }
-            match hex_audio::worker_fixture::open(rate.unwrap_or(default_rate)) {
+            match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
+                rate.unwrap_or(default_rate),
+            ) {
                 Ok((output, callback)) => {
                     *slot = Some(callback);
                     Ok(Some(output))
@@ -1225,6 +1227,23 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         assert_eq!(status.stream_applied_command_prefix.load(Acquire), pause);
         assert!(!status.playing.load(Acquire));
     }
+    let reader = h
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .action_outcomes_mut()
+        .unwrap();
+    for ticket in [play, seek, pause] {
+        assert_eq!(
+            reader.try_take(),
+            Some(hex_audio::prepared::ActionOutcomeReceipt {
+                ticket,
+                outcome: hex_audio::prepared::ActionOutcome::Applied,
+            })
+        );
+    }
+    assert_eq!(reader.try_take(), None);
     // Stop has its existing independent priority marker even when the actual
     // command ring is full; it must not wait for queued transport work.
     for _ in 0..32 {

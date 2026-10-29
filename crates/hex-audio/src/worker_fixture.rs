@@ -238,7 +238,7 @@ mod tests {
         use std::sync::Arc;
         let _serial = crate::prepared::candidate_tests::serial();
         let (mut output, mut backend) = open_with_reliable_action_outcomes(48_000).unwrap();
-        let mut reader = output
+        let reader = output
             .take_action_outcomes()
             .expect("reliable output reader");
         assert!(output.take_action_outcomes().is_none());
@@ -260,6 +260,21 @@ mod tests {
             .unwrap();
         let mut client = output.take_client().unwrap();
         assert_eq!(client.output_identity(), Some(reader.output_identity()));
+        let (mut foreign_control, mut foreign_callback) = crate::prepared::channel(48_000).unwrap();
+        let foreign_reader = foreign_control
+            .enable_action_outcomes_on_control(&mut foreign_callback)
+            .unwrap();
+        let foreign_reader = match client.attach_action_outcomes(foreign_reader) {
+            Ok(()) => panic!("a foreign reader must not attach"),
+            Err(reader) => reader,
+        };
+        assert!(!foreign_reader.is_retired());
+        foreign_control.request_shutdown();
+        foreign_control
+            .retire_action_outcomes_on_control(&mut foreign_callback)
+            .unwrap();
+        assert!(foreign_reader.is_retired());
+        assert!(client.attach_action_outcomes(reader).is_ok());
         let played = client.command_with_ticket(PlaybackCommand::Play).unwrap();
         let mut frames = [[0.0; 2]; 8];
         let mut result = Ok(());
@@ -276,7 +291,7 @@ mod tests {
         );
         assert_eq!(frames, [[0.25; 2]; 8]);
         assert_eq!(
-            reader.try_take(),
+            client.action_outcomes_mut().unwrap().try_take(),
             Some(ActionOutcomeReceipt {
                 ticket: played,
                 outcome: ActionOutcome::Applied
@@ -284,6 +299,7 @@ mod tests {
         );
         let pending = client.command_with_ticket(PlaybackCommand::Pause).unwrap();
         client.close();
+        let mut reader = client.take_action_outcomes().unwrap();
         backend.close();
         drop(output);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

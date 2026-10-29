@@ -7,6 +7,7 @@ use crate::native_callback_owner::{Guard, Terminal, reserve};
 pub struct Client {
     pub(super) endpoints: Guard<ClientEndpoints>,
     pub(super) retired_receipts: Option<Arc<retired_scalar_receipts::Mailbox>>,
+    action_outcomes: Option<ActionOutcomeReader>,
     worker_owned_publication: bool,
 }
 pub struct WorkerControl {
@@ -92,6 +93,7 @@ impl Control {
             Client {
                 endpoints,
                 retired_receipts: Some(retired_receipts),
+                action_outcomes: None,
                 worker_owned_publication: false,
             },
             WorkerControl { endpoint },
@@ -192,6 +194,31 @@ impl Client {
     /// Actual channel incarnation for view/request correlation only.
     pub fn output_identity(&self) -> Option<u64> {
         self.endpoints.owner_ref().map(|e| e.output_identity)
+    }
+    /// Attach only this output's unique reader. Refusal returns the original
+    /// reader unchanged; the control owner must drain it before retirement.
+    pub fn attach_action_outcomes(
+        &mut self,
+        reader: ActionOutcomeReader,
+    ) -> Result<(), ActionOutcomeReader> {
+        if self.action_outcomes.is_some()
+            || self.output_identity() != Some(reader.output_identity())
+        {
+            return Err(reader);
+        }
+        self.action_outcomes = Some(reader);
+        Ok(())
+    }
+    pub fn action_outcomes_mut(&mut self) -> Option<&mut ActionOutcomeReader> {
+        self.action_outcomes.as_mut()
+    }
+    pub fn has_action_outcomes(&self) -> bool {
+        self.action_outcomes.is_some()
+    }
+    /// Transfer the observer before dropping this client when retirement must
+    /// continue to report terminals after the endpoint has been closed.
+    pub fn take_action_outcomes(&mut self) -> Option<ActionOutcomeReader> {
+        self.action_outcomes.take()
     }
     pub fn capture_fresh_runtime_fence(&self) -> Option<FreshRuntimeFence> {
         capture_runtime_fence(self.status()?)
