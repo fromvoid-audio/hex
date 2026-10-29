@@ -696,7 +696,9 @@ pub(super) fn prepare_resident_seek(
 }
 
 #[cfg(all(test, feature = "allocation-probe"))]
+#[path = "streamed_export/test_support.rs"]
 pub(crate) mod test_support;
 
 #[cfg(test)]
+#[path = "streamed_export/tests.rs"]
 mod tests;
