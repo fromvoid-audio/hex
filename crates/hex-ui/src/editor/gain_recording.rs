@@ -378,6 +378,8 @@ impl EditorView {
                         gain,
                     });
                 } else {
+                    self.error =
+                        Some("gain take exceeded its event limit · original lane retained".into());
                     self.cancel_gain_recording();
                 }
             }
@@ -402,16 +404,20 @@ impl EditorView {
                 }
             }
             Receipt::Aborted { reason, .. } => {
+                let expected_cancel = self.gain_recorder.cancelled
+                    && reason == hex_audio::gain_recording::AbortReason::Cancelled;
                 if self.gain_recorder.cancelled {
                     self.gain_recorder.discard();
                 } else {
                     self.gain_recorder.audio_lost();
                 }
-                self.error = Some(
-                    format!("gain take aborted · {reason:?} · original lane retained")
-                        .to_lowercase()
-                        .into(),
-                );
+                if !expected_cancel {
+                    self.error = Some(
+                        format!("gain take aborted · {reason:?} · original lane retained")
+                            .to_lowercase()
+                            .into(),
+                    );
+                }
             }
         }
     }

@@ -352,6 +352,70 @@ fn end() -> GainTakeEnd {
 }
 
 #[gpui::test]
+fn unexpected_gain_abort_remains_visible_and_keeps_its_custody_contract(cx: &mut TestAppContext) {
+    use hex_audio::gain_recording::AbortReason;
+    let (mut visual, editor, target, track) = draft_window(cx);
+    editor.update(&mut visual, |view, _| {
+        for (explicit_cancel, reason, expected) in [
+            (false, AbortReason::Cancelled, "cancelled"),
+            (true, AbortReason::OutputFailed, "outputfailed"),
+        ] {
+            view.gain_recorder = Recorder::default();
+            view.gain_recorder.track = Some(track);
+            view.gain_recorder.target = Some(target);
+            view.gain_recorder.mode = Mode::Finishing;
+            view.gain_recorder.cancelled = explicit_cancel;
+            view.error = None;
+            view.gain_receipt(Receipt::Aborted { target, reason });
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains(expected))
+            );
+            if explicit_cancel {
+                assert!(!view.gain_recorder.blocks_edits());
+            } else {
+                assert!(view.gain_recorder.blocks_edits());
+                assert!(!view.gain_recorder.sealed.as_ref().unwrap().complete());
+            }
+        }
+        view.gain_recorder = Recorder::default();
+        view.gain_recorder.track = Some(track);
+        view.gain_recorder.target = Some(target);
+        view.gain_recorder.mode = Mode::Touching;
+        view.gain_recorder.events = vec![
+            AppliedGain {
+                sequence: 1,
+                performance_frame: 0,
+                content_frame: 0,
+                loop_pass: 0,
+                gain: 0.5,
+            };
+            hex_audio::gain_recording::MAX_TAKE_EVENTS as usize
+        ];
+        view.error = None;
+        view.gain_receipt(Receipt::Applied {
+            target,
+            sequence: 1023,
+            performance_frame: 1,
+            content_frame: 1,
+            loop_pass: 0,
+            gain: 0.5,
+        });
+        view.gain_receipt(Receipt::Aborted {
+            target,
+            reason: AbortReason::Cancelled,
+        });
+        assert!(
+            view.error
+                .as_deref()
+                .is_some_and(|error| error.contains("event limit"))
+        );
+        assert!(!view.gain_recorder.blocks_edits());
+    });
+}
+
+#[gpui::test]
 fn sealed_gain_take_waits_through_repaints_and_exact_install_then_one_undo(
     cx: &mut TestAppContext,
 ) {
@@ -664,6 +728,7 @@ fn cancelled_delivered_gain_take_releases_callback_and_preserves_project(cx: &mu
         assert!(view.tick_gain_recording());
         assert!(!view.gain_recorder.blocks_edits());
         assert!(view.gain_recorder.events.is_empty());
+        assert!(view.error.is_none(), "successful cancel: {:?}", view.error);
         assert_eq!(view.worker_requests_pending, 0);
         assert!(view.pending_requests.is_empty());
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
