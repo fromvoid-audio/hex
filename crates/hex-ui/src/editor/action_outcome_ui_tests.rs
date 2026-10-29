@@ -278,3 +278,61 @@ fn retired_action_interruption_survives_current_output_fault(cx: &mut TestAppCon
         );
     });
 }
+
+#[gpui::test]
+fn explicit_editor_play_after_render_fault_does_not_run_failed_graph(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering::Acquire;
+    let (_window, editor) = editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000).unwrap();
+    let audio = hex_engine::Audio::new(48_000, vec![[0.25; 2]; 256]).unwrap();
+    let track = hex_engine::Track::new(
+        vec![hex_engine::Clip::new(audio, 0, 256, false).unwrap()],
+        1.0,
+        false,
+    )
+    .unwrap();
+    output
+        .publication
+        .control()
+        .unwrap()
+        .publish(Playback::new(
+            hex_engine::Project::new(48_000, vec![track]).unwrap(),
+        ))
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    assert!(
+        client
+            .attach_action_outcomes(output.take_action_outcomes().unwrap())
+            .is_ok()
+    );
+    backend.render(&mut [[0.0; 2]; 8]).unwrap();
+    backend.report_render_error().unwrap();
+    editor.update(cx, |view, _| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.queue_audio_command(hex_engine::PlaybackCommand::PlayFrom(64));
+    });
+    let mut frames = [[0.0; 2]; 8];
+    backend.render(&mut frames).unwrap();
+    let status = backend.status().unwrap();
+    assert!(
+        !status.playing.load(Acquire),
+        "explicit PlayFrom restarted faulted DSP"
+    );
+    assert_eq!(frames, [[0.0; 2]; 8], "faulted DSP emitted audio");
+    assert_eq!(status.recovery_position(), 64);
+    editor.update(cx, |view, cx| {
+        view.tick(cx);
+        assert!(view.error.as_ref().unwrap().contains("audio output failed"));
+    });
+}

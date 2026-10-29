@@ -405,6 +405,20 @@ impl Callback {
                 );
                 continue;
             }
+            if self.status.render_fault.load(Acquire)
+                && (starts_playback(queued.action) || fault_cursor_intent(queued.action).is_some())
+            {
+                if let Some(frame) = fault_cursor_intent(queued.action) {
+                    self.status.recovery_position.store(frame, Release);
+                }
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                self.stage_stream_outcome(
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                );
+                continue;
+            }
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,

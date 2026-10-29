@@ -31,7 +31,9 @@ impl Harness {
             if slot.is_some() {
                 return Ok(None);
             }
-            match hex_audio::worker_fixture::open(rate.unwrap_or(16000)) {
+            match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
+                rate.unwrap_or(16000),
+            ) {
                 Ok((output, callback)) => {
                     *slot = Some(callback);
                     Ok(Some(output))
@@ -445,7 +447,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
         if slot.is_some() {
             return Ok(None);
         }
-        match hex_audio::worker_fixture::open(rate.unwrap_or(16000)) {
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(rate.unwrap_or(16000)) {
             Ok((output, callback)) => {
                 opens += 1;
                 if opens == 2 {
