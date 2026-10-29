@@ -865,7 +865,7 @@ fn study_feasible_output_gain_plan() {
     assert!(max_model <= ceiling + 1e-7);
 
     // A second offline plan uses eight-frame linear knots, with zero endpoints
-    // and a 64-tap/16-phase signed constraint. It still has no emitted past.
+    // and a 64-tap/32-phase signed constraint. It still has no emitted past.
     const STRIDE: usize = 8;
     const KNOTS: usize = COUNT / STRIDE - 1;
     let source = &samples[TAPS - 1..TAPS - 1 + COUNT];
@@ -876,12 +876,12 @@ fn study_feasible_output_gain_plan() {
     let mut planned = vec![[0.0_f32; 2]; padded.len()];
     for lane in 0..2 {
         // Precompute each knot's linear contribution to every constraint.
-        let mut effects = vec![vec![0.0_f64; windows * 16]; KNOTS];
+        let mut effects = vec![vec![0.0_f64; windows * 32]; KNOTS];
         for (knot, effect) in effects.iter_mut().enumerate() {
             let center = (knot + 1) * STRIDE;
             for (start, window) in padded.windows(64).enumerate() {
-                for (phase, kernel) in wider.iter().step_by(2).enumerate() {
-                    effect[start * 16 + phase] = kernel
+                for (phase, kernel) in wider.iter().enumerate() {
+                    effect[start * 32 + phase] = kernel
                         .iter()
                         .zip(window)
                         .enumerate()
@@ -896,7 +896,7 @@ fn study_feasible_output_gain_plan() {
                 }
             }
         }
-        let mut constraints = vec![0.0_f64; windows * 16];
+        let mut constraints = vec![0.0_f64; windows * 32];
         for _ in 0..3 {
             for knot in 0..KNOTS {
                 let mut step = 1.0 - knot_gain[lane][knot];
@@ -927,20 +927,16 @@ fn study_feasible_output_gain_plan() {
             frame[lane] = (source[index][lane] * gain) as f32;
         }
     }
-    let mut smooth_peak = 0.0_f64;
     let mut constrained_peak = 0.0_f64;
     for window in planned.windows(64) {
-        for (phase, kernel) in wider.iter().enumerate() {
+        for kernel in &wider {
             for lane in 0..2 {
                 let value: f64 = kernel
                     .iter()
                     .zip(window)
                     .map(|(c, frame)| c * f64::from(frame[lane]))
                     .sum();
-                smooth_peak = smooth_peak.max(value.abs());
-                if phase % 2 == 0 {
-                    constrained_peak = constrained_peak.max(value.abs());
-                }
+                constrained_peak = constrained_peak.max(value.abs());
             }
         }
     }
@@ -949,7 +945,7 @@ fn study_feasible_output_gain_plan() {
         .flat_map(|lane| lane.windows(2).map(|pair| (pair[1] - pair[0]).abs()))
         .fold(0.0_f64, f64::max);
     println!(
-        "smooth knot plan: constrained peak {constrained_peak:.9}, independent peak {smooth_peak:.9}, max knot jump {max_knot_jump:.6}, mean knot gain {:.6}",
+        "smooth knot plan: 32-phase peak {constrained_peak:.9}, max knot jump {max_knot_jump:.6}, mean knot gain {:.6}",
         knot_gain.iter().flatten().sum::<f64>() / (2 * KNOTS) as f64
     );
     assert!(constrained_peak <= ceiling + 1e-7);
@@ -966,22 +962,22 @@ fn study_feasible_output_gain_plan() {
     let window_count = extended.len() - 63;
     let mut added_gains = [[0.0_f64; NEXT_KNOTS]; 2];
     for lane in 0..2 {
-        let mut constraints = vec![0.0_f64; window_count * 16];
+        let mut constraints = vec![0.0_f64; window_count * 32];
         for (start, window) in extended.windows(64).enumerate() {
-            for (phase, kernel) in wider.iter().step_by(2).enumerate() {
-                constraints[start * 16 + phase] = kernel
+            for (phase, kernel) in wider.iter().enumerate() {
+                constraints[start * 32 + phase] = kernel
                     .iter()
                     .zip(window)
                     .map(|(c, frame)| c * f64::from(frame[lane]))
                     .sum();
             }
         }
-        let mut effects = vec![vec![0.0_f64; window_count * 16]; NEXT_KNOTS];
+        let mut effects = vec![vec![0.0_f64; window_count * 32]; NEXT_KNOTS];
         for (knot, effect) in effects.iter_mut().enumerate() {
             let center = COUNT + knot * STRIDE;
             for start in 0..window_count {
-                for (phase, kernel) in wider.iter().step_by(2).enumerate() {
-                    effect[start * 16 + phase] = kernel
+                for (phase, kernel) in wider.iter().enumerate() {
+                    effect[start * 32 + phase] = kernel
                         .iter()
                         .enumerate()
                         .filter_map(|(tap, coefficient)| {
@@ -1043,24 +1039,44 @@ fn study_feasible_output_gain_plan() {
             .all(|sample| f64::from(sample.abs()) <= ceiling + 1e-7)
     );
     let mut extension_model_peak = 0.0_f64;
-    let mut extension_dense_peak = 0.0_f64;
     for window in extended.windows(64) {
-        for (phase, kernel) in wider.iter().enumerate() {
+        for kernel in &wider {
             for lane in 0..2 {
                 let value: f64 = kernel
                     .iter()
                     .zip(window)
                     .map(|(c, frame)| c * f64::from(frame[lane]))
                     .sum();
-                extension_dense_peak = extension_dense_peak.max(value.abs());
-                if phase % 2 == 0 {
-                    extension_model_peak = extension_model_peak.max(value.abs());
-                }
+                extension_model_peak = extension_model_peak.max(value.abs());
+            }
+        }
+    }
+    let denser: [[f64; 64]; 64] = std::array::from_fn(|phase| {
+        let mut kernel = std::array::from_fn(|tap| {
+            let d = 31.0 + phase as f64 / 64.0 - tap as f64;
+            sinc(d) * sinc(d / 32.0)
+        });
+        let sum: f64 = kernel.iter().sum();
+        for coefficient in &mut kernel {
+            *coefficient /= sum;
+        }
+        kernel
+    });
+    let mut phase64_peak = 0.0_f64;
+    for window in extended.windows(64) {
+        for kernel in &denser {
+            for lane in 0..2 {
+                let value: f64 = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, frame)| c * f64::from(frame[lane]))
+                    .sum();
+                phase64_peak = phase64_peak.max(value.abs());
             }
         }
     }
     println!(
-        "overlapped incumbent: model peak {extension_model_peak:.9}, dense peak {extension_dense_peak:.9}, join gain {:?}, new mean knot gain {:.6}",
+        "overlapped incumbent: 32-phase peak {extension_model_peak:.9}, 64-phase peak {phase64_peak:.9}, join gain {:?}, new mean knot gain {:.6}",
         [added_gains[0][0], added_gains[1][0]],
         added_gains.iter().flatten().sum::<f64>() / (2 * NEXT_KNOTS) as f64
     );
