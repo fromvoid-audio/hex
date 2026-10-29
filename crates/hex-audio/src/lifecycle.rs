@@ -781,7 +781,18 @@ fn retire_prepared_output(mut retirement: Retirement) {
         {
             native.fail_scalar_receipts();
         }
-        thread::sleep(Duration::from_millis(250));
+        // Headless allocation-probe fixtures still use the real custody and
+        // quiescence protocol, but need not inherit the native backend's
+        // coarse retirement retry interval. Failed custody stays quarantined.
+        #[cfg(feature = "allocation-probe")]
+        let delay = if retirement.headless && !progress.failed {
+            Duration::from_millis(5)
+        } else {
+            Duration::from_millis(250)
+        };
+        #[cfg(not(feature = "allocation-probe"))]
+        let delay = Duration::from_millis(250);
+        thread::sleep(delay);
     }
 }
 fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
