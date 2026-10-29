@@ -187,6 +187,112 @@ pub(super) fn receive(visual: &mut VisualTestContext, editor: &gpui::Entity<Edit
     visual.run_until_parked();
 }
 #[gpui::test]
+fn group_drag_never_paints_its_own_subtree_as_a_destination(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..2]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    let (group, before, can_undo, can_redo) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state
+                .project
+                .tracks()
+                .iter()
+                .find(|track| track.is_group())
+                .unwrap()
+                .id(),
+            state.project.snapshot(),
+            state.can_undo,
+            state.can_redo,
+        )
+    });
+    let from = bounds(&mut visual, group).center();
+    let child = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", ids[1].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let to = point(from.x, child.origin.y + px(1.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("track-insertion-line").is_none(),
+        "cannot move a group into its own descendant"
+    );
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.project.snapshot(), before);
+        assert_eq!((state.can_undo, state.can_redo), (can_undo, can_redo));
+        assert!(!view.track_reorder_active());
+    });
+    // The boundary directly after the complete subtree is also a no-op.
+    let from = bounds(&mut visual, group).center();
+    let sibling = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", ids[2].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let unchanged = point(from.x, sibling.origin.y + px(1.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(unchanged, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insertion-line").is_none());
+    visual.simulate_mouse_up(unchanged, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+
+    // Folding hides children, but must not prevent a real subtree move.
+    let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let from = bounds(&mut visual, group).center();
+    let sibling = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", ids[2].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let after = point(from.x, sibling.origin.y + sibling.size.height - px(1.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(after, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insertion-line").is_some());
+    visual.simulate_mouse_up(after, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(
+            project
+                .tracks()
+                .iter()
+                .map(|track| track.id())
+                .collect::<Vec<_>>(),
+            [ids[2], group, ids[0], ids[1]]
+        );
+        assert_eq!(project.track(ids[0]).unwrap().parent_group(), Some(group));
+        assert_eq!(project.track(ids[1]).unwrap().parent_group(), Some(group));
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
+
+#[gpui::test]
 fn pointer_commits_first_middle_last_and_one_undo(cx: &mut TestAppContext) {
     for (source, target, below, expected) in [
         (3, 0, false, vec![3, 0, 1, 2]),
