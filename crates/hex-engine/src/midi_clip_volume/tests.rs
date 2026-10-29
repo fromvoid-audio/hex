@@ -51,6 +51,35 @@ fn session(origin: SessionMidiOrigin) -> VolumePlacement {
 }
 
 #[test]
+fn clip_gain_multiplies_curve_and_implicit_unity_without_editing_points() {
+    let timing = clock();
+    let gain = hex_project::ClipGain::new(-6_000).unwrap();
+    let coefficient = f64::from(gain.linear());
+    let source = MidiSourcePlayback::one_shot(b(4)).unwrap();
+    let original = curve(&[(b(0), 0.25, 0.25), (b(4), 0.75, 0.75)], b(4));
+    let adjusted = original.clone().with_clip_gain(gain);
+    let program = PreparedMidiClipVolume::prepare(&adjusted, source, &timing).unwrap();
+    let ramp = program
+        .segment_at(&timing, arrangement(), 0, 256)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ramp.start_gain, 0.25 * coefficient);
+    assert_eq!(ramp.end_gain, 0.75 * coefficient);
+    assert_eq!(adjusted.points(), original.points());
+    assert!(!adjusted.same_revision(&original));
+
+    let scalar_only = MidiClipVolume::default().with_clip_gain(gain);
+    let program = PreparedMidiClipVolume::prepare(&scalar_only, source, &timing).unwrap();
+    let ramp = program
+        .segment_at(&timing, arrangement(), 0, 256)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ramp.start_gain, coefficient);
+    assert_eq!(ramp.end_gain, coefficient);
+    assert!(!scalar_only.is_unity());
+}
+
+#[test]
 fn literal_f64_ramps_and_jumps_keep_original_endpoints_through_uneven_partitions() {
     let timing = clock();
     let volume = curve(

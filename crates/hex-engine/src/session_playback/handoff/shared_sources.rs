@@ -100,7 +100,7 @@ impl SharedSourceHandoff {
                     && revision.arrangement().tracks()[new_index].instrument_slot_enabled()
                     && (!old_runtime.committed_is_quiescent() || held_input || precut_analytic)
                 {
-                    return Err(SessionPlaybackError::MutableInstrumentChase);
+                    return Err(SessionPlaybackError::SourceHistoryUnavailable);
                 }
                 continue;
             };
@@ -131,13 +131,7 @@ impl SharedSourceHandoff {
                 if ((shared || same_device) && !old_runtime.committed_is_quiescent())
                     || old_runtime.has_committed_live_occurrences()
                 {
-                    return Err(if shared {
-                        SessionPlaybackError::MutableInstrumentDiagnostic(
-                            "shared source configuration changed while notes are active",
-                        )
-                    } else {
-                        SessionPlaybackError::DeviceRuntime
-                    });
+                    return Err(SessionPlaybackError::SourceHistoryUnavailable);
                 }
                 continue;
             }
@@ -1742,7 +1736,7 @@ mod tests {
                     let mut refused = playback(&f);
                     assert_eq!(
                         refused.try_inherit_state_from(&mut old),
-                        Err(SessionPlaybackError::MutableInstrumentChase)
+                        Err(SessionPlaybackError::SourceHistoryUnavailable)
                     );
                     let mut quiet = [[1.0; 2]; 8];
                     old.render(&mut quiet).unwrap();
@@ -2143,9 +2137,7 @@ mod tests {
             let mut candidate = playback(&f);
             assert_eq!(
                 candidate.try_inherit_state_from(&mut old),
-                Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                    "shared source configuration changed while notes are active",
-                ))
+                Err(SessionPlaybackError::SourceHistoryUnavailable)
             );
             assert_eq!(old.performance_frame(), 7);
             check_pcm(&mut old, 7, 19, 0.5);

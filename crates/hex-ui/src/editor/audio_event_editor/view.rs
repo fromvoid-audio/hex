@@ -2,16 +2,14 @@ use super::super::waveform;
 use super::*;
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
-use gpui::{
-    Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
-};
+use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb};
 use hex_widgets::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 
-const EVENT_RULER_HEIGHT: f32 = 22.0;
+const EVENT_RULER_HEIGHT: f32 = super::super::timeline_strip::RULER_HEIGHT;
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
-    _render_window: &gpui::Window,
+    render_window: &gpui::Window,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
     let (clip_id, root, _) = view.event_context()?;
@@ -37,6 +35,7 @@ pub(in crate::editor) fn view(
         })
     }) {
         view.audio_event_editor.selected = None;
+        view.audio_event_editor.retained_selection = None;
     }
     let pending = view
         .audio_event_editor
@@ -104,28 +103,23 @@ pub(in crate::editor) fn view(
                 .bg(rgb(theme::color(theme::PaletteRole::Grid))),
         );
     }
-    body = body.child(
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .h(px(EVENT_RULER_HEIGHT))
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border))),
-    );
+    let mut ruler = super::super::timeline_strip::ruler_surface()
+        .debug_selector(|| "audio-events-time-ruler".into())
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0();
     for tick in super::super::musical_time::ruler_ticks(&state.project, viewport, width) {
         let x = (tick.frame - viewport.start) as f32 / viewport.length.max(1) as f32;
-        body = body.child(
-            div()
-                .absolute()
-                .top_0()
-                .left(relative(x))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(tick.label)),
-        );
+        ruler = ruler.children(super::super::timeline_strip::ruler_tick(
+            x,
+            tick.label,
+            tick.bar_start,
+            tick.meter_marker,
+            tick.fragmentary_bar,
+        ));
     }
+    body = body.children([ruler]);
     for event in &preview.events {
         let raw_a = event.start.max(editor_bounds(&root).0);
         let raw_b = event.end.min(editor_bounds(&root).1);
@@ -140,6 +134,7 @@ pub(in crate::editor) fn view(
             continue;
         }
         let event_id = event.id;
+        let event_active = event.active;
         let selected = view.audio_event_editor.selected == Some(event.id);
         let mut element = div()
             .id(("audio-event", event.id))
@@ -159,6 +154,7 @@ pub(in crate::editor) fn view(
                 theme::PaletteRole::Border
             })))
             .bg(rgb(theme::color(theme::PaletteRole::Clip)))
+            .opacity(if event.active { 1.0 } else { 0.5 })
             .cursor(gpui::CursorStyle::Arrow);
         let handle_height = view
             .audio_event_editor
@@ -191,6 +187,7 @@ pub(in crate::editor) fn view(
                     visible_start.saturating_sub(pasted.frame_start),
                     visible_end.saturating_sub(pasted.frame_start),
                     clip.gain(),
+                    true,
                     std::rc::Rc::clone(&view.waveform_geometry_cache),
                 )
                 .debug_selector(move || format!("audio-event-waveform-{event_id}")),
@@ -218,6 +215,7 @@ pub(in crate::editor) fn view(
                         source_root + (visible_start - start),
                         source_root + (visible_end - start),
                         clip.gain(),
+                        true,
                         std::rc::Rc::clone(&view.waveform_geometry_cache),
                     )
                     .debug_selector(move || format!("audio-event-waveform-{event_id}")),
@@ -239,12 +237,27 @@ pub(in crate::editor) fn view(
         }
         element = element.child(
             div()
+                .debug_selector(move || {
+                    format!(
+                        "audio-event-{}-{}",
+                        event_id,
+                        if event_active { "active" } else { "inactive" }
+                    )
+                })
                 .absolute()
                 .top_0()
                 .left(px(3.0))
                 .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text(format!("event {}", event.id))),
+                .text_color(rgb(theme::color(if event.active {
+                    theme::PaletteRole::Text
+                } else {
+                    theme::PaletteRole::Muted
+                })))
+                .child(theme::text(if event.active {
+                    format!("event {}", event.id)
+                } else {
+                    format!("inactive · event {}", event.id)
+                })),
         );
         if event.start >= editor_bounds(&root).0 && start >= first + local.start {
             element = element.child(
@@ -266,6 +279,67 @@ pub(in crate::editor) fn view(
                     .bottom_0()
                     .w(px(6.0))
                     .cursor(gpui::CursorStyle::ResizeRightBracket),
+            );
+        }
+        let retained_gain = view
+            .audio_event_editor
+            .retained_selection
+            .as_ref()
+            .filter(|(path, _)| {
+                view.audio_event_editor.selected == Some(event_id)
+                    && path.first() == Some(&event.source)
+            })
+            .and_then(|(path, id)| {
+                preview
+                    .sources
+                    .iter()
+                    .find(|source| Some(&source.id) == path.first())
+                    .and_then(|source| super::retained_events(&source.clip, &path[1..]))
+                    .and_then(|events| events.events.into_iter().find(|inner| inner.id == *id))
+            })
+            .map(|inner| inner.gain);
+        let display_gain = retained_gain.unwrap_or(event.gain);
+        if matches!(operation, Some(AudioEventEdit::SetGain { event: id, .. }) if *id == event_id)
+            || (retained_gain.is_some()
+                && matches!(operation, Some(AudioEventEdit::SetRetainedGain { .. })))
+        {
+            element = element.child(
+                div()
+                    .debug_selector(move || format!("audio-event-gain-value-{event_id}"))
+                    .absolute()
+                    .top(px(5.0))
+                    .right(px(7.0))
+                    .text_xs()
+                    .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+                    .child(theme::text(format!(
+                        "{:+.1} db",
+                        f64::from(display_gain.millidb()) / 1000.0
+                    ))),
+            );
+        }
+        if !view.audio_event_editor.fade_key_held && !view.time_selection_key_held {
+            let gain = display_gain.millidb();
+            element = element.child(
+                div()
+                    .id(("audio-event-gain", event_id))
+                    .debug_selector(move || format!("audio-event-gain-{event_id}"))
+                    .absolute()
+                    .top_0()
+                    .left(px(7.0))
+                    .right(px(7.0))
+                    .h(px(4.0))
+                    .cursor(gpui::CursorStyle::ResizeUpDown)
+                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::super::waveform::ClipTooltip {
+                            kind: crate::tooltips::Kind::control("event gain"),
+                            name: format!(
+                                "gain {:+.1} db · drag down to reduce · shift for fine",
+                                f64::from(gain) / 1000.0
+                            ),
+                        })
+                        .into()
+                    }),
             );
         }
         element = element.children(view.event_fade_elements(
@@ -363,48 +437,17 @@ pub(in crate::editor) fn view(
                 .bg(rgb(theme::color(theme::PaletteRole::Primary))),
         );
     }
-    // A fixed playback-source cursor, separate from both the edit cursor and
-    // loop brace. The canonical projection owns crop, repeat and directed reads.
-    if let Some(position) = hex_project::AudioViewProjection::new(&clip, state.project.tempo_map())
-        .ok()
-        .and_then(|projection| projection.play_start_position().ok().flatten())
-        .and_then(frame_at)
-        .filter(|frame| (first + local.start..=first + local.start + local.length).contains(frame))
-    {
-        let color = theme::color(theme::PaletteRole::Text);
-        body = body.child(
-            div()
-                .debug_selector(|| "audio-play-start-marker".into())
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(relative(frame_to_x(position)))
-                .w(px(1.0))
-                .bg(rgb(color))
-                .child(
-                    canvas(
-                        |_, _, _| (),
-                        move |bounds, _, window, _| {
-                            let x = bounds.left();
-                            let y = bounds.top();
-                            let mut arrow = PathBuilder::fill();
-                            arrow.move_to(point(x, y));
-                            arrow.line_to(point(x + px(7.0), y + px(4.0)));
-                            arrow.line_to(point(x, y + px(8.0)));
-                            arrow.close();
-                            if let Ok(arrow) = arrow.build() {
-                                window.paint_path(arrow, rgb(color));
-                            }
-                        },
-                    )
-                    .absolute()
-                    .top(px(2.0))
-                    .left_0()
-                    .w(px(7.0))
-                    .h(px(8.0)),
-                ),
-        );
-    }
+    body = body.children(first.checked_add(local.start).and_then(|start| {
+        view.audio_play_start_marker(
+            &root,
+            Viewport {
+                start,
+                length: local.length,
+            },
+            render_window,
+            cx,
+        )
+    }));
     if let Some(position) = view
         .audio_playhead_root_position()
         .and_then(frame_at)
@@ -548,6 +591,32 @@ pub(in crate::editor) fn view(
                     && (offset - x(hit.end)).abs() <= 6.0
                 {
                     Kind::Trailing(hit)
+                } else if !view.audio_event_editor.fade_key_held
+                    && (EVENT_RULER_HEIGHT..EVENT_RULER_HEIGHT + 5.0).contains(&local_y)
+                {
+                    let target = if let Some((path, id)) = view
+                        .audio_event_editor
+                        .retained_selection
+                        .as_ref()
+                        .filter(|(path, _)| {
+                            path.first() == Some(&hit.source)
+                                && view.audio_event_editor.selected == Some(hit.id)
+                        }) {
+                        let Some(inner) = super::retained_events(clip, path).and_then(|events| {
+                            events.events.into_iter().find(|event| event.id == *id)
+                        }) else {
+                            return;
+                        };
+                        inner
+                    } else {
+                        hit
+                    };
+                    Kind::Gain {
+                        event: target,
+                        origin_y: f32::from(event.position.y),
+                        last_y: f32::from(event.position.y),
+                        value: f64::from(target.gain.millidb()),
+                    }
                 } else if target == RangeSelectionTarget::Move {
                     Kind::Move(hit)
                 } else {
@@ -558,6 +627,18 @@ pub(in crate::editor) fn view(
             };
             if !view.capture_audio_event_pointer(kind, window, cx) {
                 return;
+            }
+            if !matches!(kind, Kind::Gain { .. })
+                || view.audio_event_editor.selected != hit.map(|event| event.id)
+                || view
+                    .audio_event_editor
+                    .retained_selection
+                    .as_ref()
+                    .is_some_and(|(path, _)| {
+                        hit.is_none_or(|event| path.first() != Some(&event.source))
+                    })
+            {
+                view.audio_event_editor.retained_selection = None;
             }
             if matches!(kind, Kind::Select) {
                 view.audio_event_editor.range = Some((position, position));
@@ -584,6 +665,109 @@ pub(in crate::editor) fn view(
         }),
     );
 
+    let retained = view
+        .audio_event_editor
+        .selected
+        .and_then(|id| preview.events.iter().find(|event| event.id == id))
+        .and_then(|event| preview.sources.iter().find(|root| root.id == event.source));
+    let retained_label = view
+        .audio_event_editor
+        .retained_selection
+        .as_ref()
+        .and_then(|(path, id)| {
+            let root = retained.filter(|root| Some(&root.id) == path.first())?;
+            let events = super::retained_events(&root.clip, &path[1..])?;
+            let event = events.events.iter().find(|event| event.id == *id)?;
+            Some(format!(
+                "source level {} · event {} · {}",
+                path.len(),
+                id,
+                if event.active { "active" } else { "inactive" }
+            ))
+        });
+    let retained_controls = retained.map(|_| {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                waveform::button(
+                    "src",
+                    "select retained source events · 0 toggles activation",
+                    ("audio-retained-source", 0),
+                )
+                .debug_selector(|| "audio-retained-source".into())
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.audio_event_focus.focus(window);
+                    if view.activation_gesture_blocked()
+                        || view.audio_event_editor.pending.is_some()
+                        || view.audio_event_editor.gesture.is_some()
+                    {
+                        return;
+                    }
+                    if view.audio_event_editor.retained_selection.is_some() {
+                        view.audio_event_editor.retained_selection = None;
+                    } else {
+                        view.event_retained_step(true);
+                    }
+                    cx.notify();
+                })),
+            )
+            .children(retained_label.as_ref().map(|label| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        waveform::button("↑", "parent retained source", ("audio-retained-up", 0))
+                            .debug_selector(|| "audio-retained-up".into())
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.audio_event_focus.focus(window);
+                                view.event_retained_depth(false);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        waveform::button(
+                            "‹",
+                            "previous retained source event",
+                            ("audio-retained-prev", 0),
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.audio_event_focus.focus(window);
+                            view.event_retained_step(false);
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        waveform::button("↓", "open retained source", ("audio-retained-down", 0))
+                            .debug_selector(|| "audio-retained-down".into())
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.audio_event_focus.focus(window);
+                                view.event_retained_depth(true);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                            .child(theme::text(label.clone())),
+                    )
+                    .child(
+                        waveform::button(
+                            "›",
+                            "next retained source event",
+                            ("audio-retained-next", 0),
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.audio_event_focus.focus(window);
+                            view.event_retained_step(true);
+                            cx.notify();
+                        })),
+                    )
+            }))
+    });
     let grid = view.audio_event_editor.grid;
     let toolbar = div()
         .h(px(22.0))
@@ -652,6 +836,7 @@ pub(in crate::editor) fn view(
         )
         .child(view.zoom_fit_button(super::super::zoom_fit::Target::Audio, false, cx))
         .child(view.zoom_fit_button(super::super::zoom_fit::Target::Audio, true, cx))
+        .children(retained_controls)
         .child(
             div()
                 .flex_1()

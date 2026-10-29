@@ -5,6 +5,41 @@ use super::{
 use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
+#[derive(Clone, Copy)]
+enum TransportIcon {
+    Play,
+    Pause,
+    Stop,
+    Split,
+    Undo,
+    Redo,
+    AddTrack,
+    AddMidiClip,
+    RemoveTrack,
+}
+
+impl TransportIcon {
+    fn asset(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Play => ("icons/transport/play.svg", "transport-play-icon"),
+            Self::Pause => ("icons/transport/pause.svg", "transport-pause-icon"),
+            Self::Stop => ("icons/transport/stop.svg", "transport-stop-icon"),
+            Self::Split => ("icons/transport/split.svg", "transport-split-icon"),
+            Self::Undo => ("icons/transport/undo.svg", "transport-undo-icon"),
+            Self::Redo => ("icons/transport/redo.svg", "transport-redo-icon"),
+            Self::AddTrack => ("icons/transport/add-track.svg", "transport-add-track-icon"),
+            Self::AddMidiClip => (
+                "icons/transport/add-midi-clip.svg",
+                "transport-add-midi-icon",
+            ),
+            Self::RemoveTrack => (
+                "icons/transport/remove-track.svg",
+                "transport-remove-track-icon",
+            ),
+        }
+    }
+}
+
 impl EditorView {
     pub(super) fn transport(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let playing = self
@@ -35,6 +70,7 @@ impl EditorView {
             .items_center()
             .flex_shrink_0()
             .child(field)
+            .child(super::gain_recording::retained_controls(self, cx))
             .child(self.control_icon(
                 "♯",
                 "project tuning · cmd+alt+t",
@@ -53,8 +89,12 @@ impl EditorView {
                 cx,
             ))
             .child(
-                self.icon(
-                    if playing { "Ⅱ" } else { "▶" },
+                self.vector_icon(
+                    if playing {
+                        TransportIcon::Pause
+                    } else {
+                        TransportIcon::Play
+                    },
                     "play or pause · space",
                     TogglePlay,
                     cx,
@@ -62,7 +102,7 @@ impl EditorView {
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
-                self.icon("■", "stop · escape", Stop, cx)
+                self.vector_icon(TransportIcon::Stop, "stop · escape", Stop, cx)
                     .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
             .child(
@@ -164,28 +204,33 @@ impl EditorView {
                     },
                 )),
             )
-            .child(self.icon(
-                "✂",
+            .child(self.vector_icon(
+                TransportIcon::Split,
                 "split selection edges or edit cursor · e",
                 SplitClip,
                 cx,
             ))
             .child(
-                self.icon("↶", "undo · cmd+z", Undo, cx)
+                self.vector_icon(TransportIcon::Undo, "undo · cmd+z", Undo, cx)
                     .opacity(if can_undo { 1.0 } else { 0.45 }),
             )
             .child(
-                self.icon("↷", "redo · cmd+shift+z", Redo, cx)
+                self.vector_icon(TransportIcon::Redo, "redo · cmd+shift+z", Redo, cx)
                     .opacity(if can_redo { 1.0 } else { 0.45 }),
             )
-            .child(self.icon("+", "add track", AddTrack, cx))
-            .child(self.icon(
-                "♪",
+            .child(self.vector_icon(TransportIcon::AddTrack, "add track", AddTrack, cx))
+            .child(self.vector_icon(
+                TransportIcon::AddMidiClip,
                 "add four-beat midi clip · cmd+shift+m",
                 AddMidiClip,
                 cx,
             ))
-            .child(self.icon("−", "remove selected track", RemoveTrack, cx))
+            .child(self.vector_icon(
+                TransportIcon::RemoveTrack,
+                "remove selected track",
+                RemoveTrack,
+                cx,
+            ))
             .child(
                 div()
                     .w(px(1.0))
@@ -388,6 +433,46 @@ impl EditorView {
                 }))
             }
         })
+    }
+
+    fn vector_icon(
+        &self,
+        icon: TransportIcon,
+        description: &'static str,
+        action: impl gpui::Action,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let (path, selector) = icon.asset();
+        let style = theme::action_style();
+        let hover_text = style.hover_text.unwrap_or(style.text);
+        hex_widgets::action_surface(style)
+            .group(description)
+            .rounded_full()
+            .child(
+                div().debug_selector(move || selector.into()).child(
+                    gpui::svg()
+                        .path(path)
+                        .size(px(14.0))
+                        .text_color(rgb(style.text))
+                        .group_hover(description, move |style| style.text_color(rgb(hover_text))),
+                ),
+            )
+            .id(description)
+            .debug_selector(move || description.into())
+            .w(px(header::CONTROL_SIZE))
+            .h(px(header::CONTROL_SIZE))
+            .text_xs()
+            .tooltip(move |_, cx| {
+                cx.new(|_| MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: description.into(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |_, _, window, cx| {
+                window.dispatch_action(action.boxed_clone(), cx);
+                cx.notify();
+            }))
     }
 
     fn icon(

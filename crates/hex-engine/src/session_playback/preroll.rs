@@ -433,6 +433,11 @@ impl SessionPlayback {
         RuntimeStorage {
             live_expression: self.live_expression.is_some(),
             computer_keyboard: self.computer_keyboard.as_deref(),
+            native_parameter_state: self.native_parameter_state.is_some(),
+            scalar_automation: self
+                .native_parameter_state
+                .as_deref()
+                .is_some_and(|state| state.scalar.is_some()),
             compensation: self.compensation.as_ref(),
             main_chain: &self.main_chain,
             current_sampler_keyboards: &self.current_sampler_keyboards,
@@ -473,6 +478,8 @@ impl SessionPlayback {
 pub(super) struct RuntimeStorage<'a> {
     pub(super) live_expression: bool,
     pub(super) computer_keyboard: Option<&'a crate::computer_keyboard::ComputerKeyboardRuntime>,
+    pub(super) native_parameter_state: bool,
+    pub(super) scalar_automation: bool,
     pub(super) compensation: Option<&'a crate::signal_graph::SignalRuntime>,
     pub(super) main_chain: &'a hex_lattice::NativeRuntimeChain,
     pub(super) current_sampler_keyboards:
@@ -507,6 +514,19 @@ pub(super) struct RuntimeStorage<'a> {
 impl RuntimeStorage<'_> {
     pub(super) fn bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<SessionPlayback>();
+        checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
+        if self.scalar_automation {
+            checked_add(
+                &mut total,
+                crate::scalar_automation::State::requested_data_bytes(),
+            )?;
+        }
+        if self.native_parameter_state {
+            checked_add(
+                &mut total,
+                SessionPlayback::native_parameter_input_state_bytes(),
+            )?;
+        }
         if let Some(admission) = self.midi_admission {
             checked_add(&mut total, admission.retained_bytes()?)?;
         }
@@ -633,6 +653,19 @@ fn runtime_storage_preflight_bytes(
         )?
         .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
+    checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
+    if revision.scalar_automation.is_some() {
+        checked_add(
+            &mut total,
+            crate::scalar_automation::State::requested_data_bytes(),
+        )?;
+    }
+    if revision.native_parameter_input_target().is_some() {
+        checked_add(
+            &mut total,
+            SessionPlayback::native_parameter_input_state_bytes(),
+        )?;
+    }
     checked_add(&mut total, main_bytes)?;
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(

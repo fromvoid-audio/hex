@@ -21,6 +21,88 @@ fn beat(num: u64, den: u64) -> BeatTime {
 fn setup() -> (Editor, hex_project::TrackId) {
     setup_at_rate(48_000)
 }
+
+#[test]
+fn grouping_mixed_clip_activation_keeps_scheduled_notes_and_inactive_content() {
+    let (mut editor, track) = setup();
+    let active = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+    let inactive = add_clip(&mut editor, track, beat(4, 1), beat(2, 1));
+    for (clip, pitch) in [(active, 60), (inactive, 67)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: beat(1, 1),
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    editor
+        .execute(Command::SetClipActive {
+            clip: inactive,
+            active: false,
+        })
+        .unwrap();
+    let notes = |project: &Project| {
+        midi_events(project)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.frame, e.kind, e.pitch, e.channel, e.velocity))
+            .collect::<Vec<_>>()
+    };
+    let before = notes(editor.project());
+    let Created::Clip(group) = editor
+        .execute(Command::GroupClips(vec![active, inactive]))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    assert_eq!(notes(editor.project()), before);
+    let grouped = editor.project().midi_clip(group).unwrap();
+    assert!(grouped.active());
+    assert_eq!(
+        grouped
+            .notes()
+            .iter()
+            .map(|note| note.active())
+            .collect::<Vec<_>>(),
+        vec![true, false]
+    );
+    assert!(editor.undo());
+    assert_eq!(notes(editor.project()), before);
+    assert!(editor.redo());
+    assert_eq!(notes(editor.project()), before);
+}
+
+#[test]
+fn inactive_subframe_note_does_not_prevent_midi_preparation() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 1));
+    let Created::Note(note) = editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap()
+    else {
+        panic!("note")
+    };
+    editor
+        .execute(Command::SetMidiNotesActive {
+            clip,
+            notes: vec![note],
+            active: false,
+        })
+        .unwrap();
+    assert!(midi_events(editor.project()).unwrap().is_empty());
+    compile::project(editor.project(), &BTreeMap::new()).unwrap();
+}
 fn setup_at_rate(sample_rate: u32) -> (Editor, hex_project::TrackId) {
     let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 16).unwrap();
     let track = match editor
@@ -1428,6 +1510,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let frame_beat = beat(1, 24_000).raw();
     clips[0].notes = (0..hex_project::MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: first_note + index as u64,
             start_raw: index as u64 * frame_beat,
             duration_raw: frame_beat,

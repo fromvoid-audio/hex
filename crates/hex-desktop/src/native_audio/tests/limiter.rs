@@ -7,6 +7,163 @@ use hex_session::{
 };
 
 #[test]
+fn loop_edit_after_pausing_a_track_limiter_publishes_current_audio() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    });
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..12 {
+        h.render();
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Pause)
+        .unwrap();
+    h.render();
+    let edit = h.run(Request::Edit(hex_project::Command::SetLoopRegion {
+        start: 256,
+        end: 4096,
+        enabled: true,
+    }));
+    assert!(edit.error.is_none(), "{:?}", edit.error);
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..12 {
+        h.render();
+    }
+    for _ in 0..100 {
+        assert!(
+            h.render()
+                .iter()
+                .flatten()
+                .all(|v| (*v - 0.25).abs() < 1e-5)
+        );
+    }
+    let position = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    assert!((256..4096).contains(&position), "loop position {position}");
+    let added = h.run(Request::InsertEffectBusDevice {
+        project_generation: 0,
+        revision: edit.state.revision,
+        destination: EffectBusDestination::Main,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        before: None,
+    });
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let device = added.state.project.main_devices()[0].id();
+    (applied, _) = h.applied(applied);
+    h.run(Request::SetDeviceParameter {
+        device,
+        parameter: ParameterId::from_static(2),
+        value: ParameterValue::Float(-18.0),
+    });
+    h.applied(applied);
+    for _ in 0..12 {
+        h.render();
+    }
+    let ceiling = 10.0_f32.powf(-18.0 / 20.0);
+    assert!(
+        h.render()
+            .iter()
+            .flatten()
+            .all(|v| (*v - ceiling).abs() < 1e-5)
+    );
+}
+
+#[test]
+fn main_limiter_added_after_sounding_track_limiter_applies_to_audio() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    let initial = h.next();
+    assert!(initial.error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    let track_added = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    });
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..12 {
+        h.render();
+    }
+    assert!(
+        h.render()
+            .iter()
+            .flatten()
+            .all(|v| (*v - 0.25).abs() < 1e-5)
+    );
+    let added = h.run(Request::InsertEffectBusDevice {
+        project_generation: 0,
+        revision: track_added.state.revision,
+        destination: EffectBusDestination::Main,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: hex_engine::DeviceTypeId::from_static("hex.limiter"),
+        before: None,
+    });
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let device = added.state.project.main_devices()[0].id();
+    (applied, _) = h.applied(applied);
+    h.run(Request::SetDeviceParameter {
+        device,
+        parameter: ParameterId::from_static(2),
+        value: ParameterValue::Float(-18.0),
+    });
+    h.applied(applied);
+    for _ in 0..12 {
+        h.render();
+    }
+    let ceiling = 10.0_f32.powf(-18.0 / 20.0);
+    assert!(
+        h.render()
+            .iter()
+            .flatten()
+            .all(|v| (*v - ceiling).abs() < 1e-5)
+    );
+}
+
+#[test]
 fn main_limiter_quiet_timing_changes_publish_and_render_the_new_delay() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let files = Files::new();
@@ -80,6 +237,109 @@ fn main_limiter_quiet_timing_changes_publish_and_render_the_new_delay() {
     );
     assert!(h.publication_refusals.is_empty());
     // Every render checks zero total and signed-net callback allocations/bytes.
+}
+
+#[test]
+fn changing_existing_latency_reports_stop_and_restores_current_project() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    let limiter = || Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    };
+    h.run(limiter());
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..12 {
+        h.render();
+    }
+    let added = h.run(limiter());
+    let device = added.state.project.track(track).unwrap().devices()[1].id();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let rejected = loop {
+        h.pump();
+        h.render();
+        if let Some((revision, reason)) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_revision()
+            && revision > applied
+        {
+            assert_eq!(
+                reason,
+                hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
+            );
+            assert_eq!(
+                hex_engine::PlaybackHandoffRejection::from_code(reason as u32),
+                Some(reason)
+            );
+            assert!(reason.message().contains("stop transport"));
+            break revision;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "latency refusal was not reported"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    h.render();
+    let restored = h.run(Request::RestoreStoppedPlayback);
+    assert_eq!(restored.state.project, added.state.project);
+    (applied, _) = h.applied(rejected);
+    h.run(Request::SetDeviceParameter {
+        device,
+        parameter: ParameterId::from_static(2),
+        value: ParameterValue::Float(-18.0),
+    });
+    h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..20 {
+        h.render();
+    }
+    let ceiling = 10.0_f32.powf(-18.0 / 20.0);
+    assert!(
+        h.render()
+            .iter()
+            .flatten()
+            .all(|sample| *sample <= ceiling + 1e-5)
+    );
 }
 
 #[test]

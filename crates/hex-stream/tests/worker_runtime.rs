@@ -606,6 +606,183 @@ fn actual_worker_converts_and_recovers_after_a_full_unpinned_cache() {
 }
 
 #[test]
+fn pinned_real_worker_pages_survive_pressure_and_retry_after_unpin() {
+    let (wav, expected) = TestWav::stereo_pcm16(48_000, 12_288);
+    let asset = asset_id(expected.len(), 48_000);
+    let key = StreamSourceKey::new(117, asset);
+    let verified = VerifiedWavReader::open(wav.path(), reader_limits(expected.len())).unwrap();
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        expected.len() as u64,
+        expected.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *verified.fingerprint(),
+    )
+    .unwrap();
+    let definition = SourceDefinition::new(
+        wav.path().to_path_buf(),
+        metadata,
+        reader_limits(expected.len()),
+    );
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let pages = [0, 1, 2].map(|page_index| PageKey {
+        source: key,
+        page_index,
+    });
+    for page in &pages[..2] {
+        runtime.request_page(key, page.page_index);
+    }
+    assert!(wait_for_pages(
+        &mut runtime,
+        &pages[..2],
+        Duration::from_secs(3)
+    ));
+    assert!(runtime.pin_pages(&pages[..2]));
+    let queued = runtime.stats().queued_requests;
+    runtime.request_page(key, 2);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while runtime.stats().queued_requests < queued + 2 {
+        assert!(
+            Instant::now() < deadline,
+            "refused page did not become retryable"
+        );
+        runtime.pump_ready(8);
+        assert!(runtime.page(key, 2).is_none());
+        runtime.request_page(key, 2);
+        thread::sleep(Duration::from_millis(2));
+    }
+    for (index, page) in pages[..2].iter().enumerate() {
+        assert_eq!(
+            runtime.page(key, page.page_index).unwrap().frames,
+            &expected[index * 4096..(index + 1) * 4096]
+        );
+    }
+    runtime.unpin_all();
+    assert!(wait_for_pages(
+        &mut runtime,
+        &pages[2..],
+        Duration::from_secs(3)
+    ));
+    assert_eq!(runtime.page(key, 2).unwrap().frames, &expected[8192..]);
+    let report = runtime.shutdown().unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 3);
+}
+
+#[test]
+fn identity_pages_preserve_exact_samples_and_partial_eof_after_cache_turnover() {
+    let page_frames = hex_engine::STREAM_PAGE_FRAMES;
+    let (wav, pcm) = TestWav::stereo_pcm16(48_000, page_frames * 2 + 17);
+    let key = StreamSourceKey::new(43, asset_id(pcm.len(), 48_000));
+    let reader =
+        VerifiedWavReader::open(wav.path(), reader_limits(pcm.len())).expect("verified source");
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        pcm.len() as u64,
+        pcm.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .expect("identity metadata");
+    let definition =
+        SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(pcm.len()));
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).expect("runtime");
+    runtime
+        .wait_until_ready(Duration::from_secs(3))
+        .expect("ready");
+
+    // Turn over the two cache slots and compare each exposed page directly
+    // with the fixture's decoded PCM, including the short final page.
+    for index in [0, 1, 2, 0, 2] {
+        let page = PageKey {
+            source: key,
+            page_index: index,
+        };
+        if runtime.page(key, index).is_none() {
+            runtime.request_page(key, index);
+        }
+        assert!(wait_for_pages(
+            &mut runtime,
+            &[page],
+            Duration::from_secs(3)
+        ));
+        let actual = runtime.page(key, index).expect("installed page");
+        let start = index as usize * page_frames;
+        let end = (start + page_frames).min(pcm.len());
+        assert_eq!(actual.page_index, index);
+        assert_eq!(actual.frames, &pcm[start..end]);
+    }
+
+    let report = runtime.shutdown().expect("balanced shutdown");
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 3);
+}
+
+#[test]
+fn real_worker_keeps_simultaneous_generations_of_an_asset_separate() {
+    let frames = hex_engine::STREAM_PAGE_FRAMES;
+    let (first_wav, first_pcm) = TestWav::stereo_pcm16(48_000, frames);
+    let (second_wav, mut second_pcm) = TestWav::stereo_pcm16(48_000, frames);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(second_wav.path())
+        .unwrap();
+    file.seek(SeekFrom::Start(44)).unwrap();
+    file.write_all(&16_384_i16.to_le_bytes()).unwrap();
+    file.sync_all().unwrap();
+    second_pcm[0][0] = 0.5;
+    assert_ne!(first_pcm, second_pcm);
+
+    let asset = asset_id(frames, 48_000);
+    let keys = [
+        StreamSourceKey::new(41, asset),
+        StreamSourceKey::new(42, asset),
+    ];
+    let definitions = [&first_wav, &second_wav]
+        .into_iter()
+        .zip(keys)
+        .map(|(wav, key)| {
+            let reader = VerifiedWavReader::open(wav.path(), reader_limits(frames)).unwrap();
+            let metadata = StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                frames as u64,
+                frames as u64,
+                hex_project::IDENTITY_CONVERSION,
+                *reader.fingerprint(),
+            )
+            .unwrap();
+            SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(frames))
+        })
+        .collect();
+    let mut runtime = StreamRuntime::new(StreamConfig::with_pool_pages(3), definitions).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let pages = keys.map(|source| PageKey {
+        source,
+        page_index: 0,
+    });
+    for key in keys {
+        runtime.request_page(key, 0);
+    }
+    assert!(wait_for_pages(&mut runtime, &pages, Duration::from_secs(3)));
+    assert!(runtime.pin_pages(&pages));
+    assert_eq!(runtime.page(keys[0], 0).unwrap().frames, first_pcm);
+    assert_eq!(runtime.page(keys[1], 0).unwrap().frames, second_pcm);
+    runtime.unpin_all();
+    let report = runtime.shutdown().unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 3);
+}
+
+#[test]
 fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_page() {
     let (wav, _) = TestWav::stereo_pcm16(48_000, 4096);
     let asset = asset_id(4096, 48_000);
@@ -643,7 +820,7 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
 
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut failures = [hex_stream::StreamFailure {
-        key,
+        key: key.into(),
         page_index: 0,
         kind: hex_stream::StreamFailureKind::DecodeFailed,
     }; 1];
@@ -656,7 +833,7 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
         }
     }
     assert_eq!(failure_count, 1);
-    assert_eq!(failures[0].key, key);
+    assert_eq!(failures[0].key, key.into());
     assert_eq!(failures[0].page_index, 0);
     assert_eq!(
         failures[0].kind,
@@ -669,6 +846,163 @@ fn wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_pa
 
     let report = runtime.shutdown().expect("shutdown after source refusal");
     assert!(report.accounting_complete);
+}
+
+#[test]
+fn real_worker_loop_crosses_page_boundaries_with_exact_pcm() {
+    let page_frames = hex_engine::STREAM_PAGE_FRAMES;
+    let (wav, pcm) = TestWav::stereo_pcm16(48_000, page_frames + 16);
+    let key = StreamSourceKey::new(44, asset_id(pcm.len(), 48_000));
+    let reader =
+        VerifiedWavReader::open(wav.path(), reader_limits(pcm.len())).expect("verified source");
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        pcm.len() as u64,
+        pcm.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .expect("identity metadata");
+    let definition = SourceDefinition::new(
+        wav.path().to_path_buf(),
+        metadata.clone(),
+        reader_limits(pcm.len()),
+    );
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).expect("runtime");
+    runtime
+        .wait_until_ready(Duration::from_secs(3))
+        .expect("ready");
+    let pages = [
+        PageKey {
+            source: key,
+            page_index: 0,
+        },
+        PageKey {
+            source: key,
+            page_index: 1,
+        },
+    ];
+    for page in pages {
+        runtime.request_page(page.source, page.page_index);
+    }
+    assert!(wait_for_pages(&mut runtime, &pages, Duration::from_secs(3)));
+
+    let clip = Clip::streamed_region(
+        std::sync::Arc::new(metadata),
+        3,
+        20,
+        (page_frames - 3) as u64,
+        9,
+        true,
+    )
+    .expect("looped clip");
+    let project = EngineProject::new(
+        48_000,
+        vec![Track::new(vec![clip], 1.0, false).expect("track")],
+    )
+    .expect("project");
+    let mut renderer = Renderer::new(&project);
+    renderer.play();
+    let mut output = [[0.0; 2]; 26];
+    let mut offset = 0;
+    for count in [2, 5, 1, 7, 3, 8] {
+        renderer
+            .render_with_pages(&mut output[offset..offset + count], &mut runtime)
+            .expect("render");
+        offset += count;
+    }
+    let mut expected = [[0.0; 2]; 26];
+    for (frame, sample) in expected.iter_mut().enumerate().skip(3).take(20) {
+        *sample = pcm[page_frames - 3 + (frame - 3) % 9];
+    }
+    assert_eq!(output, expected);
+    assert_eq!(runtime.stats().misses, 0);
+    let report = runtime.shutdown().expect("balanced shutdown");
+    assert!(report.worker_joined && report.accounting_complete);
+}
+
+#[test]
+fn truncated_source_refuses_its_page_without_stalling_another_source() {
+    let (damaged, _) = TestWav::stereo_pcm16(48_000, 4096);
+    let (healthy, expected) = TestWav::stereo_pcm16(48_000, 4096);
+    let asset = asset_id(4096, 48_000);
+    let damaged_key = StreamSourceKey::new(101, asset);
+    let healthy_key = StreamSourceKey::new(102, asset);
+    let definition = |wav: &TestWav, key| {
+        let reader = VerifiedWavReader::open(wav.path(), reader_limits(4096)).expect("verified");
+        let metadata = StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            4096,
+            4096,
+            hex_project::IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .expect("metadata");
+        SourceDefinition::new(wav.path().to_path_buf(), metadata, reader_limits(4096))
+    };
+    let mut runtime = StreamRuntime::new(
+        StreamConfig::with_pool_pages(3),
+        vec![
+            definition(&damaged, damaged_key),
+            definition(&healthy, healthy_key),
+        ],
+    )
+    .expect("runtime");
+    runtime
+        .wait_until_ready(Duration::from_secs(3))
+        .expect("ready");
+    OpenOptions::new()
+        .write(true)
+        .open(damaged.path())
+        .expect("open damaged fixture")
+        .set_len(48)
+        .expect("truncate fixture");
+    runtime.request_page(damaged_key, 0);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut failures = [hex_stream::StreamFailure {
+        key: damaged_key.into(),
+        page_index: 0,
+        kind: hex_stream::StreamFailureKind::DecodeFailed,
+    }; 1];
+    let mut count = 0;
+    while Instant::now() < deadline && count == 0 {
+        runtime.pump_ready(8);
+        count = runtime.take_failures(&mut failures);
+        if count == 0 {
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    assert_eq!(count, 1);
+    assert_eq!(failures[0].key, damaged_key.into());
+    assert_eq!(failures[0].page_index, 0);
+    assert_eq!(
+        failures[0].kind,
+        hex_stream::StreamFailureKind::SourceChanged
+    );
+    assert!(runtime.page(damaged_key, 0).is_none());
+
+    let page = PageKey {
+        source: healthy_key,
+        page_index: 0,
+    };
+    runtime.request_page(healthy_key, 0);
+    assert!(wait_for_pages(
+        &mut runtime,
+        &[page],
+        Duration::from_secs(3)
+    ));
+    assert_eq!(
+        runtime.page(healthy_key, 0).expect("healthy page").frames,
+        expected
+    );
+    let report = runtime.shutdown().expect("balanced shutdown");
+    assert!(report.worker_joined && report.accounting_complete);
 }
 
 #[test]

@@ -277,6 +277,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
     let (mut editor, clip) = editor_with_clip(false, 0, 2, 2);
     let notes = (0..(MAX_NOTES / 2 + 1))
         .map(|_| hex_project::MidiNoteInsert {
+            active: true,
             start: BeatTime::ZERO,
             duration: beat(2),
             pitch: 60,

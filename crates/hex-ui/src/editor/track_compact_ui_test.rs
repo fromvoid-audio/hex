@@ -289,7 +289,28 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
         );
         let zero = gpui::ScaledPixels::default();
         assert!(
-            widths.top > zero && widths.bottom > zero && widths.left > zero && widths.right > zero
+            widths.top > zero && widths.bottom > zero && widths.left > zero && widths.right == zero
+        );
+        // The right edge is a separately painted physical pixel, not a layout
+        // border. Keep its scene coverage alongside the three native edges.
+        let edge_prefix = if prefix == "midi-clip-visual" {
+            "midi-clip-selected-trailing"
+        } else {
+            "clip-selected-trailing"
+        };
+        let edge_selector = selector(edge_prefix, clip.value());
+        let edge = f.visual.debug_bounds(edge_selector).unwrap();
+        let scale = f.visual.update(|window, _| window.scale_factor());
+        assert_eq!(edge.left(), surface.right());
+        assert_eq!(f64::from(edge.scale(scale).size.width), 1.0);
+        assert_eq!(
+            f.visual.rendered_background(edge_selector),
+            Some(gpui::rgb(theme::color(theme::PaletteRole::Primary)).into())
+        );
+        assert!(
+            !f.visual
+                .rendered_quad_paint_layers(edge_selector, false)
+                .is_empty()
         );
         let move_hit = bounds(&mut f.visual, "clip-drag-surface", clip.value());
         assert_title_rail_height(move_hit, "clip-drag-surface");

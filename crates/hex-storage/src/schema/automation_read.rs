@@ -84,6 +84,7 @@ fn rows(value: &mut Value, host: bool) -> Result<&mut Vec<Value>, StorageError> 
         ))
 }
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
+    super::note_activation::require_all_active(project)?;
     let selections: BTreeMap<_, _> = project
         .automation_devices()
         .flat_map(|device| {

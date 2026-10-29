@@ -329,6 +329,7 @@ pub(super) fn view(
                 viewport.start,
                 end,
                 window.gain,
+                false,
                 std::rc::Rc::clone(&view.waveform_geometry_cache),
             );
             canvas_region = canvas_region.child(
@@ -633,15 +634,8 @@ fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
 }
 
 fn time_ruler(window: ClipWindow, viewport: Viewport) -> Div {
-    let mut ruler = div()
-        .relative()
-        .h(px(18.0))
-        .flex_shrink_0()
+    let mut ruler = super::timeline_strip::ruler_surface()
         .w_full()
-        .overflow_hidden()
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-        .text_xs()
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .debug_selector(|| "arrangement-audio-time-ruler".into());
     if viewport.length == 0 {
         return ruler;
@@ -651,19 +645,13 @@ fn time_ruler(window: ClipWindow, viewport: Viewport) -> Div {
             .start
             .saturating_add((u128::from(viewport.length) * u128::from(index) / 4) as u64);
         let x = index as f32 / 4.0;
-        let ruler_label = div().absolute();
-        let ruler_label = if index == 4 {
-            ruler_label.right_0()
-        } else {
-            ruler_label.left(relative(x))
-        };
-        let ruler_label = ruler_label
-            .top_0()
-            .bottom_0()
-            .flex()
-            .items_center()
-            .child(theme::text(format_frame_time(frame, window.sample_rate)));
-        ruler = ruler.child(ruler_label);
+        ruler = ruler.children(super::timeline_strip::ruler_tick(
+            x,
+            format_frame_time(frame, window.sample_rate),
+            index == 0,
+            false,
+            false,
+        ));
     }
     ruler
 }

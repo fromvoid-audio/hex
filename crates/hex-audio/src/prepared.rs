@@ -60,6 +60,11 @@ impl Callback {
 mod admission;
 mod eligible_publication;
 mod endpoints;
+pub(crate) mod retired_scalar_receipts;
+pub use retired_scalar_receipts::{
+    RetiredReceiptFailure, RetiredScalarReceiptBatch, RetiredScalarReceipts, ScalarReceipt,
+    ScalarReceiptTarget, ScalarReceiptTerminal,
+};
 mod native_effects;
 pub(crate) use native_effects::NativeEffectWindow;
 mod midi_recording;
@@ -523,6 +528,8 @@ pub struct Status {
     pub performance_frame: AtomicU64,
     pub transport_epoch: AtomicU64,
     pub gain_recording_fault: AtomicBool,
+    pub native_parameter_input_fault: AtomicBool,
+    native_parameter_revoked_gesture: AtomicU64,
     pub gain_recording_ready: AtomicBool,
     pub playing: AtomicBool,
     /// Last callback-admitted interactive click state.
@@ -618,6 +625,25 @@ impl Status {
     pub(crate) fn gain_begin_committed(&self) {
         self.publication_pending.legacy_gain_started();
     }
+    pub(crate) fn reserve_native_parameter_input(&self) -> Result<(), &'static str> {
+        if self.closing.load(Acquire) {
+            return Err("native parameter input output is closing");
+        }
+        if !self.publication_pending.reserve_parameter_input() {
+            return Err("playback publication or live input is pending");
+        }
+        Ok(())
+    }
+    pub(crate) fn native_parameter_input_end(&self) {
+        self.publication_pending.parameter_input_finished();
+    }
+    pub(crate) fn revoke_native_parameter_input(&self, gesture: u64) {
+        self.native_parameter_revoked_gesture
+            .fetch_max(gesture, AcqRel);
+    }
+    fn native_parameter_input_revoked(&self, gesture: u64) -> bool {
+        self.native_parameter_revoked_gesture.load(Acquire) >= gesture
+    }
     pub(crate) fn gain_end(&self) {
         self.publication_pending.gain_finished();
     }
@@ -681,6 +707,8 @@ impl Status {
             performance_frame: AtomicU64::new(0),
             transport_epoch: AtomicU64::new(1),
             gain_recording_fault: AtomicBool::new(false),
+            native_parameter_input_fault: AtomicBool::new(false),
+            native_parameter_revoked_gesture: AtomicU64::new(0),
             gain_recording_ready: AtomicBool::new(false),
             playing: AtomicBool::new(false),
             metronome_enabled: AtomicBool::new(false),
@@ -1032,6 +1060,7 @@ pub struct Control {
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
     pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
     pub gain_recording: crate::gain_recording::Control,
+    pub native_parameter_input: crate::native_parameter_input::Control,
     pub midi_recording: crate::midi_recording::Control,
     command_ticket: u64,
     publication: PublicationControl,
@@ -1111,6 +1140,7 @@ pub struct Callback {
     processor_audition_lease: Option<processor_audition::ProcessorAuditionTarget>,
     processor_audition_rejected_epoch: u64,
     gain_recording: crate::gain_recording::Callback,
+    native_parameter_input: Box<crate::native_parameter_input::Callback>,
     midi_recording: crate::midi_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stages: SpectrumStages,
@@ -1177,9 +1207,12 @@ pub fn channel_with_spectrum(
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
     let (mut gain_recording, callback_gain_recording) = crate::gain_recording::channel();
+    let (mut native_parameter_input, callback_native_parameter_input) =
+        crate::native_parameter_input::channel();
     let (mut midi_recording, callback_midi_recording) = crate::midi_recording::channel();
     sample_preview.bind_status(status.clone());
     gain_recording.bind_status(status.clone());
+    native_parameter_input.bind_status(status.clone());
     midi_recording.bind_status(status.clone());
     let candidate_root = crate::candidate_custody::CandidateRoot::new(RETIRED).map_err(Invalid)?;
     let command_storage_bytes = commands
@@ -1197,6 +1230,7 @@ pub fn channel_with_spectrum(
             spectrum_target,
             processor_audition,
             gain_recording,
+            native_parameter_input,
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
@@ -1239,6 +1273,7 @@ pub fn channel_with_spectrum(
             processor_audition_lease: None,
             processor_audition_rejected_epoch: 0,
             gain_recording: callback_gain_recording,
+            native_parameter_input: callback_native_parameter_input,
             midi_recording: callback_midi_recording,
             spectrum_capture: capture,
             spectrum_stages: SpectrumStages::new()?,
@@ -2090,8 +2125,9 @@ impl Callback {
     /// Construct an original whole-output transport profile before callback
     /// exposure. This does not admit a device, graph node or native worker.
     /// Native resource admission remains unavailable until device insertion
-    /// and delayed delivery clocks exist. Spectrum/gain capture are unsupported
-    /// in this original whole-output profile; ordinary output is unchanged.
+    /// and delayed delivery clocks exist. Spectrum/gain capture and native
+    /// parameter input are unsupported in this original whole-output profile;
+    /// ordinary output is unchanged.
     pub(crate) fn prepare_output_transport_on_control(
         &mut self,
         instance: u64,
@@ -2166,7 +2202,10 @@ impl Callback {
             transport.reject(hex_plugin_host::transport::Fault::Identity);
             return false;
         }
-        if self.gain_recording.has_take() || frames.len() > hex_plugin_host::transport::MAX_FRAMES {
+        if self.gain_recording.has_take()
+            || self.native_parameter_input.has_input()
+            || frames.len() > hex_plugin_host::transport::MAX_FRAMES
+        {
             transport.reject(hex_plugin_host::transport::Fault::Protocol);
             return false;
         }
@@ -2244,6 +2283,7 @@ impl Callback {
         self.sample_preview
             .constructor_channel_storage()?
             .plus(self.gain_recording.constructor_channel_storage()?)?
+            .plus(self.native_parameter_input.constructor_channel_storage()?)?
             .plus(self.midi_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
             .plus(self.processor_audition.constructor_channel_storage()?)?
@@ -2419,29 +2459,25 @@ impl Callback {
                     .deferred_eligible
                     .take()
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
-                    .or_else(|| {
-                        self.publications.pop().ok().and_then(|queued| {
-                            Some(match queued {
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                QueuedPublication::NativeEpoch { .. } => return None,
-                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                QueuedPublication::Native(endpoint) => {
-                                    ReturnedPublication::Native(endpoint)
-                                }
-                                QueuedPublication::Domain(pages) => {
-                                    ReturnedPublication::Domain(pages)
-                                }
-                                QueuedPublication::Eligible(value) => {
-                                    ReturnedPublication::Eligible(value.reject_before_install())
-                                }
-                                QueuedPublication::Legacy(value) => {
-                                    ReturnedPublication::Legacy(value)
-                                }
-                                QueuedPublication::Candidate(value) => {
-                                    ReturnedPublication::Candidate(value.reject_before_install())
-                                }
-                            })
-                        })
+                    .or_else(|| match self.publications.pop().ok()? {
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::NativeEpoch { .. } => None,
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::Native(endpoint) => {
+                            Some(ReturnedPublication::Native(endpoint))
+                        }
+                        QueuedPublication::Domain(pages) => {
+                            Some(ReturnedPublication::Domain(pages))
+                        }
+                        QueuedPublication::Eligible(value) => {
+                            Some(ReturnedPublication::Eligible(value.reject_before_install()))
+                        }
+                        QueuedPublication::Legacy(value) => {
+                            Some(ReturnedPublication::Legacy(value))
+                        }
+                        QueuedPublication::Candidate(value) => Some(
+                            ReturnedPublication::Candidate(value.reject_before_install()),
+                        ),
                     });
             }
             if matches!(
@@ -3018,7 +3054,10 @@ impl Callback {
                         }
                         self.reject_publication(
                             next.revision,
-                            PlaybackHandoffRejection::StreamedPagesNotReady,
+                            handoff.map_or(
+                                PlaybackHandoffRejection::StreamedPagesNotReady,
+                                PlaybackHandoffRejection::from_error,
+                            ),
                         );
                         self.return_graph(next);
                         self.status.publication_pending.store(false, Release);
@@ -3605,6 +3644,7 @@ impl Callback {
 
         if !output.is_empty() {
             self.prepare_gain_recording_quantum();
+            self.prepare_native_parameter_quantum();
         }
         self.reconcile_processor_audition();
         self.begin_project_spectrum(output.len());
@@ -3944,6 +3984,23 @@ impl Callback {
         // output must not expose pre-seek/pause/stop buffers in a new context.
         self.revoke_output_transport();
         self.gain_recording.abort(reason);
+        self.invalidate_native_parameter_input(match reason {
+            crate::gain_recording::AbortReason::SourceChanged => {
+                crate::native_parameter_input::AbortReason::SourceChanged
+            }
+            crate::gain_recording::AbortReason::TransportChanged => {
+                crate::native_parameter_input::AbortReason::TransportChanged
+            }
+            crate::gain_recording::AbortReason::OutputFailed => {
+                crate::native_parameter_input::AbortReason::OutputFailed
+            }
+            crate::gain_recording::AbortReason::Cancelled => {
+                crate::native_parameter_input::AbortReason::Cancelled
+            }
+            crate::gain_recording::AbortReason::ClockExhausted => {
+                crate::native_parameter_input::AbortReason::ClockExhausted
+            }
+        });
         if let Some(mut active) = self
             .active
             .as_mut()
@@ -3958,6 +4015,117 @@ impl Callback {
             .is_err()
         {
             self.status.gain_recording_fault.store(true, Release);
+        }
+    }
+    fn invalidate_native_parameter_input(
+        &mut self,
+        reason: crate::native_parameter_input::AbortReason,
+    ) {
+        self.native_parameter_input.abort(reason);
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        {
+            active.playback.invalidate_native_parameter_input();
+        }
+    }
+    fn prepare_native_parameter_quantum(&mut self) {
+        use crate::native_parameter_input::AbortReason;
+        let source = self.status.recording_source();
+        let transport_epoch = self.status.transport_epoch.load(Acquire);
+        let unsupported_output = self.output_transport.is_some();
+        let status = &self.status;
+        let active = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut);
+        let live = self.native_parameter_input.prepare(|target| {
+            if status.native_parameter_input_revoked(target.gesture_serial) {
+                return Err(AbortReason::Cancelled);
+            }
+            if unsupported_output {
+                return Err(AbortReason::UnsupportedOutput);
+            }
+            let active = active.as_ref().ok_or(AbortReason::SourceChanged)?;
+            if source != Some(target.source)
+                || active.revision != target.source.audio_revision
+                || active.control_context_generation != target.source.context.project_generation
+                || active.playback.native_parameter_input_target() != Some(target.input)
+            {
+                return Err(AbortReason::SourceChanged);
+            }
+            if transport_epoch != target.transport_epoch || !active.playback.playing() {
+                return Err(AbortReason::TransportChanged);
+            }
+            Ok(())
+        });
+        if let Some(mut active) = active {
+            if let Some(operation) = live {
+                if active
+                    .playback
+                    .set_native_parameter_input(operation)
+                    .is_err()
+                {
+                    self.native_parameter_input
+                        .abort(AbortReason::TargetUnavailable);
+                    active.playback.invalidate_native_parameter_input();
+                }
+            } else {
+                active.playback.invalidate_native_parameter_input();
+            }
+        }
+    }
+    /// Final checked host write, not physical loudspeaker delivery. Both Set
+    /// and Clear wait for the actual processed sample plus remaining Main delay.
+    pub fn finish_native_parameter_quantum(&mut self, valid: bool) {
+        use crate::native_parameter_input::AbortReason;
+        let invalidated = self.native_parameter_input.owner().and_then(|target| {
+            if self.status.closing.load(Acquire)
+                || self
+                    .status
+                    .native_parameter_input_revoked(target.gesture_serial)
+            {
+                Some(AbortReason::Cancelled)
+            } else if self.status.pending_stop_marker.load(Acquire) != 0
+                || self.status.transport_epoch.load(Acquire) != target.transport_epoch
+            {
+                Some(AbortReason::TransportChanged)
+            } else if self.status.recording_source() != Some(target.source) {
+                Some(AbortReason::SourceChanged)
+            } else {
+                None
+            }
+        });
+        if let Some(reason) = invalidated {
+            self.invalidate_native_parameter_input(reason);
+            return;
+        }
+        let cancelled = self.native_parameter_input.owner().is_some_and(|target| {
+            self.status
+                .native_parameter_input_revoked(target.gesture_serial)
+        });
+        let mut active = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut);
+        let application = active
+            .as_mut()
+            .and_then(|active| active.playback.take_native_parameter_application());
+        let end = active
+            .as_ref()
+            .map_or(0, |active| active.playback.performance_frame());
+        self.native_parameter_input
+            .finish_quantum(application, end, valid, cancelled);
+        if !self.native_parameter_input.has_input()
+            && let Some(active) = &mut active
+        {
+            active.playback.invalidate_native_parameter_input();
+        }
+        if self.native_parameter_input.receipt_fault {
+            self.status
+                .native_parameter_input_fault
+                .store(true, Release);
         }
     }
     fn prepare_gain_recording_quantum(&mut self) {
@@ -4132,6 +4300,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
+        .checked_add(crate::native_parameter_input::constructor_storage_quote()?)?
         .checked_add(crate::midi_recording::constructor_storage_quote()?)?
         .checked_add(spectrum_target::constructor_storage_quote()?)?
         .checked_add(processor_audition::constructor_storage_quote()?)?

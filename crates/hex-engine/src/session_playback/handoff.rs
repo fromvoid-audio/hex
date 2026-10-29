@@ -478,7 +478,7 @@ impl SessionPlayback {
                 // Enumerate its candidate routes before either runtime's capture
                 // epoch, DSP history or one-shot admission is changed.
                 demand.window = Some(
-                    self.visit_stream_chunk_in_scope(
+                    self.visit_stream_chunk_with_history(
                         demand.ordinary,
                         &self.route_scratch,
                         self.performance_frame,
@@ -488,6 +488,7 @@ impl SessionPlayback {
                         demand.playing.unwrap_or(previous.playing),
                         demand.maximum_frames,
                         &mut demand.visit,
+                        super::stream_demand::ScalarOriginHistory::Empty,
                     )
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
                 );
@@ -638,9 +639,7 @@ impl SessionPlayback {
                 || previous.performance_frame != 0
                 || previous.arrangement_frame != 0 =>
             {
-                return Err(SessionPlaybackError::Arrangement(
-                    "latency layout changed · stop transport before applying this revision",
-                ));
+                return Err(SessionPlaybackError::LatencyLayoutChanged);
             }
             _ => 0,
         };
@@ -682,12 +681,15 @@ impl SessionPlayback {
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
+        // A paused loop-only edit may carry the closed compensation history;
+        // the planner below still refuses incompatible sources and active tails.
+        // An edited base tempo map or a live change still needs the old guard.
         if timing_changed
             && (self.revision.arrangement().main_latency_frames() > 0
                 || previous.revision.arrangement().main_latency_frames() > 0)
             && (previous.playing
-                || previous.performance_frame != 0
-                || previous.arrangement_frame != 0)
+                || !same_base
+                    && (previous.performance_frame != 0 || previous.arrangement_frame != 0))
         {
             return Err(SessionPlaybackError::Arrangement(
                 "compensated timing changed · stop transport before applying this revision",
@@ -3336,6 +3338,74 @@ impl SessionPlayback {
         let visible_state_changed = self.route_scratch != previous.routes
             || previous.performance_frame != self.performance_frame
             || timing_changed;
+        // Detached tails already contain their old track processing and fader.
+        // Group routing can safely adopt them only when their complete default
+        // path remains present. Refuse before transferring owners otherwise;
+        // the predecessor can drain and retry without losing its tail.
+        let old_graph = previous.revision.arrangement().signal_graph.as_deref();
+        let new_graph = self.revision.arrangement().signal_graph.as_deref();
+        let has_detached = self.release_scratch.iter().any(|release| {
+            release.location.track_index() >= self.routes.len()
+                || release.location.tail_group().is_some()
+        }) || old_track_tail_slots.iter().any(Option::is_some)
+            || active_tail_groups.iter().any(|active| *active);
+        if has_detached
+            && (old_graph.is_some_and(|graph| graph.has_group_outputs())
+                || new_graph.is_some_and(|graph| graph.has_group_outputs()))
+        {
+            let (Some(old), Some(new)) = (old_graph, new_graph) else {
+                return Err(SessionPlaybackError::GroupTailRoutingBusy);
+            };
+            // Release banks may contain many voices on one track. Validate
+            // the bounded ancestor/device path once per source owner.
+            let mut checked = [None; MAX_TRACKS];
+            let mut compatible = |id| {
+                let Some(index) = old.track_index(id) else {
+                    return false;
+                };
+                if previous
+                    .routes
+                    .get(index)
+                    .is_none_or(|route| route.id != id)
+                {
+                    return false;
+                }
+                let Some(slot) = checked.get_mut(index) else {
+                    return false;
+                };
+                if let Some(result) = *slot {
+                    return result;
+                }
+                let result = old.same_tail_path(
+                    new,
+                    previous.revision.arrangement(),
+                    self.revision.arrangement(),
+                    id,
+                );
+                *slot = Some(result);
+                result
+            };
+            if self.release_scratch.iter().any(|release| {
+                (release.location.track_index() >= self.routes.len()
+                    || release.location.tail_group().is_some())
+                    && !compatible(release.track_id)
+            }) || old_track_tail_slots
+                .iter()
+                .enumerate()
+                .any(|(index, slot)| {
+                    slot.is_some()
+                        && previous
+                            .routes
+                            .get(index)
+                            .is_none_or(|route| !compatible(route.id))
+                })
+                || active_tail_groups.iter().enumerate().any(|(slot, active)| {
+                    *active && previous.tail_track_ids[slot].is_none_or(|id| !compatible(id))
+                })
+            {
+                return Err(SessionPlaybackError::GroupTailRoutingBusy);
+            }
+        }
         if let Some(groups) = groups.as_mut() {
             // Closed chain owners and compensation swaps use the same actual
             // origin journal. Analytic/instrument fanout remains unsupported.
@@ -3396,7 +3466,7 @@ impl SessionPlayback {
                 previous.route_state_generation
             };
             demand.window = Some(
-                self.visit_stream_chunk_in_scope(
+                self.visit_stream_chunk_with_history(
                     demand.ordinary,
                     &self.route_scratch,
                     previous.performance_frame,
@@ -3406,6 +3476,11 @@ impl SessionPlayback {
                     demand.playing.unwrap_or(previous.playing),
                     demand.maximum_frames,
                     &mut demand.visit,
+                    if clock_transfer == 0 {
+                        super::stream_demand::ScalarOriginHistory::Empty
+                    } else {
+                        super::stream_demand::ScalarOriginHistory::Current(previous)
+                    },
                 )
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
             );
@@ -3896,6 +3971,7 @@ impl SessionPlayback {
             runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {
                 let key = signature.key();
                 if revision.midi_clip_inactive(key.track, key.clip)
+                    || revision.midi_note_inactive(key.clip, key.note)
                     || (!timing_changed
                         && old_loop == new_loop
                         && !midi_layout_changed

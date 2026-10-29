@@ -272,6 +272,10 @@ impl Queued {
     }
 }
 impl Bank {
+    pub(super) fn cleanup_failed(&self) -> bool {
+        self.slots.iter().any(|s| s.phase == Phase::Failed)
+    }
+
     pub(in crate::candidate_custody) fn backing_quote(
         reservation: AudioCandidatePublicationReservation,
     ) -> Result<usize, &'static str> {
@@ -694,6 +698,20 @@ impl super::Custody {
         }
         let mut used = [false; 2];
         for source in owner.streamed_sources() {
+            // Both publication classes route callback demand by typed key.
+            // Exact membership elsewhere cannot authorize ambiguous facts in
+            // another retained domain selected for this same graph.
+            if domains.iter().any(|token| {
+                bank.domains[token.slot]
+                    .owner
+                    .as_ref()
+                    .is_some_and(|domain| {
+                        domain.covers_resource_key(source.key().into())
+                            && !domain.covers_source(source)
+                    })
+            }) {
+                return Err("constructor stream source key has conflicting domain facts");
+            }
             let Some(index) = domains.iter().position(|token| {
                 bank.domains[token.slot]
                     .owner

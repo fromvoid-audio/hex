@@ -2,6 +2,160 @@
 use super::*;
 use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_ordinary_track_return_main_controller_queries_preserve_installed_pcm_and_project() {
+    use crate::plugin_worker::NativeWorkerControllerProgress;
+    use hex_plugin_host::protocol::ParameterPageQuery;
+    if std::env::var_os("HEX_ORDINARY_CONTROLLER_DRIVER").is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--test-threads=1"])
+            .env("HEX_ORDINARY_CONTROLLER_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let _serial = serial();
+    for location in 0..3 {
+        let mut f = fixture_at("processing", location);
+        let canonical = f.editor.project().clone();
+        let initial = f.control.native_source_prepared_state(f.binding).unwrap();
+        let root = f.control.native_candidate_root();
+        let playback = compile(&f, true);
+        publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+        f.control.command(PlaybackCommand::Play).unwrap();
+        block(&mut f);
+        replacement::wait_for_blocks(&root, f.binding, 1);
+        let until = Instant::now() + Duration::from_secs(3);
+        let query = loop {
+            match f.control.begin_native_source_controller_query_on_control(
+                f.binding,
+                ParameterPageQuery::default(),
+            ) {
+                Ok(query) => break query,
+                Err("native preparation is busy" | "native controller mailbox is busy") => {}
+                Err(error) => panic!("ordinary controller admission: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        assert!(
+            f.control
+                .poll_native_source_controller_query_on_control(
+                    Binding {
+                        epoch: f.binding.epoch + 1,
+                        ..f.binding
+                    },
+                    &query
+                )
+                .is_err()
+        );
+        for n in 1..4_u64 {
+            let output = block(&mut f);
+            replacement::wait_for_blocks(&root, f.binding, n + 1);
+            let gain =
+                0.5 + n.saturating_sub(2) as f32 * 0.125 + if location == 1 { 1.0 } else { 0.0 };
+            assert_eq!(
+                output,
+                if n < 2 {
+                    [[0.0; 2]; 8]
+                } else {
+                    [[0.25 * gain, -0.5 * gain]; 8]
+                }
+            );
+        }
+        let until = Instant::now() + Duration::from_secs(3);
+        let page = loop {
+            match f
+                .control
+                .poll_native_source_controller_query_on_control(f.binding, &query)
+            {
+                Ok(NativeWorkerControllerProgress::Page(page)) => break page,
+                Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
+                }
+                other => panic!("ordinary controller completion: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            (
+                page.total,
+                page.as_slice()[0].id,
+                page.as_slice()[0].normalized
+            ),
+            (1, 7, 0.25)
+        );
+        assert_eq!(
+            page.as_slice()[0].plain,
+            hex_plugin_host::protocol::ParameterPlainValue::Finite(1.0)
+        );
+        let until = Instant::now() + Duration::from_secs(3);
+        let conversion = loop {
+            match f.control.begin_native_source_controller_query_on_control(
+                f.binding,
+                ParameterPageQuery {
+                    conversion: Some(hex_plugin_host::protocol::ParameterConversion::Parse {
+                        id: 7,
+                        text: hex_plugin_host::protocol::ParameterText::from_text("double")
+                            .unwrap(),
+                    }),
+                    ..ParameterPageQuery::default()
+                },
+            ) {
+                Ok(query) => break query,
+                Err("native preparation is busy" | "native controller mailbox is busy") => {}
+                Err(error) => panic!("ordinary SDK parse admission: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        };
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match f
+                .control
+                .poll_native_source_controller_query_on_control(f.binding, &conversion)
+            {
+                Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
+                }
+                Ok(NativeWorkerControllerProgress::Conversion(value)) => {
+                    assert_eq!(
+                        (value.id, value.normalized, value.plain),
+                        (
+                            7,
+                            Some(0.5),
+                            hex_plugin_host::protocol::ParameterPlainValue::Finite(2.0)
+                        )
+                    );
+                    break;
+                }
+                other => panic!("ordinary SDK parse completion: {other:?}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            f.control.native_source_prepared_state(f.binding),
+            Some(initial)
+        );
+        assert_eq!(f.editor.project(), &canonical);
+        assert_eq!(
+            f.control.native_source_endpoint_status(f.binding),
+            Some((true, true))
+        );
+        dispose(f);
+    }
+}
+
 fn begin(f: &mut OrdinaryFixture) -> NativeWorkerCapture {
     let until = Instant::now() + Duration::from_secs(2);
     loop {

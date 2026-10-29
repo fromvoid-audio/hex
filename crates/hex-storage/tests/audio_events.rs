@@ -94,6 +94,8 @@ fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
             next_id: 1025,
             events: (0..1024)
                 .map(|i| hex_project::AudioEvent {
+                    active: true,
+                    gain: hex_project::ClipGain::UNITY,
                     source: 0,
                     id: i + 1,
                     start: i * 2,

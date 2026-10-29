@@ -38,6 +38,7 @@ fn setup(
     ]
     .into_iter()
     .map(|(pitch, start, velocity)| MidiNoteInsert {
+        active: true,
         start: BeatTime::from_raw(start),
         duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
         pitch,

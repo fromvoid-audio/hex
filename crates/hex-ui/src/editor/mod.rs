@@ -31,6 +31,9 @@ mod clip_clipboard_ui_test;
 mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
+mod clip_gain;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_gain_ui_tests;
 mod clip_name;
 mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -56,7 +59,6 @@ mod workspace_view_ui_test;
 mod group_copy;
 mod group_selection;
 mod midi_pending_drag;
-mod midi_volume;
 mod pending_clip_move;
 mod pending_edit;
 #[cfg(test)]
@@ -182,6 +184,9 @@ mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
 mod time_selection_tool;
+mod timeline_strip;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod timeline_strip_ui_tests;
 mod track_clipboard;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_clipboard_ui_test;
@@ -205,6 +210,7 @@ mod tracks;
 mod transport;
 mod trim;
 mod tuning;
+mod update_flow;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
@@ -371,6 +377,9 @@ actions!(
         CancelTuningName,
         SaveProject,
         SaveAsProject,
+        InstallUpdateOnQuit,
+        SaveAndRestartForUpdate,
+        CancelUpdate,
         ExportProject,
         Undo,
         Redo,
@@ -452,7 +461,6 @@ fn bind_editor_keys(cx: &mut App) {
     clip_name::bind_keys(cx);
     track_name::bind_keys(cx);
     cx.bind_keys([
-        KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
         KeyBinding::new("s", ToggleSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
@@ -717,6 +725,7 @@ pub(super) struct EditorView {
     document_audio_mode: hex_session::DocumentAudioMode,
     recovery: RecoveryState,
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
+    latency_rebuild: Option<audio_admission::LatencyRebuild>,
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
@@ -748,7 +757,6 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
     pending_midi_drag: Option<midi_pending_drag::Pending>,
-    midi_volume: midi_volume::State,
     pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
@@ -829,16 +837,17 @@ pub(super) struct EditorView {
     track_clipboard_context: Option<(u64, u64)>,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
+    group_selection_history: group_selection::SelectionHistory,
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
-    rendered_group_selection: group_selection::SelectionHistory,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
     saving_project: bool,
+    update_flow: update_flow::State,
     save_dialog_open: bool,
     document_format_upgrade_required: bool,
     format_upgrade_prompt: Option<save::FormatUpgradeIntent>,
@@ -903,6 +912,7 @@ pub(super) struct EditorView {
     time_selection_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     pending_fade: Option<fade_handles::PendingFade>,
+    clip_gain: clip_gain::State,
     hovered_fade_clip: Option<(u64, ClipId)>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
@@ -1191,6 +1201,8 @@ impl EditorView {
         #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        cx.use_test_assets(crate::assets::HexAssets);
         crate::diagnostics::attach_service(cx, &service);
         #[cfg(test)]
         let test_environment = test_paths.existing_environment.unwrap_or_else(|| {
@@ -1241,6 +1253,35 @@ impl EditorView {
                 return;
             }
             crate::diagnostics::record_key(cx, event);
+            // A key during the potentially slow helper handshake cancels the
+            // pending quit before the key can alter a project or local draft.
+            if let Some(entity) = keyboard_entity.upgrade()
+                && entity.read(cx).update_preparing()
+            {
+                entity.update(cx, |view, cx| view.cancel_requested_update(cx));
+            }
+            // A completed drag can leave this window with no mounted editor
+            // focus. Restore it and deliver the first Space press here;
+            // subsequent keys, including repeats, take the normal raw-key path.
+            if event.keystroke.key == "space"
+                && event.keystroke.modifiers == gpui::Modifiers::default()
+                && let Some(entity) = keyboard_entity.upgrade()
+                && !entity.read(cx).focus.contains_focused(window, cx)
+                && !event.context_stack.iter().any(|context| {
+                    context.contains("hex_text_editing")
+                        || context.contains("hex_text_input")
+                        || context.contains("hex_browser_search")
+                })
+            {
+                entity.update(cx, |view, cx| {
+                    view.focus.focus(window);
+                    let _scope = crate::diagnostics::action_scope(cx, "hex_editor::TogglePlay");
+                    view.toggle_play();
+                    cx.notify();
+                });
+                cx.stop_propagation();
+                return;
+            }
             if window.window_handle().window_id() == keyboard_window_id
                 && let Some(entity) = keyboard_entity.upgrade()
                 && (entity.read(cx).tuning_audition_accepts(
@@ -1262,6 +1303,7 @@ impl EditorView {
             view.clear_time_selection_key_on_blur(window, cx);
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
+                view.cancel_clip_gain(cx);
                 view.cancel_project_spectrum_resize(cx);
                 view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
@@ -1313,6 +1355,7 @@ impl EditorView {
                 let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
+                view.cancel_clip_gain(cx);
                 view.cancel_project_spectrum_resize(cx);
                 view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
@@ -1348,6 +1391,7 @@ impl EditorView {
         let window_bounds = cx.observe_window_bounds(window, |view, window, cx| {
             device_panel::cancel_sampler_boundary(view);
             view.cancel_fade_gesture(cx);
+            view.cancel_clip_gain(cx);
             view.cancel_project_spectrum_resize(cx);
             view.cancel_clip_detail_resize(cx);
             if view.cancel_trim_gesture(cx) {
@@ -1402,6 +1446,7 @@ impl EditorView {
             state: None,
             recovery: RecoveryState::default(),
             stopped_playback_restore: None,
+            latency_rebuild: None,
             offline_cursor: 0,
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
@@ -1432,7 +1477,6 @@ impl EditorView {
             midi_note_gesture: None,
             midi_group_gesture: None,
             pending_midi_drag: None,
-            midi_volume: midi_volume::State::default(),
             midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
@@ -1508,16 +1552,17 @@ impl EditorView {
             track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,
+            group_selection_history: group_selection::SelectionHistory::default(),
             pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
             bounce_control: None,
-            rendered_group_selection: group_selection::SelectionHistory::default(),
             pending_plugin_effect: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,
             saving_project: false,
+            update_flow: update_flow::State::default(),
             save_dialog_open: false,
             document_format_upgrade_required: false,
             format_upgrade_prompt: None,
@@ -1585,6 +1630,7 @@ impl EditorView {
             time_selection_key_held: false,
             active_fade_drag: None,
             pending_fade: None,
+            clip_gain: clip_gain::State::default(),
             hovered_fade_clip: None,
             active_midi_trim_drag: None,
             pointer_down: None,

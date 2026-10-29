@@ -452,6 +452,7 @@ where
         );
     }
     callback.finish_gain_recording_quantum(valid);
+    callback.finish_native_parameter_quantum(valid);
     valid
 }
 
@@ -1150,3 +1151,7 @@ mod tests {
 #[cfg(test)]
 #[path = "device_midi_recording_tests.rs"]
 mod midi_recording_tests;
+
+#[cfg(test)]
+#[path = "device_native_parameter_input_tests.rs"]
+pub(crate) mod native_parameter_input_tests;
