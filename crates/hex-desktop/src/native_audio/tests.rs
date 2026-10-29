@@ -3,6 +3,7 @@
 use super::*;
 mod limiter;
 mod plugins;
+mod recovery;
 mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
@@ -819,10 +820,22 @@ impl Drop for Harness {
 
 #[test]
 fn failed_output_setup_keeps_canonical_editing_and_saving_available() {
+    for retained_failure in [false, true] {
+        unavailable_output_keeps_canonical_editing_and_saving_available(retained_failure);
+    }
+}
+
+fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_failure: bool) {
     let files = Files::new();
     let (events, audio_events) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
-    sink.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
+    if retained_failure {
+        sink.lifecycle_status = Some(|| Some(hex_audio::AudioLifecycleFailure::Retirement));
+        sink.output_factory = Some(Box::new(|_| panic!("failed retirement must not reopen")));
+    } else {
+        sink.lifecycle_status = Some(|| None);
+        sink.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
+    }
     let recovery = files.0.join("untitled.hex-journal");
     let service = Service::with_audio_sink_and_native_reservation(
         32,

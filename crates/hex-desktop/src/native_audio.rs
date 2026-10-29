@@ -118,6 +118,8 @@ pub(super) struct NativeAudioSink {
     retired_sampler_hold: hex_session::service::NativeSamplerReservationHold,
     #[cfg(all(test, feature = "allocation-probe"))]
     output_factory: Option<OutputFactory>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    lifecycle_status: Option<fn() -> Option<hex_audio::AudioLifecycleFailure>>,
 }
 impl NativeAudioSink {
     fn new(events: SyncSender<EditorAudioEvent>) -> Self {
@@ -167,6 +169,8 @@ impl NativeAudioSink {
             retired_sampler_hold: Default::default(),
             #[cfg(all(test, feature = "allocation-probe"))]
             output_factory: None,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            lifecycle_status: None,
         }
     }
     fn relinquish_output(&mut self) {
@@ -204,6 +208,24 @@ impl NativeAudioSink {
     }
     fn poll_open(&mut self) {
         if !self.open_pending {
+            return;
+        }
+        let failure = hex_audio::audio_lifecycle_failure();
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let failure = self.lifecycle_status.map_or(failure, |status| status());
+        if let Some(failure) = failure {
+            let reason = match failure {
+                hex_audio::AudioLifecycleFailure::Retirement => "audio output shutdown failed",
+                hex_audio::AudioLifecycleFailure::Cleanup => "audio resource cleanup failed",
+                hex_audio::AudioLifecycleFailure::MismatchedOwner => {
+                    "audio lifecycle ownership mismatch"
+                }
+            };
+            self.open_error = Some(format!("{reason}; save your project and restart hex"));
+            self.open_pending = false;
+            // Abandon only this result request. The lifecycle owner retains the
+            // old output lease, failed resources and first destructor payload.
+            self.opening = None;
             return;
         }
         #[cfg(all(test, feature = "allocation-probe"))]
