@@ -913,14 +913,40 @@ fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
             |_| Ok::<_, ()>(()),
         )
         .unwrap_or_else(|_| panic!("replacement publication"));
-    measured_render(&mut data, &mut output);
+    let render_checked = |data: &mut _, output: &mut [Frame; 256]| {
+        let before = control.status.position.load(Acquire);
+        measured_render(data, output);
+        let after = control.status.position.load(Acquire);
+        let committed = if control.status.stream_buffering.load(Acquire) {
+            usize::try_from(control.status.stream_committed_frames.load(Acquire)).unwrap()
+        } else {
+            output.len()
+        };
+        assert!(committed <= output.len());
+        assert_eq!(
+            after,
+            before + committed as u64,
+            "clock follows audible frames"
+        );
+        let revision = control.status.applied_revision.load(Acquire);
+        let expected = if revision == a_revision {
+            0.25
+        } else {
+            assert_eq!(revision, b_revision);
+            0.5
+        };
+        for (index, frame) in output.iter().enumerate() {
+            assert_eq!(*frame, [if index < committed { expected } else { 0.0 }; 2]);
+        }
+    };
+    render_checked(&mut data, &mut output);
     let refused = control.status.stream_readiness_refused.load(Acquire);
     let rejected = control.status.rejected_revision();
     let pending = control.status.publication_pending.load(Acquire);
     if !refused && rejected.is_none() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while control.status.applied_revision.load(Acquire) != b_revision {
-            measured_render(&mut data, &mut output);
+            render_checked(&mut data, &mut output);
             assert!(control.status.rejected_revision().is_none());
             assert!(
                 std::time::Instant::now() < deadline,
