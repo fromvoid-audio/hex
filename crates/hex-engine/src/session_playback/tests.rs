@@ -4397,6 +4397,107 @@ fn mutable_short_note_releases_inside_query_and_matches_partitioned_render() {
 }
 
 #[test]
+fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() {
+    use hex_lattice::NativeInstrumentEvent;
+
+    let source = project(1.0, 0, 8 << 32);
+    let track = source.tracks().first().unwrap();
+    let clip = track.midi_clips().first().unwrap();
+    let note = clip.notes().first().unwrap();
+    let factory = MutableFeedbackFactory {
+        level: 0.2,
+        release_frames: 8,
+    };
+    let render = |segments: &[usize]| {
+        let mut runtime =
+            crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000)
+                .unwrap();
+        let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+        for (iteration, start, end, velocity) in [(0, 0, 4, 100), (1, 4, 8, 80)] {
+            onsets
+                .push(crate::mutable_instrument::MutableNoteOnset {
+                    key: crate::mutable_instrument::MutableOccurrenceKey::new(
+                        track.id(),
+                        clip.id(),
+                        note.id(),
+                        iteration,
+                        0,
+                    ),
+                    onset_beat: hex_project::BeatTime::from_raw(start << 32),
+                    gate_end_beat: hex_project::BeatTime::from_raw(end << 32),
+                    source_start: start,
+                    source_gate_end: end,
+                    pitch: 60,
+                    channel: 0,
+                    velocity,
+                })
+                .unwrap();
+        }
+        let mut audio = [[0.0; 2]; 28];
+        let mut events = Vec::new();
+        let mut observed = Vec::new();
+        let mut start = 0;
+        for &end in segments {
+            runtime.begin_block();
+            runtime
+                .process_segment(
+                    track.id(),
+                    start as u64,
+                    start as u64,
+                    &mut audio[start..end],
+                    &mut onsets,
+                    &[],
+                    &mut events,
+                )
+                .unwrap();
+            observed.extend(events.iter().map(|event| match *event {
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset,
+                    occurrence_id,
+                    ..
+                } => (start + frame_offset, true, occurrence_id),
+                NativeInstrumentEvent::NoteOff {
+                    frame_offset,
+                    occurrence_id,
+                } => (start + frame_offset, false, occurrence_id),
+                NativeInstrumentEvent::Expression { .. } => panic!("unexpected expression"),
+            }));
+            runtime.commit_block();
+            start = end;
+        }
+        assert_eq!(start, audio.len());
+        (audio, observed)
+    };
+    let (whole, events) = render(&[28]);
+    assert_eq!(
+        events,
+        [(0, true, 1), (4, false, 1), (4, true, 2), (8, false, 2)]
+    );
+    // Independent fixture oracle: the first release remains sounding for
+    // eight frames, overlapping the second note, then its feedback tail fades.
+    let mut feedback = 0.0_f32;
+    for (index, frame) in whole.iter().enumerate() {
+        let first = if index < 12 { 0.2_f32 } else { 0.0 };
+        let second = if (4..16).contains(&index) {
+            0.2_f32 * 0.8
+        } else {
+            0.0
+        };
+        let direct = first + second;
+        feedback = feedback * 0.5 + direct * 0.25;
+        assert_eq!(*frame, [direct + feedback; 2], "frame {index}");
+        if index == 22 {
+            feedback = 0.0;
+        }
+    }
+    for segments in [&[4, 8, 28][..], &[1, 3, 4, 5, 8, 9, 28][..]] {
+        let (audio, actual_events) = render(segments);
+        assert_eq!(actual_events, events, "segments {segments:?}");
+        assert_eq!(audio, whole, "segments {segments:?}");
+    }
+}
+
+#[test]
 fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
     let source = project(1.0, 0, 8 << 32);
     let track = source.tracks().first().unwrap();
