@@ -341,6 +341,57 @@ fn standard_attack_keeps_earlier_deadlines_when_stronger_peaks_arrive() {
 }
 
 #[test]
+fn falling_ceiling_limits_first_sample_after_compatible_handoff() {
+    let rate = 8_000;
+    let ceiling = 10.0_f32.powf(-24.0 / 20.0);
+    for mode in 0..3 {
+        for routing in 0..2 {
+            let settings = |db| {
+                [
+                    (MODE, ParameterValue::Choice(mode)),
+                    (ROUTING, ParameterValue::Choice(routing)),
+                    (CEILING, ParameterValue::Float(db)),
+                    (LINK, ParameterValue::Float(0.0)),
+                ]
+            };
+            let old_factory = factory(rate, &settings(0.0));
+            let new_factory = factory(rate, &settings(-24.0));
+            let mut old = old_factory.create_runtime().unwrap();
+            let warm = vec![[0.8, -0.4]; 4_000];
+            let previous = render(old.as_mut(), &warm, &[127, 31]);
+            assert!(
+                previous.last().unwrap()[0] > 0.2,
+                "mode={mode} routing={routing}"
+            );
+            let mut whole = new_factory.create_runtime().unwrap();
+            let mut split = new_factory.create_runtime().unwrap();
+            assert!(whole.can_inherit_from(old.as_ref()));
+            assert!(split.can_inherit_from(old.as_ref()));
+            whole.inherit_from(old.as_ref());
+            split.inherit_from(old.as_ref());
+
+            // An abandoned render must not consume the retained predecessor.
+            split.begin_block();
+            let mut abandoned = [[4.0, -2.0]; 19];
+            split.process_block(&mut abandoned, &EMPTY_DEVICE_RESOURCES);
+            split.rollback_block();
+            let continuation = [[0.8, -0.4]; 257];
+            let output = render(whole.as_mut(), &continuation, &[257]);
+            assert_eq!(output, render(split.as_mut(), &continuation, &[1, 7, 53]));
+            assert_ne!(output[0], [0.0; 2], "retained audio must continue");
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.is_finite() && sample.abs() <= ceiling + 1e-7),
+                "falling ceiling violated: mode={mode} routing={routing} first={:?}",
+                output[0]
+            );
+        }
+    }
+}
+
+#[test]
 fn standard_attack_rollback_and_compatible_handoff_preserve_envelope() {
     let f = factory(48_000, &[(CEILING, ParameterValue::Float(0.0))]);
     let mut original = f.create_runtime().unwrap();
