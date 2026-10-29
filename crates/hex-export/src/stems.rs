@@ -350,13 +350,19 @@ mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor};
 
-    fn fixture() -> (Arc<PreparedRevision>, Stem) {
+    fn fixture() -> (Arc<PreparedRevision>, [Stem; 2]) {
         let mut editor = Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddTrack { name: "dry".into() })
             .unwrap()
         else {
             panic!("track")
+        };
+        let Created::Track(second) = editor
+            .execute(Command::AddTrack { name: "wet".into() })
+            .unwrap()
+        else {
+            panic!("second track")
         };
         let revision = Arc::new(
             PreparedRevision::prepare(
@@ -369,10 +375,16 @@ mod tests {
         );
         (
             revision,
-            Stem {
-                id: OutputCaptureId::Track(track),
-                name: "dry".into(),
-            },
+            [
+                Stem {
+                    id: OutputCaptureId::Track(track),
+                    name: "dry".into(),
+                },
+                Stem {
+                    id: OutputCaptureId::Track(second),
+                    name: "wet".into(),
+                },
+            ],
         )
     }
 
@@ -385,27 +397,57 @@ mod tests {
         ));
         fs::create_dir(&parent).unwrap();
         let path = parent.join("batch");
-        let (revision, stem) = fixture();
+        let neighbor = parent.join("unrelated");
+        fs::write(&neighbor, b"preserve").unwrap();
+        let (revision, stems) = fixture();
         let control = ExportControl::default();
         let result = render_stems_with_hook(
             &path,
             Arc::clone(&revision),
             0,
             257,
-            std::slice::from_ref(&stem),
+            &stems,
             &control,
             || {
-                control.cancel();
+                assert!(!path.exists());
+                let stages: Vec<_> = fs::read_dir(&parent)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|entry| entry.is_dir())
+                    .collect();
+                assert_eq!(stages.len(), 1);
+                let files: Vec<_> = fs::read_dir(&stages[0])
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(files.len(), 2);
+                for stem in &stems {
+                    let staged = stages[0].join(filename(stem));
+                    assert!(files.contains(&staged));
+                    let bytes = fs::read(staged).unwrap();
+                    assert_eq!(bytes.len(), 44 + 257 * 4);
+                    assert_eq!(&bytes[..4], b"RIFF");
+                    assert_eq!(&bytes[8..12], b"WAVE");
+                    assert_eq!(&bytes[36..40], b"data");
+                    assert_eq!(
+                        u32::from_le_bytes(bytes[40..44].try_into().unwrap()),
+                        257 * 4
+                    );
+                    assert!(bytes[44..].iter().all(|byte| *byte == 0));
+                }
+                assert!(control.cancel());
             },
         );
         assert!(matches!(result, Err(ExportError::Cancelled)));
-        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+        assert!(!path.exists());
+        assert_eq!(fs::read(&neighbor).unwrap(), b"preserve");
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
         let result = render_stems_with_hook(
             &path,
             revision,
             0,
             257,
-            &[stem],
+            &stems,
             &ExportControl::default(),
             || {
                 fs::create_dir(&path).unwrap();
@@ -413,8 +455,9 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 2);
         assert_eq!(fs::read(path.join("unrelated")).unwrap(), b"preserve");
+        assert_eq!(fs::read(&neighbor).unwrap(), b"preserve");
         fs::remove_dir_all(parent).unwrap();
     }
 
