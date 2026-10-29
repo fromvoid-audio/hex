@@ -435,6 +435,7 @@ pub(crate) struct StreamOutcome {
     pub(crate) source_changed: bool,
     pub(crate) fault: Option<hex_engine::Invalid>,
     pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
+    pub(crate) action_applied: Option<u64>,
     pub(crate) activated: Option<u64>,
 }
 impl ActiveView<'_> {
@@ -482,8 +483,12 @@ impl ActiveView<'_> {
             command_prefix,
             frames: output.len(),
         };
-        let action_rejection = match self.resolve_stream_action(&mut request) {
-            super::actions::ActionResolution::Ready(rejection) => rejection,
+        let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
+            super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
+            super::actions::ActionResolution::Ready(Some((ticket, Err(reason)))) => {
+                (None, Some((ticket, reason)))
+            }
+            super::actions::ActionResolution::Ready(None) => (None, None),
             super::actions::ActionResolution::Pending => {
                 output.fill([0.0; 2]);
                 return StreamOutcome {
@@ -495,6 +500,7 @@ impl ActiveView<'_> {
                     source_changed: false,
                     fault: None,
                     action_rejection: None,
+                    action_applied: None,
                     activated: None,
                 };
             }
@@ -563,6 +569,7 @@ impl ActiveView<'_> {
                         source_changed,
                         fault: None,
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -580,6 +587,7 @@ impl ActiveView<'_> {
                         source_changed: false,
                         fault: None,
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -608,6 +616,7 @@ impl ActiveView<'_> {
                         source_changed: false,
                         fault: Some(error),
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -696,6 +705,7 @@ impl ActiveView<'_> {
                         source_changed: false,
                         fault: Some(error),
                         action_rejection,
+                        action_applied,
                         activated,
                     };
                 }
@@ -727,6 +737,7 @@ impl ActiveView<'_> {
             source_changed: false,
             fault: None,
             action_rejection,
+            action_applied,
             activated,
         }
     }

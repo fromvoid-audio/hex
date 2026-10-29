@@ -502,7 +502,6 @@ pub struct Status {
     preview_used: AtomicBool,
     constructor_mode: AtomicBool,
     verified_streaming_mode: AtomicBool,
-    reliable_action_outcomes: AtomicBool,
     applied_source: applied_source::AppliedSourceStatus,
     recording_source: applied_source::AppliedSourceStatus,
     ordinary_native_revision: AtomicU64,
@@ -715,7 +714,6 @@ impl Status {
             preview_used: AtomicBool::new(false),
             constructor_mode: AtomicBool::new(false),
             verified_streaming_mode: AtomicBool::new(false),
-            reliable_action_outcomes: AtomicBool::new(false),
             applied_source: applied_source::AppliedSourceStatus::default(),
             recording_source: applied_source::AppliedSourceStatus::default(),
             ordinary_native_revision: AtomicU64::new(0),
@@ -1154,9 +1152,10 @@ impl PublicationControl {
 impl Control {
     /// Opt in on the original vacant constructor before callback or client
     /// exposure. Admission has 32 credits until the reader consumes outcomes;
-    /// priority Stop uses its separate path. Ordinary and verified streaming
-    /// configuration are refused for the lifetime of this output. Admission
-    /// may also refuse when the next ticket's slot is still occupied; consume
+    /// priority Stop uses its separate path. Streamed actions retain their
+    /// credit through preparation; scheduled launches complete at scheduling,
+    /// while activation remains a separate status. Admission may also refuse
+    /// when the next ticket's slot is still occupied; consume
     /// available outcomes and retry. After shutdown, retain the reader until
     /// native retirement or retire the unsplit constructor on control.
     pub fn enable_action_outcomes_on_control(
@@ -1180,7 +1179,6 @@ impl Control {
             action_outcomes::channel(self.publication.candidate_root.root_id());
         self.action_admission = Some(admission);
         callback.action_writer = Some(writer);
-        self.status.reliable_action_outcomes.store(true, Release);
         Ok(reader)
     }
 
@@ -1278,6 +1276,10 @@ pub struct Callback {
     deferred_eligible: Option<crate::candidate_custody::QueuedEligibleCandidate>,
     domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
     stream_pending_play: Option<u64>,
+    // Credits remain reserved until publication, so no more than the ledger
+    // capacity can accumulate before this callback publishes and flushes them.
+    stream_outcomes: [Option<(u64, action_outcomes::Outcome)>; ACTION_OUTCOME_CAPACITY],
+    stream_outcome_count: usize,
     yield_stream_successor_once: bool,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
@@ -1420,6 +1422,8 @@ pub fn channel_with_spectrum(
             deferred_eligible: None,
             domain_pages: std::array::from_fn(|_| None),
             stream_pending_play: None,
+            stream_outcomes: [None; ACTION_OUTCOME_CAPACITY],
+            stream_outcome_count: 0,
             yield_stream_successor_once: false,
             stream_prefix: 0,
             held_retirement: None,
@@ -2734,6 +2738,10 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        self.begin_block_inner();
+        self.flush_stream_outcomes();
+    }
+    fn begin_block_inner(&mut self) {
         self.transport_setup_open = false;
         self.device_fault_fenced_in_block = false;
         if self.status.device_fault.load(Acquire) && !self.status.closing.load(Acquire) {
@@ -3680,7 +3688,41 @@ impl Callback {
         }
     }
 
+    fn stage_stream_outcome(&mut self, ticket: u64, outcome: action_outcomes::Outcome) {
+        let Some(writer) = self.action_writer.as_ref() else {
+            return;
+        };
+        let Some(slot) = self.stream_outcomes.get_mut(self.stream_outcome_count) else {
+            writer.fail_invariant();
+            return;
+        };
+        *slot = Some((ticket, outcome));
+        self.stream_outcome_count += 1;
+    }
+
+    fn flush_stream_outcomes(&mut self) {
+        if self.stream_outcome_count == 0 {
+            return;
+        }
+        #[cfg(test)]
+        if let Some(barrier) = self.test_before_action_outcome_status.take() {
+            barrier.wait();
+            barrier.wait();
+        }
+        self.publish_transport();
+        self.publish_active_routes(false);
+        let count = std::mem::take(&mut self.stream_outcome_count);
+        for index in 0..count {
+            if let Some((ticket, outcome)) = self.stream_outcomes[index].take() {
+                self.finish_action_outcome(ticket, outcome);
+            }
+        }
+    }
+
     fn consume_commands_through_inner(&mut self, cut: CommandCut, fault: bool) {
+        // A publication can complete a streamed terminal before handing the
+        // same block to resident consumption. Preserve completion order.
+        self.flush_stream_outcomes();
         if let Some(through_ticket) = cut.stop_through {
             if !fault && !self.status.closing.load(Acquire) {
                 self.recovery_position_frozen = false;
@@ -3873,6 +3915,7 @@ impl Callback {
         self.invalidate_processor_audition_request();
         self.publish_transport();
         self.publish_active_routes(false);
+        self.flush_stream_outcomes();
     }
 
     // The internal cut is never published as a priority Stop: that marker is
@@ -3908,6 +3951,7 @@ impl Callback {
             self.consume_commands_through_inner(cut, true);
         }
         self.acknowledge_sampler_edit();
+        self.flush_stream_outcomes();
     }
 
     fn invalidate_processor_audition_request(&mut self) {
@@ -3927,6 +3971,11 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        let result = self.render_inner(output);
+        self.flush_stream_outcomes();
+        result
+    }
+    fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.status.device_fault.load(Acquire) {
             if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
                 self.fence_device_fault();
@@ -4088,13 +4137,30 @@ impl Callback {
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
-            streaming::record_outcome(
+            let streaming::RecordedStreamOutcome {
+                applied_play,
+                applied_action,
+                rejected_action,
+                fault,
+            } = streaming::record_outcome(
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
                 action_pending,
                 outcome,
-            )?;
+            );
+            if let Some((ticket, reason)) = rejected_action {
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Rejected(reason));
+            }
+            if let Some(ticket) = applied_action {
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
+            }
+            if let Some(ticket) = applied_play {
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
+            }
+            if let Some(error) = fault {
+                return Err(error);
+            }
         } else if let Some(mut active) = self
             .active
             .as_mut()
@@ -4146,15 +4212,32 @@ impl Callback {
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
-            streaming::record_outcome(
+            let streaming::RecordedStreamOutcome {
+                applied_play,
+                applied_action,
+                rejected_action,
+                fault,
+            } = streaming::record_outcome(
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
                 action_pending,
                 outcome,
-            )?;
+            );
             self.publish_transport();
             self.publish_active_routes(false);
+            if let Some((ticket, reason)) = rejected_action {
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Rejected(reason));
+            }
+            if let Some(ticket) = applied_action {
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
+            }
+            if let Some(ticket) = applied_play {
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
+            }
+            if let Some(error) = fault {
+                return Err(error);
+            }
             return Ok(());
         }
         if self.active.is_none()
@@ -4168,7 +4251,7 @@ impl Callback {
                     .is_some_and(|next| next.streaming_enabled()))
         {
             output.fill([0.0; 2]);
-            streaming::record_outcome(
+            let fault = streaming::record_outcome(
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
@@ -4182,9 +4265,14 @@ impl Callback {
                     source_changed: false,
                     fault: None,
                     action_rejection: None,
+                    action_applied: None,
                     activated: None,
                 },
-            )?;
+            )
+            .fault;
+            if let Some(error) = fault {
+                return Err(error);
+            }
             return Ok(());
         }
         if let Some(mut active) = self
@@ -9260,7 +9348,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "allocation-probe")]
-    fn reliable_resident_output_refuses_ordinary_stream_configuration() {
+    fn reliable_output_accepts_ordinary_stream_configuration() {
         let _serial = super::candidate_tests::serial();
         let (mut control, mut callback) = channel(48_000).unwrap();
         let _reader = wire_action_outcomes(&mut control, &mut callback);
@@ -9286,14 +9374,14 @@ mod tests {
                     3,
                     4096,
                 )
-                .is_err()
+                .is_ok()
         );
-        assert!(!control.candidate_root.ordinary_streams_configured());
+        assert!(control.candidate_root.ordinary_streams_configured());
     }
 
     #[test]
     #[cfg(feature = "allocation-probe")]
-    fn verified_streaming_refusal_is_specific_to_reliable_outcome_mode() {
+    fn verified_streaming_accepts_both_outcome_modes() {
         use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
         let _serial = super::candidate_tests::serial();
         for reliable in [false, true] {
@@ -9320,10 +9408,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            assert_eq!(
-                worker.configure_audio_candidate_streaming(3).is_err(),
-                reliable
-            );
+            assert!(worker.configure_audio_candidate_streaming(3).is_ok());
             client.close();
             publication.close();
             drop(data);

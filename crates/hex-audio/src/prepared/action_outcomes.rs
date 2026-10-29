@@ -107,6 +107,9 @@ impl Writer {
     pub(super) fn identity(&self) -> usize {
         Arc::as_ptr(&self.ledger) as usize
     }
+    pub(super) fn fail_invariant(&self) {
+        self.ledger.fail(INVARIANT_FAILED);
+    }
 }
 pub(super) fn storage_bytes() -> usize {
     std::mem::size_of::<Ledger>()

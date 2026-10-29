@@ -102,8 +102,8 @@ impl WorkerPreparedOutput {
         )?
         .into_worker()
     }
-    /// Open an output with bounded resident action outcomes selected before
-    /// native callback exposure. Streaming configuration is refused.
+    /// Open an output with bounded action outcomes selected before native
+    /// callback exposure, including streamed playback.
     pub fn open_with_reliable_action_outcomes(
         profile: WorkerOutputProfile,
     ) -> Result<Self, String> {
