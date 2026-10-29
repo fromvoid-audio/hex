@@ -16,7 +16,10 @@ use cpal::{
 };
 use hex_engine::Frame;
 use std::{
-    sync::{Arc, atomic::Ordering::Relaxed},
+    sync::{
+        Arc,
+        atomic::Ordering::{Acquire, Relaxed},
+    },
     time::Instant,
 };
 
@@ -334,6 +337,13 @@ where
             owner.run(|callback, status| {
                 let start = Instant::now();
                 callback.begin_block();
+                if status.device_fault.load(Acquire) {
+                    callback.fence_device_fault();
+                    data.fill(T::from_sample(0.0));
+                    status.peak_left.store(0, Relaxed);
+                    status.peak_right.store(0, Relaxed);
+                    return;
+                }
                 let mut block: [Frame; 256] = [[0.0; 2]; 256];
                 let mut peaks = [0.0_f32; 2];
                 let complete = data.len() / channels * channels;
@@ -911,6 +921,31 @@ mod tests {
             callback.begin_block();
             callback.render(source)
         }
+    }
+
+    #[test]
+    fn device_error_aborts_a_queued_gain_take() {
+        let (mut control, mut callback, target) = recording_callback();
+        control.gain_recording.begin(target, 0.8).unwrap();
+        control
+            .status
+            .device_fault
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut source = [[1.0; 2]; 8];
+        assert!(checked_recording_render(&mut callback, &mut source).is_ok());
+        assert_eq!(source, [[0.0; 2]; 8]);
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Superseded { .. })
+        ));
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::OutputFailed,
+                ..
+            })
+        ));
+        assert!(control.gain_recording.begin(target, 0.8).is_err());
     }
 
     #[test]

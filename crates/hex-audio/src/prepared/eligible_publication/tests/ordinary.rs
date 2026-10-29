@@ -803,6 +803,22 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         measured_block(&mut data);
         assert_eq!(control.status.recovery_position(), 0);
     }
+    if !sampler {
+        let cursor = control.status.position.load(Acquire);
+        let pending = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(1))
+            .unwrap();
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        control.status.device_fault.store(true, Release);
+        assert_eq!(measured_block(&mut data), [[0.0; 2]; 8]);
+        assert_eq!(control.status.recovery_position(), cursor);
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((pending, PlaybackActionRejection::OutputFailed))
+        );
+    }
     assert!(control.retire_audio_candidate_domain(domain));
     assert!(
         !control.audio_candidate_domain_endpoint_is_installed(domain),
