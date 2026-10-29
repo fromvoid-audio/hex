@@ -17,6 +17,26 @@ pub(super) enum StoppedPlaybackRestore {
     Published(u64),
 }
 
+/// A rejected canonical latency change may be rebuilt after an explicit Stop.
+/// The output and project identities fence both the stop and the later resume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LatencyRebuild {
+    Unresolved {
+        generation: u64,
+        output: u64,
+        audio_revision: u64,
+    },
+    Waiting {
+        project: ProjectRevision,
+        output: u64,
+    },
+    Restoring {
+        project: ProjectRevision,
+        output: u64,
+        frame: u64,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AdmissionState {
     Pending,
