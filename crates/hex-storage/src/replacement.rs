@@ -654,6 +654,70 @@ mod tests {
     }
 
     #[test]
+    fn recovery_directory_sync_failure_preserves_original_and_allows_retry() {
+        let directory = TestDir::new();
+        let target = directory.0.join("recovery-sync.hex");
+        let sidecar = recovery_path(&target).expect("sidecar path");
+        let previous = project(48_000);
+        let replacement = project(44_100);
+        save_new(&target, &previous).expect("initial project");
+        let (_, token) = load_with_token(&target).expect("original token");
+        let original_bytes = fs::read(&target).expect("original bytes");
+
+        let error = replace_with_hooks(
+            &target,
+            &token,
+            &replacement,
+            |parent| {
+                assert_eq!(parent, directory.0);
+                Err(io::Error::other("injected recovery sync failure"))
+            },
+            |_| panic!("project directory sync must not run before commit"),
+            || panic!("project rename must not run after recovery sync failure"),
+        )
+        .expect_err("recovery directory sync fails");
+        assert!(matches!(
+            error,
+            StorageError::RecoveryBackupPublished {
+                path, recovery_path, operation: "synchronize the recovery directory", source,
+            } if path == target && recovery_path == sidecar
+                && source.to_string() == "injected recovery sync failure"
+        ));
+        assert_eq!(fs::read(&target).expect("original file"), original_bytes);
+        token
+            .check_unchanged(&target)
+            .expect("original token remains valid");
+        let recovered = load_recovery(&target).expect("published recovery is valid");
+        assert_eq!(recovered.project, previous);
+        assert_eq!(recovered.token.0.as_ref(), original_bytes);
+        let recovery_bytes = fs::read(&sidecar).expect("published recovery bytes");
+        let mut paths: Vec<_> = fs::read_dir(&directory.0)
+            .expect("list files after failure")
+            .map(|entry| entry.expect("directory entry").path())
+            .collect();
+        paths.sort();
+        let mut expected_paths = vec![target.clone(), sidecar.clone()];
+        expected_paths.sort();
+        assert_eq!(paths, expected_paths, "temporary files are removed");
+
+        let outcome = replace_existing(&target, &token, &replacement).expect("normal retry");
+        assert!(outcome.warning.is_none());
+        assert_eq!(load(&target).expect("replacement after retry"), replacement);
+        outcome.token.check_unchanged(&target).expect("new token");
+        assert_eq!(
+            fs::read(&sidecar).expect("recovery after retry"),
+            recovery_bytes
+        );
+        assert_eq!(
+            load_recovery(&target)
+                .expect("recovery after retry")
+                .project,
+            previous
+        );
+        assert_eq!(fs::read_dir(&directory.0).expect("list files").count(), 2);
+    }
+
+    #[test]
     fn postcommit_sync_failure_returns_adoptable_token_and_recovery_path() {
         let directory = TestDir::new();
         let target = directory.0.join("postcommit.hex");

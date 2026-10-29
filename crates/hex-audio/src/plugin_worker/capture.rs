@@ -39,6 +39,7 @@ impl Default for Payload {
     }
 }
 pub(super) struct Slot {
+    pub(super) controller: super::controller::Slot,
     pub(super) parameters: super::parameters::NativeParameterValues,
     pub(super) edits_pending: bool,
     pub(super) edits_result: Option<hex_plugin_host::protocol::ParameterEdits>,
@@ -50,6 +51,7 @@ pub(super) struct Slot {
 impl Default for Slot {
     fn default() -> Self {
         Self {
+            controller: super::controller::Slot::default(),
             parameters: super::parameters::NativeParameterValues::default(),
             edits_pending: false,
             edits_result: None,

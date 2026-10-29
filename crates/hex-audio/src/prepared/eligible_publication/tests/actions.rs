@@ -11,12 +11,165 @@ fn zero(measured: allocation_counter::AllocationInfo) {
     );
 }
 #[test]
+fn changed_source_rejects_streamed_seek_with_recovery_guidance() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let project = readiness::project_with_frames(12_288);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(12_288);
+    let definition = wav.definition(asset, 11);
+    let source_path = definition.path.clone();
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 25,
+        }),
+    );
+    let limits = reservation(&mut owner);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while control.status.applied_revision.load(Acquire) == 0 {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        }));
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(output, [[0.25; 2]; 8]);
+    std::fs::write(source_path, b"changed source bytes").unwrap();
+    let seek = control
+        .command_with_ticket(PlaybackCommand::Seek(4096))
+        .unwrap();
+    zero(allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut output).unwrap();
+        })
+    }));
+    assert_eq!(output, [[0.0; 2]; 8]);
+    assert_eq!(control.status.position.load(Acquire), 8);
+    let rejection = loop {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        }));
+        assert!(output == [[0.0; 2]; 8] || output == [[0.25; 2]; 8]);
+        if let Some((observed, reason)) = control.status.rejected_action()
+            && observed == seek
+        {
+            break reason;
+        }
+        assert!(std::time::Instant::now() < deadline, "seek must be refused");
+        std::thread::yield_now();
+    };
+    assert!(control.status.position.load(Acquire) < 4096);
+    control.stop();
+    zero(allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut output).unwrap();
+        })
+    }));
+    assert_eq!(control.status.position.load(Acquire), 0);
+    assert!(!control.status.playing.load(Acquire));
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    retirement.advance().unwrap();
+    let returned = recover(&mut control, &ticket);
+    loop {
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(returned);
+    drop(control);
+    finish(&mut retirement);
+    assert_eq!(
+        rejection.message(),
+        "original media changed · reopen or relink it"
+    );
+}
+
+#[test]
 fn real_seek_waits_without_commit_busy_and_pause_cancel_then_playfrom_reads_exact_page() {
+    seek_pause_stop_case(false);
+}
+#[test]
+fn grouped_stream_seek_pause_and_priority_stop_preserve_pages_and_clocks() {
+    seek_pause_stop_case(true);
+}
+fn seek_pause_stop_case(grouped: bool) {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
     }
     let project = readiness::project_with_frames(12288);
+    let project = if grouped {
+        let mut editor = hex_project::Editor::new(project, 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let hex_project::Created::Track(group) = editor
+            .execute(hex_project::Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        editor
+            .execute(hex_project::Command::Gain {
+                track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor.project().clone()
+    } else {
+        project
+    };
     let asset = project.assets().next().unwrap().id();
     let wav =
         stream_fixture::Wav::with_samples(12288, |frame| if frame < 4096 { 8192 } else { 16384 });
@@ -61,7 +214,7 @@ fn real_seek_waits_without_commit_busy_and_pause_cancel_then_playfrom_reads_exac
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    assert_eq!(output, [[0.25; 2]; 8]);
+    assert_eq!(output, [[if grouped { 0.125 } else { 0.25 }; 2]; 8]);
     let seek = control
         .command_with_ticket(PlaybackCommand::Seek(4096))
         .unwrap();
@@ -120,7 +273,7 @@ fn real_seek_waits_without_commit_busy_and_pause_cancel_then_playfrom_reads_exac
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    assert_eq!(output, [[0.5; 2]; 8]);
+    assert_eq!(output, [[if grouped { 0.25 } else { 0.5 }; 2]; 8]);
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         from

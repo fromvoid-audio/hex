@@ -118,6 +118,7 @@ pub(super) struct SceneKey {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct NoteGeometry {
+    pub(super) active: bool,
     pub(super) id: NoteId,
     pub(super) start: u64,
     pub(super) duration: u64,
@@ -202,6 +203,7 @@ impl MidiScene {
                     pitch: note.pitch(),
                     channel: note.channel(),
                     velocity: note.velocity(),
+                    active: note.active(),
                     x: x as f32,
                     y: row as f32 / f32::from(key.pitch_rows),
                     width: width as f32,
@@ -386,6 +388,7 @@ fn geometry(
     let rect = insert_geometry(key, start, duration, pitch)?;
     Some(NoteGeometry {
         id,
+        active: true,
         start,
         duration,
         pitch,
@@ -481,6 +484,7 @@ mod tests {
             };
         midi_clip.notes = (0..count)
             .map(|index| MidiNoteSnapshot {
+                active: true,
                 id: first_note_id + index as u64,
                 start_raw: (index / 24) as u64 * gate
                     + if stagger { 0 } else { BeatTime::ONE.raw() / 4 },

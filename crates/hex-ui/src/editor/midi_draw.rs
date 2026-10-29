@@ -404,6 +404,7 @@ mod tests {
         let mut insert = Vec::new();
         for pitch in [60, 61, 62] {
             insert.push(hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::from_quarters(pitch as u64 - 60).unwrap(),
                 duration: BeatTime::ONE,
                 pitch,

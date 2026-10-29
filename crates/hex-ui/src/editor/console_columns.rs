@@ -21,6 +21,7 @@ pub(super) struct ColumnFrame {
     window: WindowId,
     size: gpui::Size<gpui::Pixels>,
     page: usize,
+    fold_revision: u64,
 }
 impl ColumnFrame {
     pub(super) fn capture(view: &EditorView, window: &Window, revision: u64) -> Self {
@@ -30,9 +31,10 @@ impl ColumnFrame {
             window: window.window_handle().window_id(),
             size: window.bounds().size,
             page: view.session_track_start,
+            fold_revision: view.arrangement_focus.projection.fold_revision(),
         }
     }
-    fn current(self, view: &EditorView, window: &Window) -> bool {
+    pub(super) fn current(self, view: &EditorView, window: &Window) -> bool {
         view.mode == EditorMode::Session
             && self.generation == view.project_generation
             && view
@@ -42,6 +44,7 @@ impl ColumnFrame {
             && self.window == window.window_handle().window_id()
             && self.size == window.bounds().size
             && self.page == view.session_track_start
+            && self.fold_revision == view.arrangement_focus.projection.fold_revision()
     }
 }
 impl EditorView {

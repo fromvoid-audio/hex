@@ -18,6 +18,7 @@ impl EditorView {
                 .preview_note_overwrite(
                     &[gesture.note],
                     &[MidiNoteInsert {
+                        active: gesture.active,
                         start: BeatTime::from_raw(gesture.preview.start),
                         duration: BeatTime::from_raw(gesture.preview.duration),
                         pitch: gesture.preview.pitch,
@@ -45,6 +46,7 @@ impl EditorView {
                     removed.push(original.id);
                 }
                 authored.push(MidiNoteInsert {
+                    active: note.active,
                     start: BeatTime::from_raw(note.start),
                     duration: BeatTime::from_raw(note.duration),
                     pitch: note.pitch,
@@ -73,14 +75,19 @@ pub(super) fn retained_geometry(
 ) -> Option<NoteGeometry> {
     match preview.and_then(|preview| preview.existing_change(note.id)) {
         Some(MidiNoteOverwriteChange::Remove) => None,
-        Some(MidiNoteOverwriteChange::TruncateTo(duration)) => scene.preview_geometry(
-            note.id,
-            note.start,
-            duration.raw(),
-            note.pitch,
-            note.channel,
-            note.velocity,
-        ),
+        Some(MidiNoteOverwriteChange::TruncateTo(duration)) => scene
+            .preview_geometry(
+                note.id,
+                note.start,
+                duration.raw(),
+                note.pitch,
+                note.channel,
+                note.velocity,
+            )
+            .map(|mut geometry| {
+                geometry.active = note.active;
+                geometry
+            }),
         None => Some(note),
     }
 }

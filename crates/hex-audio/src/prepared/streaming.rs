@@ -19,6 +19,9 @@ pub(super) fn record_outcome(
     };
     status.stream_committed_frames.store(committed, Relaxed);
     status.stream_buffering.store(buffering, Release);
+    if outcome.source_changed {
+        status.stream_source_changed.store(true, Release);
+    }
     status
         .stream_readiness_refused
         .store(outcome.readiness_refused, Release);

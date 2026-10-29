@@ -20,10 +20,10 @@ pub(super) fn envelope(
 }
 impl Workspace {
     fn insert(
-        extents: &mut [Vec<StreamPageExtent>; 2],
+        extents: &mut [Vec<StreamResourceExtent>; 2],
         limit: usize,
         index: usize,
-        extent: StreamPageExtent,
+        extent: StreamResourceExtent,
     ) -> Result<(), hex_engine::Invalid> {
         let rows = &mut extents[index];
         match rows.binary_search_by_key(&(extent.source, extent.page_index), |row| {
@@ -74,7 +74,7 @@ impl StateView<'_> {
     }
     pub(super) fn prepare_stream_window_at(
         &mut self,
-        previous: Option<&mut StateView<'_>>,
+        mut previous: Option<&mut StateView<'_>>,
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
         due: Option<u64>,
@@ -86,6 +86,7 @@ impl StateView<'_> {
             .filter(|w| w.valid())
             .ok_or(hex_engine::Invalid("stream demand workspace unavailable"))?;
         workspace.handoff_diagnostic = None;
+        workspace.source_changed = false;
         let runtime = self
             .runtime
             .as_mut()
@@ -104,15 +105,21 @@ impl StateView<'_> {
         } else {
             workspace.predecessor
         };
-        for rows in &mut workspace.extents {
-            rows.clear();
-        }
-        let window = {
+        // A larger transaction may cover more distinct pages than the fixed
+        // readiness reservation. At most nine pure attempts halve the 256-frame
+        // maximum to one, without allocating or publishing a partial intent.
+        // Failure at one frame retains the existing refusal.
+        let mut frames = request.frames.min(256);
+        let window = loop {
+            for rows in &mut workspace.extents {
+                rows.clear();
+            }
             let domains = &*request.domains;
             let staged = workspace.pending_action.as_ref();
             let extents = &mut workspace.extents;
             let limit = workspace.limit;
-            let mut visit = |extent: StreamPageExtent| {
+            let overflow = std::cell::Cell::new(false);
+            let mut visit = |extent: StreamResourceExtent| {
                 let index = refs
                     .iter()
                     .flatten()
@@ -122,27 +129,34 @@ impl StateView<'_> {
                             .and_then(Option::as_ref)
                             .filter(|pages| pages.inner.token == *token)
                             .and_then(|pages| pages.inner.loan.as_ref())
-                            .is_some_and(|loan| loan.covers_key(extent.source))
+                            .is_some_and(|loan| loan.covers_resource_key(extent.source))
                             .then_some(token.slot)
                     })
                     .ok_or(hex_engine::Invalid(
                         "stream demand source lacks actual domain",
                     ))?;
-                Workspace::insert(extents, limit, index, extent)
+                let result = Workspace::insert(extents, limit, index, extent);
+                if result.is_err() {
+                    overflow.set(true);
+                }
+                result
             };
-            if let Some(due) = due {
-                runtime.visit_pending_stream_chunk(due, request.frames, &mut visit)?
-            } else if let Some(previous) = previous {
+            let planned = if let Some(due) = due {
+                runtime.visit_pending_stream_chunk(due, frames, &mut visit)
+            } else if let Some(previous) = previous.as_deref_mut() {
                 match runtime.preview_stream_handoff(
                     previous
                         .runtime
                         .as_mut()
                         .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?,
-                    request.frames,
+                    frames,
                     request.pending_play.then_some(true),
                     &mut visit,
                 ) {
-                    Ok(window) => window,
+                    Ok(window) => Ok(window),
+                    Err(_) if overflow.get() => {
+                        Err(hex_engine::Invalid("exact stream demand capacity exceeded"))
+                    }
                     Err(error)
                         if error.is_transient()
                             || matches!(
@@ -165,18 +179,19 @@ impl StateView<'_> {
                     }
                 }
             } else if let Some(staged) = staged.filter(|_| role == ProtectionRole::Transition) {
-                runtime.visit_prepared_stream_action(
-                    &staged.prepared,
-                    request.frames,
-                    &mut visit,
-                )?
+                runtime.visit_prepared_stream_action(&staged.prepared, frames, &mut visit)
             } else {
                 runtime.visit_next_stream_chunk(
-                    request.frames,
+                    frames,
                     request.pending_play.then_some(true),
                     &mut visit,
-                )?
+                )
+            };
+            if overflow.get() && frames > 1 {
+                frames = frames.div_ceil(2);
+                continue;
             }
+            break planned?;
         };
         if request.frames == 0
             && (request.pending_play
@@ -222,10 +237,14 @@ impl StateView<'_> {
                 // stale buffers returned. Consuming its receipt releases the
                 // failed pending key; continue bounded service below. Actual
                 // source/read failures still refuse the affected window.
-                failed_window |= failure.kind != hex_stream::StreamFailureKind::CapacityExhausted
-                    && rows.iter().any(|row| {
-                        row.source == failure.key && row.page_index == failure.page_index
-                    });
+                let demanded = rows
+                    .iter()
+                    .any(|row| row.source == failure.key && row.page_index == failure.page_index);
+                failed_window |=
+                    failure.kind != hex_stream::StreamFailureKind::CapacityExhausted && demanded;
+                workspace.source_changed |= demanded
+                    && failure.kind == hex_stream::StreamFailureKind::SourceChanged
+                    && matches!(failure.key, hex_engine::StreamResourceKey::Audio(_));
                 pages.inner.last_failure = Some(failure);
             }
             if failed_window {
@@ -240,7 +259,7 @@ impl StateView<'_> {
                     && stamp.predecessor == predecessor
                     && stamp.admitted_command_prefix == request.command_prefix
                     && stamp.window == window;
-                if !same || !loan.matches_intent(role, stamp, rows) {
+                if !same || !loan.matches_resource_intent(role, stamp, rows) {
                     let _ = loan.cancel(role, stamp.request_epoch);
                     stamps[token.slot] = None;
                 }
@@ -262,21 +281,21 @@ impl StateView<'_> {
                     admitted_command_prefix: request.command_prefix,
                     window,
                 };
-                loan.submit(role, stamp, rows)
+                loan.submit_resources(role, stamp, rows)
                     .map_err(|_| hex_engine::Invalid("stream protection reservation refused"))?;
                 pages.inner.epoch = epoch;
                 stamps[token.slot] = Some(stamp);
             }
             let stamp =
                 stamps[token.slot].ok_or(hex_engine::Invalid("stream intent unavailable"))?;
-            if !loan.is_protected(role, stamp, rows) {
+            if !loan.is_resource_protected(role, stamp, rows) {
                 match loan
                     .service(role, stamp, workspace.limit, workspace.limit)
                     .map_err(|_| hex_engine::Invalid("stream readiness service refused"))?
                 {
                     ReadinessProgress::Pending => complete = false,
                     ReadinessProgress::InstalledProtected => {
-                        if !loan.acknowledge(role, stamp, rows) {
+                        if !loan.acknowledge_resources(role, stamp, rows) {
                             return Err(hex_engine::Invalid("stream readiness receipt differs"));
                         }
                     }
@@ -293,7 +312,9 @@ impl StateView<'_> {
                 .inner
                 .loan
                 .as_ref()
-                .is_some_and(|loan| loan.can_promote(role, stamp, &workspace.extents[token.slot]))
+                .is_some_and(|loan| {
+                    loan.can_promote_resources(role, stamp, &workspace.extents[token.slot])
+                })
             {
                 return Err(hex_engine::Invalid("stream protected role cannot commit"));
             }
@@ -331,7 +352,7 @@ impl StateView<'_> {
                 .filter(|pages| pages.inner.token == token)
                 .and_then(|pages| pages.inner.loan.as_mut())
                 .ok_or(hex_engine::Invalid("stream exact loan unavailable"))?;
-            loan.prepare_promotion(role, stamp, &workspace.extents[index])
+            loan.prepare_resource_promotion(role, stamp, &workspace.extents[index])
                 .map(Some)
                 .ok_or(hex_engine::Invalid("stream protected commit refused"))
         };
@@ -382,6 +403,21 @@ impl hex_engine::MediaPages for PagePair<'_> {
         }
         self.right.as_mut()?.page(key, index)
     }
+    fn scalar_page(
+        &mut self,
+        key: hex_engine::ScalarSourceKey,
+        index: u64,
+    ) -> Option<hex_engine::BorrowedScalarPage<'_>> {
+        if let Some(page) = self
+            .left
+            .as_mut()
+            .and_then(|pages| pages.scalar_page(key, index))
+        {
+            return Some(page);
+        }
+        self.right.as_mut()?.scalar_page(key, index)
+    }
+    fn request_scalar_page(&mut self, _key: hex_engine::ScalarSourceKey, _index: u64) {}
     fn request_page(&mut self, _key: hex_engine::StreamSourceKey, _index: u64) {}
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -393,6 +429,7 @@ pub(crate) struct StreamOutcome {
     pub(crate) progress: StreamProgress,
     pub(crate) play_applied: bool,
     pub(crate) readiness_refused: bool,
+    pub(crate) source_changed: bool,
     pub(crate) fault: Option<hex_engine::Invalid>,
     pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
     pub(crate) activated: Option<u64>,
@@ -449,6 +486,7 @@ impl ActiveView<'_> {
                     },
                     play_applied: false,
                     readiness_refused: false,
+                    source_changed: false,
                     fault: None,
                     action_rejection: None,
                     activated: None,
@@ -469,6 +507,11 @@ impl ActiveView<'_> {
             let mut planned =
                 self.state
                     .prepare_stream_window(None, &mut request, ProtectionRole::Transition);
+            let mut source_changed = self
+                .state
+                .streaming
+                .as_mut()
+                .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
             if !matches!(planned, Ok(Some(_))) && self.revoke_launch_prewarm(request.domains) {
                 if let Some(scheduled) = self
                     .state
@@ -487,6 +530,11 @@ impl ActiveView<'_> {
                     &mut request,
                     ProtectionRole::Transition,
                 );
+                source_changed |= self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
             }
             let window = match planned {
                 Ok(Some(window)) => window,
@@ -500,6 +548,7 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: refused,
+                        source_changed,
                         fault: None,
                         action_rejection,
                         activated,
@@ -516,6 +565,7 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: true,
+                        source_changed: false,
                         fault: None,
                         action_rejection,
                         activated,
@@ -543,6 +593,7 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: false,
+                        source_changed: false,
                         fault: Some(error),
                         action_rejection,
                         activated,
@@ -630,6 +681,7 @@ impl ActiveView<'_> {
                         },
                         play_applied,
                         readiness_refused: false,
+                        source_changed: false,
                         fault: Some(error),
                         action_rejection,
                         activated,
@@ -660,6 +712,7 @@ impl ActiveView<'_> {
             progress: StreamProgress::Complete,
             play_applied,
             readiness_refused: false,
+            source_changed: false,
             fault: None,
             action_rejection,
             activated,

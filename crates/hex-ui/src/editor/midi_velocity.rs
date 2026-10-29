@@ -43,6 +43,7 @@ impl Scene {
             points.push(Point {
                 note: GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),

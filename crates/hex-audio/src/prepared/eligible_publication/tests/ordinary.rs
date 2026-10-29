@@ -84,19 +84,151 @@ fn measured_render(
     );
 }
 #[test]
+fn ordinary_publication_reports_changed_source_after_catalog_admission() {
+    let _serial = serial();
+    let project = super::readiness::project_with_frames(32_768);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(32_768);
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let source_path = definition.path.clone();
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let audio = hex_engine::Audio::new(48_000, vec![[0.375; 2]; 32_768]).unwrap();
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &store,
+        &project,
+        1_000_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let revision = hex_engine::PreparedRevision::prepare_with_device_resources(
+        &project,
+        &BTreeMap::from([(asset, audio)]),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+        &hex_engine::audio_transform::AudioTransformPreparation::default(),
+        &resources,
+        100_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let donor =
+        Playback::try_from_prepared_with_device_resources(Arc::new(revision), &resources).unwrap();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    control.status.stream_source_changed.store(true, Release);
+    let donor_revision = control
+        .publish_with_admission_and_source_on_control(
+            donor,
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|error| panic!("donor publication: {error:?}"));
+    control.command(PlaybackCommand::Play).unwrap();
+    assert_eq!(measured_block(&mut data), [[0.375; 2]; 8]);
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        donor_revision
+    );
+    assert!(!control.status.stream_source_changed.load(Acquire));
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap_or_else(|_| panic!("source registration"));
+    std::fs::write(source_path, b"changed source bytes").unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("ordinary publication"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let rejection = loop {
+        assert_eq!(measured_block(&mut data), [[0.375; 2]; 8]);
+        if let Some(rejection) = control.status.rejected_revision() {
+            break rejection;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        rejection,
+        (revision, PlaybackHandoffRejection::StreamSourceChanged)
+    );
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        donor_revision
+    );
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    loop {
+        measured_block(&mut data);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
 fn ordinary_resource_graph_requires_actual_catalog_and_protected_pages_and_returns_before_join() {
-    ordinary_case(false, false);
+    ordinary_case(false, false, false);
 }
 #[test]
 fn ordinary_sampler_and_streamed_clip_share_resource_and_page_custody_without_callback_allocations()
 {
-    ordinary_case(true, false);
+    ordinary_case(true, false, false);
 }
 #[test]
 fn ordinary_paused_keyboard_monitor_and_first_play_keep_resident_pcm_and_clock_semantics() {
-    ordinary_case(true, true);
+    ordinary_case(true, true, false);
 }
-fn ordinary_case(sampler: bool, keyboard: bool) {
+#[test]
+fn grouped_file_backed_native_playback_matches_resident_oracle_without_callback_allocations() {
+    ordinary_case(false, false, true);
+}
+#[test]
+fn grouped_sampler_and_file_backed_sources_keep_existing_resource_custody() {
+    ordinary_case(true, false, true);
+}
+fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool) {
     let _serial = serial();
     let mut project = super::readiness::project_with_frames(8);
     let asset = project.assets().next().unwrap().id();
@@ -184,6 +316,38 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
                 || Ok::<_, hex_engine::native_device_resources::ResourcePreparationError>(()),
             )
             .unwrap();
+    }
+    if grouped {
+        let mut editor = hex_project::Editor::new(project, 16).unwrap();
+        let ids: Vec<_> = editor
+            .project()
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect();
+        let hex_project::Created::Track(group) = editor
+            .execute(hex_project::Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&ids).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        editor
+            .execute(hex_project::Command::Gain {
+                track: group,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::SetAudioFeed {
+                source: hex_project::RoutingOwner::Track(ids[0]),
+                destination: group,
+                gain: 0.5,
+            })
+            .unwrap();
+        project = editor.project().clone();
     }
     let resources = PreparedDeviceResources::prepare_on_control(
         &store,
@@ -462,7 +626,10 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
         let seek = control
             .command_with_ticket(PlaybackCommand::PlayFrom(0))
             .unwrap();
-        assert_eq!(measured_block(&mut data), [[0.25; 2]; 8]);
+        assert_eq!(
+            measured_block(&mut data),
+            [[if grouped { 0.1875 } else { 0.25 }; 2]; 8]
+        );
         assert_eq!(
             control.status.stream_applied_command_prefix.load(Acquire),
             seek
@@ -750,4 +917,113 @@ fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
         !refused,
         "pending candidate intent blocked the current page"
     );
+}
+
+#[test]
+fn compensated_demand_retries_a_smaller_window_at_page_capacity() {
+    let _serial = serial();
+    let mut snapshot = super::readiness::project_with_frames(8192).snapshot();
+    let clips = match &mut snapshot.tracks[0].content {
+        hex_project::TrackContentSnapshot::Audio(clips) => clips,
+        hex_project::TrackContentSnapshot::Hybrid { audio_clips, .. } => audio_clips,
+        _ => panic!("audio fixture"),
+    };
+    clips[0].source_offset = 4095;
+    clips[0].source_length = 4097;
+    clips[0].duration = 4097;
+    clips[0].fade = hex_project::ClipFade::neutral(4097).unwrap();
+    snapshot.tracks[0].devices.clear();
+    snapshot.tracks[0]
+        .devices
+        .push(hex_project::DeviceSnapshot {
+            automation: Vec::new(),
+            comparison: None,
+            id: snapshot.next_id,
+            bypassed: false,
+            state: hex_engine::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+            )
+            .unwrap(),
+        });
+    snapshot.next_id += 1;
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(8192);
+    let definition = wav.definition(asset, 11);
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8_000_000,
+                max_construction_peak_data_bytes: 8_000_000,
+            },
+            1,
+            4096,
+        )
+        .unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition.clone()),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 1,
+            },
+        )
+        .unwrap_or_else(|_| panic!("source registration"));
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, definition.metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 7,
+                editor_revision: 3,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("publication"));
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut collected = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while collected.len() < 512 {
+        let mut output = [[0.0; 2]; 256];
+        let before = control.status.performance_frame.load(Acquire);
+        measured_render(&mut data, &mut output);
+        assert!(!control.status.stream_readiness_refused.load(Acquire));
+        assert!(control.status.rejected_revision().is_none());
+        let after = control.status.performance_frame.load(Acquire);
+        let count = usize::try_from(after - before).unwrap();
+        collected.extend_from_slice(&output[..count]);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stream made no progress"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    assert!(collected[..72].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(collected[72..512].iter().all(|frame| *frame == [0.25; 2]));
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        measured_render(&mut data, &mut [[0.0; 2]; 256]);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "source reclamation");
+        std::thread::yield_now();
+    }
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
 }

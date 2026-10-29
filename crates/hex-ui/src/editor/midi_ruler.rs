@@ -12,7 +12,7 @@ use super::{
 use crate::theme;
 use gpui::{
     Bounds, Context as ViewContext, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathBuilder, ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    PathBuilder, ScrollWheelEvent, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 use hex_project::ClipId;
 use hex_session::service::Request;
@@ -26,6 +26,7 @@ pub(super) use time_selection::State as TimeSelection;
 #[derive(Default)]
 pub(super) struct State {
     gesture: Option<Gesture>,
+    marker_hovered: bool,
 }
 impl State {
     pub(super) fn held(&self) -> bool {
@@ -219,7 +220,8 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut ViewContext<Self>,
     ) -> bool {
-        if !x.is_finite()
+        if self.time_selection_key_held
+            || !x.is_finite()
             || self.midi_ruler_context(context.bounds) != Some(context)
             || context
                 .x(context.values.source_start)
@@ -394,18 +396,14 @@ impl EditorView {
             .gesture
             .is_some_and(|gesture| gesture.handle == Handle::Start);
         let time_selection = self.midi_time_selection_bounds();
+        let start_marker_enabled = !self.time_selection_key_held;
         let entity = cx.entity();
-        let mut ruler = div()
+        let mut ruler = super::timeline_strip::ruler_surface()
             .id("midi-source-ruler")
             .debug_selector(|| "midi-source-ruler".into())
-            .relative()
             .h_full()
             .flex_1()
             .min_w_0()
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
             .tooltip(|_, cx| {
@@ -436,21 +434,16 @@ impl EditorView {
                 break;
             };
             let fraction = (offset as f64 / span as f64) as f32;
-            ruler = ruler.child(
-                div()
-                    .absolute()
-                    .left(relative(fraction))
-                    .top_0()
-                    .pl(px(3.0))
-                    .max_w(px(64.0))
-                    .truncate()
-                    .text_size(px(8.0))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(format!(
-                        "{:.2}b",
-                        raw as f64 / hex_project::BeatTime::ONE.raw() as f64
-                    ))),
-            );
+            ruler = ruler.children(super::timeline_strip::ruler_tick(
+                fraction,
+                format!(
+                    "{:.2}b",
+                    raw as f64 / hex_project::BeatTime::ONE.raw() as f64
+                ),
+                raw % (hex_project::BeatTime::ONE.raw() * 4) == 0,
+                false,
+                false,
+            ));
         }
         ruler = ruler.child(
             canvas(
@@ -485,6 +478,15 @@ impl EditorView {
                     {
                         let x =
                             bounds.origin.x + px((marker as f64 / span as f64) as f32 * b.width);
+                        let hovered = start_marker_enabled
+                            && hitbox.is_hovered(window)
+                            && !window.is_pointer_dragging()
+                            && (f32::from(window.mouse_position().x - x)).abs() <= 7.0;
+                        let marker_color = rgb(theme::color(if active || hovered {
+                            theme::PaletteRole::Text
+                        } else {
+                            theme::PaletteRole::Primary
+                        }));
                         let y = bounds.origin.y + px(10.0);
                         let mut path = PathBuilder::fill();
                         path.move_to(point(x - px(5.0), y));
@@ -492,19 +494,41 @@ impl EditorView {
                         path.line_to(point(x, y + px(6.0)));
                         path.close();
                         if let Ok(path) = path.build() {
-                            window.paint_path(path, rgb(theme::color(theme::PaletteRole::Primary)));
+                            window.paint_path(path, marker_color);
                         }
                         window.paint_quad(fill(
                             Bounds::new(point(x, bounds.origin.y), size(px(1.0), px(b.height))),
-                            rgb(theme::color(theme::PaletteRole::Primary)),
+                            marker_color,
                         ));
-                        if active
-                            || (hitbox.is_hovered(window)
-                                && (f32::from(window.mouse_position().x - x)).abs() <= 7.0)
-                        {
+                        if active || hovered {
                             window.set_cursor_style(gpui::CursorStyle::ResizeLeftRight, &hitbox);
+                        } else if !start_marker_enabled {
+                            window.set_cursor_style(gpui::CursorStyle::IBeam, &hitbox);
                         }
                     }
+                    let hover_entity = entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let hovered = !window.is_pointer_dragging()
+                            && bounds.contains(&event.position)
+                            && marker
+                                .and_then(|at| at.checked_sub(start))
+                                .filter(|at| *at <= span)
+                                .is_some_and(|at| {
+                                    let x = bounds.left()
+                                        + bounds.size.width * (at as f64 / span as f64) as f32;
+                                    (f32::from(event.position.x - x)).abs() <= 7.0
+                                });
+                        hover_entity.update(cx, |view, cx| {
+                            let hovered = hovered && !view.time_selection_key_held;
+                            if view.midi_ruler.marker_hovered != hovered {
+                                view.midi_ruler.marker_hovered = hovered;
+                                cx.notify();
+                            }
+                        });
+                    });
                     entity
                         .read(cx)
                         .renew_midi_ruler_capture(b, entity.entity_id(), window);
@@ -567,7 +591,7 @@ impl EditorView {
             )
             .size_full(),
         );
-        let source_row=div().h(px(18.0)).flex_shrink_0().flex()
+        let source_row=div().h(px(super::timeline_strip::RULER_HEIGHT)).flex_shrink_0().flex()
             .child(div().id("midi-source-ruler-label").w(px(38.0)).flex_shrink_0().text_size(px(8.0)).child(theme::text("start"))
                 .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("clip start"), description:"drag start marker · drag blank ruler to select time · cmd+d duplicate · hold cmd/control to invert snap · no seek".into() }).into()))
             .children([ruler]);

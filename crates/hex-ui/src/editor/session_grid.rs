@@ -198,8 +198,9 @@ impl EditorView {
             return;
         }
         let selection = self.state.as_ref().and_then(|state| {
-            super::session_navigation::resolve_navigation(
+            super::session_navigation::resolve_visible_navigation(
                 &state.project,
+                &self.arrangement_focus.projection.console_indices,
                 self.selected_cell,
                 self.selected_scene,
                 direction,
@@ -251,6 +252,22 @@ impl EditorView {
             return;
         };
         let revision = state.revision;
+        if self.selected_cell.is_some_and(|(track, _)| {
+            !self
+                .arrangement_focus
+                .projection
+                .console_indices
+                .iter()
+                .any(|index| {
+                    state
+                        .project
+                        .tracks()
+                        .get(*index)
+                        .is_some_and(|item| item.id() == track)
+                })
+        }) {
+            return;
+        }
         let Some(target) = super::session_navigation::resolve_enter_target(
             &state.project,
             self.selected_cell,
@@ -398,9 +415,16 @@ impl EditorView {
             .floor()
             .max(1.0) as usize;
         self.session_visible_columns = visible_columns;
-        let columns = visible_track_range(tracks.len(), self.session_track_start, visible_columns);
+        let indices = &self.arrangement_focus.projection.console_indices;
+        let columns = visible_track_range(indices.len(), self.session_track_start, visible_columns);
         let column_start = columns.start;
         let column_end = columns.end;
+        let column_indices = indices.get(columns).unwrap_or_default().to_vec();
+        let next_track = indices
+            .get(column_end)
+            .and_then(|index| tracks.get(*index))
+            .map(|track| track.id());
+        let track_count = indices.len();
         let frame = ColumnFrame::capture(self, window, revision);
         let row_context = SessionRowContext {
             frame,
@@ -420,12 +444,12 @@ impl EditorView {
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .children(
-                tracks
-                    .get(column_start..column_end)
-                    .unwrap_or_default()
+                column_indices
                     .iter()
+                    .filter_map(|index| tracks.get(*index))
                     .map(|track| {
                         let track_id = track.id();
+                        let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
                         let header_focus = self.track_header_focus(track_id, cx);
                         let click_focus = header_focus.clone();
                         let header = div()
@@ -482,6 +506,74 @@ impl EditorView {
                                     .min_w_0()
                                     .flex_1()
                                     .truncate()
+                                    .flex()
+                                    .items_center()
+                                    .children((hierarchy_indent > 0.0).then(|| {
+                                        div()
+                                            .w(px(hierarchy_indent))
+                                            .flex_shrink_0()
+                                            .debug_selector(move || {
+                                                format!(
+                                                    "track-hierarchy-indent-{}",
+                                                    track_id.value()
+                                                )
+                                            })
+                                    }))
+                                    .children(track.is_group().then(|| {
+                                        let folded =
+                                            self.arrangement_focus.projection.folded(track_id);
+                                        div()
+                                            .id(("console-group-fold", track_id.value()))
+                                            .debug_selector(move || {
+                                                format!("console-group-fold-{}", track_id.value())
+                                            })
+                                            .w(px(14.0))
+                                            .flex_shrink_0()
+                                            .cursor_pointer()
+                                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                                cx.stop_propagation()
+                                            })
+                                            .on_click(cx.listener(move |view, _, _, cx| {
+                                                cx.stop_propagation();
+                                                if view.mode == EditorMode::Session
+                                                    && view.track_view_change_available(cx)
+                                                    && view
+                                                        .state
+                                                        .as_ref()
+                                                        .and_then(|state| {
+                                                            state.project.track(track_id)
+                                                        })
+                                                        .is_some_and(hex_project::Track::is_group)
+                                                {
+                                                    view.arrangement_focus
+                                                        .projection
+                                                        .toggle_fold(track_id);
+                                                    view.reconcile_arrangement_focus();
+                                                    cx.notify();
+                                                }
+                                            }))
+                                            .tooltip(move |_, cx| {
+                                                cx.new(|_| super::transport::MiniTooltip {
+                                                    kind: crate::tooltips::Kind::Identification,
+                                                    description: if folded {
+                                                        "expand group"
+                                                    } else {
+                                                        "fold group"
+                                                    }
+                                                    .into(),
+                                                })
+                                                .into()
+                                            })
+                                            .child(theme::text(if folded { ">" } else { "v" }))
+                                    }))
+                                    .children(track.is_group().then(|| {
+                                        div()
+                                            .flex_shrink_0()
+                                            .debug_selector(move || {
+                                                format!("group-track-marker-{}", track_id.value())
+                                            })
+                                            .child(theme::text("group · "))
+                                    }))
                                     .child(theme::text(track.name().to_lowercase())),
                             )
                             .children(self.route_marker_for_track(
@@ -509,7 +601,7 @@ impl EditorView {
                         .flex_1()
                         .min_w(px(12.0))
                         .h_full(),
-                    tracks.get(column_end).map(|track| track.id()),
+                    next_track,
                     SessionSceneTarget::Insert { before: None },
                     frame,
                     true,
@@ -545,7 +637,13 @@ impl EditorView {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(self.session_toolbar(cx, visible_columns, tracks.len(), route_feedback))
+            .child(self.session_toolbar(
+                cx,
+                visible_columns,
+                column_start,
+                track_count,
+                route_feedback,
+            ))
             .child(div().flex_shrink_0().flex().overflow_hidden().child(header));
         grid.child(
             div()
@@ -561,6 +659,7 @@ impl EditorView {
         &self,
         cx: &mut Context<Self>,
         page_size: usize,
+        page_start: usize,
         track_count: usize,
         route_feedback: Option<&'static str>,
     ) -> Div {
@@ -588,16 +687,11 @@ impl EditorView {
                     "previous tracks",
                     "session-page-previous",
                     cx.listener(move |view, _, _, cx| {
-                        view.session_track_start =
-                            view.session_track_start.saturating_sub(page_size.max(1));
+                        view.session_track_start = page_start.saturating_sub(page_size.max(1));
                         cx.notify();
                     }),
                 )
-                .opacity(if self.session_track_start == 0 {
-                    0.45
-                } else {
-                    1.0
-                }),
+                .opacity(if page_start == 0 { 0.45 } else { 1.0 }),
             )
             .child(self.session_icon(
                 "+",
@@ -783,27 +877,21 @@ impl EditorView {
                 "next tracks",
                 "session-page-next",
                 cx.listener(move |view, _, _, cx| {
-                    view.session_track_start = view
-                        .session_track_start
+                    view.session_track_start = page_start
                         .saturating_add(page_size.max(1))
                         .min(track_count.saturating_sub(page_size));
                     cx.notify();
                 }),
             )
-            .opacity(
-                if self.session_track_start.saturating_add(page_size) >= track_count {
-                    0.45
-                } else {
-                    1.0
-                },
-            ),
+            .opacity(if page_start.saturating_add(page_size) >= track_count {
+                0.45
+            } else {
+                1.0
+            }),
         );
         if track_count > 0 {
-            let first = self.session_track_start.saturating_add(1).min(track_count);
-            let last = self
-                .session_track_start
-                .saturating_add(page_size)
-                .min(track_count);
+            let first = page_start.saturating_add(1).min(track_count);
+            let last = page_start.saturating_add(page_size).min(track_count);
             row = row.child(
                 div()
                     .px_1()
@@ -938,11 +1026,15 @@ impl EditorView {
             .flex()
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        for track in state
-            .project
-            .tracks()
+        let column_indices = self
+            .arrangement_focus
+            .projection
+            .console_indices
             .get(column_start..column_end)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        for track in column_indices
+            .iter()
+            .filter_map(|index| state.project.tracks().get(*index))
         {
             let track_id = track.id();
             let content = state.project.session_cell(track_id, scene_id);
@@ -1356,10 +1448,11 @@ impl EditorView {
                 .flex_1()
                 .min_w(px(12.0))
                 .h_full(),
-            state
-                .project
-                .tracks()
+            self.arrangement_focus
+                .projection
+                .console_indices
                 .get(column_end)
+                .and_then(|index| state.project.tracks().get(*index))
                 .map(|track| track.id()),
             SessionSceneTarget::Existing(scene_id),
             frame,
@@ -1422,7 +1515,16 @@ impl EditorView {
                 }),
             );
         if let Some(state) = self.state.as_ref() {
-            for track in state.project.tracks().get(start..end).unwrap_or_default() {
+            let column_indices = self
+                .arrangement_focus
+                .projection
+                .console_indices
+                .get(start..end)
+                .unwrap_or_default();
+            for track in column_indices
+                .iter()
+                .filter_map(|index| state.project.tracks().get(*index))
+            {
                 let id = track.id();
                 let cell = div()
                     .id(("console-append-track", id.value()))
@@ -1461,7 +1563,13 @@ impl EditorView {
         let before = self
             .state
             .as_ref()
-            .and_then(|state| state.project.tracks().get(end))
+            .and_then(|state| {
+                self.arrangement_focus
+                    .projection
+                    .console_indices
+                    .get(end)
+                    .and_then(|index| state.project.tracks().get(*index))
+            })
             .map(|track| track.id());
         let tail = self.console_column_surface(
             div()
@@ -1710,11 +1818,17 @@ impl EditorView {
         let positions = self.state.as_ref().map(|state| {
             (
                 track.and_then(|track| {
-                    state
-                        .project
-                        .tracks()
+                    self.arrangement_focus
+                        .projection
+                        .console_indices
                         .iter()
-                        .position(|item| item.id() == track)
+                        .position(|index| {
+                            state
+                                .project
+                                .tracks()
+                                .get(*index)
+                                .is_some_and(|item| item.id() == track)
+                        })
                 }),
                 scene.and_then(|scene| {
                     state

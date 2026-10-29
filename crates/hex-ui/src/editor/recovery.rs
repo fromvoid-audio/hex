@@ -30,14 +30,8 @@ impl EditorView {
                 return;
             }
         };
-        self.gain_recorder.discard();
         self.offline_cursor = position;
-        if let Some(audio) = self.audio.take() {
-            let mut audio = audio;
-            audio.control.stop();
-            audio.control.close();
-            drop(audio);
-        }
+        self.retire_audio_preserving_gain_take();
         self.clear_audio_accounting();
         if self.restart_audio_for_current_document() {
             self.pending_recovery_generation = Some(generation);
@@ -167,12 +161,7 @@ impl EditorView {
     pub(super) fn fail_audio_recovery(&mut self, error: String) {
         self.offline_cursor = self.cursor_position();
         self.recovery.fail();
-        if let Some(audio) = self.audio.take() {
-            let mut audio = audio;
-            audio.control.stop();
-            audio.control.close();
-            drop(audio);
-        }
+        self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;
         self.pending_restart_request = None;
         self.clear_audio_accounting();

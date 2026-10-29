@@ -126,7 +126,7 @@ impl EditorView {
                 .flex_1()
                 .min_h_0()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
-            let main = self.main_track_row(viewport, &[], &[], cx);
+            let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), cx);
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         };
@@ -189,6 +189,7 @@ impl EditorView {
                             &grid,
                             empty_viewport,
                             self.track_header_width(),
+                            window.scale_factor(),
                         )])
                         .child(
                             div()
@@ -199,15 +200,16 @@ impl EditorView {
                                 .justify_center()
                                 .text_xs()
                                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                                .child(theme::text(if self.arrangement_focus.enabled {
-                                    "no clips in selected sections · q restores all tracks"
+                                .child(theme::text(if self.arrangement_focus.projection.enabled {
+                                    "no clips in selected sections · q clears section focus"
                                 } else {
                                     "no tracks · import audio or add a track"
                                 })),
                         ),
                     cx,
                 )]);
-            let main = self.main_track_row(empty_viewport, &bands, &grid, cx);
+            let main =
+                self.main_track_row(empty_viewport, &bands, &grid, window.scale_factor(), cx);
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         }
@@ -284,6 +286,7 @@ impl EditorView {
                 &grid,
                 viewport,
                 self.track_header_width(),
+                window.scale_factor(),
             )])
             .child(rows);
         if let Some(position) = viewport.fraction(playhead) {
@@ -323,7 +326,7 @@ impl EditorView {
                 ruler_width,
                 cx,
             ));
-        let main = self.main_track_row(viewport, &bands, &grid, cx);
+        let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), cx);
         let returns = self.return_tracks_view(cx);
         self.arrangement_surface(upper, returns, main, cx)
     }
@@ -766,6 +769,7 @@ impl EditorView {
         viewport: Viewport,
         bands: &[super::musical_time::GridBand],
         lines: &[super::musical_time::GridLine],
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Div {
         let state = self.state.clone();
@@ -786,9 +790,9 @@ impl EditorView {
             .flex_1()
             .min_w_0()
             .h_full()
-            .children([main_track_grid_layer(bands, lines, viewport)])
+            .children([main_track_grid_layer(bands, lines, viewport, scale)])
             .children(self.main_time_selection_overlay(viewport))
-            .children(self.section_elements(viewport, cx))
+            .children(self.section_elements(viewport, scale, cx))
             .children([self.section_pointer_events(cx)])
             .children(automation)
             .child(
@@ -903,30 +907,18 @@ impl EditorView {
             .children(
                 super::musical_time::ruler_ticks(&state.project, viewport, ruler_width)
                     .into_iter()
-                    .map(|tick| {
+                    .filter_map(|tick| {
                         let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
-                        div()
-                            .debug_selector(move || format!("ruler-tick-{}", tick.frame))
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(relative(x))
-                            .flex()
-                            .items_center()
-                            .border_l_1()
-                            .border_color(rgb(theme::ruler_tick_color(
-                                tick.bar_start,
-                                tick.meter_marker || tick.fragmentary_bar,
-                            )))
-                            .pl_1()
-                            .pb(px(hex_widgets::TIME_POSITION_MARKER_HEIGHT))
-                            .text_size(px(10.0))
-                            .text_color(rgb(if tick.meter_marker {
-                                theme::color(theme::PaletteRole::Text)
-                            } else {
-                                theme::color(theme::PaletteRole::Muted)
-                            }))
-                            .child(theme::text(tick.label))
+                        super::timeline_strip::ruler_tick(
+                            x,
+                            tick.label,
+                            tick.bar_start,
+                            tick.meter_marker,
+                            tick.fragmentary_bar,
+                        )
+                        .map(|tick_view| {
+                            tick_view.debug_selector(move || format!("ruler-tick-{}", tick.frame))
+                        })
                     }),
             );
         let entity = cx.entity();
@@ -1036,14 +1028,10 @@ impl EditorView {
             .bottom_0()
             .left_0()
             .right_0()]);
-        div()
-            .h(px(24.0))
-            .flex_shrink_0()
+        super::timeline_strip::ruler_surface()
+            .debug_selector(|| "arrangement-time-ruler".into())
             .flex()
             .items_center()
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .child(cells)
             .children([self.time_controls(cx)])
     }
@@ -1052,6 +1040,7 @@ impl EditorView {
 pub(super) fn timeline_grid_elements(
     lines: &[super::musical_time::GridLine],
     viewport: super::viewport::Viewport,
+    scale: f32,
 ) -> Vec<Div> {
     if viewport.length == 0 {
         return Vec::new();
@@ -1078,11 +1067,7 @@ pub(super) fn timeline_grid_elements(
                     .top_0()
                     .bottom_0()
                     .left(relative(position.clamp(0.0, 1.0)))
-                    .w(px(if line.meter_marker || line.bar_start {
-                        1.5
-                    } else {
-                        1.0
-                    }))
+                    .w(px(1.0 / scale.max(1.0)))
                     .bg(rgb(color))
                     .opacity(opacity),
             )
@@ -1095,6 +1080,7 @@ fn timeline_grid_layer(
     lines: &[super::musical_time::GridLine],
     viewport: super::viewport::Viewport,
     header_width: f32,
+    scale: f32,
 ) -> Div {
     div()
         .debug_selector(|| "arrangement-grid".to_owned())
@@ -1104,20 +1090,21 @@ fn timeline_grid_layer(
         .left_0()
         .right(px(header_width))
         .children(timeline_band_elements(bands, viewport))
-        .children(timeline_grid_elements(lines, viewport))
+        .children(timeline_grid_elements(lines, viewport, scale))
 }
 
 fn main_track_grid_layer(
     bands: &[super::musical_time::GridBand],
     lines: &[super::musical_time::GridLine],
     viewport: Viewport,
+    scale: f32,
 ) -> Div {
     div()
         .debug_selector(|| "main-track-grid".to_owned())
         .absolute()
         .inset_0()
         .children(timeline_band_elements(bands, viewport))
-        .children(timeline_grid_elements(lines, viewport))
+        .children(timeline_grid_elements(lines, viewport, scale))
 }
 
 fn timeline_band_elements(

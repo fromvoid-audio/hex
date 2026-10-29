@@ -132,9 +132,6 @@ impl EditorView {
             self.piano_beat_span =
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
         }
-        if self.midi_volume.enabled {
-            return self.midi_volume_editor(cx);
-        }
         let state = std::sync::Arc::clone(self.state.as_ref()?);
         let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
@@ -522,7 +519,11 @@ impl EditorView {
                         y + 1.0,
                         w,
                         (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                        theme::color(theme::PaletteRole::Secondary),
+                        theme::color(if note.active {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Muted
+                        }),
                     );
                     let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
                     let border = theme::color(theme::PaletteRole::Background);
@@ -569,7 +570,11 @@ impl EditorView {
                         y + 1.0,
                         w,
                         (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                        theme::color(theme::PaletteRole::Primary),
+                        theme::color(if note.active {
+                            theme::PaletteRole::Primary
+                        } else {
+                            theme::PaletteRole::Muted
+                        }),
                     );
                     if draw_primary == Some(id) {
                         let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
@@ -647,7 +652,11 @@ impl EditorView {
                                 note.y * height + 1.0,
                                 right - x,
                                 (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                                theme::color(theme::PaletteRole::Primary),
+                                theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
+                                    theme::PaletteRole::Muted
+                                } else {
+                                    theme::PaletteRole::Primary
+                                }),
                             );
                         }
                     }
@@ -683,7 +692,11 @@ impl EditorView {
                                 note.y * height + 1.0,
                                 right - x,
                                 (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                                theme::color(theme::PaletteRole::Primary),
+                                theme::color(if original.active {
+                                    theme::PaletteRole::Primary
+                                } else {
+                                    theme::PaletteRole::Muted
+                                }),
                             );
                         }
                     }
@@ -1035,6 +1048,7 @@ impl EditorView {
                                     }
                                     originals.push(super::midi_group_drag::GroupNote {
                                         id: selected_note.id(),
+                                        active: selected_note.active(),
                                         start: selected_note.start().raw(),
                                         duration: selected_note.duration().raw(),
                                         pitch: selected_note.pitch(),
@@ -1090,6 +1104,7 @@ impl EditorView {
                                 revision,
                                 clip: clip_id,
                                 note: note.id,
+                                active: note.active,
                                 original: NotePreview {
                                     start: note.start,
                                     duration: note.duration,
@@ -1208,6 +1223,7 @@ impl EditorView {
                             rendered_context,
                             f32::from(event.position.x),
                             hex_project::MidiNoteInsert {
+                                active: true,
                                 start: local_beat,
                                 duration: BeatTime::from_raw(duration),
                                 pitch,
@@ -1407,7 +1423,6 @@ impl EditorView {
                     "toggle source looping · disabled loop markers are retained",
                     "toggle source looping · disabled loop markers are retained",
                 ))]);
-        let mode_control = self.volume_mode_button(cx);
         let toolbar = div()
             .h(px(28.0))
             .flex_shrink_0()
@@ -1415,7 +1430,6 @@ impl EditorView {
             .items_center()
             .gap_1()
             .px_1()
-            .child(mode_control)
             .child(theme::text("piano roll"))
             .children([self.midi_button(
                 grid.label(),
@@ -1919,7 +1933,6 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
-        let volume = self.cancel_midi_volume_input();
         let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
         let pan = self.midi_pan.gesture.take().is_some();
         let marquee = self.cancel_all_midi_marquees();
@@ -1930,8 +1943,7 @@ impl EditorView {
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
-        volume
-            || ruler
+        ruler
             || pan
             || velocity
             || pending_selection

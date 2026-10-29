@@ -1457,13 +1457,19 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
         let saved = startup_state(&selected, true, 3);
         let build = build();
         let setup = case.setup_restore(variant);
+        let mut preparation = options().preparation;
+        if timeout {
+            // The barrier deliberately holds the SDK indefinitely; a shorter
+            // fixture deadline exercises the same timeout and direct reap.
+            preparation.limits.startup = Duration::from_millis(500);
+        }
         let result = case.after_stage(
             stage,
             move || {
                 Pending::prepare_with_restore(
                     &build,
                     selected,
-                    options().preparation,
+                    preparation,
                     Some(saved),
                     context,
                     setup,
@@ -1509,6 +1515,8 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
     assert!(other.stop_and_reap_on_control().unwrap().status.success());
 }
 
+#[path = "native_tests/controller.rs"]
+mod controller;
 #[path = "native_tests/epoch.rs"]
 mod epoch;
 #[path = "native_tests/live_capture.rs"]

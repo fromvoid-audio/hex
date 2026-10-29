@@ -1016,6 +1016,7 @@ impl super::EditorView {
         {
             self.arrangement_device_preview = None;
             self.active_native_device_drag = None;
+            self.device_panel.drag_copy = None;
         }
         drag.destination.set(None);
         drag.return_destination.set(None);
@@ -1026,6 +1027,7 @@ impl super::EditorView {
         let Some(drag) = self.active_native_device_drag.take() else {
             return false;
         };
+        self.device_panel.drag_copy = None;
         drag.destination.set(None);
         drag.return_destination.set(None);
         true

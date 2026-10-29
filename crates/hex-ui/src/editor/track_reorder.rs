@@ -19,6 +19,8 @@ use hex_project::{TrackId, TrackSelectionIds};
 use hex_session::service::{Event, Request};
 use std::time::{Duration, Instant};
 
+mod subtree;
+
 #[derive(Default)]
 pub(super) struct TrackReorder {
     gesture: Option<Gesture>,
@@ -30,6 +32,7 @@ struct Gesture {
     revision: u64,
     track: TrackId,
     tracks: TrackSelectionIds,
+    source_rows: subtree::SourceRows,
     origin: (f32, f32),
     pointer: (f32, f32),
     moved: bool,
@@ -123,6 +126,14 @@ impl EditorView {
                 return;
             }
         };
+        let source_rows = match subtree::SourceRows::capture(&state.project, &tracks) {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.error = Some(error.0.into());
+                cx.notify();
+                return;
+            }
+        };
         self.track_header_focus(track, cx).focus(window);
         self.track_reorder.painted_gap = None;
         self.track_reorder.gesture = Some(Gesture {
@@ -130,6 +141,7 @@ impl EditorView {
             revision,
             track,
             tracks,
+            source_rows,
             origin: pointer,
             pointer,
             moved: false,
@@ -277,7 +289,7 @@ impl EditorView {
     fn track_reorder_destination(
         &self,
         pointer: (f32, f32),
-        source: &TrackSelectionIds,
+        source: &subtree::SourceRows,
     ) -> Option<Destination> {
         let bounds = self.arrangement_bounds?;
         let (x, y) = pointer;
@@ -306,23 +318,8 @@ impl EditorView {
             index += 1;
         }
         let index = self.arrangement_track_index(index).unwrap_or(tracks.len());
-        let members = source.ids();
-        if tracks
-            .get(index)
-            .is_some_and(|track| members.contains(&track.id()))
-        {
-            return None;
-        }
-        let first = tracks
-            .iter()
-            .position(|track| members.contains(&track.id()))?;
-        // The boundary immediately after an already contiguous block is also
-        // a no-op. Noncontiguous members otherwise form one canonical block.
-        if index == first.checked_add(members.len())?
-            && tracks[first..index]
-                .iter()
-                .all(|track| members.contains(&track.id()))
-        {
+        let destination_parent = tracks.get(index).and_then(|track| track.parent_group());
+        if !source.permits(index, destination_parent) {
             return None;
         }
         if row_y < bounds.top || row_y > bounds.top + bounds.height {
@@ -345,7 +342,7 @@ impl EditorView {
         g.moved |= g.crosses_threshold(pointer);
         g.destination = g
             .moved
-            .then(|| self.track_reorder_destination(g.pointer, &g.tracks))
+            .then(|| self.track_reorder_destination(g.pointer, &g.source_rows))
             .flatten();
         self.track_reorder.gesture = Some(g);
         true

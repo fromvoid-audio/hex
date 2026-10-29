@@ -767,6 +767,21 @@ impl VisualTestContext {
         })
     }
 
+    /// Return monochrome sprite colors intersecting an element in the completed scene.
+    /// This observes SVG painting, not a native framebuffer or cursor.
+    pub fn rendered_monochrome_colors(&mut self, selector: &'static str) -> Vec<crate::Hsla> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.monochrome_sprites.iter()
+                .filter(|sprite| sprite.bounds.intersects(&scaled))
+                .map(|sprite| sprite.color)
+                .collect()
+        })
+    }
+
     /// Filled quad fragments inside a debug element in the completed scene,
     /// clipped to its bounds and each replay/content mask. Canvas primitives do
     /// not have individual element selectors. This is scene geometry, not native

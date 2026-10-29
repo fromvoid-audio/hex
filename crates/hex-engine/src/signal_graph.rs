@@ -24,6 +24,12 @@ pub(crate) struct Send {
     pub gain: f32,
     pub edge: usize,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackOutput {
+    Main { edge: usize },
+    Group { target: usize, edge: usize },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TrackPlan {
     pub id: Option<TrackId>,
@@ -34,7 +40,7 @@ pub(crate) struct TrackPlan {
     pub source_input: usize,
     pub audio_merge: usize,
     pub generator_merge: Option<usize>,
-    pub main: usize,
+    pub output: TrackOutput,
     pub sends: Vec<Send>,
     pub audio_feeds: Vec<Send>,
 }
@@ -59,6 +65,8 @@ pub(crate) struct SignalGraph {
     pub tracks: Vec<TrackPlan>,
     pub returns: Vec<ReturnPlan>,
     pub owner_order: Vec<Owner>,
+    track_indices: Vec<(TrackId, usize)>,
+    has_group_outputs: bool,
     pub main: usize,
     pub main_devices: Vec<usize>,
     pre_main_edges: Vec<usize>,
@@ -96,6 +104,25 @@ impl Builder {
     }
 }
 impl SignalGraph {
+    /// Resolve the prepared stage's origin in this actual graph. Project device
+    /// identities are unique; no caller-provided latency becomes authority.
+    pub(crate) fn parameter_arrival(
+        &self,
+        input: crate::NativeParameterInputTarget,
+    ) -> Result<u32, Invalid> {
+        let node = self
+            .typed
+            .binary_search(&NodeId::Device(input.identity().device_id()))
+            .ok()
+            .and_then(|index| self.plan.nodes().get(index))
+            .ok_or(Invalid("parameter stage is absent from the signal graph"))?;
+        Ok(match input.target() {
+            hex_lattice_contract::DeviceAutomationTarget::HostOutputGain => {
+                node.output_arrival_frames
+            }
+            _ => node.input_arrival_frames,
+        })
+    }
     pub(crate) fn prepare(
         project: &Project,
         feeds: &[(usize, usize, f32)],
@@ -213,7 +240,7 @@ impl SignalGraph {
                 source_input,
                 audio_merge,
                 generator_merge,
-                main: 0,
+                output: TrackOutput::Main { edge: 0 },
                 sends: Vec::new(),
                 audio_feeds: Vec::new(),
             });
@@ -246,8 +273,38 @@ impl SignalGraph {
             });
         }
         let main = builder.node(NodeId::Main, Some(0));
-        for (index, track) in tracks.iter_mut().enumerate() {
-            track.main = builder.edge(track.fader, main);
+        // Resolve canonical parent IDs once during preparation. Each track owns
+        // exactly one default output; authored feeds remain separate edges.
+        for index in 0..tracks.len() {
+            let parent = match tracks[index].id {
+                Some(id) => canonical
+                    .track(id)
+                    .ok_or(Invalid("canonical track is missing"))?
+                    .parent_group(),
+                None => None,
+            };
+            let target = parent
+                .map(|id| {
+                    tracks
+                        .iter()
+                        .position(|candidate| candidate.id == Some(id))
+                        .ok_or(Invalid("group output target is missing"))
+                })
+                .transpose()?;
+            let from = tracks[index].fader;
+            let output = if let Some(target) = target {
+                let input = builder.edges[tracks[target].source_input].1;
+                TrackOutput::Group {
+                    target,
+                    edge: builder.edge(from, input),
+                }
+            } else {
+                TrackOutput::Main {
+                    edge: builder.edge(from, main),
+                }
+            };
+            let track = &mut tracks[index];
+            track.output = output;
             for send in &project.tracks[index].sends {
                 let input = *inputs
                     .get(send.return_index)
@@ -395,7 +452,11 @@ impl SignalGraph {
             track.source_input = edge_index(track.source_input)?;
             track.audio_merge = edge_index(track.audio_merge)?;
             track.generator_merge = track.generator_merge.map(edge_index).transpose()?;
-            track.main = edge_index(track.main)?;
+            match &mut track.output {
+                TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => {
+                    *edge = edge_index(*edge)?;
+                }
+            }
             for send in track.sends.iter_mut().chain(&mut track.audio_feeds) {
                 send.edge = edge_index(send.edge)?;
             }
@@ -430,7 +491,23 @@ impl SignalGraph {
         }
         order.sort_by_key(|(node, _)| ranks[*node]);
         let owner_order = order.into_iter().map(|(_, owner)| owner).collect();
+        let has_group_outputs = tracks
+            .iter()
+            .any(|track| matches!(track.output, TrackOutput::Group { .. }));
+        let mut track_indices = Vec::new();
+        track_indices
+            .try_reserve_exact(tracks.len())
+            .map_err(|_| Invalid("could not reserve signal track index"))?;
+        track_indices.extend(
+            tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, track)| track.id.map(|id| (id, index))),
+        );
+        track_indices.sort_unstable_by_key(|(id, _)| *id);
         let graph = Self {
+            track_indices,
+            has_group_outputs,
             main: node_index(main)?,
             main_devices,
             pre_main_edges,
@@ -463,6 +540,8 @@ impl SignalGraph {
             tracks,
             returns,
             owner_order,
+            track_indices,
+            has_group_outputs: _,
             main: _,
             main_devices,
             pre_main_edges,
@@ -474,7 +553,12 @@ impl SignalGraph {
             .checked_add(typed.capacity().checked_mul(size_of::<NodeId>())?)?
             .checked_add(tracks.capacity().checked_mul(size_of::<TrackPlan>())?)?
             .checked_add(returns.capacity().checked_mul(size_of::<ReturnPlan>())?)?
-            .checked_add(owner_order.capacity().checked_mul(size_of::<Owner>())?)?;
+            .checked_add(owner_order.capacity().checked_mul(size_of::<Owner>())?)?
+            .checked_add(
+                track_indices
+                    .capacity()
+                    .checked_mul(size_of::<(TrackId, usize)>())?,
+            )?;
         total = total.checked_add(main_devices.capacity().checked_mul(size_of::<usize>())?)?;
         total = total.checked_add(pre_main_edges.capacity().checked_mul(size_of::<usize>())?)?;
         for track in tracks {
@@ -500,17 +584,142 @@ impl SignalGraph {
     /// compensated execution follow the actual latency/typed-routing requirement.
     pub(crate) fn needs_runtime(&self) -> bool {
         self.plan.max_latency_frames() != 0
+            || self.has_group_outputs
             || self
                 .tracks
                 .iter()
                 .any(|track| !track.audio_feeds.is_empty())
             || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
     }
+    pub(crate) fn has_group_outputs(&self) -> bool {
+        self.has_group_outputs
+    }
+    /// Stable ID lookup is prepared off callback; the returned slot belongs to
+    /// this exact immutable graph and its matching Arrangement track inventory.
+    pub(crate) fn track_index(&self, id: TrackId) -> Option<usize> {
+        self.track_indices
+            .binary_search_by_key(&id, |(track, _)| *track)
+            .ok()
+            .and_then(|index| self.track_indices.get(index).map(|(_, slot)| *slot))
+    }
+    /// Retained post-fader tails may enter a successor graph only while every
+    /// destination on their original default path still names the same owner.
+    pub(crate) fn same_default_path(&self, other: &Self, mut id: TrackId) -> bool {
+        for _ in 0..=self.tracks.len() {
+            let Some(a) = self
+                .track_index(id)
+                .and_then(|index| self.tracks.get(index))
+            else {
+                return false;
+            };
+            let Some(b) = other
+                .track_index(id)
+                .and_then(|index| other.tracks.get(index))
+            else {
+                return false;
+            };
+            let parent = |graph: &Self, output: TrackOutput| match output {
+                TrackOutput::Main { .. } => Some(None),
+                TrackOutput::Group { target, .. } => graph
+                    .tracks
+                    .get(target)
+                    .and_then(|track| track.id)
+                    .map(Some),
+            };
+            let Some(next) = parent(self, a.output) else {
+                return false;
+            };
+            if Some(next) != parent(other, b.output) {
+                return false;
+            }
+            match next {
+                Some(parent) => id = parent,
+                None => return true,
+            }
+        }
+        false
+    }
+    /// An in-flight child tail cannot be fed into a replacement ancestor
+    /// processor chain after its predecessor has been detached. Require the
+    /// actual prepared ancestor chains to remain identical before transfer.
+    pub(crate) fn same_tail_path(
+        &self,
+        other: &Self,
+        old: &Project,
+        new: &Project,
+        mut id: TrackId,
+    ) -> bool {
+        if !self.same_default_path(other, id) {
+            return false;
+        }
+        for _ in 0..self.tracks.len() {
+            let Some(plan) = self
+                .track_index(id)
+                .and_then(|index| self.tracks.get(index))
+            else {
+                return false;
+            };
+            let TrackOutput::Group { target, .. } = plan.output else {
+                return true;
+            };
+            let Some(parent) = self.tracks.get(target).and_then(|track| track.id) else {
+                return false;
+            };
+            let Some(a) = self
+                .track_index(parent)
+                .and_then(|index| old.tracks.get(index))
+            else {
+                return false;
+            };
+            let Some(b) = other
+                .track_index(parent)
+                .and_then(|index| new.tracks.get(index))
+            else {
+                return false;
+            };
+            if a.device_chain.len() != b.device_chain.len()
+                || !a
+                    .device_chain
+                    .iter()
+                    .zip(b.device_chain.iter())
+                    .all(|(a, b)| {
+                        // Foreign binding metadata alone does not prove an
+                        // endpoint lease. Let the predecessor drain instead.
+                        !matches!(
+                            a.definition,
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        ) && !matches!(
+                            b.definition,
+                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                        ) && a.device_id == b.device_id
+                            && a.device_type == b.device_type
+                            && a.bypassed == b.bypassed
+                            && a.matrix == b.matrix
+                            && a.configuration == b.configuration
+                            && a.automation == b.automation
+                    })
+            {
+                return false;
+            }
+            id = parent;
+        }
+        false
+    }
+    /// The closed streamed constructor may enumerate zero-latency group routes
+    /// using the same source frontier as its per-frame render. Authored feeds
+    /// remain outside that constructor's admitted graph class.
+    pub(crate) fn supports_closed_group_stream(&self) -> bool {
+        self.plan.max_latency_frames() == 0
+            && self.has_group_outputs
+            && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
+            && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
+    }
     /// Serial Main latency needs clock history, but does not require rendering
     /// all upstream sources and effects one sample at a time. Typed audio feeds
     /// and pre-Main latency still use the general compensated routing kernel.
     pub(crate) fn needs_upstream_frame_routing(&self) -> bool {
         self.main_latency() != 0
+            || self.has_group_outputs
             || self
                 .tracks
                 .iter()
@@ -534,7 +743,9 @@ impl SignalGraph {
     /// quiescence and source/clock continuity are independently checked by Session.
     pub(crate) fn can_start_compensation_from(&self, other: &Self) -> bool {
         !other.needs_runtime()
-            && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
+            && self.tracks.iter().all(|track| {
+                matches!(track.output, TrackOutput::Main { .. }) && track.audio_feeds.is_empty()
+            })
             && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
             && self.same_routing(other)
     }
@@ -570,6 +781,14 @@ impl SignalGraph {
             && self.returns.len() == other.returns.len()
             && self.tracks.iter().zip(&other.tracks).all(|(a, b)| {
                 a.id == b.id
+                    && std::mem::discriminant(&a.output) == std::mem::discriminant(&b.output)
+                    && match (a.output, b.output) {
+                        (
+                            TrackOutput::Group { target: a, .. },
+                            TrackOutput::Group { target: b, .. },
+                        ) => a == b,
+                        _ => true,
+                    }
                     && a.sends
                         .iter()
                         .map(|send| send.target)
@@ -604,6 +823,7 @@ impl SignalGraph {
         };
         if !self.tracks.iter().zip(&other.tracks).all(|(a, b)| {
             a.id == b.id
+                && a.output == b.output
                 && same_edges(&a.sends, &b.sends)
                 && same_edges(&a.audio_feeds, &b.audio_feeds)
         }) || !self.returns.iter().zip(&other.returns).all(|(a, b)| {
@@ -870,6 +1090,25 @@ impl SignalRuntime {
         self.graph = graph;
         Ok(())
     }
+    pub(crate) fn route_track_output(
+        &mut self,
+        index: usize,
+        frame: Frame,
+    ) -> Result<Frame, Invalid> {
+        let output = self.graph.tracks[index].output;
+        let edge = match output {
+            TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => edge,
+        };
+        let routed = self.edge(edge, frame)?;
+        match output {
+            TrackOutput::Main { .. } => self.main[index] = routed,
+            TrackOutput::Group { target, .. } => {
+                self.inputs[target][0] += routed[0];
+                self.inputs[target][1] += routed[1];
+            }
+        }
+        Ok(routed)
+    }
     pub(crate) fn edge(&mut self, index: usize, frame: Frame) -> Result<Frame, Invalid> {
         let mut frames = [frame];
         let index = *self
@@ -913,6 +1152,8 @@ impl SignalRuntime {
             offset,
             &mut hex_lattice::RefuseForeign,
             observer,
+            None,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -923,6 +1164,8 @@ impl SignalRuntime {
         offset: usize,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), Invalid> {
         if frames.len() != 1 || chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
@@ -932,34 +1175,20 @@ impl SignalRuntime {
             let clock = OriginClock(self.delays.stamp_at_delay(planned.input_arrival_frames));
             let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
             let output_clock = OriginClock(output_stamp);
-            if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_foreign(
-                    index..index + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    Some(&output_clock),
-                    foreign,
-                    &mut |owner, device, kind, phase, offset, frames| {
-                        observer(
-                            crate::PostNodeIdentity::new(owner, device, kind),
-                            phase,
-                            offset,
-                            frames,
-                        );
-                    },
-                )
-            } else {
-                chain.process_range_with_foreign(
-                    index..index + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    Some(&output_clock),
-                    foreign,
-                )
-            }
-            .map_err(|_| Invalid("main effect runtime failed"))?;
+            crate::native_parameter_input::process_range_with_external(
+                input.as_deref_mut(),
+                external,
+                chain,
+                index..index + 1,
+                frames,
+                offset,
+                Some(&clock),
+                Some(&output_clock),
+                planned.input_arrival_frames,
+                planned.output_arrival_frames,
+                foreign,
+                observer,
+            )?;
             if output_stamp.is_none() {
                 frames.fill([0.0; 2]);
             }
@@ -988,6 +1217,8 @@ impl SignalRuntime {
             metered,
             &mut hex_lattice::RefuseForeign,
             observer,
+            None,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -1002,6 +1233,8 @@ impl SignalRuntime {
         metered: bool,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<Frame, Invalid> {
         audio = self.edge(self.graph.tracks[index].source_input, audio)?;
         audio[0] += self.inputs[index][0];
@@ -1015,6 +1248,8 @@ impl SignalRuntime {
             offset,
             foreign,
             observer,
+            input.as_deref_mut(),
+            external,
         )?;
         track.apply_instrument_input_gain(std::slice::from_mut(&mut audio));
         if metered {
@@ -1046,6 +1281,8 @@ impl SignalRuntime {
             offset,
             foreign,
             observer,
+            input,
+            external,
         )?;
         Ok(mixed)
     }
@@ -1066,6 +1303,8 @@ impl SignalRuntime {
             offset,
             &mut hex_lattice::RefuseForeign,
             observer,
+            None,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -1078,6 +1317,8 @@ impl SignalRuntime {
         offset: usize,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        mut input: Option<&mut crate::native_parameter_input::Processing>,
+        external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), Invalid> {
         for (local, &node) in nodes.iter().enumerate() {
             let planned = &self.graph.plan.nodes()[node];
@@ -1085,34 +1326,20 @@ impl SignalRuntime {
             let output_stamp = self.delays.stamp_at_delay(planned.output_arrival_frames);
             let output_clock = OriginClock(output_stamp);
             let frames = std::slice::from_mut(frame);
-            if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_foreign(
-                    start + local..start + local + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    Some(&output_clock),
-                    foreign,
-                    &mut |owner, device, kind, phase, offset, frames| {
-                        observer(
-                            crate::PostNodeIdentity::new(owner, device, kind),
-                            phase,
-                            offset,
-                            frames,
-                        )
-                    },
-                )
-            } else {
-                chain.process_range_with_foreign(
-                    start + local..start + local + 1,
-                    frames,
-                    offset,
-                    Some(&clock),
-                    Some(&output_clock),
-                    foreign,
-                )
-            }
-            .map_err(|_| Invalid("compensated native device range is invalid"))?;
+            crate::native_parameter_input::process_range_with_external(
+                input.as_deref_mut(),
+                external,
+                chain,
+                start + local..start + local + 1,
+                frames,
+                offset,
+                Some(&clock),
+                Some(&output_clock),
+                planned.input_arrival_frames,
+                planned.output_arrival_frames,
+                foreign,
+                observer,
+            )?;
             if output_stamp.is_none() {
                 *frame = [0.0; 2];
             }

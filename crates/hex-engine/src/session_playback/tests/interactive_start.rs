@@ -167,6 +167,76 @@ fn play_from_chases_a_held_mutable_note_without_replaying_the_prefix() {
 }
 
 #[test]
+fn play_from_note_onset_and_off_boundaries_match_authored_pcm() {
+    // At 120 bpm and 48 kHz this one-beat note ends at frame 24,000.
+    let prepared = start_fixture(0, 1 << 32, None);
+    let mut oracle = SessionPlayback::new(start_fixture(0, 1 << 32, None)).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let onset = render_checkpoint_partitioned(&mut oracle, &[256], 512);
+    assert!(onset.iter().flatten().any(|sample| *sample != 0.0));
+
+    for destination in [0, 24_000, 24_001] {
+        let expected = if destination == 0 {
+            onset.clone()
+        } else {
+            vec![[0.0; 2]; 512]
+        };
+        for block in [1, 17, 64, 128, 256, 512] {
+            let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            playback.play_from(destination).unwrap();
+            let actual = render_checkpoint_partitioned(&mut playback, &[block], 512);
+            assert_eq!(actual, expected, "destination={destination}, block={block}");
+            assert_eq!(playback.arrangement_frame(), destination + 512);
+            assert_eq!(playback.performance_frame(), destination + 512);
+        }
+    }
+}
+
+#[test]
+fn chased_note_gate_and_stop_match_authored_pcm_at_fixed_block_sizes() {
+    let prepared = start_fixture(0, 1 << 32, None);
+    let mut oracle = SessionPlayback::new(start_fixture(1 << 31, 1 << 31, None)).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(
+        render_checkpoint_prefix(&mut oracle, 12_000)
+            .iter()
+            .flatten()
+            .all(|value| *value == 0.0)
+    );
+    let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064);
+    assert!(
+        expected[..12_000]
+            .iter()
+            .flatten()
+            .any(|value| *value != 0.0)
+    );
+    assert!(
+        expected[12_040..]
+            .iter()
+            .flatten()
+            .all(|value| *value == 0.0)
+    );
+    for block in [1, 17, 64, 128, 256, 512] {
+        let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&prepared)).unwrap();
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(12_000)))
+            .unwrap();
+        let mut actual = vec![[0.0; 2]; expected.len()];
+        for chunk in actual.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "block size {block}");
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Stop))
+            .unwrap();
+        let mut stopped = [[1.0; 2]; 32];
+        playback.render(&mut stopped).unwrap();
+        assert_eq!(stopped, [[0.0; 2]; 32]);
+        assert_eq!(playback.position(), 0);
+    }
+}
+
+#[test]
 fn play_from_invalid_destination_is_atomic_and_strict_seek_still_refuses_chase() {
     let (prepared, track) = mutable_checkpoint_fixture(1 << 32);
     let mut runtime = SessionPlayback::new(prepared).unwrap();
