@@ -1,5 +1,8 @@
 //! Compact canonical mixer controls. All musical changes stay on the actor.
-use super::{EditorView, waveform::button};
+use super::{
+    EditorView,
+    waveform::{button, toggle_button_with_style},
+};
 use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_project::Command;
@@ -77,6 +80,47 @@ impl EditorView {
                 );
         }
         if show_main {
+            if let Some(track) = self.selected_track.and_then(|id| state.project.track(id)) {
+                let id = track.id();
+                let (background, text) = super::track_gain::activator_colors(!track.muted());
+                let (solo_background, solo_text) =
+                    super::track_gain::activator_colors(track.soloed());
+                strip = strip
+                    .child(
+                        toggle_button_with_style(
+                            "on",
+                            if track.muted() {
+                                "activate track"
+                            } else {
+                                "deactivate track"
+                            },
+                            ("console-track-mute", id.value()),
+                            theme::action_style().with_state_colors(background, text),
+                        )
+                        .debug_selector(|| "console-track-mute".into())
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            cx.stop_propagation();
+                            view.toggle_mute(id);
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        toggle_button_with_style(
+                            "s",
+                            "solo track · s · cmd+click additive",
+                            ("console-track-solo", id.value()),
+                            theme::action_style().with_state_colors(solo_background, solo_text),
+                        )
+                        .debug_selector(|| "console-track-solo".into())
+                        .on_click(cx.listener(
+                            move |view, event: &gpui::ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                view.toggle_solo(id, !event.modifiers().platform);
+                                cx.notify();
+                            },
+                        )),
+                    );
+            }
             use hex_session::device_gesture::GestureTarget;
             let active_gain = self.device_gesture.snapshot().and_then(|snapshot| {
                 if snapshot.key.generation != self.project_generation {

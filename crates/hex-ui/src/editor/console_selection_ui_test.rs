@@ -110,6 +110,42 @@ fn console_multi_selection_is_visible_and_drags_as_one_history_step(cx: &mut Tes
         assert_eq!(v.selected_track_ids(), [ids[1], ids[2]]);
     });
 }
+
+#[gpui::test]
+fn console_solo_applies_to_the_selected_tracks(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    session(&mut visual, &editor);
+    click(&mut visual, ids[0], Modifiers::default());
+    click(
+        &mut visual,
+        ids[1],
+        Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+    );
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_track_ids(), [ids[0], ids[1]])
+    });
+    let solo = visual.debug_bounds("console-track-solo").unwrap().center();
+    visual.simulate_mouse_down(solo, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(solo, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(project.track(ids[0]).unwrap().soloed());
+        assert!(project.track(ids[1]).unwrap().soloed());
+        assert!(!project.track(ids[2]).unwrap().soloed());
+        assert_eq!(view.selected_track_ids(), [ids[0], ids[1]]);
+    });
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(!project.track(ids[0]).unwrap().soloed());
+        assert!(!project.track(ids[1]).unwrap().soloed());
+    });
+}
 #[gpui::test]
 fn console_shift_range_respects_folded_tracks_and_retains_additive_hidden_selection(
     cx: &mut TestAppContext,
