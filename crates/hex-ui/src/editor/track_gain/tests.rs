@@ -1744,3 +1744,116 @@ fn console_gain_draft_retires_when_source_tracks_are_removed(cx: &mut TestAppCon
     });
     assert!(visual.debug_bounds("console-track-gain-owner").is_none());
 }
+
+#[gpui::test]
+fn console_track_activator_and_solo_use_canonical_commands(cx: &mut TestAppContext) {
+    use hex_project::TrackSelectionIds;
+    use hex_session::service::Request;
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        })))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.state.as_ref().unwrap().project.has_group_tracks()
+    });
+    let group = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|t| t.is_group())
+            .unwrap()
+            .id()
+    });
+    editor.update(cx, |view, cx| {
+        view.set_mode(super::super::EditorMode::Session);
+        view.selected_track = Some(group);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let mute = visual
+        .debug_bounds("console-track-mute")
+        .expect("console activator")
+        .center();
+    visual.simulate_mouse_down(mute, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(mute, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .muted()
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .muted()
+    });
+    let solo = visual
+        .debug_bounds("console-track-solo")
+        .expect("console solo")
+        .center();
+    visual.simulate_mouse_down(solo, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(solo, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .soloed()
+    });
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(other);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let solo = visual.debug_bounds("console-track-solo").unwrap().center();
+    let modifiers = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(solo, MouseButton::Left, modifiers);
+    visual.simulate_mouse_up(solo, MouseButton::Left, modifiers);
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .soloed()
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .soloed()
+        )
+    });
+}
