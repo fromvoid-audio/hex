@@ -1830,13 +1830,14 @@ impl EditorView {
         if self.opening_project || self.close_prompt_open {
             return;
         }
-        let choice = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
-            self.focused_neighbor_track(forward)
-        } else {
-            self.state
-                .as_ref()
-                .and_then(|state| selection::neighbor(&state.project, self.selected_track, forward))
-        };
+        let choice =
+            if self.mode == EditorMode::Arrangement && self.arrangement_focus.projection.enabled {
+                self.focused_neighbor_track(forward)
+            } else {
+                self.state.as_ref().and_then(|state| {
+                    selection::neighbor(&state.project, self.selected_track, forward)
+                })
+            };
         if let Some((index, track, clip)) = choice {
             self.select_track(track, window);
             if let Some(clip) = clip
@@ -1844,7 +1845,9 @@ impl EditorView {
             {
                 self.selected_clip = Some(clip);
             }
-            let row = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
+            let row = if self.mode == EditorMode::Arrangement
+                && self.arrangement_focus.projection.enabled
+            {
                 Some(index)
             } else {
                 self.arrangement_row_index(index)

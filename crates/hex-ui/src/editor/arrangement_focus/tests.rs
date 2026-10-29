@@ -4,110 +4,13 @@ use gpui::{
     Entity, KeyDownEvent, Keystroke, Modifiers, MouseButton, TestAppContext, VisualTestContext,
     point, px, size,
 };
-use hex_project::{BeatTime, Command, Created, Editor};
+use hex_project::{Command, Created};
 use std::sync::Arc;
 
-struct Fixture {
-    model: Editor,
-    tracks: Vec<TrackId>,
-    clips: Vec<ClipId>,
-    asset: hex_project::AssetId,
-    sections: Vec<SectionId>,
-}
-fn model() -> Fixture {
-    let mut model = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
-    let add = |model: &mut Editor, name: &str| {
-        let Created::Track(id) = model
-            .execute(Command::AddTrack { name: name.into() })
-            .unwrap()
-        else {
-            panic!("track")
-        };
-        id
-    };
-    let empty = add(&mut model, "empty");
-    let Created::Imported {
-        track: audio,
-        clip,
-        asset,
-    } = model
-        .execute(Command::ImportAudioTrack {
-            name: "audio".into(),
-            path: "focus.wav".into(),
-            sample_rate: 48_000,
-            frames: 96_000,
-        })
-        .unwrap()
-    else {
-        panic!("audio")
-    };
-    let tracks = vec![
-        empty,
-        audio,
-        add(&mut model, "outside"),
-        add(&mut model, "inside"),
-        add(&mut model, "late"),
-    ];
-    let Created::Clip(outside_audio) = model.execute(Command::DuplicateClip(clip)).unwrap() else {
-        panic!("duplicate audio")
-    };
-    model
-        .execute(Command::MoveClip {
-            clip: outside_audio,
-            track: tracks[1],
-            start: 192_000,
-        })
-        .unwrap();
-    let mut clips = vec![clip];
-    for (track, start, length) in [
-        (tracks[2], 0, 2),
-        (tracks[3], 2, 1),
-        (tracks[4], 3, 1),
-        (tracks[1], 6, 1),
-    ] {
-        let Created::Clip(id) = model
-            .execute(Command::PlaceMidiClip {
-                track,
-                start: BeatTime::from_quarters(start).unwrap(),
-                length: BeatTime::from_quarters(length).unwrap(),
-            })
-            .unwrap()
-        else {
-            panic!("midi")
-        };
-        clips.push(id);
-    }
-    clips.push(outside_audio);
-    let mut sections = Vec::new();
-    for (start, end) in [(2, 3), (4, 5), (6, 7)] {
-        let Created::ArrangementSection(id) = model
-            .execute(Command::AddArrangementSection {
-                name: format!("section {}", sections.len()),
-                color: hex_project::ElementColor::Cyan,
-                start: BeatTime::from_quarters(start).unwrap(),
-                end: BeatTime::from_quarters(end).unwrap(),
-            })
-            .unwrap()
-        else {
-            panic!("section")
-        };
-        sections.push(id);
-    }
-    model
-        .execute(Command::SetLoopRegion {
-            start: 48_000,
-            end: 72_000,
-            enabled: false,
-        })
-        .unwrap();
-    Fixture {
-        model,
-        tracks,
-        clips,
-        asset,
-        sections,
-    }
-}
+#[path = "fixture.rs"]
+mod fixture;
+use fixture::{Fixture, model};
+
 fn open(cx: &mut TestAppContext) -> (VisualTestContext, Entity<EditorView>, Fixture) {
     cx.update(crate::editor::bind_editor_keys);
     let f = model();
@@ -213,171 +116,6 @@ fn section_focus_renders_visible_child_with_nested_group_headers(cx: &mut TestAp
     );
 }
 
-#[test]
-fn projection_uses_cached_section_union_and_half_open_boundaries() {
-    let f = model();
-    let mut state = State::default();
-    assert!(state.rebuild(1, 1, f.model.project(), &f.sections[..1], None));
-    state.enabled = true;
-    assert!(state.rebuild(1, 1, f.model.project(), &f.sections[..1], None));
-    assert_eq!(state.indices, [1, 3]);
-    assert_eq!(
-        state.clips,
-        BTreeSet::from([f.clips[0], f.clips[2], f.clips[4], f.clips[5]])
-    );
-    assert!(
-        !state.rebuild(1, 1, f.model.project(), &f.sections[..1], None),
-        "unchanged paints must not scan the project again"
-    );
-    assert!(!state.rebuild(1, 1, f.model.project(), &f.sections[..1], None));
-    assert!(state.rebuild(
-        1,
-        1,
-        f.model.project(),
-        &[f.sections[0], f.sections[2]],
-        None
-    ));
-    assert_eq!(state.indices, [1, 3]);
-    assert_eq!(
-        state.clips,
-        BTreeSet::from([f.clips[0], f.clips[2], f.clips[4], f.clips[5]])
-    );
-    assert!(!state.clips.contains(&f.clips[3]), "gap is excluded");
-    assert!(state.rebuild(1, 1, f.model.project(), &f.sections[1..2], None));
-    assert!(
-        state.indices.is_empty(),
-        "audio ending at the section start is excluded"
-    );
-    assert!(state.rebuild(1, 1, f.model.project(), &[], None));
-    assert!(state.enabled, "no selection leaves the mode armed");
-    assert_eq!(state.indices, [0, 1, 2, 3, 4]);
-    assert!(state.rebuild(2, 1, f.model.project(), &f.sections[..1], None));
-    assert!(
-        !state.enabled,
-        "replacement document must start in the normal view"
-    );
-    assert_eq!(state.indices, [0, 1, 2, 3, 4]);
-}
-#[test]
-fn new_track_exception_expires_without_repinning_on_history_or_focus_changes() {
-    let mut f = model();
-    let mut state = State {
-        enabled: true,
-        ..State::default()
-    };
-    state.rebuild(1, 1, f.model.project(), &f.sections[..1], None);
-    let Created::Track(first) = f
-        .model
-        .execute(Command::AddTrack {
-            name: "first new".into(),
-        })
-        .unwrap()
-    else {
-        panic!("track");
-    };
-    state.reveal_created_track(first);
-    state.rebuild(1, 2, f.model.project(), &f.sections[..1], Some(first));
-    assert!(state.tracks.contains(&first));
-    assert!(!state.rebuild(1, 2, f.model.project(), &f.sections[..1], Some(first)));
-    // Losing the active track invalidates the cached rows at the same revision.
-    assert!(state.rebuild(1, 2, f.model.project(), &f.sections[..1], Some(f.tracks[1])));
-    assert!(!state.tracks.contains(&first));
-    state.rebuild(1, 2, f.model.project(), &f.sections[..1], Some(first));
-    assert!(
-        !state.tracks.contains(&first),
-        "selection cannot repin an empty track"
-    );
-
-    state.reveal_created_track(first);
-    let Created::Track(second) = f
-        .model
-        .execute(Command::AddTrack {
-            name: "second new".into(),
-        })
-        .unwrap()
-    else {
-        panic!("track");
-    };
-    state.reveal_created_track(second);
-    state.rebuild(1, 3, f.model.project(), &f.sections[..1], Some(second));
-    assert!(state.tracks.contains(&second));
-    assert!(!state.tracks.contains(&first));
-    assert!(f.model.undo());
-    state.rebuild(1, 4, f.model.project(), &f.sections[..1], Some(second));
-    assert!(f.model.redo());
-    state.rebuild(1, 5, f.model.project(), &f.sections[..1], Some(second));
-    assert!(
-        !state.tracks.contains(&second),
-        "redo does not revive stale visibility"
-    );
-
-    state.reveal_created_track(second);
-    state.rebuild(1, 6, f.model.project(), &f.sections[1..2], Some(second));
-    assert!(!state.tracks.contains(&second));
-    state.rebuild(1, 6, f.model.project(), &f.sections[..1], Some(second));
-    assert!(!state.tracks.contains(&second));
-    state.reveal_created_track(second);
-    f.model
-        .execute(Command::SetArrangementSectionRange {
-            section: f.sections[0],
-            start: BeatTime::ZERO,
-            end: BeatTime::ONE,
-        })
-        .unwrap();
-    state.rebuild(1, 7, f.model.project(), &f.sections[..1], Some(second));
-    assert!(
-        !state.tracks.contains(&second),
-        "editing the focused range retires the exception"
-    );
-    state.reveal_created_track(second);
-    state.enabled = false;
-    state.rebuild(1, 7, f.model.project(), &f.sections[..1], Some(second));
-    state.enabled = true;
-    state.rebuild(1, 7, f.model.project(), &f.sections[..1], Some(second));
-    assert!(!state.tracks.contains(&second));
-    state.reveal_created_track(second);
-    state.rebuild(2, 7, f.model.project(), &f.sections[..1], Some(second));
-    state.enabled = true;
-    state.rebuild(2, 7, f.model.project(), &f.sections[..1], Some(second));
-    assert!(
-        !state.tracks.contains(&second),
-        "document identities cannot retain an exception"
-    );
-}
-
-#[test]
-fn section_projection_follows_canonical_tempo_range_and_removal() {
-    let mut f = model();
-    let mut state = State {
-        enabled: true,
-        ..State::default()
-    };
-    state.rebuild(1, 1, f.model.project(), &f.sections[..1], None);
-    f.model
-        .execute(Command::SetTempoPoint {
-            beat: BeatTime::ZERO,
-            tempo: hex_project::Tempo::new(60_000_000).unwrap(),
-        })
-        .unwrap();
-    state.rebuild(1, 2, f.model.project(), &f.sections[..1], None);
-    assert_eq!(state.ranges.as_ref(), &[(96_000, 144_000)]);
-    assert_eq!(state.indices, [3]);
-    f.model
-        .execute(Command::SetArrangementSectionRange {
-            section: f.sections[0],
-            start: BeatTime::ZERO,
-            end: BeatTime::ONE,
-        })
-        .unwrap();
-    state.rebuild(1, 3, f.model.project(), &f.sections[..1], None);
-    assert_eq!(state.indices, [1, 2]);
-    f.model
-        .execute(Command::RemoveArrangementSection(f.sections[0]))
-        .unwrap();
-    state.rebuild(1, 4, f.model.project(), &f.sections[..1], None);
-    assert!(state.enabled);
-    assert_eq!(state.indices, [0, 1, 2, 3, 4]);
-}
 #[gpui::test]
 fn q_filters_tracks_but_keeps_outside_clips_and_hits_without_editing_history(
     cx: &mut TestAppContext,
@@ -443,7 +181,7 @@ fn q_filters_tracks_but_keeps_outside_clips_and_hits_without_editing_history(
             .is_some()
     );
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.arrangement_focus.indices, [1, 3]);
+        assert_eq!(v.arrangement_focus.projection.indices, [1, 3]);
         assert_eq!(
             (
                 v.selected_track,
@@ -501,13 +239,13 @@ fn toggle_tracks_section_selection_and_ignores_loop_changes(cx: &mut TestAppCont
     visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
-        assert_eq!(v.arrangement_focus.indices, [0, 1, 2, 3, 4]);
+        assert!(v.arrangement_focus.projection.enabled);
+        assert_eq!(v.arrangement_focus.projection.indices, [0, 1, 2, 3, 4]);
     });
     select_section(&mut visual, 0, false);
     select_section(&mut visual, 2, true);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.arrangement_focus.indices, [1, 3]);
+        assert_eq!(v.arrangement_focus.projection.indices, [1, 3]);
         assert!(v.arrangement_clip_visible(f.clips[4]));
         assert!(!v.arrangement_clip_visible(f.clips[3]));
     });
@@ -545,7 +283,7 @@ fn toggle_tracks_section_selection_and_ignores_loop_changes(cx: &mut TestAppCont
         .unwrap();
     replace(&mut visual, &editor, f.model.project().clone());
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.arrangement_focus.indices, [1, 3])
+        assert_eq!(v.arrangement_focus.projection.indices, [1, 3])
     });
     let header = visual
         .debug_bounds(selector("track-name", f.tracks[3].value()))
@@ -556,23 +294,25 @@ fn toggle_tracks_section_selection_and_ignores_loop_changes(cx: &mut TestAppCont
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.selected_track, Some(f.tracks[3]));
         assert_eq!(v.sections.selected_ids(), &[f.sections[0], f.sections[2]]);
-        assert_eq!(v.arrangement_focus.indices, [1, 3]);
+        assert_eq!(v.arrangement_focus.projection.indices, [1, 3]);
     });
     select_section(&mut visual, 1, false);
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
-        assert!(v.arrangement_focus.indices.is_empty());
+        assert!(v.arrangement_focus.projection.enabled);
+        assert!(v.arrangement_focus.projection.indices.is_empty());
         assert!(v.focused_neighbor_track(true).is_none());
     });
     select_section(&mut visual, 1, true);
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
-        assert_eq!(v.arrangement_focus.indices, [0, 1, 2, 3, 4]);
+        assert!(v.arrangement_focus.projection.enabled);
+        assert_eq!(v.arrangement_focus.projection.indices, [0, 1, 2, 3, 4]);
         assert!(v.last_enqueued_edit.is_none());
     });
     visual.simulate_keystrokes("q");
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert!(!v.arrangement_focus.enabled));
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.arrangement_focus.projection.enabled)
+    });
     select_section(&mut visual, 0, false);
     let button = visual
         .debug_bounds("arrangement-focus-toggle")
@@ -581,18 +321,18 @@ fn toggle_tracks_section_selection_and_ignores_loop_changes(cx: &mut TestAppCont
     visual.simulate_click(button, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
         assert_eq!(v.sections.selected_ids(), &f.sections[..1]);
-        assert_eq!(v.arrangement_focus.indices, [1, 3]);
+        assert_eq!(v.arrangement_focus.projection.indices, [1, 3]);
     });
     f.model
         .execute(Command::RemoveArrangementSection(f.sections[0]))
         .unwrap();
     replace(&mut visual, &editor, f.model.project().clone());
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
         assert!(v.sections.selected_ids().is_empty());
-        assert_eq!(v.arrangement_focus.indices, [0, 1, 2, 3, 4]);
+        assert_eq!(v.arrangement_focus.projection.indices, [0, 1, 2, 3, 4]);
     });
 }
 #[gpui::test]
@@ -605,13 +345,15 @@ fn q_respects_text_repeat_modifiers_and_filtered_drag_geometry(cx: &mut TestAppC
         keystroke: Keystroke::parse("q").unwrap(),
         is_held: true,
     });
-    editor.read_with(&visual, |v, _| assert!(!v.arrangement_focus.enabled));
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.arrangement_focus.projection.enabled)
+    });
     visual.simulate_keystrokes("cmd-f");
     visual.simulate_input("q");
     visual.run_until_parked();
     editor.read_with(&visual, |v, cx| {
         assert_eq!(v.browser.search.read(cx).text(), "q");
-        assert!(!v.arrangement_focus.enabled);
+        assert!(!v.arrangement_focus.projection.enabled);
     });
     visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window)));
     visual.simulate_keystrokes("q");
@@ -625,7 +367,9 @@ fn q_respects_text_repeat_modifiers_and_filtered_drag_geometry(cx: &mut TestAppC
     });
     visual.run_until_parked();
     visual.simulate_keystrokes("q");
-    editor.read_with(&visual, |v, _| assert!(v.arrangement_focus.enabled));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.arrangement_focus.projection.enabled)
+    });
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| {
             v.set_mode(crate::editor::EditorMode::Arrangement);
@@ -652,7 +396,7 @@ fn q_respects_text_repeat_modifiers_and_filtered_drag_geometry(cx: &mut TestAppC
     visual.simulate_keystrokes("q");
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.arrangement_focus.enabled,
+            v.arrangement_focus.projection.enabled,
             "capture must keep its row projection"
         )
     });

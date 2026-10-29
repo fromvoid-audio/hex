@@ -11,25 +11,11 @@ use crate::theme;
 use gpui::{Context, Div, Entity, Focusable, Subscription, Window, div, prelude::*, px};
 use hex_project::{ClipId, Project, SectionId, Track, TrackId};
 use hex_widgets::{Toggle, ToggleAppearance, ToggleChanged, ToggleConfig};
-use std::{collections::BTreeSet, rc::Rc};
+use std::rc::Rc;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    generation: u64,
-    revision: u64,
-    enabled: bool,
-    new_track: Option<TrackId>,
-}
 #[derive(Default)]
 pub(super) struct State {
-    pub(super) enabled: bool,
-    stamp: Option<Stamp>,
-    selected: Vec<SectionId>,
-    new_track: Option<TrackId>,
-    ranges: Rc<[(u64, u64)]>,
-    indices: Vec<usize>,
-    tracks: BTreeSet<TrackId>,
-    clips: BTreeSet<ClipId>,
+    pub(super) projection: visibility::Projection,
     restore_scroll: Option<(TrackId, gpui::Pixels)>,
     pub(super) pending_restore: Option<(TrackId, gpui::Pixels)>,
     toggle: Option<Entity<Toggle>>,
@@ -39,42 +25,13 @@ pub(super) struct State {
 mod visibility;
 pub(super) use visibility::track_intersects_sections;
 
-fn section_intervals(project: &Project, selected: &[SectionId]) -> Rc<[(u64, u64)]> {
-    let mut intervals = selected
-        .iter()
-        .filter_map(|id| {
-            let section = project.arrangement_section(*id)?;
-            let map = project.tempo_map();
-            let start = map.beat_to_frame(section.start()).ok()?;
-            let end = map.beat_to_frame(section.end()).ok()?;
-            (start < end).then_some((start, end))
-        })
-        .collect::<Vec<_>>();
-    intervals.sort_unstable();
-    let mut union: Vec<(u64, u64)> = Vec::with_capacity(intervals.len());
-    for (start, end) in intervals {
-        if let Some(last) = union.last_mut()
-            && start <= last.1
-        {
-            last.1 = last.1.max(end);
-        } else {
-            union.push((start, end));
-        }
-    }
-    union.into()
-}
 impl State {
-    /// Retire on the selection event, even when multiple events share one paint.
     pub(super) fn observe_active_track(&mut self, active: Option<TrackId>) {
-        if self.new_track != active {
-            self.new_track = None;
-        }
+        self.projection.observe_active_track(active);
     }
-
     pub(super) fn reveal_created_track(&mut self, track: TrackId) {
-        self.new_track = (self.enabled && !self.ranges.is_empty()).then_some(track);
+        self.projection.reveal_created_track(track);
     }
-
     fn rebuild(
         &mut self,
         generation: u64,
@@ -83,84 +40,45 @@ impl State {
         selected: &[SectionId],
         active_track: Option<TrackId>,
     ) -> bool {
-        if self.stamp.is_some_and(|s| s.generation != generation) {
-            self.enabled = false;
+        if self.projection.generation_changed(generation) {
             self.restore_scroll = None;
             self.pending_restore = None;
-            self.new_track = None;
         }
-        self.observe_active_track(active_track);
-        if !self.enabled || self.selected != selected {
-            self.new_track = None;
-        }
-        let mut stamp = Stamp {
-            generation,
-            revision,
-            enabled: self.enabled,
-            new_track: self.new_track,
-        };
-        if self.stamp == Some(stamp) && self.selected == selected {
-            return false;
-        }
-        let ranges = if self.enabled {
-            section_intervals(project, selected)
-        } else {
-            Rc::from([])
-        };
-        // Validate track existence only on an invalidated projection, so an
-        // unchanged repaint retains the constant-time stamp path.
-        if self.ranges != ranges || self.new_track.is_some_and(|id| project.track(id).is_none()) {
-            self.new_track = None;
-            stamp.new_track = None;
-        }
-        if !self.ranges.is_empty() && ranges.is_empty() && self.pending_restore.is_none() {
+        let had_ranges = !self.projection.ranges.is_empty();
+        let changed =
+            self.projection
+                .rebuild(generation, revision, project, selected, active_track);
+        if changed
+            && had_ranges
+            && self.projection.ranges.is_empty()
+            && self.pending_restore.is_none()
+        {
             self.pending_restore = self.restore_scroll;
         }
-        self.selected.clear();
-        self.selected.extend_from_slice(selected);
-        self.ranges = ranges;
-        self.indices.clear();
-        self.tracks.clear();
-        self.clips.clear();
-        let visible = visibility::visible_tracks(project, &self.ranges, self.new_track);
-        for (index, track) in project.tracks().iter().enumerate() {
-            if !self.ranges.is_empty() && !visible.contains(&track.id()) {
-                continue;
-            }
-            if !self.ranges.is_empty() {
-                self.tracks.insert(track.id());
-                self.clips.extend(
-                    track
-                        .clips()
-                        .iter()
-                        .map(|clip| clip.id())
-                        .chain(track.midi_clips().iter().map(|clip| clip.id())),
-                );
-            }
-            self.indices.push(index);
-        }
-        self.stamp = Some(stamp);
-        true
+        changed
     }
 }
 impl EditorView {
     pub(super) fn arrangement_focus_ranges(&self) -> Rc<[(u64, u64)]> {
-        Rc::clone(&self.arrangement_focus.ranges)
+        Rc::clone(&self.arrangement_focus.projection.ranges)
     }
     pub(super) fn arrangement_revealed_track(&self) -> Option<TrackId> {
-        self.arrangement_focus.new_track
+        self.arrangement_focus.projection.new_track
     }
     pub(super) fn arrangement_clip_visible(&self, id: ClipId) -> bool {
-        self.arrangement_focus.ranges.is_empty() || self.arrangement_focus.clips.contains(&id)
+        self.arrangement_focus.projection.ranges.is_empty()
+            || self.arrangement_focus.projection.clips.contains(&id)
     }
     pub(super) fn arrangement_track_visible(&self, id: TrackId) -> bool {
-        self.arrangement_focus.ranges.is_empty() || self.arrangement_focus.tracks.contains(&id)
+        self.arrangement_focus.projection.ranges.is_empty()
+            || self.arrangement_focus.projection.tracks.contains(&id)
     }
     pub(super) fn arrangement_tracks<'a>(
         &'a self,
         project: &'a Project,
     ) -> impl Iterator<Item = (usize, &'a Track)> {
         self.arrangement_focus
+            .projection
             .indices
             .iter()
             .copied()
@@ -168,13 +86,14 @@ impl EditorView {
     }
     /// Canonical indices in visible row order; borrowed for pointer geometry.
     pub(super) fn arrangement_track_indices(&self) -> &[usize] {
-        &self.arrangement_focus.indices
+        &self.arrangement_focus.projection.indices
     }
     pub(super) fn arrangement_track_index(&self, row: usize) -> Option<usize> {
-        self.arrangement_focus.indices.get(row).copied()
+        self.arrangement_focus.projection.indices.get(row).copied()
     }
     pub(super) fn arrangement_row_index(&self, canonical: usize) -> Option<usize> {
         self.arrangement_focus
+            .projection
             .indices
             .binary_search(&canonical)
             .ok()
@@ -184,7 +103,7 @@ impl EditorView {
         forward: bool,
     ) -> Option<(usize, TrackId, Option<ClipId>)> {
         let project = &self.state.as_ref()?.project;
-        let indices = &self.arrangement_focus.indices;
+        let indices = &self.arrangement_focus.projection.indices;
         let last = indices.len().checked_sub(1)?;
         let current = self
             .selected_track
@@ -227,8 +146,8 @@ impl EditorView {
         // An explicit Q/toolbar choice supersedes a delayed automatic focus.
         self.cancel_pending_loop_focus();
         self.reconcile_arrangement_focus();
-        if self.arrangement_focus.enabled {
-            self.arrangement_focus.enabled = false;
+        if self.arrangement_focus.projection.enabled {
+            self.arrangement_focus.projection.enabled = false;
             self.arrangement_focus.pending_restore = self.arrangement_focus.restore_scroll.take();
             self.status = "all arrangement tracks · q focuses selected sections".into();
         } else {
@@ -238,7 +157,7 @@ impl EditorView {
                 .as_ref()
                 .and_then(|s| s.project.tracks().get(top.item_ix))
                 .map(|t| (t.id(), top.offset_in_item));
-            self.arrangement_focus.enabled = true;
+            self.arrangement_focus.projection.enabled = true;
             self.status = "section focus on · select section(s) · q restores all tracks".into();
         }
         self.reconcile_arrangement_focus();
@@ -254,7 +173,7 @@ impl EditorView {
             let Ok(config) = ToggleConfig::new(
                 "arrangement-focus-toggle",
                 theme::text("q"),
-                self.arrangement_focus.enabled,
+                self.arrangement_focus.projection.enabled,
                 theme::control_style(),
             ) else {
                 return div().id("section-focus-control");
@@ -265,7 +184,7 @@ impl EditorView {
             toggle.update(cx, |toggle, cx| toggle.set_tab_navigation(true, cx));
             let sub = cx.subscribe(&toggle, |view, _, event: &ToggleChanged, cx| {
                 if view.arrangement_view_change_available(cx)
-                    && view.arrangement_focus.enabled != event.checked
+                    && view.arrangement_focus.projection.enabled != event.checked
                 {
                     view.toggle_arrangement_focus();
                 }
@@ -277,7 +196,7 @@ impl EditorView {
         let enabled = self.arrangement_view_change_available(cx);
         if let Some(toggle) = &self.arrangement_focus.toggle {
             toggle.update(cx, |toggle, cx| {
-                toggle.set_checked(self.arrangement_focus.enabled, cx);
+                toggle.set_checked(self.arrangement_focus.projection.enabled, cx);
                 toggle.set_enabled(enabled, cx);
                 let _ = toggle.set_external_style(theme::control_style(), cx);
             });

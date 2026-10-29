@@ -1347,14 +1347,14 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert!(
-                !v.arrangement_focus.enabled,
+                !v.arrangement_focus.projection.enabled,
                 "no optimistic focus before ACK"
             )
         });
     }
     install_loop_terminal(&editor, &mut visual, own);
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
         assert_eq!(&*v.arrangement_focus_ranges(), &[(96_000, 120_000)]);
     });
     visual.simulate_keystrokes("l");
@@ -1369,22 +1369,24 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
                 .unwrap()
                 .enabled()
         );
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
     });
     choose_loop_section(&mut visual, 2, false);
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(&*v.arrangement_focus_ranges(), &[(144_000, 168_000)]);
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
     });
     visual.simulate_keystrokes("q");
-    editor.read_with(&visual, |v, _| assert!(!v.arrangement_focus.enabled));
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.arrangement_focus.projection.enabled)
+    });
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
-            !v.arrangement_focus.enabled,
+            !v.arrangement_focus.projection.enabled,
             "same-range toggle does not re-arm focus"
         )
     });
@@ -1393,7 +1395,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
         assert_eq!(
             &*v.arrangement_focus_ranges(),
             &[(24_000, 48_000), (144_000, 168_000)]
@@ -1456,7 +1458,7 @@ fn section_loop_focus_ignores_changed_selection_and_refused_or_replaced_terminal
         }
         install_loop_terminal(&editor, &mut visual, own);
         editor.read_with(&visual, |v, _| {
-            assert!(!v.arrangement_focus.enabled, "{case}")
+            assert!(!v.arrangement_focus.projection.enabled, "{case}")
         });
     }
 }
@@ -1498,7 +1500,7 @@ fn section_loop_focus_respects_held_foreground_automation_input(cx: &mut TestApp
             "held curve cannot submit a section loop/focus"
         );
         assert!(v.last_enqueued_edit.is_none());
-        assert!(!v.arrangement_focus.enabled);
+        assert!(!v.arrangement_focus.projection.enabled);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     visual.simulate_keystrokes("escape");
