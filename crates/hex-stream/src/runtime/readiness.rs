@@ -670,6 +670,11 @@ impl ConstructorPageLoan {
         self.readiness
             .service(&mut self.pages, role, stamp, pump_limit, request_limit)
     }
+    /// Test-only observation of a resident extent; it does not grant protection.
+    #[cfg(feature = "test-support")]
+    pub fn test_has_resource_extent(&self, extent: StreamResourceExtent) -> bool {
+        self.pages.endpoint.has_extent(extent)
+    }
     fn acknowledge_view(
         &mut self,
         role: ProtectionRole,
