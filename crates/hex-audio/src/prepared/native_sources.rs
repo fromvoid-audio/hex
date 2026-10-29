@@ -17,8 +17,10 @@ impl PublicationControl {
     /// Query actual SDK controller metadata through the original Root effect
     /// or loan worker. Busy/preparing/quiescent/closing sources refuse without
     /// replacing them. Normally stopped transport uses its joined original
-    /// worker. The caller owns the one weak token and retires it at its exact
-    /// terminal; neither admission nor copied metadata grants edit authority.
+    /// worker. An admitted token is returned even if close races admission;
+    /// the caller retains it until its exact terminal or worker release. A
+    /// token does not imply that the source remains open. Neither admission nor
+    /// copied metadata grants edit authority.
     pub fn begin_native_source_controller_query_on_control(
         &mut self,
         binding: Binding,
@@ -27,13 +29,8 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native controller output is closing");
         }
-        let result = self
-            .candidate_root
-            .begin_native_controller_query(binding, query)?;
-        if self.status.closing.load(Acquire) {
-            return Err("native controller output is closing");
-        }
-        Ok(result)
+        self.candidate_root
+            .begin_native_controller_query(binding, query)
     }
     /// Consume only the exact source/worker query terminal. Recheck the owning
     /// document/device context before using these copied observations in UI.
