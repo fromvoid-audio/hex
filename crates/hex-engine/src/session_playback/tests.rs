@@ -12397,6 +12397,21 @@ fn linear_receiverless_bound_source_uses_audio_only_quote_and_renders_silence() 
 }
 
 #[test]
+fn resident_batch_storage_is_included_in_preroll_admission() {
+    let fixture = crate::signal_graph::tests::fixture(&[&[7], &[]], 32);
+    let revision = crate::signal_graph::tests::prepare(&fixture).unwrap();
+    let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&revision).unwrap();
+    let runtime = SessionPlayback::new(revision).unwrap();
+    assert_eq!(runtime.resident_source_scratch.len(), 2);
+    let actual =
+        runtime.accounted_runtime_storage_bytes().unwrap() + super::preroll::PREROLL_SCRATCH_BYTES;
+    assert!(
+        actual <= preflight,
+        "actual={actual}, preflight={preflight}"
+    );
+}
+
+#[test]
 fn arrangement_preroll_storage_preflight_covers_constructed_runtime() {
     let (prepared, _) = mutable_checkpoint_fixture(8 << 32);
     let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();

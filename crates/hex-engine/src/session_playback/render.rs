@@ -706,6 +706,8 @@ impl SessionPlayback {
         // Keep the next deadline for this render transaction so compensated
         // graphs do not rescan every track several times for every sample.
         let mut next_route = next_pending_frame(&self.route_scratch);
+        let mut resident_source_index = 0;
+        let mut resident_source_end = 0;
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -735,6 +737,33 @@ impl SessionPlayback {
                 .compensation
                 .as_ref()
                 .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing());
+            let use_resident_sources = upstream_frame_routing
+                && self.playing
+                && !self.resident_source_scratch.is_empty()
+                && self.computer_keyboard.is_none()
+                && self.current_sampler_keyboards.is_empty()
+                && !self.current_sampler_console;
+            if use_resident_sources && resident_source_index == resident_source_end {
+                let mut count = (output.len() - output_offset).min(256);
+                if let Some(next) = next_route.filter(|next| *next > performance_frame) {
+                    count =
+                        count.min(usize::try_from(next - performance_frame).unwrap_or(usize::MAX));
+                }
+                if let Some(region) = region {
+                    let until = if arrangement_frame < region.start() {
+                        region.start() - arrangement_frame
+                    } else {
+                        region.end() - arrangement_frame
+                    };
+                    count = count.min(usize::try_from(until).unwrap_or(usize::MAX));
+                }
+                if count == 0 {
+                    return Err(SessionPlaybackError::ArithmeticOverflow);
+                }
+                self.prepare_resident_sources(arrangement_frame, count)?;
+                resident_source_index = 0;
+                resident_source_end = count;
+            }
             let mut chunk_frames =
                 (output.len() - output_offset).min(if upstream_frame_routing { 1 } else { 256 });
             if let Some(keyboard) = self.computer_keyboard.as_ref() {
@@ -842,7 +871,11 @@ impl SessionPlayback {
                     sources,
                     foreign,
                     external,
+                    use_resident_sources.then_some(resident_source_index),
                 )?;
+                if use_resident_sources {
+                    resident_source_index += 1;
+                }
             } else {
                 self.render_route_chunk(
                     performance_frame,
