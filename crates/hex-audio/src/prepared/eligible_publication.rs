@@ -631,6 +631,10 @@ impl Callback {
                     self.finish_pending_stream_play();
                     self.status.stream_buffering.store(false, Release);
                     self.publish_active_routes(true);
+                    self.recovery_seek_pending = None;
+                    if !self.status.device_fault.load(Acquire) {
+                        self.recovery_position_frozen = false;
+                    }
                     self.publish_transport();
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);

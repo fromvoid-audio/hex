@@ -9,7 +9,6 @@ mod tests;
 
 impl EditorView {
     pub(super) fn recover_audio(&mut self) {
-        self.invalidate_prepared_seek();
         if self.close_prompt_open
             || self.opening_project
             || self.save_dialog_open
@@ -22,7 +21,16 @@ impl EditorView {
             self.error = Some("project is still loading".into());
             return;
         };
-        let position = self.cursor_position();
+        if self.seek_pending() && self.recovery.generation().is_none() {
+            self.error =
+                Some("seek pending · wait for audio or press stop before restarting".into());
+            return;
+        }
+        self.invalidate_prepared_seek();
+        let position = self.recovery.position().unwrap_or_else(|| {
+            self.audio_status()
+                .map_or(self.offline_cursor, |status| status.recovery_position())
+        });
         let generation = match self.recovery.begin(position) {
             Ok(generation) => generation,
             Err(message) => {

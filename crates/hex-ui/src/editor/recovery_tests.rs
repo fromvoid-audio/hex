@@ -33,6 +33,70 @@ struct Sink {
     cancel_next_fresh: Arc<AtomicBool>,
     cancellation_done: Arc<AtomicBool>,
 }
+
+#[gpui::test]
+fn restart_uses_fault_cursor_instead_of_rewound_transport(cx: &mut gpui::TestAppContext) {
+    restart_from_fault(cx, false);
+}
+
+#[gpui::test]
+fn restart_respects_unconsumed_seek_and_stop_after_fault(cx: &mut gpui::TestAppContext) {
+    restart_from_fault(cx, true);
+}
+
+fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
+    let (mut output, mut backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+    let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
+    output
+        .publication
+        .control()
+        .unwrap()
+        .publish(playback)
+        .unwrap();
+    let mut client = output.take_client().unwrap();
+    client.command(PlaybackCommand::Play).unwrap();
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    backend.report_render_error().unwrap();
+    let status = client.status().unwrap();
+    assert_eq!(status.position.load(Acquire), 0);
+    assert_eq!(status.recovery_position(), 64);
+
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "recovery fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        if stop {
+            let ticket = view
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command_with_ticket(PlaybackCommand::Seek(37))
+                .unwrap();
+            view.pending_seek_ticket = Some(ticket);
+            view.recover_audio();
+            assert!(view.audio.is_some());
+            assert_eq!(
+                view.error.as_deref(),
+                Some("seek pending · wait for audio or press stop before restarting")
+            );
+            view.stop();
+        }
+        view.recover_audio();
+        assert_eq!(view.offline_cursor, if stop { 0 } else { 64 });
+    });
+    drop(backend);
+    output.publication.close();
+}
 impl WorkerAudioSink for Sink {
     fn resident_publication_enabled(&self) -> bool {
         true

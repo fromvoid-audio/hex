@@ -37,6 +37,20 @@ pub(super) fn record_outcome(
     outcome.fault.map_or(Ok(()), Err)
 }
 impl Callback {
+    pub(super) fn resolve_recovery_seek(
+        &mut self,
+        action_pending: bool,
+        rejection: Option<(u64, PlaybackActionRejection)>,
+    ) {
+        let Some(ticket) = self.recovery_seek_pending.filter(|_| !action_pending) else {
+            return;
+        };
+        self.recovery_seek_pending = None;
+        if rejection.is_none_or(|(rejected, _)| rejected != ticket) {
+            self.recovery_position_frozen = false;
+            self.publish_transport();
+        }
+    }
     /// Yield only a successor's exact outstanding reservation after the
     /// current window reports capacity pressure. The next nonempty render
     /// gives the current window one opportunity before another admission.
@@ -74,6 +88,9 @@ impl Callback {
             .and_then(ActivePublication::stream_view)
             && let Some(ticket) = active.cancel_stream_action(&mut self.domain_pages)
         {
+            if self.recovery_seek_pending == Some(ticket) {
+                self.recovery_seek_pending = None;
+            }
             self.status
                 .publish_rejected_action(ticket, PlaybackActionRejection::StreamActionCancelled);
         }
@@ -100,7 +117,16 @@ impl Callback {
             crate::candidate_custody::StageAction::Scheduled => {
                 self.status.stream_scheduled_command.store(ticket, Release)
             }
-            _ => {}
+            crate::candidate_custody::StageAction::Applied => {
+                if recovery_cursor_action(action) {
+                    self.recovery_position_frozen = false;
+                }
+            }
+            crate::candidate_custody::StageAction::Pending => {
+                if self.recovery_position_frozen && recovery_cursor_action(action) {
+                    self.recovery_seek_pending = Some(ticket);
+                }
+            }
         }
     }
     pub(super) fn streamed_transport_mode(&self) -> bool {
@@ -167,9 +193,14 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            if let Err(error) = active.playback.try_apply_action(action) {
-                self.status
-                    .publish_rejected_action(ticket, error.telemetry_rejection());
+            match active.playback.try_apply_action(action) {
+                Ok(()) if recovery_cursor_action(action) && !self.status.closing.load(Acquire) => {
+                    self.recovery_position_frozen = false;
+                }
+                Ok(()) => {}
+                Err(error) => self
+                    .status
+                    .publish_rejected_action(ticket, error.telemetry_rejection()),
             }
         } else if !matches!(
             action,
@@ -196,9 +227,13 @@ impl Callback {
     pub(super) fn consume_stream_commands(&mut self) {
         let cut = command_cut(
             self.status.admitted_ticket.load(Acquire),
-            self.status.pending_stop_marker.swap(0, AcqRel),
+            self.take_stop_marker(),
         );
         if let Some(stop) = cut.stop_through {
+            if !self.status.closing.load(Acquire) {
+                self.recovery_position_frozen = false;
+                self.status.recovery_position.store(0, Relaxed);
+            }
             self.trace_audio(
                 AudioDiagnosticKind::PriorityStop {
                     through_ticket: stop,
@@ -290,10 +325,15 @@ impl Callback {
                             SessionPlaybackCommand::CancelPending { track },
                             &mut self.domain_pages,
                         ) {
-                            Ok(Some(ticket)) => self.status.publish_rejected_action(
-                                ticket,
-                                PlaybackActionRejection::StreamActionCancelled,
-                            ),
+                            Ok(Some(ticket)) => {
+                                if self.recovery_seek_pending == Some(ticket) {
+                                    self.recovery_seek_pending = None;
+                                }
+                                self.status.publish_rejected_action(
+                                    ticket,
+                                    PlaybackActionRejection::StreamActionCancelled,
+                                );
+                            }
                             Err(error) => self.status.publish_rejected_action(
                                 queued.ticket,
                                 error.telemetry_rejection(),

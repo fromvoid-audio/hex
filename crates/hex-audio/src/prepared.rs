@@ -251,6 +251,17 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
     }
 }
 
+fn recovery_cursor_action(action: PlaybackAction) -> bool {
+    matches!(
+        action,
+        PlaybackAction::Transport(
+            PlaybackCommand::Stop | PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_)
+        ) | PlaybackAction::Session(
+            hex_engine::SessionPlaybackCommand::Stop | hex_engine::SessionPlaybackCommand::Seek(_)
+        )
+    )
+}
+
 pub(crate) struct Publication {
     pcm_frames: u64,
     forwarded_pcm: bool,
@@ -533,6 +544,8 @@ pub struct Status {
     rejected_revision_reason: AtomicU32,
     rejected_revision_sequence: AtomicU64,
     pub position: AtomicU64,
+    // Last callback-published cursor, frozen before fault Stop rewinds the graph.
+    recovery_position: AtomicU64,
     pub performance_frame: AtomicU64,
     pub transport_epoch: AtomicU64,
     pub gain_recording_fault: AtomicBool,
@@ -713,6 +726,7 @@ impl Status {
             rejected_revision_reason: AtomicU32::new(0),
             rejected_revision_sequence: AtomicU64::new(0),
             position: AtomicU64::new(0),
+            recovery_position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
             transport_epoch: AtomicU64::new(1),
             gain_recording_fault: AtomicBool::new(false),
@@ -740,6 +754,17 @@ impl Status {
 }
 
 impl Status {
+    /// Last callback-published arrangement cursor, retained across a fault Stop.
+    /// A pending explicit priority Stop takes precedence and returns zero even
+    /// before the callback consumes it.
+    /// This is a recovery observation, not the current transport position or a
+    /// claim that the corresponding audio reached the physical device.
+    pub fn recovery_position(&self) -> u64 {
+        if !self.closing.load(Acquire) && self.pending_stop_marker.load(Acquire) != 0 {
+            return 0;
+        }
+        self.recovery_position.load(Acquire)
+    }
     /// Current diagnostic configuration; this observation grants no authority.
     pub fn audio_diagnostics_flags(&self) -> AudioDiagnosticsFlags {
         AudioDiagnosticsFlags::from_bits(self.diagnostics_flags.load(Relaxed))
@@ -1143,6 +1168,8 @@ pub struct Callback {
     candidate_root: crate::candidate_custody::CandidateRoot,
     commands: Consumer<QueuedCommand>,
     status: Arc<Status>,
+    recovery_position_frozen: bool,
+    recovery_seek_pending: Option<u64>,
     rate: u32,
     spectrum_target: spectrum_target::SpectrumTargetCallback,
     processor_audition: processor_audition::ProcessorAuditionTargetCallback,
@@ -1277,6 +1304,8 @@ pub fn channel_with_spectrum(
             retired: returning,
             commands: events,
             status,
+            recovery_position_frozen: false,
+            recovery_seek_pending: None,
             rate,
             spectrum_target: callback_target,
             processor_audition: callback_audition,
@@ -3325,6 +3354,11 @@ impl Callback {
                         cancellation.finish();
                     }
                     self.publish_active_routes(true);
+                    self.recovery_seek_pending = None;
+                    if self.recovery_position_frozen && !self.status.device_fault.load(Acquire) {
+                        self.recovery_position_frozen = false;
+                        self.publish_transport();
+                    }
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
                     self.status.stream_source_changed.store(false, Release);
@@ -3447,9 +3481,25 @@ impl Callback {
         // producer admissions stay queued for the next block; a Stop arriving
         // after this swap also remains pending for the next block.
         let entry_ticket = self.status.admitted_ticket.load(Acquire);
-        let stop_marker = self.status.pending_stop_marker.swap(0, AcqRel);
+        let stop_marker = self.take_stop_marker();
         self.consume_commands_through(command_cut(entry_ticket, stop_marker));
         self.acknowledge_sampler_edit();
+    }
+
+    // Publish the user Stop's recovery cursor before clearing its marker.
+    // A racing newer marker stays pending for the next block; no callback retry.
+    fn take_stop_marker(&self) -> u64 {
+        let marker = self.status.pending_stop_marker.load(Acquire);
+        if marker != 0 {
+            if !self.status.closing.load(Acquire) {
+                self.status.recovery_position.store(0, Release);
+            }
+            let _ = self
+                .status
+                .pending_stop_marker
+                .compare_exchange(marker, 0, AcqRel, Acquire);
+        }
+        marker
     }
 
     fn trace_command_dequeued(&mut self, queued: QueuedCommand, cut: CommandCut) {
@@ -3467,6 +3517,10 @@ impl Callback {
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
         if let Some(through_ticket) = cut.stop_through {
+            if !self.status.closing.load(Acquire) {
+                self.recovery_position_frozen = false;
+                self.status.recovery_position.store(0, Relaxed);
+            }
             self.trace_audio(
                 AudioDiagnosticKind::PriorityStop { through_ticket },
                 self.status.applied_revision.load(Relaxed),
@@ -3531,6 +3585,9 @@ impl Callback {
                 {
                     match active.playback.try_apply_action(queued.action) {
                         Ok(()) => {
+                            if recovery_cursor_action(queued.action) {
+                                self.recovery_position_frozen = false;
+                            }
                             invalidate_audition =
                                 action_invalidates_processor_audition(queued.action);
                         }
@@ -3580,6 +3637,8 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.recovery_position_frozen = true;
+        self.recovery_seek_pending = None;
         self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
         self.revoke_output_transport();
         self.status.sampler_keyboard.revoke_on_callback();
@@ -3766,6 +3825,7 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
@@ -3823,6 +3883,7 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
             }
@@ -4310,6 +4371,9 @@ impl Callback {
         if let Some(ActivePublication::Candidate(active)) = self.active.as_ref() {
             if let Some((position, frame, playing)) = active.owner.test_transport() {
                 self.status.position.store(position, Relaxed);
+                if !self.recovery_position_frozen {
+                    self.status.recovery_position.store(position, Relaxed);
+                }
                 self.status.performance_frame.store(frame, Relaxed);
                 self.status.playing.store(playing, Relaxed);
             }
@@ -4327,9 +4391,11 @@ impl Callback {
                 });
         self.status.gain_recording_ready.store(ready, Release);
         if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
-            self.status
-                .position
-                .store(active.playback.position(), Relaxed);
+            let position = active.playback.position();
+            self.status.position.store(position, Relaxed);
+            if !self.recovery_position_frozen {
+                self.status.recovery_position.store(position, Relaxed);
+            }
             self.status
                 .performance_frame
                 .store(active.playback.performance_frame(), Relaxed);
@@ -6465,11 +6531,27 @@ mod tests {
             (0, 0, 0, 0),
         );
         assert!(!control.status.playing.load(Relaxed));
+        assert_eq!(control.status.position.load(Relaxed), 0);
+        assert_eq!(control.status.recovery_position(), 128);
         let fault = control.status.render_fault_snapshot().expect("fault");
         assert_eq!(fault.message, "ongoing midi query exceeds 256 edges");
         assert_eq!((fault.audio_revision, fault.frame), (revision, 128));
         callback.report_render_fault(None, 0);
         assert_eq!(control.status.render_fault_snapshot(), Some(fault));
+        assert_eq!(control.status.recovery_position(), 128);
+        control.command(PlaybackCommand::Seek(37)).expect("seek");
+        callback.begin_block();
+        assert_eq!(control.status.position.load(Relaxed), 37);
+        assert_eq!(control.status.recovery_position(), 37);
+        callback.report_render_fault(None, 37);
+        assert_eq!(control.status.recovery_position(), 37);
+        control.stop();
+        assert_eq!(control.status.recovery_position(), 0);
+        control
+            .command(PlaybackCommand::Seek(45))
+            .expect("later seek");
+        callback.begin_block();
+        assert_eq!(control.status.recovery_position(), 45);
         let (replacement, _) = spectrum_eq8_graph();
         let replacement_revision = control
             .publish_with_policy(replacement, PublicationPolicy::InstallFreshRuntime)
@@ -6481,6 +6563,7 @@ mod tests {
         );
         assert!(!control.status.render_fault.load(Acquire));
         assert!(control.status.render_fault_snapshot().is_none());
+        assert_eq!(control.status.recovery_position(), 0);
         callback.report_render_fault(None, 256);
         assert_eq!(
             control
@@ -6490,6 +6573,31 @@ mod tests {
                 .message,
             "audio output contains nonfinite samples"
         );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn device_fault_keeps_recovery_cursor_across_graph_admission() {
+        let (mut control, mut callback) = channel(48_000).expect("channel");
+        let (playback, _) = spectrum_eq8_graph();
+        control.publish(playback).expect("publish");
+        control.command(PlaybackCommand::Play).expect("play");
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 64]).expect("prefix");
+        control.status.device_fault.store(true, Release);
+        callback.stop_after_fault();
+        assert_eq!(control.status.position.load(Relaxed), 0);
+        assert_eq!(control.status.recovery_position(), 64);
+        let (replacement, _) = spectrum_eq8_graph();
+        control
+            .publish_with_policy(replacement, PublicationPolicy::InstallFreshRuntime)
+            .expect("replacement");
+        callback.begin_block();
+        assert_eq!(control.status.recovery_position(), 64);
+        control.stop();
+        assert_eq!(control.status.recovery_position(), 0);
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
