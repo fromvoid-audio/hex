@@ -549,6 +549,9 @@ pub struct Status {
     recovery_position: AtomicU64,
     pub performance_frame: AtomicU64,
     pub transport_epoch: AtomicU64,
+    // A capture admitted at or before this epoch crossed an output fault,
+    // even if a queued graph subsequently clears the render-fault flag.
+    last_output_fault_epoch: AtomicU64,
     pub gain_recording_fault: AtomicBool,
     pub native_parameter_input_fault: AtomicBool,
     native_parameter_revoked_gesture: AtomicU64,
@@ -612,7 +615,7 @@ impl Status {
         !self.preview_used.load(Acquire)
     }
     pub(crate) fn reserve_midi_begin(&self) -> Result<(), &'static str> {
-        if self.device_fault.load(Acquire) {
+        if self.device_fault.load(Acquire) || self.render_fault.load(Acquire) {
             return Err("midi recording output has failed");
         }
         if self.closing.load(Acquire) {
@@ -630,7 +633,7 @@ impl Status {
         self.publication_pending.midi_finished();
     }
     pub(crate) fn reserve_gain_begin(&self) -> Result<bool, &'static str> {
-        if self.device_fault.load(Acquire) {
+        if self.device_fault.load(Acquire) || self.render_fault.load(Acquire) {
             return Err("gain recording output has failed");
         }
         if self.closing.load(Acquire) {
@@ -657,7 +660,7 @@ impl Status {
         self.publication_pending.legacy_gain_started();
     }
     pub(crate) fn reserve_native_parameter_input(&self) -> Result<(), &'static str> {
-        if self.device_fault.load(Acquire) {
+        if self.device_fault.load(Acquire) || self.render_fault.load(Acquire) {
             return Err("native parameter input output has failed");
         }
         if self.closing.load(Acquire) {
@@ -742,6 +745,7 @@ impl Status {
             recovery_position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
             transport_epoch: AtomicU64::new(1),
+            last_output_fault_epoch: AtomicU64::new(0),
             gain_recording_fault: AtomicBool::new(false),
             native_parameter_input_fault: AtomicBool::new(false),
             native_parameter_revoked_gesture: AtomicU64::new(0),
@@ -4202,12 +4206,16 @@ impl Callback {
         {
             active.playback.clear_gain_recording_override();
         }
-        if self
+        let prior_epoch = self
             .status
             .transport_epoch
-            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1))
-            .is_err()
-        {
+            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1));
+        if matches!(reason, crate::gain_recording::AbortReason::OutputFailed) {
+            self.status
+                .last_output_fault_epoch
+                .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
+        }
+        if prior_epoch.is_err() {
             self.status.gain_recording_fault.store(true, Release);
         }
     }
@@ -4235,6 +4243,11 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut);
         let live = self.native_parameter_input.prepare(|target| {
+            if status.render_fault.load(Acquire)
+                || target.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
+            {
+                return Err(AbortReason::OutputFailed);
+            }
             if status.native_parameter_input_revoked(target.gesture_serial) {
                 return Err(AbortReason::Cancelled);
             }
@@ -4325,11 +4338,17 @@ impl Callback {
     fn prepare_gain_recording_quantum(&mut self) {
         use crate::gain_recording::{AbortReason, Clock};
         let transport_epoch = self.status.transport_epoch.load(Acquire);
+        let status = &self.status;
         let active = self
             .active
             .as_mut()
             .and_then(ActivePublication::current_mut);
         let live = self.gain_recording.prepare(|target| {
+            if status.render_fault.load(Acquire)
+                || target.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
+            {
+                return Err(AbortReason::OutputFailed);
+            }
             let active = active.as_ref().ok_or(AbortReason::SourceChanged)?;
             if active.revision != target.audio_revision
                 || active.control_context_generation != target.project_generation
@@ -6587,6 +6606,15 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[test]
+    fn render_fault_refuses_new_capture_admissions() {
+        let (control, mut callback) = channel(48_000).unwrap();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 0);
+        assert!(control.status.reserve_midi_begin().is_err());
+        assert!(control.status.reserve_gain_begin().is_err());
+        assert!(control.status.reserve_native_parameter_input().is_err());
     }
 
     #[test]

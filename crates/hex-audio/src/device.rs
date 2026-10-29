@@ -924,6 +924,65 @@ mod tests {
     }
 
     #[test]
+    fn gain_begin_racing_fault_and_prequeued_recovery_keeps_failure_cause() {
+        let (mut control, mut callback, target) = recording_callback();
+        let replacement =
+            hex_engine::playback::Playback::new(hex_engine::Project::new(48_000, vec![]).unwrap());
+        control.publish(replacement).unwrap();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        control.gain_recording.begin_gate = Some(gate.clone());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                gate.wait();
+                callback.report_render_fault(Some(&hex_engine::Invalid("injected failure")), 16);
+                callback.begin_block();
+                gate.wait();
+            });
+            control.gain_recording.begin(target, 0.8).unwrap();
+        });
+        control.gain_recording.begin_gate = None;
+        let mut source = [[0.0; 2]; 8];
+        checked_recording_render(&mut callback, &mut source).unwrap();
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Superseded { .. })
+        ));
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::OutputFailed,
+                ..
+            })
+        ));
+        assert!(!control.status.render_fault.load(Acquire));
+        assert!(control.status.reserve_midi_begin().is_ok());
+        control.status.midi_end();
+    }
+
+    #[test]
+    fn render_fault_aborts_a_racing_gain_take() {
+        let (mut control, mut callback, target) = recording_callback();
+        control.gain_recording.begin(target, 0.8).unwrap();
+        control
+            .status
+            .render_fault
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut source = [[0.0; 2]; 8];
+        checked_recording_render(&mut callback, &mut source).unwrap();
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Superseded { .. })
+        ));
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::OutputFailed,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn device_error_aborts_a_queued_gain_take() {
         let (mut control, mut callback, target) = recording_callback();
         control.gain_recording.begin(target, 0.8).unwrap();
