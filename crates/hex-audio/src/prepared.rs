@@ -61,6 +61,11 @@ impl Callback {
             && !self.status.publication_pending.load(Acquire)
     }
 }
+mod action_outcomes;
+pub use action_outcomes::{
+    ACTION_OUTCOME_CAPACITY, Failure as ActionOutcomeFailure, Outcome as ActionOutcome,
+    Reader as ActionOutcomeReader, Receipt as ActionOutcomeReceipt,
+};
 mod admission;
 mod eligible_publication;
 mod endpoints;
@@ -497,6 +502,7 @@ pub struct Status {
     preview_used: AtomicBool,
     constructor_mode: AtomicBool,
     verified_streaming_mode: AtomicBool,
+    reliable_action_outcomes: AtomicBool,
     applied_source: applied_source::AppliedSourceStatus,
     recording_source: applied_source::AppliedSourceStatus,
     ordinary_native_revision: AtomicU64,
@@ -709,6 +715,7 @@ impl Status {
             preview_used: AtomicBool::new(false),
             constructor_mode: AtomicBool::new(false),
             verified_streaming_mode: AtomicBool::new(false),
+            reliable_action_outcomes: AtomicBool::new(false),
             applied_source: applied_source::AppliedSourceStatus::default(),
             recording_source: applied_source::AppliedSourceStatus::default(),
             ordinary_native_revision: AtomicU64::new(0),
@@ -1106,6 +1113,7 @@ impl std::fmt::Debug for PublishError {
 /// before delivering its nonowning client. Resident callers retain these APIs.
 pub struct Control {
     diagnostics: audio_diagnostics::TraceReader,
+    action_admission: Option<action_outcomes::Admission>,
     pub sample_preview: crate::sample_preview::Control,
     commands: Producer<QueuedCommand>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
@@ -1144,6 +1152,69 @@ impl PublicationControl {
     }
 }
 impl Control {
+    /// Opt in on the original vacant constructor before callback or client
+    /// exposure. Admission has 32 credits until the reader consumes outcomes;
+    /// priority Stop uses its separate path. Ordinary and verified streaming
+    /// configuration are refused for the lifetime of this output. Admission
+    /// may also refuse when the next ticket's slot is still occupied; consume
+    /// available outcomes and retry. After shutdown, retain the reader until
+    /// native retirement or retire the unsplit constructor on control.
+    pub fn enable_action_outcomes_on_control(
+        &mut self,
+        callback: &mut Callback,
+    ) -> Result<ActionOutcomeReader, &'static str> {
+        if self.action_admission.is_some()
+            || callback.action_writer.is_some()
+            || self.command_ticket != 0
+            || self.publication.revision != 0
+            || self.publication.native_custody
+            || self.status.split_endpoints.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || !callback.transport_setup_open
+            || !callback.matches_native_status(&self.status)
+            || !callback.belongs_to_candidate_root(&self.publication.candidate_root)
+        {
+            return Err("action outcomes require a vacant paired constructor");
+        }
+        let (admission, writer, reader) =
+            action_outcomes::channel(self.publication.candidate_root.root_id());
+        self.action_admission = Some(admission);
+        callback.action_writer = Some(writer);
+        self.status.reliable_action_outcomes.store(true, Release);
+        Ok(reader)
+    }
+
+    /// Consume an unsplit, nonnative pair after shutdown, when exclusive access
+    /// to the callback establishes that it cannot execute concurrently.
+    pub fn retire_action_outcomes_on_control(
+        &mut self,
+        callback: &mut Callback,
+    ) -> Result<(), &'static str> {
+        if !self.status.closing.load(Acquire)
+            || self.publication.native_custody
+            || self.status.split_endpoints.load(Acquire)
+            || !callback.matches_native_status(&self.status)
+            || !callback.belongs_to_candidate_root(&self.publication.candidate_root)
+        {
+            return Err("action outcomes require a quiescent paired constructor");
+        }
+        let Some(admission) = self.action_admission.take() else {
+            return Err("action outcome admission unavailable");
+        };
+        let Some(writer) = callback.action_writer.take() else {
+            self.action_admission = Some(admission);
+            return Err("action outcome writer unavailable");
+        };
+        match writer.interrupt_after_quiescence(admission) {
+            Ok(()) => Ok(()),
+            Err((writer, admission)) => {
+                callback.action_writer = Some(writer);
+                self.action_admission = Some(admission);
+                Err("action outcome endpoints do not match")
+            }
+        }
+    }
+
     /// Take one non-owning Copy event; callers bound each drain.
     pub fn take_audio_diagnostic(&mut self) -> Option<AudioDiagnosticEvent> {
         self.diagnostics.pop()
@@ -1173,6 +1244,7 @@ pub(crate) enum OutputTransportDelivery {
 
 pub struct Callback {
     diagnostics: audio_diagnostics::TraceWriter,
+    action_writer: Option<action_outcomes::Writer>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     native_sources: crate::candidate_custody::NativeEndpointBank,
     requested_physical_callback_frames: Option<u16>,
@@ -1226,6 +1298,8 @@ pub struct Callback {
     test_after_fresh_runtime_apply_decision: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
     test_after_spectrum_target_boundary: Option<std::sync::Arc<std::sync::Barrier>>,
+    #[cfg(test)]
+    test_before_action_outcome_status: Option<std::sync::Arc<std::sync::Barrier>>,
 }
 
 pub(crate) fn native_endpoint_bank_storage_quote() -> Option<usize> {
@@ -1281,6 +1355,7 @@ pub fn channel_with_spectrum(
     Ok((
         Control {
             diagnostics: trace_reader,
+            action_admission: None,
             sample_preview,
             commands,
             spectrum_target,
@@ -1311,6 +1386,7 @@ pub fn channel_with_spectrum(
         },
         Callback {
             diagnostics: trace_writer,
+            action_writer: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
             requested_physical_callback_frames: None,
@@ -1363,6 +1439,8 @@ pub fn channel_with_spectrum(
             test_after_fresh_runtime_apply_decision: None,
             #[cfg(test)]
             test_after_spectrum_target_boundary: None,
+            #[cfg(test)]
+            test_before_action_outcome_status: None,
         },
     ))
 }
@@ -2341,6 +2419,15 @@ impl Callback {
         if self.output_transport.is_some() {
             return None;
         }
+        let outcome_storage = if self.action_writer.is_some() {
+            crate::native_callback_owner::ChannelStorage {
+                data_bytes: action_outcomes::storage_bytes(),
+                shared_groups: 1,
+                shared_handles: 3,
+            }
+        } else {
+            crate::native_callback_owner::ChannelStorage::default()
+        };
         self.sample_preview
             .constructor_channel_storage()?
             .plus(self.gain_recording.constructor_channel_storage()?)?
@@ -2348,6 +2435,7 @@ impl Callback {
             .plus(self.midi_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
             .plus(self.processor_audition.constructor_channel_storage()?)?
+            .plus(outcome_storage)?
             .plus(crate::native_callback_owner::ChannelStorage {
                 data_bytes: self.spectrum_stages.heap_data_bytes()?,
                 shared_groups: 0,
@@ -2388,6 +2476,46 @@ impl Callback {
     }
     pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
+    }
+    pub(crate) fn has_action_writer(&self) -> bool {
+        self.action_writer.is_some()
+    }
+    pub(crate) fn action_writer_identity(&self) -> Option<usize> {
+        self.action_writer
+            .as_ref()
+            .map(action_outcomes::Writer::identity)
+    }
+    /// Consume the matched producer and writer only under the exact native
+    /// root's post-guard, post-stream-handle release authority.
+    pub(crate) fn retire_action_outcomes_on_control(
+        &mut self,
+        client: &mut ClientEndpoints,
+        authority: &crate::native_callback_owner::FinalReleaseAuthority,
+    ) -> Result<(), ()> {
+        if !authority.matches(self.candidate_root.root_id())
+            || !client.matches(&self.status)
+            || !client.matches_retired_scalar_output(
+                Arc::as_ptr(&self.status) as usize,
+                self.candidate_root.root_id(),
+            )
+        {
+            return Err(());
+        }
+        let Some(writer) = self.action_writer.take() else {
+            return Err(());
+        };
+        let Some(admission) = client.take_action_admission() else {
+            self.action_writer = Some(writer);
+            return Err(());
+        };
+        match writer.interrupt_after_quiescence(admission) {
+            Ok(()) => Ok(()),
+            Err((writer, admission)) => {
+                self.action_writer = Some(writer);
+                client.restore_action_admission(admission);
+                Err(())
+            }
+        }
     }
     pub(crate) fn candidate_root_for_native_boundary(
         &self,
@@ -3545,6 +3673,13 @@ impl Callback {
         self.consume_commands_through_inner(cut, false);
     }
 
+    fn finish_action_outcome(&mut self, ticket: u64, outcome: action_outcomes::Outcome) {
+        if let Some(writer) = self.action_writer.as_mut() {
+            // A mismatch latches an observable failure and refuses further admission.
+            let _ = writer.finish(ticket, outcome);
+        }
+    }
+
     fn consume_commands_through_inner(&mut self, cut: CommandCut, fault: bool) {
         if let Some(through_ticket) = cut.stop_through {
             if !fault && !self.status.closing.load(Acquire) {
@@ -3579,7 +3714,8 @@ impl Callback {
             }
         }
         let mut consumed = None;
-        for _ in 0..COMMANDS {
+        let mut outcomes = [None; COMMANDS];
+        for staged in &mut outcomes {
             if !self
                 .commands
                 .peek()
@@ -3596,9 +3732,14 @@ impl Callback {
             }
             if fault && sampler_edit::is_stop(queued.action) {
                 self.status.recovery_position.store(0, Release);
+                *staged = Some((queued.ticket, action_outcomes::Outcome::Applied));
             } else if fault {
                 self.status
                     .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                *staged = Some((
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                ));
             }
             if fault {
                 continue;
@@ -3608,6 +3749,10 @@ impl Callback {
                     queued.ticket,
                     PlaybackActionRejection::SamplerEditBusy,
                 );
+                *staged = Some((
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::SamplerEditBusy),
+                ));
                 continue;
             }
             if cut
@@ -3623,6 +3768,7 @@ impl Callback {
                     self.revoke_current_sampler_keyboard();
                 }
                 let mut invalidate_audition = false;
+                let outcome;
                 if let Some(mut active) = self
                     .active
                     .as_mut()
@@ -3630,17 +3776,29 @@ impl Callback {
                 {
                     match active.playback.try_apply_action(queued.action) {
                         Ok(()) => {
+                            outcome = action_outcomes::Outcome::Applied;
                             if recovery_cursor_action(queued.action) {
                                 self.recovery_position_frozen = false;
                             }
                             invalidate_audition =
                                 action_invalidates_processor_audition(queued.action);
                         }
-                        Err(error) => self
-                            .status
-                            .publish_rejected_action(queued.ticket, error.telemetry_rejection()),
+                        Err(error) => {
+                            let reason = error.telemetry_rejection();
+                            self.status.publish_rejected_action(queued.ticket, reason);
+                            outcome = action_outcomes::Outcome::Rejected(reason);
+                        }
                     }
+                } else {
+                    self.status.publish_rejected_action(
+                        queued.ticket,
+                        PlaybackActionRejection::NoActivePlayback,
+                    );
+                    outcome = action_outcomes::Outcome::Rejected(
+                        PlaybackActionRejection::NoActivePlayback,
+                    );
                 }
+                *staged = Some((queued.ticket, outcome));
                 if invalidate_audition
                     || matches!(
                         queued.action,
@@ -3658,12 +3816,22 @@ impl Callback {
                 if invalidate_audition {
                     self.invalidate_processor_audition_request();
                 }
+            } else {
+                *staged = Some((queued.ticket, action_outcomes::Outcome::Superseded));
             }
+        }
+        #[cfg(test)]
+        if let Some(barrier) = self.test_before_action_outcome_status.take() {
+            barrier.wait();
+            barrier.wait();
         }
         self.publish_transport();
         self.publish_active_routes(false);
         if let Some(ticket) = consumed {
             self.status.consumed_command.store(ticket, Release);
+        }
+        for (ticket, outcome) in outcomes.into_iter().flatten() {
+            self.finish_action_outcome(ticket, outcome);
         }
     }
     /// Latch the first actual render cause before Stop changes the cursor.
@@ -4518,6 +4686,7 @@ impl Callback {
 /// Known channel payload/capacity quote for the pinned worker factory.
 pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
     std::mem::size_of::<Status>()
+        .checked_add(action_outcomes::storage_bytes())?
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
@@ -8414,6 +8583,826 @@ mod tests {
 
     fn graph() -> (Playback, Weak<hex_engine::Project>) {
         graph_with_frame([0.25; 2])
+    }
+
+    fn wire_action_outcomes(
+        control: &mut Control,
+        callback: &mut Callback,
+    ) -> action_outcomes::Reader {
+        control.enable_action_outcomes_on_control(callback).unwrap()
+    }
+
+    fn begin_outcome_test_block(callback: &mut Callback) {
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| callback.begin_block());
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        callback.begin_block();
+    }
+
+    #[test]
+    fn action_outcomes_require_a_vacant_matching_constructor_and_account_storage() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (_, mut foreign) = channel(48_000).unwrap();
+        assert!(
+            control
+                .enable_action_outcomes_on_control(&mut foreign)
+                .is_err()
+        );
+        let before = callback.constructor_channel_storage().unwrap();
+        let reader = control
+            .enable_action_outcomes_on_control(&mut callback)
+            .unwrap();
+        let after = callback.constructor_channel_storage().unwrap();
+        assert_eq!(
+            after.data_bytes - before.data_bytes,
+            reader.retained_data_bytes()
+        );
+        assert_eq!(after.shared_groups - before.shared_groups, 1);
+        assert_eq!(after.shared_handles - before.shared_handles, 3);
+        assert!(
+            control
+                .enable_action_outcomes_on_control(&mut callback)
+                .is_err()
+        );
+        let (mut late, mut late_callback) = channel(48_000).unwrap();
+        late_callback.begin_block();
+        assert!(
+            late.enable_action_outcomes_on_control(&mut late_callback)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn legacy_quiescent_retirement_refuses_foreign_callback_and_interrupts_pending() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (_, mut foreign) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        control.request_shutdown();
+        assert!(
+            control
+                .retire_action_outcomes_on_control(&mut foreign)
+                .is_err()
+        );
+        assert_eq!(reader.try_take(), None);
+        control
+            .retire_action_outcomes_on_control(&mut callback)
+            .unwrap();
+        assert_eq!(reader.failure(), None);
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket,
+                outcome: action_outcomes::Outcome::Interrupted,
+            })
+        );
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn abandoning_legacy_endpoint_reports_unknown_instead_of_a_terminal() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        drop(control);
+        assert_eq!(
+            reader.failure(),
+            Some(ActionOutcomeFailure::EndpointAbandoned)
+        );
+        assert_eq!(reader.try_take(), None);
+        drop(callback);
+    }
+
+    #[test]
+    fn resident_action_outcomes_preserve_distinct_rejections_before_polling() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let no_graph = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        begin_outcome_test_block(&mut callback);
+        control.reclaim();
+        control.publish(graph().0).unwrap();
+        let metronome = control
+            .action_with_ticket(PlaybackAction::SetMetronome(true))
+            .unwrap();
+        begin_outcome_test_block(&mut callback);
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: no_graph,
+                outcome: action_outcomes::Outcome::Rejected(
+                    PlaybackActionRejection::NoActivePlayback
+                )
+            })
+        );
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: metronome,
+                outcome: action_outcomes::Outcome::Rejected(
+                    PlaybackActionRejection::MetronomeUnavailable
+                )
+            })
+        );
+        assert_eq!(reader.try_take(), None);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn resident_outcomes_cross_concurrent_admission_and_callback_handoff() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        callback.test_after_fresh_fence_validation = Some(Arc::clone(&barrier));
+        std::thread::scope(|scope| {
+            let audio = scope.spawn(|| callback.begin_block());
+            barrier.wait();
+            let session = control
+                .session_command_with_ticket(hex_engine::SessionPlaybackCommand::Play)
+                .unwrap();
+            let metronome = control
+                .action_with_ticket(PlaybackAction::SetMetronome(true))
+                .unwrap();
+            barrier.wait();
+            audio.join().unwrap();
+            assert_eq!(
+                reader.try_take(),
+                Some(action_outcomes::Receipt {
+                    ticket: session,
+                    outcome: action_outcomes::Outcome::Rejected(
+                        PlaybackActionRejection::SessionNotPrepared
+                    ),
+                })
+            );
+            assert_eq!(
+                reader.try_take(),
+                Some(action_outcomes::Receipt {
+                    ticket: metronome,
+                    outcome: action_outcomes::Outcome::Rejected(
+                        PlaybackActionRejection::MetronomeUnavailable
+                    ),
+                })
+            );
+        });
+        control.request_shutdown();
+        control
+            .retire_action_outcomes_on_control(&mut callback)
+            .unwrap();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn action_receipt_waits_for_transport_and_consumed_status() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        callback.test_before_action_outcome_status = Some(Arc::clone(&barrier));
+        std::thread::scope(|scope| {
+            let audio = scope.spawn(|| callback.begin_block());
+            barrier.wait();
+            let early = reader.try_take();
+            let playing = control.status.playing.load(Acquire);
+            let consumed = control.status.consumed_command.load(Acquire);
+            barrier.wait();
+            audio.join().unwrap();
+            assert_eq!(early, None);
+            assert!(!playing);
+            assert!(consumed < ticket);
+        });
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket,
+                outcome: action_outcomes::Outcome::Applied,
+            })
+        );
+        assert!(control.status.playing.load(Acquire));
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        control.request_shutdown();
+        control
+            .retire_action_outcomes_on_control(&mut callback)
+            .unwrap();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn resident_outcome_backpressure_preserves_priority_stop_and_retries() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let mut tickets = Vec::new();
+        for _ in 0..COMMANDS {
+            tickets.push(control.command_with_ticket(PlaybackCommand::Play).unwrap());
+        }
+        assert!(control.command_with_ticket(PlaybackCommand::Play).is_err());
+        control.stop();
+        begin_outcome_test_block(&mut callback);
+        assert!(!control.status.playing.load(Acquire));
+        assert!(control.command_with_ticket(PlaybackCommand::Play).is_err());
+        for ticket in tickets {
+            assert_eq!(
+                reader.try_take(),
+                Some(action_outcomes::Receipt {
+                    ticket,
+                    outcome: action_outcomes::Outcome::Superseded
+                })
+            );
+        }
+        let retried = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        begin_outcome_test_block(&mut callback);
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: retried,
+                outcome: action_outcomes::Outcome::Applied
+            })
+        );
+        assert!(control.status.playing.load(Acquire));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn resident_outcomes_report_each_pre_fault_action_and_stop() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        let pause = control.command_with_ticket(PlaybackCommand::Pause).unwrap();
+        let stop = control.command_with_ticket(PlaybackCommand::Stop).unwrap();
+        control.status.device_fault.store(true, Release);
+        begin_outcome_test_block(&mut callback);
+        for ticket in [play, pause] {
+            assert_eq!(
+                reader.try_take(),
+                Some(action_outcomes::Receipt {
+                    ticket,
+                    outcome: action_outcomes::Outcome::Rejected(
+                        PlaybackActionRejection::OutputFailed
+                    ),
+                })
+            );
+        }
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: stop,
+                outcome: action_outcomes::Outcome::Applied,
+            })
+        );
+        assert!(!control.status.playing.load(Acquire));
+        control.request_shutdown();
+        control
+            .retire_action_outcomes_on_control(&mut callback)
+            .unwrap();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn action_outcomes_survive_graph_and_output_replacement_without_ticket_aliasing() {
+        let (mut old, mut old_callback) = channel(48_000).unwrap();
+        let mut old_reader = wire_action_outcomes(&mut old, &mut old_callback);
+        old.publish(graph().0).unwrap();
+        old_callback.begin_block();
+        let first = old.command_with_ticket(PlaybackCommand::Play).unwrap();
+        old.publish(graph().0).unwrap();
+        old_callback.begin_block();
+        let pending = old.command_with_ticket(PlaybackCommand::Pause).unwrap();
+        old.request_shutdown();
+        old.retire_action_outcomes_on_control(&mut old_callback)
+            .unwrap();
+
+        let (mut replacement, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut replacement, &mut callback);
+        assert_ne!(old_reader.output_identity(), reader.output_identity());
+        replacement.publish(graph().0).unwrap();
+        callback.begin_block();
+        let replacement_ticket = replacement
+            .command_with_ticket(PlaybackCommand::Play)
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(replacement_ticket, first);
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: replacement_ticket,
+                outcome: action_outcomes::Outcome::Applied,
+            })
+        );
+        assert_eq!(
+            old_reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: first,
+                outcome: action_outcomes::Outcome::Applied,
+            })
+        );
+        assert_eq!(
+            old_reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: pending,
+                outcome: action_outcomes::Outcome::Interrupted,
+            })
+        );
+        old_callback.begin_block();
+        old.reclaim();
+        replacement.request_shutdown();
+        replacement
+            .retire_action_outcomes_on_control(&mut callback)
+            .unwrap();
+        callback.begin_block();
+        replacement.reclaim();
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn split_client_admission_reaches_the_actual_callback_writer() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        let session = client
+            .session_command_with_ticket(hex_engine::SessionPlaybackCommand::Play)
+            .unwrap();
+        let metronome = client
+            .action_with_ticket(PlaybackAction::SetMetronome(true))
+            .unwrap();
+        let ticket = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        {
+            let measured = allocation_counter::measure(|| {
+                data.owner_mut()
+                    .unwrap()
+                    .run(|callback, _| callback.begin_block());
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: session,
+                outcome: action_outcomes::Outcome::Rejected(
+                    PlaybackActionRejection::SessionNotPrepared
+                ),
+            })
+        );
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: metronome,
+                outcome: action_outcomes::Outcome::Rejected(
+                    PlaybackActionRejection::MetronomeUnavailable
+                ),
+            })
+        );
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket,
+                outcome: action_outcomes::Outcome::Applied
+            })
+        );
+        let pending = client.command_with_ticket(PlaybackCommand::Pause).unwrap();
+        client.close();
+        publication.close();
+        assert!(!retirement.advance().unwrap());
+        assert_eq!(reader.try_take(), None);
+        drop(data);
+        assert!(!retirement.advance().unwrap());
+        assert_eq!(reader.try_take(), None);
+        drop(errors);
+        // Both guard carriers are back, but the stream handle is not yet disposed.
+        assert!(!retirement.advance().unwrap());
+        assert_eq!(reader.try_take(), None);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: pending,
+                outcome: action_outcomes::Outcome::Interrupted,
+            })
+        );
+        assert_eq!(reader.try_take(), None);
+        assert_eq!(reader.failure(), None);
+        super::candidate_tests::finish(&mut retirement);
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn action_outcomes_wait_for_client_after_stream_and_callback_retirement() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        let ticket = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        publication.close();
+        drop(errors);
+        drop(data);
+        assert!(
+            !crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert_eq!(reader.try_take(), None);
+        client.close();
+        assert!(retirement.advance().unwrap());
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket,
+                outcome: action_outcomes::Outcome::Interrupted,
+            })
+        );
+        super::candidate_tests::finish(&mut retirement);
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn retired_client_reader_stays_bound_to_its_output_after_replacement() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut old_reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        let old_ticket = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        super::candidate_tests::finish(&mut retirement);
+
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut new_reader = wire_action_outcomes(&mut control, &mut callback);
+        assert_ne!(old_reader.output_identity(), new_reader.output_identity());
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        let new_ticket = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        assert_eq!(new_ticket, old_ticket);
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert_eq!(
+            new_reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: new_ticket,
+                outcome: action_outcomes::Outcome::Applied,
+            })
+        );
+        assert_eq!(
+            old_reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket: old_ticket,
+                outcome: action_outcomes::Outcome::Interrupted,
+            })
+        );
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        super::candidate_tests::finish(&mut retirement);
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn action_outcomes_report_retirement_failure_without_inventing_a_terminal() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        let ticket = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        retirement.fail_retained_receipts();
+        assert_eq!(
+            reader.failure(),
+            Some(ActionOutcomeFailure::RetirementUnavailable)
+        );
+        assert_eq!(reader.try_take(), None);
+        assert!(client.command_with_ticket(PlaybackCommand::Pause).is_err());
+        client.close();
+        publication.close();
+        drop(data);
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            reader.try_take(),
+            Some(action_outcomes::Receipt {
+                ticket,
+                outcome: action_outcomes::Outcome::Interrupted,
+            })
+        );
+        super::candidate_tests::finish(&mut retirement);
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn abandoned_action_reader_does_not_destroy_ledger_on_callback_guard_drop() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let reader = wire_action_outcomes(&mut control, &mut callback);
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let root = control.native_candidate_root();
+        let (data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        client.command_with_ticket(PlaybackCommand::Play).unwrap();
+        drop(reader);
+        client.close();
+        publication.close();
+        let measured = allocation_counter::measure(|| drop(data));
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        drop(errors);
+        assert!(
+            crate::lifecycle::test_dispose_backend(
+                &mut Some(()),
+                &mut false,
+                &mut false,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        super::candidate_tests::finish(&mut retirement);
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn reliable_resident_output_refuses_ordinary_stream_configuration() {
+        let _serial = super::candidate_tests::serial();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let _reader = wire_action_outcomes(&mut control, &mut callback);
+        control.enable_native_custody().unwrap();
+        control
+            .configure_device_resource_publication_on_control(
+                hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 256,
+                    root_rows: 128,
+                    max_retained_bytes: 20_000_000,
+                    max_construction_peak_bytes: 20_000_000,
+                },
+            )
+            .unwrap();
+        assert!(
+            control
+                .configure_ordinary_streaming_on_control(
+                    crate::AudioCandidateDomainReservation {
+                        max_retained_data_bytes: 8 * 1024 * 1024,
+                        max_construction_peak_data_bytes: 8 * 1024 * 1024,
+                    },
+                    3,
+                    4096,
+                )
+                .is_err()
+        );
+        assert!(!control.candidate_root.ordinary_streams_configured());
+    }
+
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn verified_streaming_refusal_is_specific_to_reliable_outcome_mode() {
+        use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
+        let _serial = super::candidate_tests::serial();
+        for reliable in [false, true] {
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let _reader = reliable.then(|| wire_action_outcomes(&mut control, &mut callback));
+            let root = control.native_candidate_root();
+            let (data, errors, terminals, mut client, mut publication) =
+                reserve_native_worker(control, callback, None);
+            let mut retirement = NativeRetirement::new(terminals, root);
+            let worker = publication.control().unwrap();
+            worker.enable_native_custody().unwrap();
+            worker
+                .configure_audio_candidate_publication(
+                    crate::AudioCandidatePublicationReservation {
+                        runtime_slots: 2,
+                        archive_slots: 2,
+                        member_rows: 256,
+                        transfer_rows: 256,
+                        receipt_rows: 3,
+                        data_rows: 4096,
+                        handle_rows: 2048,
+                        max_retained_data_bytes: 96 * 1024 * 1024,
+                        max_construction_peak_data_bytes: 96 * 1024 * 1024,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                worker.configure_audio_candidate_streaming(3).is_err(),
+                reliable
+            );
+            client.close();
+            publication.close();
+            drop(data);
+            drop(errors);
+            assert!(
+                crate::lifecycle::test_dispose_backend(
+                    &mut Some(()),
+                    &mut false,
+                    &mut false,
+                    &mut retirement,
+                    |_| Ok(())
+                )
+                .unwrap()
+            );
+            super::candidate_tests::finish(&mut retirement);
+        }
+    }
+
+    #[test]
+    fn initial_stale_fence_rejects_play_without_active_playback() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let revision = control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        #[cfg(not(feature = "allocation-probe"))]
+        callback.begin_block();
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| callback.begin_block());
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        assert_eq!(control.status.applied_revision.load(Acquire), 0);
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        assert_eq!(
+            control.status.rejected_revision().map(|r| r.0),
+            Some(revision)
+        );
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((ticket, PlaybackActionRejection::NoActivePlayback))
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn priority_stop_discards_play_without_active_playback() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        control
+            .publish_with_policy(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        let ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        control.stop();
+        callback.begin_block();
+        assert_eq!(control.status.applied_revision.load(Acquire), 0);
+        assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        assert_eq!(control.status.rejected_action(), None);
+        assert!(!control.status.playing.load(Acquire));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
     }
 
     fn graph_with_frame(frame: hex_engine::Frame) -> (Playback, Weak<hex_engine::Project>) {

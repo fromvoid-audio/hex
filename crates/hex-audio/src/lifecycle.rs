@@ -256,7 +256,7 @@ impl Drop for StreamOwner {
             reaper.request_stop();
         }
         if let Some(native) = retirement.native.as_ref() {
-            native.fail_scalar_receipts();
+            native.fail_retained_receipts();
         }
         let mut quarantine = match QUARANTINE.lock() {
             Ok(guard) => guard,
@@ -779,7 +779,7 @@ fn retire_prepared_output(mut retirement: Retirement) {
             && progress.failed
             && let Some(native) = retirement.native.as_ref()
         {
-            native.fail_scalar_receipts();
+            native.fail_retained_receipts();
         }
         // Headless allocation-probe fixtures still use the real custody and
         // quiescence protocol, but need not inherit the native backend's
