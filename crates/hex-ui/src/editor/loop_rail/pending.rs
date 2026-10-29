@@ -95,7 +95,7 @@ impl EditorView {
         {
             return;
         }
-        if !self.arrangement_focus.enabled {
+        if !self.arrangement_focus.projection.enabled {
             self.toggle_arrangement_focus();
         } else {
             self.reconcile_arrangement_focus();
