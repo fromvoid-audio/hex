@@ -322,6 +322,35 @@ the agent's responsibility. For persistence/recording, test
 round trips, missing assets, interrupted writes, and recoverable failures. Never
 substitute automated checks for manual acceptance they cannot establish.
 
+### Shared user-test checklist
+
+Keep the reusable, user-edited Markdown checklist at
+`/Users/portalsurfer/dev/hex/artifacts/USER-TESTS.md`. This explicit exception
+to the local-backlog prohibition is for user-run acceptance and reproduction
+steps only; Pulse remains the authority for issue status, scope and dependencies.
+The ignored, shared path keeps user checkmarks available across worktrees without
+dirtying an exact-source build. Do not replace it with a per-worktree checklist.
+
+After a focused PR passes its required checks and its merge is authenticated,
+mark its issue `ready_for_review`, then add any applicable user-run checks to the
+shared file. Group checks under a link to their Pulse issue and write each as a
+single observable `- [ ]` line. Explicitly requested reproduction may appear
+before a fix is merged; identify its actual status. Do not invent manual checks
+for an internal-only change. State the qualified running build/source and any
+prerequisites or limits; neither a disk installation nor a headless test proves
+native acceptance. Keep the checklist aligned with the finite delivery checklist
+in `docs/test-builds.md`.
+
+The user marks completed checks `- [x]` and personally marks the issue done
+after all its checks are complete. Do not mark an issue done merely because
+checkboxes are checked, or infer acceptance from a merge. Before editing the file,
+read its current contents and fresh Pulse state. Remove a completed issue's
+checked group only when every check is marked and the user has marked that issue
+done; retain partial groups, failures, unchecked items and unrelated user edits.
+Preserve entries if the issue state cannot be confirmed. Avoid overwriting a
+concurrent user edit; re-read and reconcile it. Do not use the file as a second
+source of implementation tasks, status changes or project requirements.
+
 Inspect the final diff when Git exists; otherwise review the changed files against
 known starting content. Preserve unrelated work. Update technical contracts in the
 owning docs when they change; record task progress, actual results and remaining
@@ -456,8 +485,9 @@ are unavailable, report the limitation and keep a clearly labeled temporary
 plan in chat; do not silently switch trackers or claim that unsaved tickets were
 created.
 
-Pulse is the sole planning and issue authority. Do not create or maintain local
-TODO files, task/status lists, request queues or parallel milestone backlogs. Put
+Pulse is the sole planning and issue authority. Apart from the shared user-test
+checklist described above, do not create or maintain local TODO files,
+task/status lists, request queues or parallel milestone backlogs. Put
 new requirements, dependencies, priorities, acceptance criteria, next actions and
 progress in the corresponding live Pulse tickets and goals. Do not append task
 chronologies to repository documents as a substitute. If Pulse is unavailable,
