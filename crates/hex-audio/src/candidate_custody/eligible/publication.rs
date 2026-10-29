@@ -272,6 +272,10 @@ impl Queued {
     }
 }
 impl Bank {
+    pub(super) fn cleanup_failed(&self) -> bool {
+        self.slots.iter().any(|s| s.phase == Phase::Failed)
+    }
+
     pub(in crate::candidate_custody) fn backing_quote(
         reservation: AudioCandidatePublicationReservation,
     ) -> Result<usize, &'static str> {

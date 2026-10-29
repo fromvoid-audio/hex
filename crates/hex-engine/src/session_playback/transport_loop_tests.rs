@@ -769,6 +769,51 @@ fn mutable_transport_wrap_chases_as_fresh_attack_without_first_entry_duplicate()
 }
 
 #[test]
+fn interactive_start_one_frame_before_wrap_matches_authored_attack_and_note_off() {
+    let looped = transport_loop_project(false);
+    let revision = prepare_mutable(&looped);
+    let mut snapshot = transport_loop_project(true).snapshot();
+    let (TrackContentSnapshot::Hybrid { midi_clips, .. }
+    | TrackContentSnapshot::Instrument(midi_clips)) = &mut snapshot.tracks[0].content
+    else {
+        panic!("fixture Arrangement MIDI clip")
+    };
+    let note = &mut midi_clips[0].notes[0];
+    note.start_raw = beat_raw_for_frames(1);
+    note.duration_raw = Q;
+    midi_clips[0].notes.truncate(1);
+    let oracle = legacy_project_from_snapshot(snapshot).expect("valid linear oracle");
+    let expected = render_transport_project(&oracle, 24_065, &[256]);
+    assert_eq!(expected[0], [0.0; 2]);
+    assert!(
+        expected[1..24_001]
+            .iter()
+            .flatten()
+            .any(|sample| *sample != 0.0)
+    );
+    assert!(
+        expected[24_041..]
+            .iter()
+            .flatten()
+            .all(|sample| *sample == 0.0)
+    );
+
+    for block in [1, 17, 64, 128, 256, 512] {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback.play_from(95_999).unwrap();
+        playback.render(&mut []).unwrap();
+        assert_eq!(playback.arrangement_frame(), 95_999);
+        let mut actual = vec![[0.0; 2]; expected.len()];
+        for chunk in actual.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "block size {block}");
+        assert_eq!(playback.arrangement_frame(), 72_064);
+        assert_eq!(playback.performance_frame(), 120_064);
+    }
+}
+
+#[test]
 fn mutable_transport_density_allows_empty_short_loops_and_rejects_dense_short_loops() {
     let mut empty = transport_loop_project(false).snapshot();
     empty.loop_region = Some(LoopRegion::new(0, 1, true).expect("valid one-frame loop"));
