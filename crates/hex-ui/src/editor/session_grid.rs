@@ -409,12 +409,14 @@ impl EditorView {
             .max(1.0) as usize;
         self.session_visible_columns = visible_columns;
         let indices = &self.arrangement_focus.projection.console_indices;
-        let page = Arc::new(TrackPage::capture(
-            &state.project,
-            indices,
-            self.session_track_start,
-            visible_columns,
-        ));
+        let page = self.pending_console_reorder_page().unwrap_or_else(|| {
+            Arc::new(TrackPage::capture(
+                &state.project,
+                indices,
+                self.session_track_start,
+                visible_columns,
+            ))
+        });
         let column_start = page.range.start;
         let next_track = page.next;
         let track_count = indices.len();
@@ -429,6 +431,7 @@ impl EditorView {
             transport_playing,
         };
         let header = div()
+            .relative()
             .w_full()
             .h(px(SCENE_ROW_HEIGHT))
             .flex_shrink_0()
@@ -452,6 +455,21 @@ impl EditorView {
                             .id(("session-track", track.id().value()))
                             .track_focus(&header_focus)
                             .key_context("hex_track_header")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(
+                                    move |view, event: &gpui::MouseDownEvent, window, cx| {
+                                        if event.click_count == 1 {
+                                            view.begin_track_reorder(
+                                                track_id,
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    },
+                                ),
+                            )
                             .on_click(cx.listener(move |view, _, window, cx| {
                                 view.select_track(track_id, window);
                                 view.selected_cell = None;
@@ -604,7 +622,14 @@ impl EditorView {
                     cx,
                 ),
             )
-            .child(session_scenes_header());
+            .child(session_scenes_header())
+            .child(self.console_reorder_layer(
+                page.clone(),
+                frame,
+                TRACK_COLUMN_WIDTH,
+                SCENE_HEADER_WIDTH,
+                cx,
+            ));
 
         let scene_rows = uniform_list(
             "session-scene-rows",
@@ -629,6 +654,7 @@ impl EditorView {
             Some("audio updating")
         };
         let grid = div()
+            .relative()
             .flex_1()
             .min_h_0()
             .flex()
@@ -649,6 +675,7 @@ impl EditorView {
                 .flex()
                 .child(scene_rows),
         )
+        .child(self.track_reorder_events(cx))
     }
 
     fn session_toolbar(
@@ -683,7 +710,9 @@ impl EditorView {
                     "previous tracks",
                     "session-page-previous",
                     cx.listener(move |view, _, _, cx| {
-                        view.session_track_start = page_start.saturating_sub(page_size.max(1));
+                        if !view.track_reorder_active() {
+                            view.session_track_start = page_start.saturating_sub(page_size.max(1));
+                        }
                         cx.notify();
                     }),
                 )
@@ -873,9 +902,11 @@ impl EditorView {
                 "next tracks",
                 "session-page-next",
                 cx.listener(move |view, _, _, cx| {
-                    view.session_track_start = page_start
-                        .saturating_add(page_size.max(1))
-                        .min(track_count.saturating_sub(page_size));
+                    if !view.track_reorder_active() {
+                        view.session_track_start = page_start
+                            .saturating_add(page_size.max(1))
+                            .min(track_count.saturating_sub(page_size));
+                    }
                     cx.notify();
                 }),
             )
@@ -1814,7 +1845,7 @@ impl EditorView {
         let Some((track_index, scene_index)) = positions else {
             return;
         };
-        if let Some(index) = track_index {
+        if let Some(index) = track_index.filter(|_| !self.track_reorder_active()) {
             let page_size = self.session_visible_columns.max(1);
             if index < self.session_track_start
                 || index >= self.session_track_start.saturating_add(page_size)
