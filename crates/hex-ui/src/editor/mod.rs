@@ -51,6 +51,7 @@ mod project_recovery_ui_test;
 mod section_launch;
 mod track_header;
 mod track_header_device_drop;
+mod track_hierarchy_indent;
 mod track_meters;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -870,6 +871,7 @@ pub(super) struct EditorView {
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
     arrangement_focus: arrangement_focus::State,
+    track_hierarchy_indent: track_hierarchy_indent::HierarchyIndent,
     track_reorder: track_reorder::TrackReorder,
     #[cfg(all(test, feature = "ui-test-support"))]
     track_row_builds: usize,
@@ -1586,6 +1588,7 @@ impl EditorView {
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
             arrangement_focus: arrangement_focus::State::default(),
+            track_hierarchy_indent: track_hierarchy_indent::HierarchyIndent::default(),
             track_reorder: track_reorder::TrackReorder::default(),
             #[cfg(all(test, feature = "ui-test-support"))]
             track_row_builds: 0,
