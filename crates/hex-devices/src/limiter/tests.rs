@@ -438,8 +438,15 @@ fn check_sample_ceiling_and_partition_independence(mode: u32, routing: u32) {
         .collect();
     let mut a = f.create_runtime().unwrap();
     let mut b = f.create_runtime().unwrap();
-    let output = render(a.as_mut(), &input, &[input.len()]);
-    assert_eq!(output, render(b.as_mut(), &input, &[1, 63, 257, 17]));
+    // Both isolated runtimes consume the same immutable full signal. Running
+    // them concurrently preserves the complete partition oracle while keeping
+    // this relatively expensive 48 kHz fixture within a short feedback loop.
+    let (output, partitioned) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| render(a.as_mut(), &input, &[input.len()]));
+        let second = render(b.as_mut(), &input, &[1, 63, 257, 17]);
+        (first.join().unwrap(), second)
+    });
+    assert_eq!(output, partitioned);
     assert!(
         output
             .iter()
