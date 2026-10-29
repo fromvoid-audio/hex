@@ -952,6 +952,168 @@ fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
 }
 
 #[test]
+fn gain_publication_waits_for_held_later_page_then_applies_exact_pcm() {
+    let _serial = serial();
+    let frames = (hex_engine::STREAM_PAGE_FRAMES * 3) as u64;
+    let project = super::readiness::project_with_frames(frames);
+    let track = project.tracks()[0].id();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(frames.try_into().unwrap());
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: metadata.key(),
+        page_index: 1,
+    });
+    let mut runtime = hex_stream::StreamRuntime::new_with_page_gate(
+        hex_stream::StreamConfig::with_pool_pages(4),
+        vec![definition],
+        gate,
+    )
+    .unwrap();
+    runtime
+        .wait_until_ready(std::time::Duration::from_secs(3))
+        .unwrap();
+    let domain_pair = runtime.split().ok().unwrap();
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            domain_pair,
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap_or_else(|_| panic!("source registration"));
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let original = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata.clone(), &store),
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("original publication"));
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let mut saw_original = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        measured_render(&mut data, &mut output);
+        saw_original |= output.iter().any(|frame| *frame == [0.25; 2]);
+        if entered.try_recv().is_ok() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "later page was not requested"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(control.status.applied_revision.load(Acquire), original);
+    while control.status.position.load(Acquire) < hex_engine::STREAM_PAGE_FRAMES as u64 {
+        measured_render(&mut data, &mut output);
+        saw_original |= output.iter().any(|frame| *frame == [0.25; 2]);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "initial page did not finish"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        control.status.position.load(Acquire),
+        hex_engine::STREAM_PAGE_FRAMES as u64
+    );
+    assert!(saw_original, "the initial page must produce original PCM");
+    measured_render(&mut data, &mut output);
+    assert!(control.status.stream_buffering.load(Acquire));
+    assert_eq!(output, [[0.0; 2]; 256]);
+    let mut editor = hex_project::Editor::new(project, 8).unwrap();
+    editor
+        .execute(hex_project::Command::Gain { track, gain: 0.5 })
+        .unwrap();
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(editor.project(), metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("gain publication"));
+    measured_render(&mut data, &mut output);
+    assert_eq!(control.status.applied_revision.load(Acquire), original);
+    assert!(control.status.publication_pending.load(Acquire));
+    assert!(
+        control.status.rejected_revision().is_none(),
+        "gain rejected while page is held: {:?}",
+        control.status.rejected_revision()
+    );
+    release.send(()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        measured_render(&mut data, &mut output);
+        assert!(
+            control.status.rejected_revision().is_none(),
+            "gain rejected: {:?}",
+            control.status.rejected_revision()
+        );
+        if control.status.applied_revision.load(Acquire) == revision
+            && output.iter().all(|frame| *frame == [0.125; 2])
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "gain did not apply after page release"
+        );
+        std::thread::yield_now();
+    }
+    control.stop();
+    measured_render(&mut data, &mut output);
+    assert!(!control.status.playing.load(Acquire));
+    assert_eq!(output, [[0.0; 2]; 256]);
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "source reclamation");
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
 fn compensated_demand_retries_a_smaller_window_at_page_capacity() {
     let _serial = serial();
     let mut snapshot = super::readiness::project_with_frames(8192).snapshot();
