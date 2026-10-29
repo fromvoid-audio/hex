@@ -869,10 +869,19 @@ fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
         )
         .unwrap_or_else(|_| panic!("original publication"));
     control.command(PlaybackCommand::Play).unwrap();
-    let mut output = [[0.0; 2]; 256];
+    let mut warmup = [[0.0; 2]; 1024];
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while control.status.position.load(Acquire) < hex_engine::STREAM_PAGE_FRAMES as u64 {
-        measured_render(&mut data, &mut output);
+        measured_render(&mut data, &mut warmup);
+        let committed = if control.status.stream_buffering.load(Acquire) {
+            usize::try_from(control.status.stream_committed_frames.load(Acquire)).unwrap()
+        } else {
+            warmup.len()
+        };
+        assert!(committed <= warmup.len());
+        for (index, frame) in warmup.iter().enumerate() {
+            assert_eq!(*frame, [if index < committed { 0.25 } else { 0.0 }; 2]);
+        }
         assert!(control.status.rejected_revision().is_none());
         assert!(
             std::time::Instant::now() < deadline,
@@ -885,7 +894,7 @@ fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
         control.status.position.load(Acquire),
         hex_engine::STREAM_PAGE_FRAMES as u64
     );
-    assert_eq!(output, [[0.25; 2]; 256]);
+    let mut output = [[0.0; 2]; 256];
 
     // The last committed chunk protects A0. The next candidate needs B1, which
     // has never been requested: its first service must return Pending even if
