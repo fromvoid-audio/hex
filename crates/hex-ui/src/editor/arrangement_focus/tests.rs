@@ -177,6 +177,84 @@ fn select_section(visual: &mut VisualTestContext, index: u64, toggle_membership:
 }
 
 #[test]
+fn section_focus_keeps_nested_group_ancestors_of_visible_tracks() {
+    let mut f = model();
+    let group = |model: &mut Editor, track| {
+        let Created::Track(id) = model
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        id
+    };
+    let inner = group(&mut f.model, f.tracks[3]);
+    let outer = group(&mut f.model, inner);
+    let unrelated = group(&mut f.model, f.tracks[2]);
+    let mut focus = State {
+        enabled: true,
+        ..Default::default()
+    };
+    assert!(focus.rebuild(1, 1, f.model.project(), &f.sections[..1], None));
+    let visible: Vec<_> = focus
+        .indices
+        .iter()
+        .map(|index| f.model.project().tracks()[*index].id())
+        .collect();
+    let position = |id| {
+        visible
+            .iter()
+            .position(|candidate| *candidate == id)
+            .unwrap()
+    };
+    assert!(position(outer) < position(inner) && position(inner) < position(f.tracks[3]));
+    assert!(!visible.contains(&unrelated));
+    assert!(!visible.contains(&f.tracks[2]));
+    assert!(focus.tracks.contains(&outer) && focus.tracks.contains(&inner));
+    assert!(!focus.rebuild(1, 1, f.model.project(), &f.sections[..1], None));
+}
+
+#[gpui::test]
+fn section_focus_renders_visible_child_with_nested_group_headers(cx: &mut TestAppContext) {
+    let (mut visual, editor, mut f) = open(cx);
+    let mut child = f.tracks[3];
+    let mut groups = Vec::new();
+    for _ in 0..2 {
+        let Created::Track(group) = f
+            .model
+            .execute(Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[child]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        groups.push(group);
+        child = group;
+    }
+    replace(&mut visual, &editor, f.model.project().clone());
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+    select_section(&mut visual, 0, false);
+    for id in [groups[1], groups[0], f.tracks[3]] {
+        assert!(
+            visual
+                .debug_bounds(selector("arrangement-track-header", id.value()))
+                .is_some()
+        );
+    }
+    assert!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", f.tracks[2].value()))
+            .is_none()
+    );
+}
+
+#[test]
 fn projection_uses_cached_section_union_and_half_open_boundaries() {
     let f = model();
     let mut state = State::default();

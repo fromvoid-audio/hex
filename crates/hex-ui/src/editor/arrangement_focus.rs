@@ -1,7 +1,8 @@
 //! Read-only Arrangement track visibility over selected canonical section intervals.
 //! Rebuild once per document/revision/section selection change, never per row.
 //! Nonadjacent sections form a union, not a hull. No selection leaves the normal
-//! view visible while the mode stays armed. Retained tracks expose all their clips,
+//! view visible while the mode stays armed. Ancestor groups of retained tracks
+//! stay visible; retained tracks expose all their clips,
 //! including outside the selected intervals. Edits retain canonical IDs/indices.
 //! A newly acknowledged track stays visible while it is the active track. This
 //! exception is view-only and ends on selection, section, focus-mode or document change.
@@ -147,10 +148,27 @@ impl State {
         self.indices.clear();
         self.tracks.clear();
         self.clips.clear();
+        let mut visible = BTreeSet::new();
+        if !self.ranges.is_empty() {
+            for track in project.tracks() {
+                if self.new_track != Some(track.id())
+                    && !track_intersects_sections(project, track, &self.ranges)
+                {
+                    continue;
+                }
+                visible.insert(track.id());
+                let mut parent = track.parent_group();
+                for _ in 0..hex_project::MAX_TRACKS {
+                    let Some(id) = parent else { break };
+                    if !visible.insert(id) {
+                        break;
+                    }
+                    parent = project.track(id).and_then(|track| track.parent_group());
+                }
+            }
+        }
         for (index, track) in project.tracks().iter().enumerate() {
-            if self.new_track != Some(track.id())
-                && !track_intersects_sections(project, track, &self.ranges)
-            {
+            if !self.ranges.is_empty() && !visible.contains(&track.id()) {
                 continue;
             }
             if !self.ranges.is_empty() {
