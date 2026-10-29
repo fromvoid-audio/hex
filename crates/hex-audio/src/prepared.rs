@@ -8274,6 +8274,158 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn priority_stop_clears_pending_and_queued_session_launches_before_later_play() {
+        use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, weak, clip, track) = session_audio_graph();
+        control.publish(playback).unwrap();
+        callback.begin_block();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 1]).unwrap();
+        let quantized = SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::FourQuarter,
+        };
+        control
+            .action_with_ticket(PlaybackAction::Session(quantized))
+            .unwrap();
+        callback.begin_block();
+        let mut routes = [SessionRouteEntry::default(); 1];
+        control.status.session_routes(&mut routes).unwrap();
+        assert_eq!(routes[0].track_id, track.value());
+        assert!(routes[0].pending.is_some());
+        assert_eq!(
+            routes[0].pending.unwrap().target,
+            SessionRouteTarget::Session {
+                clip_id: clip.value()
+            }
+        );
+        let old_due = routes[0].pending.unwrap().performance_frame;
+        assert_eq!(old_due, 96_000);
+
+        let old_ticket = control
+            .action_with_ticket(PlaybackAction::Session(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        control.stop();
+        let play_ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        assert!(play_ticket > old_ticket);
+        let mut output = [[0.0; 2]; 128];
+        let measured = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(output, [[0.0; 2]; 128]);
+        assert!(control.status.playing.load(Acquire));
+        assert_eq!(control.status.consumed_command.load(Acquire), play_ticket);
+        control.status.session_routes(&mut routes).unwrap();
+        assert_eq!(routes[0].owner, SessionRouteOwner::Arrangement);
+        assert_eq!(routes[0].pending, None);
+
+        // Cross the old due frame with real callback-sized blocks: no stale
+        // Session audio or deferred launch may reappear after the Stop.
+        let mut rendered = output.len() as u64;
+        while rendered <= old_due {
+            let n = ((old_due + 1 - rendered) as usize).min(output.len());
+            let measured = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output[..n]).unwrap();
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(output[..n].iter().all(|frame| *frame == [0.0; 2]));
+            rendered += n as u64;
+        }
+        assert_eq!(control.status.position.load(Acquire), old_due + 1);
+        assert_eq!(control.status.performance_frame.load(Acquire), old_due + 1);
+        control.status.session_routes(&mut routes).unwrap();
+        assert_eq!(routes[0].owner, SessionRouteOwner::Arrangement);
+        assert_eq!(routes[0].pending, None);
+        control
+            .action_with_ticket(PlaybackAction::Session(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        let measured = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output[..4]).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            &output[..4],
+            &[[0.25, -0.5], [0.75, -1.0], [0.0; 2], [0.0; 2]]
+        );
+        control.status.session_routes(&mut routes).unwrap();
+        assert_eq!(
+            routes[0].owner,
+            SessionRouteOwner::Session {
+                clip_id: clip.value()
+            }
+        );
+        control.stop();
+        let stopped = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output[..4]).unwrap();
+        });
+        assert_eq!(
+            (
+                stopped.count_total,
+                stopped.bytes_total,
+                stopped.count_current,
+                stopped.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(&output[..4], &[[0.0; 2]; 4]);
+        control.request_shutdown();
+        let shutdown = allocation_counter::measure(|| callback.begin_block());
+        assert_eq!(
+            (
+                shutdown.count_total,
+                shutdown.bytes_total,
+                shutdown.count_current,
+                shutdown.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        control.reclaim();
+        assert!(weak.upgrade().is_none());
+    }
+
     #[test]
     fn retired_session_audio_pcm_stays_owned_until_control_reclaims_publication() {
         let (mut control, mut callback) = channel(48_000).unwrap();
