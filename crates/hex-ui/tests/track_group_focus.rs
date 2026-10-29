@@ -77,6 +77,7 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
             .unwrap()
     };
     assert!(!source.permits(index(inner), Some(outer)));
+    assert!(!source.permits_group(index(inner), inner));
     assert!(!source.permits(index(inside), Some(inner)));
     assert!(
         !source.permits(index(unrelated), None),
@@ -88,6 +89,8 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
     );
     let nested =
         subtree::SourceRows::capture(project, &TrackSelectionIds::new(&[inner]).unwrap()).unwrap();
+    assert!(nested.permits_group(index(unrelated), unrelated));
+    assert!(!nested.permits_group(index(outer), outer));
     assert!(
         nested.permits(index(unrelated), None),
         "unchanged order can still reparent a subtree"

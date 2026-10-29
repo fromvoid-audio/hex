@@ -3,6 +3,7 @@ use hex_project::{Invalid, MAX_TRACKS, Project, TrackId, TrackSelectionIds};
 
 pub(crate) struct SourceRows {
     selected: [bool; MAX_TRACKS],
+    group_ends: [usize; MAX_TRACKS],
     end: usize,
     contiguous: bool,
     common_parent: Option<Option<TrackId>>,
@@ -10,6 +11,7 @@ pub(crate) struct SourceRows {
 impl SourceRows {
     pub(crate) fn capture(project: &Project, tracks: &TrackSelectionIds) -> Result<Self, Invalid> {
         let mut selected = [false; MAX_TRACKS];
+        let mut group_ends = [0; MAX_TRACKS];
         let common_parent = if project.has_group_tracks() {
             let hierarchy = project.track_hierarchy()?;
             if tracks.ids().iter().any(|id| hierarchy.row(*id).is_none()) {
@@ -20,6 +22,9 @@ impl SourceRows {
             let mut same_parent = true;
             for row in hierarchy.rows() {
                 let range = row.subtree_range();
+                if let Some(end) = group_ends.get_mut(range.start) {
+                    *end = range.end;
+                }
                 if !tracks.ids().contains(&row.id())
                     || selected.get(range.start).copied().unwrap_or(false)
                 {
@@ -65,6 +70,7 @@ impl SourceRows {
         let contiguous = selected[first..end].iter().all(|selected| *selected);
         Ok(Self {
             selected,
+            group_ends,
             end,
             contiguous,
             common_parent,
@@ -77,5 +83,15 @@ impl SourceRows {
             || self.contiguous
                 && boundary == self.end
                 && self.common_parent == Some(destination_parent))
+    }
+    /// An append target cannot lie in a selected subtree or preserve a trailing no-op.
+    pub(crate) fn permits_group(&self, index: usize, group: TrackId) -> bool {
+        !self.selected.get(index).copied().unwrap_or(true)
+            && self.group_ends.get(index).is_some_and(|end| {
+                *end > index
+                    && !(self.contiguous
+                        && *end == self.end
+                        && self.common_parent == Some(Some(group)))
+            })
     }
 }

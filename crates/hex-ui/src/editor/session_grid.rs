@@ -1,5 +1,8 @@
 //! Compact, ID-backed Session grid and guarded playback requests.
 use super::console_columns::ColumnFrame;
+use super::console_track_page::TrackPage;
+#[cfg(test)]
+use super::console_track_page::visible_track_range;
 use super::session_route_view::cell_route_markers;
 use super::{EditorMode, EditorView, PendingPlaybackAction};
 use crate::theme;
@@ -12,6 +15,7 @@ use hex_project::{
     BeatTime, ClipId, Command, Project, SceneId, SessionCellContent, SessionSceneTarget, TrackId,
 };
 use hex_session::{import_batch::ConsoleDestination, service::Request};
+use std::sync::Arc;
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
 const SCENE_ROW_HEIGHT: f32 = 34.0;
@@ -33,13 +37,12 @@ fn session_scenes_header() -> Div {
     header
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SessionRowContext {
     frame: ColumnFrame,
     revision: u64,
     generation: u64,
-    column_start: usize,
-    column_end: usize,
+    page: Arc<TrackPage>,
     route_snapshot: Option<SessionRouteSnapshot>,
     routes_ready: bool,
     transport_playing: bool,
@@ -92,16 +95,6 @@ pub(super) fn resolve_delete_target(
             .map(DeleteTarget::SessionScene);
     }
     selected_clip.map(DeleteTarget::ArrangementClip)
-}
-
-fn visible_track_range(
-    track_count: usize,
-    start: usize,
-    visible_count: usize,
-) -> std::ops::Range<usize> {
-    let count = visible_count.max(1);
-    let start = start.min(track_count.saturating_sub(count));
-    start..start.saturating_add(count).min(track_count)
 }
 
 pub(super) fn launch_action(
@@ -416,22 +409,21 @@ impl EditorView {
             .max(1.0) as usize;
         self.session_visible_columns = visible_columns;
         let indices = &self.arrangement_focus.projection.console_indices;
-        let columns = visible_track_range(indices.len(), self.session_track_start, visible_columns);
-        let column_start = columns.start;
-        let column_end = columns.end;
-        let column_indices = indices.get(columns).unwrap_or_default().to_vec();
-        let next_track = indices
-            .get(column_end)
-            .and_then(|index| tracks.get(*index))
-            .map(|track| track.id());
+        let page = Arc::new(TrackPage::capture(
+            &state.project,
+            indices,
+            self.session_track_start,
+            visible_columns,
+        ));
+        let column_start = page.range.start;
+        let next_track = page.next;
         let track_count = indices.len();
         let frame = ColumnFrame::capture(self, window, revision);
         let row_context = SessionRowContext {
             frame,
             revision,
             generation,
-            column_start,
-            column_end,
+            page: page.clone(),
             route_snapshot,
             routes_ready,
             transport_playing,
@@ -444,9 +436,13 @@ impl EditorView {
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .children(
-                column_indices
+                page.columns
                     .iter()
-                    .filter_map(|index| tracks.get(*index))
+                    .filter_map(|column| {
+                        tracks
+                            .get(column.index)
+                            .filter(|track| track.id() == column.id)
+                    })
                     .map(|track| {
                         let track_id = track.id();
                         let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
@@ -616,7 +612,7 @@ impl EditorView {
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                 let mut rows = Vec::with_capacity(range.end.saturating_sub(range.start));
                 for index in range {
-                    rows.push(this.session_scene_row(index, row_context, cx));
+                    rows.push(this.session_scene_row(index, row_context.clone(), cx));
                 }
                 rows
             }),
@@ -999,8 +995,7 @@ impl EditorView {
             frame,
             revision,
             generation,
-            column_start,
-            column_end,
+            page,
             route_snapshot,
             routes_ready,
             transport_playing,
@@ -1009,7 +1004,7 @@ impl EditorView {
             return div().id(("session-scene-row-empty", index));
         };
         let Some(scene) = state.project.scenes().get(index) else {
-            return self.console_append_row(column_start, column_end, frame, cx);
+            return self.console_append_row(&page, frame, cx);
         };
         let scene_id = scene.id();
         let next_scene = state
@@ -1026,16 +1021,13 @@ impl EditorView {
             .flex()
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        let column_indices = self
-            .arrangement_focus
-            .projection
-            .console_indices
-            .get(column_start..column_end)
-            .unwrap_or_default();
-        for track in column_indices
-            .iter()
-            .filter_map(|index| state.project.tracks().get(*index))
-        {
+        for track in page.columns.iter().filter_map(|column| {
+            state
+                .project
+                .tracks()
+                .get(column.index)
+                .filter(|track| track.id() == column.id)
+        }) {
             let track_id = track.id();
             let content = state.project.session_cell(track_id, scene_id);
             let route = self.route_entry_for_track(track_id.value(), route_snapshot, routes_ready);
@@ -1448,12 +1440,7 @@ impl EditorView {
                 .flex_1()
                 .min_w(px(12.0))
                 .h_full(),
-            self.arrangement_focus
-                .projection
-                .console_indices
-                .get(column_end)
-                .and_then(|index| state.project.tracks().get(*index))
-                .map(|track| track.id()),
+            page.next,
             SessionSceneTarget::Existing(scene_id),
             frame,
             false,
@@ -1493,8 +1480,7 @@ impl EditorView {
 
     fn console_append_row(
         &self,
-        start: usize,
-        end: usize,
+        page: &TrackPage,
         frame: ColumnFrame,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
@@ -1515,16 +1501,13 @@ impl EditorView {
                 }),
             );
         if let Some(state) = self.state.as_ref() {
-            let column_indices = self
-                .arrangement_focus
-                .projection
-                .console_indices
-                .get(start..end)
-                .unwrap_or_default();
-            for track in column_indices
-                .iter()
-                .filter_map(|index| state.project.tracks().get(*index))
-            {
+            for track in page.columns.iter().filter_map(|column| {
+                state
+                    .project
+                    .tracks()
+                    .get(column.index)
+                    .filter(|track| track.id() == column.id)
+            }) {
                 let id = track.id();
                 let cell = div()
                     .id(("console-append-track", id.value()))
@@ -1560,17 +1543,6 @@ impl EditorView {
                 row = row.child(cell);
             }
         }
-        let before = self
-            .state
-            .as_ref()
-            .and_then(|state| {
-                self.arrangement_focus
-                    .projection
-                    .console_indices
-                    .get(end)
-                    .and_then(|index| state.project.tracks().get(*index))
-            })
-            .map(|track| track.id());
         let tail = self.console_column_surface(
             div()
                 .id("console-column-append-tail")
@@ -1578,7 +1550,7 @@ impl EditorView {
                 .flex_1()
                 .min_w(px(12.0))
                 .h_full(),
-            before,
+            page.next,
             SessionSceneTarget::Insert { before: None },
             frame,
             false,
