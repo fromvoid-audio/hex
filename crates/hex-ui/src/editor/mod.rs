@@ -86,6 +86,7 @@ mod close;
 mod computer_keyboard;
 mod console_columns;
 mod console_drop;
+mod console_track_page;
 mod context_menu;
 mod controller;
 mod controller_input;
