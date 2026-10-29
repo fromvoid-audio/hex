@@ -43,3 +43,7 @@ allocation-counter = "=0.8.1"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "profile_stream_callback"
+required-features = ["allocation-probe"]
