@@ -427,7 +427,7 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return;
     }
-    let (a_project, track) = utility_fixture::project();
+    let (a_project, track) = utility_fixture::project_with_loop(64);
     let mut edit = hex_project::Editor::new(a_project.clone(), 4).unwrap();
     edit.execute(hex_project::Command::RemoveTrack(track))
         .unwrap();
@@ -445,11 +445,41 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
         .ok()
         .unwrap();
     control.command(PlaybackCommand::Play).unwrap();
-    data.owner_mut().unwrap().run(|c, _| {
-        c.begin_block();
-        c.render(&mut [[0.0; 2]; 8]).unwrap();
-    });
+    let pole = (-std::f64::consts::TAU * 5.0 / 48_000.0).exp();
+    let mut frame_index = 0;
+    let mut render = |data: &mut crate::native_callback_owner::Guard<
+        crate::native_callback_owner::NativeCallbackOwner,
+    >| {
+        let mut pcm = [[0.0; 2]; 8];
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut pcm).unwrap();
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        for frame in pcm {
+            // Independent closed form for constant input through the 5 Hz DC filter.
+            let scale = pole.powi(frame_index);
+            assert!(
+                (f64::from(frame[0]) - 0.25 * scale).abs() < 1e-6
+                    && (f64::from(frame[1]) + f64::from(0.1_f32) * scale).abs() < 1e-6,
+                "donor PCM changed: {frame:?}"
+            );
+            frame_index += 1;
+        }
+    };
+    render(&mut data);
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(control.status.position.load(Acquire), 8);
     let b_ticket = control
         .stage_eligible_audio_candidate(b, vec![], PublicationPolicy::InheritRuntime, 8)
         .ok()
@@ -463,14 +493,17 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
         assert!(c.deferred_eligible.is_some());
         assert!(matches!(c.active, Some(ActivePublication::Eligible(_))));
     });
+    render(&mut data);
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(control.status.position.load(Acquire), 16);
     assert!(control.status.publication_pending.load(Acquire));
     assert_eq!(
         control.cancel_audio_candidate(&b_ticket),
         crate::AudioCandidateCancellationResult::Cancelled
     );
-    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    render(&mut data);
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(control.status.position.load(Acquire), 24);
     assert_eq!(
         control.status.rejected_revision(),
         Some((2, PlaybackHandoffRejection::FreshRuntimeCancelled))
