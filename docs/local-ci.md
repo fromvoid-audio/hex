@@ -298,6 +298,29 @@ report compilation separately. This targeted profile is not a substitute for
 the other affected owner and consumer checks, or for an unoptimized debugging
 run when one is needed.
 
+For allocator-probe sensitivity checks, the original two tests can also be
+compiled as an optimized, separately linked executable while retaining the
+test target's debug assertions and overflow checks. The pinned counter is
+compiled with the same opt-level, debug-assertion and overflow settings as the
+ordinary debug test profile:
+
+```sh
+mkdir -p artifacts
+cargo --config 'profile.release.package.allocation-counter.opt-level=0' \
+  --config 'profile.release.package.allocation-counter.debug-assertions=true' \
+  --config 'profile.release.package.allocation-counter.overflow-checks=true' \
+  rustc -p hex-audio --features allocation-probe \
+  --test allocation_probe_calibration --release --locked --message-format=json \
+  -- -C debug-assertions=yes -C overflow-checks=yes -C strip=symbols \
+  > artifacts/allocation-calibration-build.jsonl
+```
+
+Use the JSON test artifact's `executable` path to run each calibration test
+with its full name and `--exact`. Include process startup in each wall time;
+report compilation separately. The normal test target and discovery remain
+unchanged. This is an optional measurement profile, not proof that every cold
+launch fits the limit or that the affected audio/stream tests are covered.
+
 Focused tests can form part of a reviewed change-based merge check set when its
 affected contracts, consumers and configurations are covered; an isolated passing
 test alone does not establish that scope.
