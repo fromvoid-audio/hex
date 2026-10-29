@@ -113,11 +113,28 @@ impl Custody {
         binding: Binding,
         query: hex_plugin_host::protocol::ParameterPageQuery,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
-        self.with_live_capture(binding, |owner| match owner {
-            Owner::Effect(owner) => owner.begin_controller_query(query),
-            Owner::Loaned(owner) => owner.begin_controller_query(query),
-            _ => Err("native controller owner differs"),
-        })
+        self.controller_query_admission(binding, query, || {})
+    }
+    fn controller_query_admission(
+        &self,
+        binding: Binding,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+        after_admission: impl FnOnce(),
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        let mut admitted = None;
+        let result = self.with_live_capture(binding, |owner| {
+            admitted = Some(match owner {
+                Owner::Effect(owner) => owner.begin_controller_query(query),
+                Owner::Loaned(owner) => owner.begin_controller_query(query),
+                _ => Err("native controller owner differs"),
+            }?);
+            after_admission();
+            Ok(())
+        });
+        match admitted {
+            Some(token) => Ok(token),
+            None => result.and(Err("native controller query was not admitted")),
+        }
     }
     pub(in crate::candidate_custody) fn poll_native_controller_query(
         &self,
@@ -294,12 +311,9 @@ impl CandidateRoot {
         query: hex_plugin_host::protocol::ParameterPageQuery,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.require_native_source_control_open()?;
-        let result = self
-            .0
+        self.0
             .eligible
-            .begin_native_controller_query(binding, query)?;
-        self.require_native_source_control_open()?;
-        Ok(result)
+            .begin_native_controller_query(binding, query)
     }
     pub(crate) fn poll_native_controller_query(
         &self,

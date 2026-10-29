@@ -523,9 +523,9 @@ impl NativeWorker {
             .native_error
             .take()
             .or_else(|| joined.err().map(|fault| Error::Protocol(fault.message())));
-        if failure.is_none() && state.capture.is_in_flight() {
-            // Retirement explicitly cancels this original outstanding capture;
-            // never send normal SDK Stop while main still owns its streams.
+        if failure.is_none() && (state.capture.is_in_flight() || state.controller.is_in_flight()) {
+            // Retirement explicitly cancels the outstanding original request;
+            // never send normal SDK Stop while the main lane owns it.
             failure = Some(Error::Cancelled);
         }
         let Some(Processor::Native(instance)) = state.processor.as_mut() else {

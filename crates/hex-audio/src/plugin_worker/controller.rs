@@ -59,6 +59,13 @@ pub struct NativeWorkerControllerQuery {
     ordinal: u64,
     stopped: bool,
 }
+impl NativeWorkerControllerQuery {
+    /// Whether the original completion allocation has been released. This
+    /// does not imply that the source itself was destroyed or return data.
+    pub fn original_worker_released_on_control(&self) -> bool {
+        self.source.upgrade().is_none()
+    }
+}
 /// Copied controller observations only; never DSP/canonical/publication ACK.
 #[derive(Debug)]
 pub enum NativeWorkerControllerProgress {

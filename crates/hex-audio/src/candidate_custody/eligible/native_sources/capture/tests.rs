@@ -5,6 +5,72 @@ use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn admitted_controller_query_survives_close_during_admission() {
+    use hex_plugin_host::protocol::ParameterPageQuery;
+    if std::env::var_os("HEX_CLOSE_ADMISSION_DRIVER").is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--test-threads=1"])
+            .env("HEX_CLOSE_ADMISSION_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "91")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 77,
+            output_frames: 91,
+        }),
+    )
+    .unwrap();
+    root.start_native_effect(binding).unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let request = loop {
+        match root
+            .controller_query_admission(binding, ParameterPageQuery::default(), || root.close())
+        {
+            Ok(request) => break request,
+            Err("native preparation is busy" | "native controller mailbox is busy") => {}
+            Err(reason) => panic!("admitted controller token was lost: {reason}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    };
+    assert!(!request.original_worker_released_on_control());
+    assert!(
+        root.poll_native_controller_query(binding, &request)
+            .is_err()
+    );
+    dispose(&root, binding);
+    let returned = root.recover_native_source(binding).unwrap();
+    assert!(
+        matches!(
+            returned.error,
+            None | Some(hex_plugin_host::Error::Cancelled)
+        ),
+        "unexpected retirement error: {:?}",
+        returned.error
+    );
+    assert!(returned.cleanup_error.is_none());
+    assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
+    assert!(request.original_worker_released_on_control());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_controller_query_requires_original_worker_and_suppresses_late_close() {
     use crate::plugin_worker::NativeWorkerControllerProgress;
     use hex_plugin_host::protocol::ParameterPageQuery;
