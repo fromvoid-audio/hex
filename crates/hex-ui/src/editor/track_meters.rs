@@ -2,7 +2,7 @@
 use super::EditorView;
 use crate::theme;
 use gpui::{Div, prelude::*, px};
-use hex_project::{ReturnId, TrackId};
+use hex_project::{Project, ReturnId, TrackId};
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering::Acquire;
 use std::time::Instant;
@@ -73,6 +73,10 @@ fn decay_level(level: f32, decay: f32) -> f32 {
     if next < 0.001 { 0.0 } else { next }
 }
 
+fn selected_console_meter(project: &Project, selected: Option<TrackId>) -> Option<TrackId> {
+    selected.filter(|id| project.track(*id).is_some())
+}
+
 impl EditorView {
     pub(super) fn tick_track_meters(&mut self, now: Instant) -> bool {
         let Some(status) = self.audio.as_ref().and_then(|audio| audio.control.status()) else {
@@ -92,25 +96,29 @@ impl EditorView {
             return self.track_meters.hold(self.project_generation, now);
         };
         let identity = (audible.project_generation, audible.audio_revision);
-        let viewport = self.track_scroll.list.viewport_bounds();
-        let start = self.track_scroll.list.logical_scroll_top().item_ix;
         let project = self.state.as_ref().map(|state| &state.project);
         let mut visible = Vec::new();
         if let Some(project) = project {
-            for row in start..self.arrangement_track_indices().len() {
-                let Some(bounds) = self.track_scroll.list.bounds_for_item(row) else {
-                    break;
-                };
-                if bounds.top() >= viewport.bottom() {
-                    break;
+            if self.mode == super::EditorMode::Session {
+                visible.extend(selected_console_meter(project, self.selected_track));
+            } else {
+                let viewport = self.track_scroll.list.viewport_bounds();
+                let start = self.track_scroll.list.logical_scroll_top().item_ix;
+                for row in start..self.arrangement_track_indices().len() {
+                    let Some(bounds) = self.track_scroll.list.bounds_for_item(row) else {
+                        break;
+                    };
+                    if bounds.top() >= viewport.bottom() {
+                        break;
+                    }
+                    let Some(track) = self
+                        .arrangement_track_index(row)
+                        .and_then(|index| project.tracks().get(index))
+                    else {
+                        continue;
+                    };
+                    visible.push(track.id());
                 }
-                let Some(track) = self
-                    .arrangement_track_index(row)
-                    .and_then(|index| project.tracks().get(index))
-                else {
-                    continue;
-                };
-                visible.push(track.id());
             }
         }
         // Stage the readings until the applied revision is rechecked. A race
@@ -221,6 +229,41 @@ mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project};
     use std::time::Duration;
+
+    #[test]
+    fn console_meter_tracks_the_selected_live_identity_including_groups() {
+        use hex_project::TrackSelectionIds;
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "track".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        assert_eq!(
+            selected_console_meter(editor.project(), Some(group)),
+            Some(group)
+        );
+        assert_eq!(
+            selected_console_meter(editor.project(), Some(track)),
+            Some(track)
+        );
+        assert_eq!(selected_console_meter(editor.project(), None), None);
+        editor.execute(Command::RemoveTrack(group)).unwrap();
+        assert_eq!(selected_console_meter(editor.project(), Some(group)), None);
+        assert_eq!(selected_console_meter(editor.project(), Some(track)), None);
+    }
 
     #[test]
     fn revision_handoffs_decay_accepted_levels_without_crossing_projects() {
