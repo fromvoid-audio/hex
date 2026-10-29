@@ -45,6 +45,17 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
     let inner = group(&mut editor, inside);
     let outer = group(&mut editor, inner);
     let unrelated = group(&mut editor, outside);
+    let Created::ArrangementSection(section) = editor
+        .execute(Command::AddArrangementSection {
+            name: "selected".into(),
+            color: hex_project::ElementColor::Cyan,
+            start: BeatTime::from_quarters(2).unwrap(),
+            end: BeatTime::from_quarters(3).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("section")
+    };
     let project = editor.project();
     let mut indent = track_hierarchy_indent::HierarchyIndent::default();
     indent.reconcile(1, 1, project);
@@ -71,7 +82,51 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
         visibility::visible_tracks(project, &[], None).is_empty(),
         "empty ranges use the caller's unfiltered path"
     );
+    let mut projection = visibility::Projection::default();
+    projection.rebuild(1, 1, project, &[], None);
+    projection.toggle_fold(inner);
+    assert!(projection.rebuild(1, 1, project, &[], None));
+    assert_eq!(
+        projection.tracks,
+        BTreeSet::from([outer, inner, unrelated, outside])
+    );
+    assert!(!projection.tracks.contains(&inside));
+    projection.toggle_fold(outer);
+    projection.rebuild(1, 1, project, &[], None);
+    assert_eq!(
+        projection.tracks,
+        BTreeSet::from([outer, unrelated, outside])
+    );
+    projection.toggle_fold(outer);
+    projection.rebuild(1, 1, project, &[], None);
+    assert!(projection.folded(inner));
+    assert!(
+        !projection.tracks.contains(&inside),
+        "inner fold survives outer expansion"
+    );
+    projection.toggle_fold(inner);
+    projection.rebuild(1, 1, project, &[], None);
+    assert!(!projection.filtering());
+    assert_eq!(projection.indices.len(), project.tracks().len());
+    projection.enabled = true;
+    projection.toggle_fold(outer);
+    projection.rebuild(1, 1, project, &[section], None);
+    assert_eq!(projection.tracks, BTreeSet::from([outer]));
+    projection.toggle_fold(outer);
+    projection.rebuild(1, 1, project, &[section], None);
+    assert_eq!(projection.tracks, BTreeSet::from([outer, inner, inside]));
+    projection.toggle_fold(inner);
     editor.execute(Command::UngroupTrack(inner)).unwrap();
+    projection.rebuild(1, 2, editor.project(), &[section], None);
+    assert!(!projection.folded(inner));
+    assert!(projection.tracks.contains(&inside));
+    projection.toggle_fold(outer);
+    projection.rebuild(1, 2, editor.project(), &[section], None);
+    assert!(projection.folded(outer));
+    projection.rebuild(2, 2, editor.project(), &[section], None);
+    assert!(!projection.folded(outer));
+    assert!(!projection.enabled);
+
     indent.reconcile(1, 2, editor.project());
     assert_eq!(indent.pixels(inside), 4.0);
     assert_eq!(indent.pixels(outside), 4.0);

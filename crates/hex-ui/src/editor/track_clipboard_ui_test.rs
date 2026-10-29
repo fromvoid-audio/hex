@@ -79,6 +79,38 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
             4.0
         );
     }
+    if mode == super::EditorMode::Arrangement {
+        let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
+        let click_fold = |visual: &mut VisualTestContext| {
+            let point = visual.debug_bounds(fold).unwrap().center();
+            visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+        };
+        let before = snapshot(&visual, &editor);
+        let selected = editor.read_with(&visual, |view, _| view.selected_track_ids());
+        click_fold(&mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track_ids(), selected);
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(view.arrangement_track_visible(group));
+            assert!(ids.iter().all(|id| !view.arrangement_track_visible(*id)));
+            assert_eq!(
+                view.focused_neighbor_track(true).map(|(_, track, _)| track),
+                Some(group)
+            );
+        });
+        for id in &ids {
+            let selector =
+                Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
+            assert!(visual.debug_bounds(selector).is_none());
+        }
+        click_fold(&mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(ids.iter().all(|id| view.arrangement_track_visible(*id)));
+            assert_eq!(view.selected_track_ids(), selected);
+        });
+    }
     right_click(&mut visual, group);
     choose(&mut visual, "ungroup tracks");
     editor.read_with(&visual, |view, _| {

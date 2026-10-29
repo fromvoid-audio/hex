@@ -1,11 +1,14 @@
 //! Read-only Arrangement track visibility over selected canonical section intervals.
-//! Rebuild once per document/revision/section selection change, never per row.
-//! Nonadjacent sections form a union, not a hull. No selection leaves the normal
-//! view visible while the mode stays armed. Ancestor groups of retained tracks
+//! Rebuild once per document/revision/section selection or group-fold change, never per row.
+//! Nonadjacent sections form a union, not a hull. No selection leaves the view
+//! unfiltered by section while the mode stays armed. Ancestor groups of retained tracks
 //! stay visible; retained tracks expose all their clips,
 //! including outside the selected intervals. Edits retain canonical IDs/indices.
 //! A newly acknowledged track stays visible while it is the active track. This
 //! exception is view-only and ends on selection, section, focus-mode or document change.
+//! Fold state is view-only: collapsed groups retain their row while hiding all
+//! descendants. Nested folds persist when an outer group is opened; document
+//! replacement clears them and deleted group identities are retired.
 use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, Entity, Focusable, Subscription, Window, div, prelude::*, px};
@@ -66,11 +69,11 @@ impl EditorView {
         self.arrangement_focus.projection.new_track
     }
     pub(super) fn arrangement_clip_visible(&self, id: ClipId) -> bool {
-        self.arrangement_focus.projection.ranges.is_empty()
+        !self.arrangement_focus.projection.filtering()
             || self.arrangement_focus.projection.clips.contains(&id)
     }
     pub(super) fn arrangement_track_visible(&self, id: TrackId) -> bool {
-        self.arrangement_focus.projection.ranges.is_empty()
+        !self.arrangement_focus.projection.filtering()
             || self.arrangement_focus.projection.tracks.contains(&id)
     }
     pub(super) fn arrangement_tracks<'a>(
@@ -149,16 +152,15 @@ impl EditorView {
         if self.arrangement_focus.projection.enabled {
             self.arrangement_focus.projection.enabled = false;
             self.arrangement_focus.pending_restore = self.arrangement_focus.restore_scroll.take();
-            self.status = "all arrangement tracks · q focuses selected sections".into();
+            self.status = "section focus off · q focuses selected sections".into();
         } else {
             let top = self.track_scroll.list.logical_scroll_top();
             self.arrangement_focus.restore_scroll = self
-                .state
-                .as_ref()
-                .and_then(|s| s.project.tracks().get(top.item_ix))
+                .arrangement_track_index(top.item_ix)
+                .and_then(|index| self.state.as_ref()?.project.tracks().get(index))
                 .map(|t| (t.id(), top.offset_in_item));
             self.arrangement_focus.projection.enabled = true;
-            self.status = "section focus on · select section(s) · q restores all tracks".into();
+            self.status = "section focus on · select section(s) · q clears section focus".into();
         }
         self.reconcile_arrangement_focus();
     }
