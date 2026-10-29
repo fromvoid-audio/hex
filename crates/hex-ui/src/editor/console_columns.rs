@@ -40,14 +40,30 @@ impl ColumnFrame {
             && self.size == window.bounds().size
     }
     pub(super) fn current_view(self, view: &EditorView) -> bool {
+        self.current_view_without_page(view) && self.page == view.session_track_start
+    }
+    fn current_view_without_page(self, view: &EditorView) -> bool {
         view.mode == EditorMode::Session
             && self.generation == view.project_generation
             && view
                 .state
                 .as_ref()
                 .is_some_and(|state| state.revision == self.revision)
-            && self.page == view.session_track_start
             && self.fold_revision == view.arrangement_focus.projection.fold_revision()
+    }
+    pub(super) fn current_transition(
+        self,
+        view: &EditorView,
+        window: &Window,
+        page: usize,
+    ) -> bool {
+        self.current_view_without_page(view)
+            && view.session_track_start == page
+            && self.window == window.window_handle().window_id()
+            && self.size == window.bounds().size
+    }
+    pub(super) fn current_transition_view(self, view: &EditorView, page: usize) -> bool {
+        self.current_view_without_page(view) && view.session_track_start == page
     }
 }
 impl EditorView {
