@@ -82,6 +82,11 @@ impl Callback {
             .is_some_and(ActivePublication::has_stream_action)
     }
     pub(super) fn cancel_active_stream_action(&mut self) {
+        self.cancel_active_stream_action_with_reason(
+            PlaybackActionRejection::StreamActionCancelled,
+        );
+    }
+    fn cancel_active_stream_action_with_reason(&mut self, reason: PlaybackActionRejection) {
         if let Some(mut active) = self
             .active
             .as_mut()
@@ -91,8 +96,7 @@ impl Callback {
             if self.recovery_seek_pending == Some(ticket) {
                 self.recovery_seek_pending = None;
             }
-            self.status
-                .publish_rejected_action(ticket, PlaybackActionRejection::StreamActionCancelled);
+            self.status.publish_rejected_action(ticket, reason);
         }
     }
     fn stage_stream_action(&mut self, action: PlaybackAction, ticket: u64) {
@@ -229,37 +233,55 @@ impl Callback {
             self.status.admitted_ticket.load(Acquire),
             self.take_stop_marker(),
         );
+        self.consume_stream_commands_through(cut, false);
+    }
+    pub(super) fn consume_stream_commands_through(&mut self, cut: CommandCut, fault: bool) {
         if let Some(stop) = cut.stop_through {
-            if !self.status.closing.load(Acquire) {
+            if !fault && !self.status.closing.load(Acquire) {
                 self.recovery_position_frozen = false;
                 self.status.recovery_position.store(0, Relaxed);
             }
-            self.trace_audio(
-                AudioDiagnosticKind::PriorityStop {
-                    through_ticket: stop,
-                },
-                self.status.applied_revision.load(Relaxed),
-                None,
-                0,
-            );
-            self.finish_midi_before_stop();
-            self.revoke_output_transport();
-            self.revoke_current_sampler_keyboard();
-            self.cancel_active_stream_action();
-            self.stream_pending_play = None;
-            self.invalidate_stream_readiness();
-            if let Some(ActivePublication::Legacy(active)) = self.active.as_mut() {
-                active
-                    .playback
-                    .apply_priority_stop(&self.status.keyboard_activation);
-            } else {
-                self.apply_stream_zero_page_action(
-                    PlaybackAction::Transport(PlaybackCommand::Stop),
-                    stop,
+            if !fault {
+                self.trace_audio(
+                    AudioDiagnosticKind::PriorityStop {
+                        through_ticket: stop,
+                    },
+                    self.status.applied_revision.load(Relaxed),
+                    None,
+                    0,
                 );
+                self.finish_midi_before_stop();
+                self.revoke_output_transport();
+                self.revoke_current_sampler_keyboard();
             }
-            self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
-            self.invalidate_processor_audition_request();
+            if fault {
+                self.cancel_active_stream_action_with_reason(PlaybackActionRejection::OutputFailed);
+            } else {
+                self.cancel_active_stream_action();
+            }
+            if let Some(ticket) = self.stream_pending_play.take()
+                && fault
+            {
+                self.status
+                    .publish_rejected_action(ticket, PlaybackActionRejection::OutputFailed);
+            }
+            self.invalidate_stream_readiness();
+            if !fault {
+                if let Some(ActivePublication::Legacy(active)) = self.active.as_mut() {
+                    active
+                        .playback
+                        .apply_priority_stop(&self.status.keyboard_activation);
+                } else {
+                    self.apply_stream_zero_page_action(
+                        PlaybackAction::Transport(PlaybackCommand::Stop),
+                        stop,
+                    );
+                }
+                self.invalidate_gain_recording(
+                    crate::gain_recording::AbortReason::TransportChanged,
+                );
+                self.invalidate_processor_audition_request();
+            }
             self.stream_prefix = self.stream_prefix.max(stop);
             self.refresh_stream_schedule();
         }
@@ -276,7 +298,15 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
-            self.trace_command_dequeued(queued, cut);
+            if !fault {
+                self.trace_command_dequeued(queued, cut);
+            }
+            if fault && sampler_edit::is_stop(queued.action) {
+                self.status.recovery_position.store(0, Release);
+            } else if fault {
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+            }
             self.stream_prefix = self.stream_prefix.max(queued.ticket);
             if cut.stop_through.is_some_and(|stop| queued.ticket <= stop) {
                 continue;

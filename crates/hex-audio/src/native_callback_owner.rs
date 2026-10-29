@@ -68,7 +68,7 @@ impl ErrorCallbackOwner {
     pub(crate) fn report(&self) {
         self.status
             .device_fault
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 enum GuardState<T> {

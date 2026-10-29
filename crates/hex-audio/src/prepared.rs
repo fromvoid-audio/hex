@@ -504,6 +504,7 @@ pub struct Status {
     split_endpoints: AtomicBool,
     client_exposed: AtomicBool,
     submitted_revision: AtomicU64,
+    /// Latched for this output after a device error; recovery opens a new output.
     pub device_fault: AtomicBool,
     pub render_fault: AtomicBool,
     render_fault_record: crate::render_fault::RenderFaultRecord,
@@ -599,7 +600,9 @@ impl Status {
         self.publication_pending.store(false, Release);
     }
     pub(crate) fn preview_permitted(&self) -> bool {
-        !self.constructor_mode.load(Acquire) && !self.closing.load(Acquire)
+        !self.constructor_mode.load(Acquire)
+            && !self.closing.load(Acquire)
+            && !self.device_fault.load(Acquire)
     }
     pub(crate) fn mark_preview_used(&self) {
         self.preview_used.store(true, Release);
@@ -608,6 +611,9 @@ impl Status {
         !self.preview_used.load(Acquire)
     }
     pub(crate) fn reserve_midi_begin(&self) -> Result<(), &'static str> {
+        if self.device_fault.load(Acquire) {
+            return Err("midi recording output has failed");
+        }
         if self.closing.load(Acquire) {
             return Err("midi recording output is closing");
         }
@@ -623,6 +629,9 @@ impl Status {
         self.publication_pending.midi_finished();
     }
     pub(crate) fn reserve_gain_begin(&self) -> Result<bool, &'static str> {
+        if self.device_fault.load(Acquire) {
+            return Err("gain recording output has failed");
+        }
         if self.closing.load(Acquire) {
             return Err("gain recording output is closing");
         }
@@ -647,6 +656,9 @@ impl Status {
         self.publication_pending.legacy_gain_started();
     }
     pub(crate) fn reserve_native_parameter_input(&self) -> Result<(), &'static str> {
+        if self.device_fault.load(Acquire) {
+            return Err("native parameter input output has failed");
+        }
         if self.closing.load(Acquire) {
             return Err("native parameter input output is closing");
         }
@@ -1170,6 +1182,8 @@ pub struct Callback {
     status: Arc<Status>,
     recovery_position_frozen: bool,
     recovery_seek_pending: Option<u64>,
+    device_fault_stopped: bool,
+    device_fault_fenced_in_block: bool,
     rate: u32,
     spectrum_target: spectrum_target::SpectrumTargetCallback,
     processor_audition: processor_audition::ProcessorAuditionTargetCallback,
@@ -1306,6 +1320,8 @@ pub fn channel_with_spectrum(
             status,
             recovery_position_frozen: false,
             recovery_seek_pending: None,
+            device_fault_stopped: false,
+            device_fault_fenced_in_block: false,
             rate,
             spectrum_target: callback_target,
             processor_audition: callback_audition,
@@ -2586,6 +2602,11 @@ impl Callback {
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
         self.transport_setup_open = false;
+        self.device_fault_fenced_in_block = false;
+        if self.status.device_fault.load(Acquire) && !self.status.closing.load(Acquire) {
+            self.fence_device_fault();
+            return;
+        }
         if self.status.closing.load(Acquire) || self.status.pending_stop_marker.load(Acquire) != 0 {
             self.revoke_output_transport();
         }
@@ -3516,33 +3537,41 @@ impl Callback {
     }
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
+        self.consume_commands_through_inner(cut, false);
+    }
+
+    fn consume_commands_through_inner(&mut self, cut: CommandCut, fault: bool) {
         if let Some(through_ticket) = cut.stop_through {
-            if !self.status.closing.load(Acquire) {
+            if !fault && !self.status.closing.load(Acquire) {
                 self.recovery_position_frozen = false;
                 self.status.recovery_position.store(0, Relaxed);
             }
-            self.trace_audio(
-                AudioDiagnosticKind::PriorityStop { through_ticket },
-                self.status.applied_revision.load(Relaxed),
-                None,
-                0,
-            );
-            self.finish_midi_before_stop();
-            self.revoke_output_transport();
-            self.revoke_current_sampler_keyboard();
-            #[cfg(all(test, feature = "allocation-probe"))]
-            self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
-            self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
-            if let Some(mut active) = self
-                .active
-                .as_mut()
-                .and_then(ActivePublication::current_mut)
-            {
-                active
-                    .playback
-                    .apply_priority_stop(&self.status.keyboard_activation);
+            if !fault {
+                self.trace_audio(
+                    AudioDiagnosticKind::PriorityStop { through_ticket },
+                    self.status.applied_revision.load(Relaxed),
+                    None,
+                    0,
+                );
+                self.finish_midi_before_stop();
+                self.revoke_output_transport();
+                self.revoke_current_sampler_keyboard();
+                #[cfg(all(test, feature = "allocation-probe"))]
+                self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
+                self.invalidate_gain_recording(
+                    crate::gain_recording::AbortReason::TransportChanged,
+                );
+                if let Some(mut active) = self
+                    .active
+                    .as_mut()
+                    .and_then(ActivePublication::current_mut)
+                {
+                    active
+                        .playback
+                        .apply_priority_stop(&self.status.keyboard_activation);
+                }
+                self.invalidate_processor_audition_request();
             }
-            self.invalidate_processor_audition_request();
         }
         let mut consumed = None;
         for _ in 0..COMMANDS {
@@ -3557,7 +3586,18 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
-            self.trace_command_dequeued(queued, cut);
+            if !fault {
+                self.trace_command_dequeued(queued, cut);
+            }
+            if fault && sampler_edit::is_stop(queued.action) {
+                self.status.recovery_position.store(0, Release);
+            } else if fault {
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+            }
+            if fault {
+                continue;
+            }
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,
@@ -3658,6 +3698,41 @@ impl Callback {
         self.publish_active_routes(false);
     }
 
+    // The internal cut is never published as a priority Stop: that marker is
+    // reserved for the user's explicit cursor-reset intent. Drain at most one
+    // bounded command prefix per callback and leave graph custody unchanged.
+    pub(crate) fn fence_device_fault(&mut self) {
+        if self.device_fault_fenced_in_block || self.status.closing.load(Acquire) {
+            return;
+        }
+        self.device_fault_fenced_in_block = true;
+        let entry = self.status.admitted_ticket.load(Acquire);
+        let user_stop = self.take_stop_marker();
+        if !self.device_fault_stopped {
+            self.device_fault_stopped = true;
+            self.stop_after_fault();
+        } else {
+            // A begin that raced the error still receives its reserved terminal.
+            self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
+            self.gain_recording
+                .abort(crate::gain_recording::AbortReason::OutputFailed);
+            self.invalidate_native_parameter_input(
+                crate::native_parameter_input::AbortReason::OutputFailed,
+            );
+        }
+        let through = entry.max(user_stop.saturating_sub(1));
+        let cut = CommandCut {
+            stop_through: Some(through),
+            process_through: through,
+        };
+        if self.streamed_transport_mode() {
+            self.consume_stream_commands_through(cut, true);
+        } else {
+            self.consume_commands_through_inner(cut, true);
+        }
+        self.acknowledge_sampler_edit();
+    }
+
     fn invalidate_processor_audition_request(&mut self) {
         if self.processor_audition.has_request_after_hard_cancel() {
             return;
@@ -3675,6 +3750,13 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.status.device_fault.load(Acquire) {
+            if !self.status.closing.load(Acquire) && !self.device_fault_fenced_in_block {
+                self.fence_device_fault();
+            }
+            output.fill([0.0; 2]);
+            return Ok(());
+        }
         let yield_successor = self.yield_stream_successor_once;
         if !output.is_empty() {
             self.yield_stream_successor_once = false;

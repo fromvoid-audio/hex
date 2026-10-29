@@ -225,6 +225,137 @@ pub fn open(rate: u32) -> Result<(crate::WorkerPreparedOutput, HeadlessBackend),
 mod tests {
     use super::*;
     #[test]
+    fn device_fault_fences_the_next_real_callback() {
+        use hex_engine::{Audio, Clip, PlaybackCommand, Project, Track, playback::Playback};
+        use std::sync::{Arc, atomic::Ordering::Acquire};
+
+        let _serial = crate::prepared::candidate_tests::serial();
+        let (mut output, mut backend) = open(48_000).unwrap();
+        let audio = Audio::new(48_000, vec![[0.25; 2]; 64]).unwrap();
+        let project = Arc::new(
+            Project::new(
+                48_000,
+                vec![
+                    Track::new(vec![Clip::new(audio, 0, 64, false).unwrap()], 1.0, false).unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
+        let graph_owner = Arc::downgrade(&project);
+        let graph = Playback::from_shared(project);
+        output
+            .publication
+            .control()
+            .unwrap()
+            .publish(graph)
+            .unwrap();
+        let mut client = output.take_client().unwrap();
+        client.command(PlaybackCommand::Play).unwrap();
+        let mut frames = [[0.0; 2]; 8];
+        let mut host = [0.0; 16];
+        backend.render_direct(&mut frames, &mut host).unwrap();
+        assert_eq!(host, [0.25; 16]);
+        let position = client.status().unwrap().position.load(Acquire);
+        assert!(client.status().unwrap().playing.load(Acquire));
+
+        backend
+            .data
+            .as_mut()
+            .unwrap()
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        let queued = client
+            .command_with_ticket(PlaybackCommand::Seek(32))
+            .unwrap();
+        backend.report_device_error().unwrap();
+        assert!(client.command(PlaybackCommand::Play).is_err());
+        let status = client.status().unwrap();
+        assert!(status.reserve_midi_begin().is_err());
+        assert!(status.reserve_gain_begin().is_err());
+        assert!(status.reserve_native_parameter_input().is_err());
+        frames.fill([1.0; 2]);
+        backend
+            .data
+            .as_mut()
+            .unwrap()
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.render(&mut frames).unwrap());
+        assert_eq!(frames, [[0.0; 2]; 8]);
+        let measured = allocation_counter::measure(|| {
+            let _ = backend.render_direct(&mut frames, &mut host);
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(host, [0.0; 16], "faulted output must remain silent");
+        assert!(
+            graph_owner.upgrade().is_some(),
+            "callback must retain the graph"
+        );
+        assert_eq!(client.status().unwrap().recovery_position(), position);
+        assert!(!client.status().unwrap().playing.load(Acquire));
+        assert!(client.status().unwrap().consumed_command.load(Acquire) >= queued);
+        assert_eq!(
+            client.status().unwrap().rejected_action(),
+            Some((queued, hex_engine::PlaybackActionRejection::OutputFailed))
+        );
+        client.command(PlaybackCommand::Stop).unwrap();
+        backend.render_direct(&mut frames, &mut host).unwrap();
+        assert_eq!(client.status().unwrap().recovery_position(), 0);
+        backend.report_device_error().unwrap();
+        client.stop();
+        backend.render_direct(&mut frames, &mut host).unwrap();
+        assert_eq!(host, [0.0; 16]);
+        assert_eq!(client.status().unwrap().recovery_position(), 0);
+        drop(client);
+        backend.close();
+        drop(output);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let (mut replacement, mut replacement_backend) = loop {
+            match open(48_000) {
+                Ok(pair) => break pair,
+                Err(error) if error == "audio output is open or still shutting down" => {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("replacement failed: {error}"),
+            }
+        };
+        assert!(
+            graph_owner.upgrade().is_none(),
+            "old graph must retire on control"
+        );
+        let audio = Audio::new(48_000, vec![[0.5; 2]; 8]).unwrap();
+        let graph = Playback::new(
+            Project::new(
+                48_000,
+                vec![Track::new(vec![Clip::new(audio, 0, 8, false).unwrap()], 1.0, false).unwrap()],
+            )
+            .unwrap(),
+        );
+        replacement
+            .publication
+            .control()
+            .unwrap()
+            .publish(graph)
+            .unwrap();
+        let mut replacement_client = replacement.take_client().unwrap();
+        replacement_client.command(PlaybackCommand::Play).unwrap();
+        replacement_backend
+            .render_direct(&mut frames, &mut host)
+            .unwrap();
+        assert_eq!(host, [0.5; 16]);
+    }
+
+    #[test]
     fn client_preview_stop_completion_and_stale_decode_reach_actual_callback() {
         use crate::sample_preview::Phase;
         use std::sync::atomic::Ordering::Acquire;
