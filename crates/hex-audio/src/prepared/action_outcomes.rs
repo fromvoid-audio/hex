@@ -7,7 +7,7 @@ use hex_engine::PlaybackActionRejection;
 use std::sync::{
     Arc,
     atomic::{
-        AtomicU8, AtomicU32, AtomicU64,
+        AtomicBool, AtomicU8, AtomicU32, AtomicU64,
         Ordering::{Acquire, Relaxed, Release},
     },
 };
@@ -64,6 +64,7 @@ impl Slot {
 struct Ledger {
     slots: [Slot; CAPACITY],
     failure: AtomicU8,
+    retired: AtomicBool,
 }
 impl Ledger {
     fn slot(&self, ticket: u64) -> &Slot {
@@ -133,6 +134,7 @@ pub(super) fn channel(output_identity: u64) -> (Admission, Writer, Reader) {
     let ledger = Arc::new(Ledger {
         slots: std::array::from_fn(|_| Slot::new()),
         failure: AtomicU8::new(HEALTHY),
+        retired: AtomicBool::new(false),
     });
     (
         Admission {
@@ -221,10 +223,19 @@ impl Writer {
         }
         self.retired = true;
         admission.retired = true;
+        // No matching endpoint can publish again. Release makes every final
+        // terminal visible before the reader observes this frontier.
+        self.ledger.retired.store(true, Release);
         Ok(())
     }
 }
 impl Reader {
+    /// True only after both matching endpoints have become quiescent and all
+    /// remaining reservations have terminals. Unread receipts remain available;
+    /// drain them after observing this frontier. Check failure independently.
+    pub fn is_retired(&self) -> bool {
+        self.ledger.retired.load(Acquire)
+    }
     /// Exact output incarnation for correlating tickets across replacement.
     pub fn output_identity(&self) -> u64 {
         self.output_identity
@@ -396,8 +407,13 @@ mod tests {
         assert!(admission.reserve(2));
         assert!(admission.reserve(3));
         assert!(writer.finish(2, Outcome::Rejected(PlaybackActionRejection::OutputFailed)));
+        assert!(!reader.is_retired());
         // No callback is assumed to run again after the endpoints are returned.
         assert!(writer.interrupt_after_quiescence(admission).is_ok());
+        assert!(
+            reader.is_retired(),
+            "unread terminals do not delay quiescence"
+        );
         assert_eq!(
             reader.try_take(),
             Some(Receipt {
@@ -424,7 +440,7 @@ mod tests {
     #[test]
     fn quiescent_interruption_refuses_foreign_admission() {
         let (mut admission, mut writer, mut reader) = channel(1);
-        let (foreign, _foreign_writer, _foreign_reader) = channel(1);
+        let (foreign, _foreign_writer, foreign_reader) = channel(1);
         assert!(admission.reserve(1));
         let (returned_writer, _returned_foreign) = match writer.interrupt_after_quiescence(foreign)
         {
@@ -432,6 +448,11 @@ mod tests {
             Err(endpoints) => endpoints,
         };
         writer = returned_writer;
+        assert!(
+            !reader.is_retired(),
+            "a foreign pair cannot retire this reader"
+        );
+        assert!(!foreign_reader.is_retired());
         assert_eq!(reader.try_take(), None);
         assert!(writer.finish(1, Outcome::Applied));
         assert_eq!(
@@ -442,6 +463,47 @@ mod tests {
             })
         );
     }
+    #[test]
+    fn abandoned_endpoint_is_failure_not_successful_retirement() {
+        let (admission, writer, reader) = channel(1);
+        drop(writer);
+        assert!(!reader.is_retired());
+        assert_eq!(reader.failure(), Some(Failure::EndpointAbandoned));
+        drop(admission);
+        assert!(!reader.is_retired());
+        assert_eq!(reader.failure(), Some(Failure::EndpointAbandoned));
+    }
+    #[test]
+    fn retirement_frontier_publishes_all_terminals_across_threads() {
+        let (mut admission, mut writer, mut reader) = channel(1);
+        assert!(admission.reserve(1));
+        assert!(admission.reserve(2));
+        assert!(writer.finish(2, Outcome::Applied));
+        assert!(!reader.is_retired());
+        std::thread::scope(|scope| {
+            scope.spawn(move || assert!(writer.interrupt_after_quiescence(admission).is_ok()));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            while !reader.is_retired() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                reader.try_take(),
+                Some(Receipt {
+                    ticket: 2,
+                    outcome: Outcome::Applied
+                })
+            );
+            assert_eq!(
+                reader.try_take(),
+                Some(Receipt {
+                    ticket: 1,
+                    outcome: Outcome::Interrupted
+                })
+            );
+            assert_eq!(reader.try_take(), None);
+        });
+    }
     #[cfg(feature = "allocation-probe")]
     #[test]
     fn completion_and_observation_do_not_allocate_or_free() {
@@ -450,6 +512,7 @@ mod tests {
         let mut receipt = None;
         let allocations = allocation_counter::measure(|| {
             assert!(writer.finish(1, Outcome::Rejected(PlaybackActionRejection::OutputFailed)));
+            assert!(!reader.is_retired());
             receipt = reader.try_take();
         });
         assert_eq!(
@@ -467,6 +530,17 @@ mod tests {
                 ticket: 1,
                 outcome: Outcome::Rejected(PlaybackActionRejection::OutputFailed)
             })
+        );
+        assert!(writer.interrupt_after_quiescence(admission).is_ok());
+        let allocations = allocation_counter::measure(|| assert!(reader.is_retired()));
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
         );
     }
 }
