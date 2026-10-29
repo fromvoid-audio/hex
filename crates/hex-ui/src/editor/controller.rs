@@ -3295,6 +3295,7 @@ impl EditorView {
                     ..
                 }
                 | Request::ReorderTracks { .. }
+                | Request::ReparentTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::DuplicateAliasClips { .. }
