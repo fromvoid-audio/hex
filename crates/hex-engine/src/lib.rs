@@ -2437,6 +2437,40 @@ impl Project {
             .transpose()
     }
 
+    /// Conservative causal end for the selected pre-Main outputs, including
+    /// declared residual tails along their contributing graph paths. Unknown,
+    /// over-budget or overflowing tails require an explicit export range.
+    pub fn untrimmed_capture_end_frame(
+        &self,
+        captures: &[OutputCaptureId],
+    ) -> Result<Option<u64>, Invalid> {
+        if captures.len() > MAX_OUTPUT_CAPTURES {
+            return Err(Invalid("too many capture outputs"));
+        }
+        let Some(source_end) = self.untrimmed_capture_source_end_frame()? else {
+            return Ok(None);
+        };
+        let tail = match &self.signal_graph {
+            Some(graph) => graph.output_tail_frames(self, Some(captures))?,
+            None => 0,
+        };
+        self.checked_output_tail_end(source_end, tail).map(Some)
+    }
+
+    fn checked_output_tail_end(&self, source_end: u64, tail: u64) -> Result<u64, Invalid> {
+        let limit = u64::from(self.sample_rate)
+            .checked_mul(session_playback::MAX_FINITE_EFFECT_TAIL_SECONDS)
+            .ok_or(Invalid("automatic output drain overflow"))?;
+        if tail > limit {
+            return Err(Invalid(
+                "automatic output drain exceeds its bounded horizon",
+            ));
+        }
+        source_end
+            .checked_add(tail)
+            .ok_or(Invalid("automatic output range overflow"))
+    }
+
     /// Causal Main output end for an untrimmed, automatically sized offline
     /// range. Ordinary source-length exports trim startup separately and must
     /// continue to use `audible_end_frame`. Explicit ranges never use this bound.
@@ -2444,36 +2478,33 @@ impl Project {
         let Some(source_end) = self.audible_end_frame else {
             return Ok(None);
         };
-        let mut drain = 0_u64;
-        for device in self
-            .main_device_chain
-            .iter()
-            .filter(|device| !device.bypassed)
-        {
-            let tail = device.definition.as_ref().map_or(
-                hex_lattice::OutputTail::Finite { max_tail_frames: 0 },
-                hex_lattice::PreparedProcessorFactory::output_tail,
-            );
-            let hex_lattice::OutputTail::Finite { max_tail_frames } = tail else {
-                return Err(Invalid(
-                    "automatic Main range requires a finite tail; choose an explicit range",
-                ));
-            };
-            drain = drain
-                .checked_add(max_tail_frames)
-                .ok_or(Invalid("Main export drain overflow"))?;
-        }
-        let limit = u64::from(self.sample_rate)
-            .checked_mul(session_playback::MAX_FINITE_EFFECT_TAIL_SECONDS)
-            .ok_or(Invalid("Main export drain overflow"))?;
-        if drain > limit {
-            return Err(Invalid("Main export drain exceeds its bounded horizon"));
-        }
-        source_end
+        let tail = match &self.signal_graph {
+            Some(graph) => graph.output_tail_frames(self, None)?,
+            None => {
+                let mut tail = 0_u64;
+                for device in self
+                    .main_device_chain
+                    .iter()
+                    .filter(|device| !device.bypassed)
+                {
+                    let output = device.definition.as_ref().map_or(
+                        hex_lattice::OutputTail::Finite { max_tail_frames: 0 },
+                        hex_lattice::PreparedProcessorFactory::output_tail,
+                    );
+                    let hex_lattice::OutputTail::Finite { max_tail_frames } = output else {
+                        return Err(Invalid("automatic output tail is unbounded"));
+                    };
+                    tail = tail
+                        .checked_add(max_tail_frames)
+                        .ok_or(Invalid("automatic output tail overflows"))?;
+                }
+                tail
+            }
+        };
+        let causal_end = source_end
             .checked_add(u64::from(self.main_output_latency_frames))
-            .and_then(|end| end.checked_add(drain))
-            .map(Some)
-            .ok_or(Invalid("Main export range overflow"))
+            .ok_or(Invalid("Main export range overflow"))?;
+        self.checked_output_tail_end(causal_end, tail).map(Some)
     }
 
     pub fn device_meter(
@@ -3552,6 +3583,18 @@ impl InstrumentTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_tail_end_refuses_overflow_and_excessive_drain() {
+        let project = Project::new(48_000, Vec::new()).unwrap();
+        let limit = 48_000 * session_playback::MAX_FINITE_EFFECT_TAIL_SECONDS;
+        assert_eq!(
+            project.checked_output_tail_end(1, limit).unwrap(),
+            1 + limit
+        );
+        assert!(project.checked_output_tail_end(1, limit + 1).is_err());
+        assert!(project.checked_output_tail_end(u64::MAX, 1).is_err());
+    }
+
     fn project(looping: bool, duration: u64) -> Project {
         let audio = Audio::new(48_000, vec![[1.0, -1.0], [0.5, -0.5]]).unwrap();
         Project::new(

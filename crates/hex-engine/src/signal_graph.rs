@@ -926,6 +926,118 @@ impl SignalGraph {
     pub(crate) fn main_latency(&self) -> u32 {
         self.plan.nodes()[self.main].output_arrival_frames
     }
+
+    /// Longest declared residual tail feeding Main, or the selected pre-Main
+    /// capture edges. This is a control-side query over the prepared DAG.
+    pub(crate) fn output_tail_frames(
+        &self,
+        project: &Project,
+        captures: Option<&[crate::OutputCaptureId]>,
+    ) -> Result<u64, Invalid> {
+        use hex_lattice::{OutputTail, PreparedProcessorFactory, PreparedRuntimeInstance};
+
+        let mut tails = Vec::new();
+        tails
+            .try_reserve_exact(self.plan.nodes().len())
+            .map_err(|_| Invalid("could not reserve output tail plan"))?;
+        tails.resize(self.plan.nodes().len(), Some(0_u64));
+        let mut assign = |indices: &[usize], chain: &[PreparedRuntimeInstance]| {
+            if indices.len() != chain.len() {
+                return Err(Invalid("output tail graph does not match device chain"));
+            }
+            for (&index, device) in indices.iter().zip(chain) {
+                let value = if device.bypassed {
+                    Some(0)
+                } else {
+                    match device.definition.as_ref().map_or(
+                        OutputTail::Finite { max_tail_frames: 0 },
+                        PreparedProcessorFactory::output_tail,
+                    ) {
+                        OutputTail::Finite { max_tail_frames } => Some(max_tail_frames),
+                        OutputTail::Unbounded => None,
+                    }
+                };
+                *tails
+                    .get_mut(index)
+                    .ok_or(Invalid("output tail node is missing"))? = value;
+            }
+            Ok(())
+        };
+        if self.tracks.len() != project.tracks.len()
+            || self.returns.len() != project.return_buses.len()
+        {
+            return Err(Invalid("output tail graph does not match project"));
+        }
+        for (plan, track) in self.tracks.iter().zip(&project.tracks) {
+            assign(&plan.devices, &track.device_chain)?;
+        }
+        for (plan, bus) in self.returns.iter().zip(&project.return_buses) {
+            assign(&plan.devices, &bus.device_chain)?;
+        }
+        assign(&self.main_devices, &project.main_device_chain)?;
+
+        // None means an unbounded or overflowing path. Keeping it in the DAG
+        // allows an unrelated selected capture to remain independently valid.
+        for &node in self.plan.topological_order() {
+            let mut incoming = Some(0_u64);
+            for edge in self
+                .plan
+                .edges()
+                .iter()
+                .filter(|edge| edge.to_index == node)
+            {
+                incoming = match (incoming, tails[edge.from_index]) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    _ => None,
+                };
+            }
+            tails[node] =
+                incoming.and_then(|frames| tails[node].and_then(|tail| frames.checked_add(tail)));
+        }
+        let mut maximum = 0_u64;
+        if let Some(captures) = captures {
+            for capture in captures {
+                let edge = match *capture {
+                    crate::OutputCaptureId::Track(id) => {
+                        let plan = self
+                            .tracks
+                            .iter()
+                            .find(|track| track.id == Some(id))
+                            .ok_or(Invalid("capture track is missing"))?;
+                        match plan.output {
+                            TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => edge,
+                        }
+                    }
+                    crate::OutputCaptureId::Return(id) => {
+                        self.returns
+                            .iter()
+                            .find(|bus| bus.id == id)
+                            .ok_or(Invalid("capture return is missing"))?
+                            .main
+                    }
+                };
+                let planned = *self
+                    .pre_main_edges
+                    .get(edge)
+                    .ok_or(Invalid("capture edge is missing"))?;
+                let node = self
+                    .plan
+                    .edges()
+                    .get(planned)
+                    .ok_or(Invalid("capture edge is missing"))?
+                    .from_index;
+                maximum = maximum.max(
+                    tails[node]
+                        .ok_or(Invalid("automatic output tail is unbounded or overflows"))?,
+                );
+            }
+        } else {
+            let node = self.main_devices.last().copied().unwrap_or(self.main);
+            maximum =
+                tails[node].ok_or(Invalid("automatic output tail is unbounded or overflows"))?;
+        }
+        Ok(maximum)
+    }
 }
 
 #[derive(Debug)]
