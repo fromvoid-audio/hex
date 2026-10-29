@@ -85,6 +85,8 @@ fn pair_with_hooks(
         StreamConfig::with_pool_pages(4),
         vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
         hooks,
+        #[cfg(feature = "test-support")]
+        None,
     )
     .unwrap();
     runtime.wait_until_ready(Duration::from_secs(2)).unwrap();

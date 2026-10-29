@@ -251,6 +251,8 @@ impl PendingStreamDomain {
             true,
             #[cfg(test)]
             None,
+            #[cfg(feature = "test-support")]
+            None,
         )?;
         Ok(Self {
             runtime,

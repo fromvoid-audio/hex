@@ -516,6 +516,8 @@ fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_
         vec![first, second],
         false,
         Some(hooks),
+        #[cfg(feature = "test-support")]
+        None,
     )
     .unwrap();
     runtime.wait_until_ready(Duration::from_secs(2)).unwrap();

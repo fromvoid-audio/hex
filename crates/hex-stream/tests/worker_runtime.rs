@@ -164,6 +164,83 @@ fn wait_for_pages(runtime: &mut StreamRuntime, pages: &[PageKey], timeout: Durat
     false
 }
 
+#[cfg(feature = "test-support")]
+fn wait_for_split_page(pages: &mut hex_stream::StreamCallbackPages, key: PageKey) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        pages.pump_ready(8);
+        if pages.pin_pages(&[key]) {
+            pages.unpin_all();
+            return true;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    false
+}
+
+#[cfg(feature = "test-support")]
+fn gated_second_page(release_page: bool) {
+    let (wav, expected) = TestWav::stereo_pcm16(48_000, 8192);
+    let asset = asset_id(expected.len(), 48_000);
+    let key = StreamSourceKey::new(301, asset);
+    let verified = VerifiedWavReader::open(wav.path(), reader_limits(expected.len())).unwrap();
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        expected.len() as u64,
+        expected.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *verified.fingerprint(),
+    )
+    .unwrap();
+    let definition = SourceDefinition::new(
+        wav.path().to_path_buf(),
+        metadata,
+        reader_limits(expected.len()),
+    );
+    let pages = [0, 1].map(|page_index| PageKey {
+        source: key,
+        page_index,
+    });
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(pages[1]);
+    let mut runtime =
+        StreamRuntime::new_with_page_gate(StreamConfig::with_pool_pages(3), vec![definition], gate)
+            .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let (control, mut endpoint) = runtime.split().ok().unwrap();
+    endpoint.request_page(key, 0);
+    control.wake_worker();
+    assert!(wait_for_split_page(&mut endpoint, pages[0]));
+    assert_eq!(endpoint.page(key, 0).unwrap().frames, &expected[..4096]);
+    endpoint.request_page(key, 1);
+    control.wake_worker();
+    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    endpoint.pump_ready(8);
+    assert!(endpoint.page(key, 1).is_none());
+    assert_eq!(endpoint.page(key, 0).unwrap().frames, &expected[..4096]);
+    if release_page {
+        release.send(()).unwrap();
+        assert!(wait_for_split_page(&mut endpoint, pages[1]));
+        assert_eq!(endpoint.page(key, 1).unwrap().frames, &expected[4096..]);
+    }
+    let report = control.shutdown(endpoint).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 3);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn held_later_page_releases_after_initial_ready() {
+    gated_second_page(true);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn shutdown_joins_worker_with_later_page_held() {
+    gated_second_page(false);
+}
+
 #[test]
 fn split_runtime_preserves_pairing_and_rejects_cross_runtime_shutdown_without_mutation() {
     let mut first =
