@@ -1,4 +1,6 @@
 //! Focused visibility contract using the same private projection as the UI.
+#[path = "../src/editor/track_reorder/subtree.rs"]
+mod subtree;
 #[path = "../src/editor/track_hierarchy_indent.rs"]
 mod track_hierarchy_indent;
 #[path = "../src/editor/arrangement_focus/visibility.rs"]
@@ -64,6 +66,60 @@ fn matching_tracks_keep_nested_ancestors_and_revealed_track_context() {
     assert_eq!(indent.pixels(inside), 8.0);
     assert_eq!(indent.pixels(unrelated), 0.0);
     assert_eq!(indent.pixels(outside), 4.0);
+    let source =
+        subtree::SourceRows::capture(project, &TrackSelectionIds::new(&[outer, inner]).unwrap())
+            .unwrap();
+    let index = |id| {
+        project
+            .tracks()
+            .iter()
+            .position(|track| track.id() == id)
+            .unwrap()
+    };
+    assert!(!source.permits(index(inner), Some(outer)));
+    assert!(!source.permits(index(inside), Some(inner)));
+    assert!(
+        !source.permits(index(unrelated), None),
+        "the boundary after the complete subtree is a no-op"
+    );
+    assert!(
+        source.permits(project.tracks().len(), None),
+        "the group can move after an unrelated subtree"
+    );
+    let nested =
+        subtree::SourceRows::capture(project, &TrackSelectionIds::new(&[inner]).unwrap()).unwrap();
+    assert!(
+        nested.permits(index(unrelated), None),
+        "unchanged order can still reparent a subtree"
+    );
+    assert!(
+        !nested.permits(index(unrelated), Some(outer)),
+        "same-parent trailing boundary is a no-op"
+    );
+    let mut moved = Editor::new(project.clone(), 8).unwrap();
+    moved
+        .execute(Command::MoveTracksBefore {
+            tracks: TrackSelectionIds::new(&[inner]).unwrap(),
+            before: Some(unrelated),
+        })
+        .unwrap();
+    assert_eq!(moved.project().track(inner).unwrap().parent_group(), None);
+    assert_eq!(
+        moved.project().track(inside).unwrap().parent_group(),
+        Some(inner)
+    );
+    assert!(moved.undo());
+    assert_eq!(moved.project(), project);
+
+    let sparse = subtree::SourceRows::capture(
+        project,
+        &TrackSelectionIds::new(&[inside, outside]).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        sparse.permits(index(unrelated), None),
+        "a gap between selected subtrees remains a real move"
+    );
     let ranges = [(48_000, 72_000)];
     let visible = visibility::visible_tracks(project, &ranges, None);
     assert_eq!(visible, BTreeSet::from([outer, inner, inside]));
