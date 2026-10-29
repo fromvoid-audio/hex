@@ -396,6 +396,15 @@ impl Callback {
                 self.stage_stream_outcome(queued.ticket, action_outcomes::Outcome::Superseded);
                 continue;
             }
+            if stale_output_start(&self.status, queued) {
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                self.stage_stream_outcome(
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                );
+                continue;
+            }
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,

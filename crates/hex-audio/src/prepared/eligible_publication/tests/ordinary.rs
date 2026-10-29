@@ -130,7 +130,7 @@ fn ordinary_streamed_actions_deliver_split_client_outcomes() {
         .run(|callback, _| callback.begin_block());
     let revision = control
         .publish_with_admission_and_source_on_control(
-            compile(&project, metadata, &store),
+            compile(&project, metadata.clone(), &store),
             PublicationPolicy::InheritRuntime,
             hex_engine::AudioSourceContext {
                 project_generation: 7,
@@ -186,6 +186,38 @@ fn ordinary_streamed_actions_deliver_split_client_outcomes() {
             outcome: ActionOutcome::Applied
         })
     );
+    let stale = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let stale_second = client
+        .command_with_ticket(PlaybackCommand::PlayFrom(32))
+        .unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.report_render_fault(Some(&Invalid("injected failure")), 4096));
+    let replacement = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata, &store),
+            PublicationPolicy::InstallFreshRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 7,
+                editor_revision: 3,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    measured_block(&mut data);
+    assert_eq!(
+        client.status().unwrap().applied_revision.load(Acquire),
+        replacement
+    );
+    for ticket in [stale, stale_second] {
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket,
+                outcome: ActionOutcome::Rejected(PlaybackActionRejection::OutputFailed)
+            })
+        );
+    }
     assert_eq!(reader.failure(), None);
     let mut backend = Some(());
     let mut pending = false;
@@ -642,6 +674,10 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
     );
     assert_eq!(control.status.performance_frame.load(Acquire), 0);
     if !keyboard && !sampler {
+        // The queue cut has passed; this start races the faulting callback.
+        let stale = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(2))
+            .unwrap();
         data.owner_mut().unwrap().run(|callback, _| {
             assert_eq!(callback.stream_pending_play, Some(play));
             callback.report_render_fault(Some(&Invalid("injected buffered failure")), 0);
@@ -649,6 +685,14 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         assert_eq!(
             control.status.rejected_action(),
             Some((play, PlaybackActionRejection::OutputFailed))
+        );
+        assert_eq!(control.status.recovery_position(), 0);
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((stale, PlaybackActionRejection::OutputFailed))
         );
         assert_eq!(control.status.recovery_position(), 0);
         play = control.command_with_ticket(PlaybackCommand::Play).unwrap();

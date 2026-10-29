@@ -225,6 +225,7 @@ struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
     sampler_edit_gate: u64,
+    transport_epoch: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,6 +255,22 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
         | PlaybackAction::LaunchAndPlay(_)
         | PlaybackAction::SetMetronome(_) => false,
     }
+}
+
+// A start queued before an output fault must not revive that output, even
+// if graph recovery clears the fault before the command reaches the callback.
+fn stale_output_start(status: &Status, queued: QueuedCommand) -> bool {
+    matches!(
+        queued.action,
+        PlaybackAction::Transport(PlaybackCommand::Play | PlaybackCommand::PlayFrom(_))
+            | PlaybackAction::Session(
+                hex_engine::SessionPlaybackCommand::Play
+                    | hex_engine::SessionPlaybackCommand::LaunchClip { .. }
+                    | hex_engine::SessionPlaybackCommand::LaunchScene { .. }
+                    | hex_engine::SessionPlaybackCommand::CueMidiClip { .. }
+            )
+            | PlaybackAction::LaunchAndPlay(_)
+    ) && queued.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
 }
 
 fn recovery_cursor_action(action: PlaybackAction) -> bool {
@@ -2106,6 +2123,10 @@ impl Control {
     /// Failed admission does not advance the ticket. `consumed_command` denotes
     /// consumption, not guaranteed application: priority Stop discards commands admitted
     /// before its ticket marker while later commands in the captured prefix follow FIFO.
+    /// Playback starts admitted before an output fault that reach consumption
+    /// receive `OutputFailed`, even if a replacement has cleared the fault.
+    /// Priority Stop can supersede them; later user commands and explicit
+    /// seek/stop retain their ordinary ordering.
     pub fn command_with_ticket(
         &mut self,
         command: PlaybackCommand,
@@ -3784,6 +3805,15 @@ impl Callback {
                 ));
             }
             if fault {
+                continue;
+            }
+            if stale_output_start(&self.status, queued) {
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                *staged = Some((
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                ));
                 continue;
             }
             if !self.status.sampler_edit.permits(queued) {
@@ -6878,6 +6908,179 @@ mod tests {
     }
 
     #[test]
+    fn stale_play_queued_before_fault_does_not_restart_resident_graph() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, _) = spectrum_eq8_graph();
+        control.publish(playback).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 32]).unwrap();
+        let ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 32);
+        let mut output = [[0.0; 2]; 16];
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(
+            !control.status.playing.load(Acquire),
+            "pre-fault queued Play restarted the faulted graph"
+        );
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((ticket, PlaybackActionRejection::OutputFailed))
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn admission_delayed_across_fault_cannot_restart_playback() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, _) = spectrum_eq8_graph();
+        control.publish(playback).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 32]).unwrap();
+        // Model a producer suspended after reading the actual admission fields
+        // but before publishing its fixed-size command into the ring.
+        let epoch = control.status.transport_epoch.load(Acquire);
+        let gate = control.status.sampler_edit.gate();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 32);
+        let ticket = control.command_ticket + 1;
+        assert!(
+            control
+                .commands
+                .push(QueuedCommand {
+                    ticket,
+                    action: PlaybackAction::Transport(PlaybackCommand::PlayFrom(45)),
+                    sampler_edit_gate: gate,
+                    transport_epoch: epoch,
+                })
+                .is_ok()
+        );
+        control.command_ticket = ticket;
+        control.status.admitted_ticket.store(ticket, Release);
+        callback.begin_block();
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.status.recovery_position(), 32);
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((ticket, PlaybackActionRejection::OutputFailed))
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn stale_play_is_rejected_after_replacement_and_new_play_is_allowed() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = control
+            .enable_action_outcomes_on_control(&mut callback)
+            .unwrap();
+        let (playback, _) = spectrum_eq8_graph();
+        control.publish(playback).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 32]).unwrap();
+        let stale = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        let stale_second = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(45))
+            .unwrap();
+        let (replacement, _) = fresh_spectrum_eq8_graph();
+        let revision = control
+            .publish_with_policy(replacement, PublicationPolicy::InstallFreshRuntime)
+            .unwrap();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 32);
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| callback.begin_block());
+        #[cfg(not(feature = "allocation-probe"))]
+        callback.begin_block();
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((stale_second, PlaybackActionRejection::OutputFailed))
+        );
+        for ticket in [stale, stale_second] {
+            assert_eq!(
+                reader.try_take(),
+                Some(ActionOutcomeReceipt {
+                    ticket,
+                    outcome: ActionOutcome::Rejected(PlaybackActionRejection::OutputFailed),
+                })
+            );
+        }
+        assert!(!control.status.playing.load(Acquire));
+        let fresh = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 16]).unwrap();
+        assert!(control.status.playing.load(Acquire));
+        assert_eq!(
+            reader.try_take(),
+            Some(ActionOutcomeReceipt {
+                ticket: fresh,
+                outcome: ActionOutcome::Applied,
+            })
+        );
+        control.request_shutdown();
+        control
+            .retire_action_outcomes_on_control(&mut callback)
+            .unwrap();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn fresh_play_from_after_fault_retains_explicit_cursor() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, _) = spectrum_eq8_graph();
+        control.publish(playback).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 32]).unwrap();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 32);
+        let ticket = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(45))
+            .unwrap();
+        callback.begin_block();
+        assert!(control.status.playing.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 45);
+        assert_eq!(control.status.recovery_position(), 45);
+        assert_ne!(
+            control.status.rejected_action().map(|rejected| rejected.0),
+            Some(ticket)
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
     fn multiple_rejected_actions_are_each_observable_after_one_callback() {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let mut reader = control
@@ -9658,6 +9861,59 @@ mod tests {
             clip,
             track,
         )
+    }
+
+    #[test]
+    fn pre_fault_session_launch_cannot_restart_or_change_route() {
+        use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, _, clip, _) = session_audio_graph();
+        control.publish(playback).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 16]).unwrap();
+        let ticket = control
+            .action_with_ticket(PlaybackAction::LaunchAndPlay(
+                SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 16);
+        let mut output = [[0.0; 2]; 16];
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((ticket, PlaybackActionRejection::OutputFailed))
+        );
+        let mut routes = [SessionRouteEntry::default(); 1];
+        control.status.session_routes(&mut routes).unwrap();
+        assert_eq!(routes[0].owner, SessionRouteOwner::Arrangement);
+        assert!(routes[0].pending.is_none());
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
     }
 
     #[cfg(feature = "allocation-probe")]
