@@ -298,32 +298,33 @@ report compilation separately. This targeted profile is not a substitute for
 the other affected owner and consumer checks, or for an unoptimized debugging
 run when one is needed.
 
-For a focused streamed-readiness or ordinary audio publication unit test whose
-test-harness startup exceeds the unit limit, compile the same library test
-harness with a smaller test profile and explicit final symbol stripping:
+For a focused streamed-readiness or ordinary audio publication regression whose
+library test startup exceeds the unit limit, an optimized test harness can retain
+debug assertions and overflow checks:
 
 ```sh
 mkdir -p artifacts
-CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_LTO=thin \
-  CARGO_PROFILE_TEST_CODEGEN_UNITS=1 cargo \
-  --config 'profile.test.package.hex-engine.opt-level="z"' \
-  --config 'profile.test.package.hex-stream.opt-level="z"' \
-  --config 'profile.test.package.hex-audio.opt-level="z"' \
-  rustc -p hex-audio --features allocation-probe --lib --profile test --locked \
-  --message-format=json -- -C lto=fat -C strip=symbols > artifacts/audio-test-build.jsonl
+CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true \
+  CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+  CARGO_PROFILE_RELEASE_STRIP=symbols cargo \
+  --config 'profile.release.package.hex-engine.opt-level="z"' \
+  --config 'profile.release.package.hex-stream.opt-level="z"' \
+  --config 'profile.release.package.hex-audio.opt-level="z"' \
+  --config 'profile.release.package.allocation-counter.opt-level=0' \
+  test -p hex-audio --features allocation-probe --lib --release --locked \
+  --no-run --message-format=json > artifacts/audio-test-build.jsonl
 ```
 
-Use `-p hex-stream` instead for its library tests. The Cargo JSON
-`compiler-artifact` whose `target.name` is `hex_audio` or `hex_stream` and
-whose `profile.test` is true identifies the executable in its `executable`
-field. Invoke that executable with the full test name and `--exact`; confirm
-that one test actually ran. The final rustc flag matters: the test-profile
-`strip` setting alone may result in `strip=debuginfo` for a library test harness.
-This uses ThinLTO for dependencies and fat LTO plus compiler-produced stripping
-for the final test target; no post-build strip or re-sign step is excluded from
-the measurement. Debug assertions remain enabled. This profile does not
-guarantee every launch meets the limit. Other affected checks and configurations
-still apply.
+For the stream owner, use `-p hex-stream --features allocation-probe` with the
+same profile settings. The Cargo JSON `compiler-artifact` with target `hex_audio`
+or `hex_stream` and `profile.test` true identifies the executable. Invoke it
+with the full test name and `--exact`;
+confirm exactly one test ran and include process launch in the timing. Use the
+corresponding `--test` target for separately linked consumer and calibration
+checks. Do not set global `RUSTFLAGS` for symbol stripping: the PCM constructor
+layout gate deliberately rejects that unsupported compiler configuration. The
+profile does not guarantee every launch meets the limit or replace the other
+affected owner, consumer, and configuration checks.
 
 For allocator-probe sensitivity checks, the original two tests can also be
 compiled as an optimized, separately linked executable while retaining the
