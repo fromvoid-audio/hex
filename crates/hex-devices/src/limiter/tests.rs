@@ -599,6 +599,73 @@ fn dense_reconstructed_peak(output: &[StereoFrame]) -> (f64, usize) {
     }
     maximum
 }
+
+#[test]
+#[ignore = "diagnostic independent reconstruction; a limiter correction is not yet implemented"]
+fn study_true_peak_with_independent_lanczos_reconstruction() {
+    let factory = factory(
+        48_000,
+        &[
+            (MODE, ParameterValue::Choice(2)),
+            (LINK, ParameterValue::Float(0.0)),
+            (RELEASE, ParameterValue::Float(0.01)),
+            (CEILING, ParameterValue::Float(-1.0)),
+        ],
+    );
+    let mut runtime = factory.create_runtime().unwrap();
+    let mut input: Vec<_> = (0..4000)
+        .map(|i| {
+            let envelope = if i % 137 < 17 { 10.0 } else { 1.0 };
+            [
+                envelope * (i as f32 * 2.7 + 0.2).sin(),
+                envelope * (i as f32 * 2.1 + 0.7).sin(),
+            ]
+        })
+        .collect();
+    input.extend(vec![[0.0; 2]; 2048]);
+    let output = render(runtime.as_mut(), &input, &[1, 63, 257]);
+    let sinc = |x: f64| {
+        if x.abs() < 1e-12 {
+            1.0
+        } else {
+            (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+        }
+    };
+    let kernels: [[f64; 64]; 32] = std::array::from_fn(|phase| {
+        let mut kernel = std::array::from_fn(|tap| {
+            let d = 31.0 + phase as f64 / 32.0 - tap as f64;
+            sinc(d) * sinc(d / 32.0)
+        });
+        let sum: f64 = kernel.iter().sum();
+        for coefficient in &mut kernel {
+            *coefficient /= sum;
+        }
+        kernel
+    });
+    let mut peak = 0.0_f64;
+    let mut at = 0;
+    for (index, window) in output.windows(64).enumerate() {
+        for kernel in &kernels {
+            for lane in 0..2 {
+                let value: f64 = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, s)| c * f64::from(s[lane]))
+                    .sum();
+                if value.abs() > peak {
+                    peak = value.abs();
+                    at = index + 31;
+                }
+            }
+        }
+    }
+    let ceiling = 10.0_f64.powf(-1.0 / 20.0);
+    println!("independent Lanczos peak {peak:.9}, ceiling {ceiling:.9}, frame {at}");
+    assert!(
+        peak > ceiling + 0.01,
+        "expected the documented counterexample"
+    );
+}
 #[test]
 fn invalid_rates_and_nonfinite_pcm_are_contained() {
     for rate in [0, 7999, 192001, u32::MAX] {
