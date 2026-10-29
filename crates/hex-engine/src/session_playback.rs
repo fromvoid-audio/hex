@@ -1838,8 +1838,8 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-        // Only Arrangement resident clips are eligible. Generic streamed page
-        // providers retain one lookup per original per-frame span.
+        // Resident Arrangement and eligible Session audio share this window.
+        // Generic streamed providers retain their original per-frame lookups.
         let mut resident_source_scratch = Vec::new();
         if !revision.arrangement().contains_streamed_sources()
             && compensation

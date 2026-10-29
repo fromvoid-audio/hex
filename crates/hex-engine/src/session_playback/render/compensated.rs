@@ -5,16 +5,30 @@
 use super::*;
 
 impl SessionPlayback {
-    /// Prepare only resident Arrangement sources; no page provider is read and
-    /// the per-frame DSP/routing order is unchanged. The caller bounds the
-    /// window before every transport or route discontinuity.
+    /// Prepare resident Arrangement and eligible Session audio sources; no page
+    /// provider is read and per-frame DSP/routing order is unchanged. The caller
+    /// bounds the window before every transport or route discontinuity.
     pub(super) fn prepare_resident_sources(
         &mut self,
+        performance_frame: u64,
         arrangement_frame: u64,
         frames: usize,
-    ) -> Result<(), SessionPlaybackError> {
+        eligible: &mut [bool; MAX_TRACKS],
+    ) -> Result<bool, SessionPlaybackError> {
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        // Keep small Session graphs on the original one-frame path; larger
+        // graphs can amortize the preparation work across the window.
+        let batch_session = self
+            .route_scratch
+            .iter()
+            .filter(|route| matches!(route.owner, RouteOwner::SessionAudio { .. }))
+            .take(4)
+            .count()
+            == 4;
+        if batch_session {
+            eligible.fill(false);
         }
         for (index, (route, scratch)) in self
             .route_scratch
@@ -24,21 +38,60 @@ impl SessionPlayback {
         {
             let output = &mut scratch[..frames];
             output.fill([0.0; 2]);
-            if matches!(route.owner, RouteOwner::Arrangement) {
-                let track = self
-                    .revision
-                    .arrangement()
-                    .tracks()
-                    .get(index)
-                    .ok_or(SessionPlaybackError::UnknownTrack)?;
-                if track.audio_content_enabled() {
-                    track
-                        .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
-                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+            match route.owner {
+                RouteOwner::Arrangement => {
+                    let track = self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    if track.audio_content_enabled() {
+                        track
+                            .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    }
                 }
+                RouteOwner::SessionAudio { clip, launch_frame } if batch_session => {
+                    let track = self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    let is_eligible = eligible
+                        .get_mut(index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    if !track.audio_content_enabled() {
+                        *is_eligible = true;
+                        continue;
+                    }
+                    let prepared = self
+                        .revision
+                        .session()
+                        .audio_clip(clip)
+                        .ok_or(SessionPlaybackError::UnknownClip)?;
+                    if prepared.track != route.id {
+                        return Err(SessionPlaybackError::ClipTrackMismatch);
+                    }
+                    if let PreparedAudioSource::Resident(audio) = prepared.source() {
+                        if prepared.active {
+                            render_resident_session_audio(
+                                prepared,
+                                audio,
+                                launch_frame,
+                                performance_frame,
+                                output,
+                                crate::PreparedTrackMix::identity(),
+                            )?;
+                        }
+                        *is_eligible = true;
+                    }
+                }
+                _ => {}
             }
         }
-        Ok(())
+        Ok(batch_session)
     }
     /// Publish one transport origin immediately before processing its Main
     /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
@@ -89,7 +142,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
-        resident_source_index: Option<usize>,
+        resident_source: Option<(usize, Option<&[bool; MAX_TRACKS]>)>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -139,8 +192,14 @@ impl SessionPlayback {
                     let mut audio = [[0.0; 2]];
                     let mut generator = [[0.0; 2]];
                     if self.playing {
-                        if let Some(sample_index) = resident_source_index
-                            .filter(|_| matches!(route.owner, RouteOwner::Arrangement))
+                        if let Some(sample_index) = resident_source
+                            .filter(|(_, eligible)| {
+                                matches!(route.owner, RouteOwner::Arrangement)
+                                    || eligible.is_some_and(|eligible| {
+                                        eligible.get(index).copied().unwrap_or(false)
+                                    })
+                            })
+                            .map(|(sample_index, _)| sample_index)
                         {
                             audio[0] = *self
                                 .resident_source_scratch

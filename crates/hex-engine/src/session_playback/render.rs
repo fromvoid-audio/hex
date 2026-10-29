@@ -708,6 +708,8 @@ impl SessionPlayback {
         let mut next_route = next_pending_frame(&self.route_scratch);
         let mut resident_source_index = 0;
         let mut resident_source_end = 0;
+        let mut resident_source_eligible = [false; MAX_TRACKS];
+        let mut resident_session_batch = false;
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -760,7 +762,12 @@ impl SessionPlayback {
                 if count == 0 {
                     return Err(SessionPlaybackError::ArithmeticOverflow);
                 }
-                self.prepare_resident_sources(arrangement_frame, count)?;
+                resident_session_batch = self.prepare_resident_sources(
+                    performance_frame,
+                    arrangement_frame,
+                    count,
+                    &mut resident_source_eligible,
+                )?;
                 resident_source_index = 0;
                 resident_source_end = count;
             }
@@ -871,7 +878,10 @@ impl SessionPlayback {
                     sources,
                     foreign,
                     external,
-                    use_resident_sources.then_some(resident_source_index),
+                    use_resident_sources.then_some((
+                        resident_source_index,
+                        resident_session_batch.then_some(&resident_source_eligible),
+                    )),
                 )?;
                 if use_resident_sources {
                     resident_source_index += 1;
@@ -2674,6 +2684,40 @@ enum SourceStage {
     Instrument,
 }
 
+fn render_resident_session_audio(
+    prepared: &crate::session_inventory::PreparedSessionAudioClip,
+    audio: &crate::Audio,
+    launch_frame: u64,
+    performance_frame: u64,
+    output: &mut [Frame],
+    source_mix: crate::PreparedTrackMix,
+) -> Result<(), SessionPlaybackError> {
+    let frames = audio.frames();
+    for (offset, frame) in output.iter_mut().enumerate() {
+        let offset = u64::try_from(offset).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+        let absolute = performance_frame
+            .checked_add(offset)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let Some(elapsed) = absolute.checked_sub(launch_frame) else {
+            continue;
+        };
+        let Some(source_frame) = prepared.source_frame(elapsed) else {
+            continue;
+        };
+        let source_index =
+            usize::try_from(source_frame).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+        let mut sample = *frames
+            .get(source_index)
+            .ok_or(SessionPlaybackError::UnknownClip)?;
+        if prepared.gain != 1.0 {
+            sample[0] *= prepared.gain;
+            sample[1] *= prepared.gain;
+        }
+        source_mix.add_frame(frame, sample);
+    }
+    Ok(())
+}
+
 fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::MidiTempoBreaks>(
     context: RouteSourceContext<'_, T>,
     spans: &mut MidiSpanBuffer,
@@ -2830,30 +2874,14 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
             }
             match prepared.source() {
                 PreparedAudioSource::Resident(audio) => {
-                    let frames = audio.frames();
-                    for (offset, frame) in output.iter_mut().enumerate() {
-                        let offset = u64::try_from(offset)
-                            .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                        let absolute = performance_frame
-                            .checked_add(offset)
-                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                        let Some(elapsed) = absolute.checked_sub(launch_frame) else {
-                            continue;
-                        };
-                        let Some(source_frame) = prepared.source_frame(elapsed) else {
-                            continue;
-                        };
-                        let source_index = usize::try_from(source_frame)
-                            .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                        let mut sample = *frames
-                            .get(source_index)
-                            .ok_or(SessionPlaybackError::UnknownClip)?;
-                        if prepared.gain != 1.0 {
-                            sample[0] *= prepared.gain;
-                            sample[1] *= prepared.gain;
-                        }
-                        source_mix.add_frame(frame, sample);
-                    }
+                    render_resident_session_audio(
+                        prepared,
+                        audio,
+                        launch_frame,
+                        performance_frame,
+                        output,
+                        source_mix,
+                    )?;
                 }
                 PreparedAudioSource::Streamed(source) => {
                     let page_provider = pages.ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
