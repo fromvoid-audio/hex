@@ -1,16 +1,24 @@
 //! Bounded streamed transport intent, separate from dequeued/applied prefixes.
 use super::*;
 use hex_engine::SessionPlaybackCommand;
+pub(super) struct RecordedStreamOutcome {
+    pub(super) applied_play: Option<u64>,
+    pub(super) applied_action: Option<u64>,
+    pub(super) rejected_action: Option<(u64, PlaybackActionRejection)>,
+    pub(super) fault: Option<Invalid>,
+}
 pub(super) fn record_outcome(
     status: &Status,
     pending_play: &mut Option<u64>,
     prefix: u64,
     action_pending: bool,
     outcome: crate::candidate_custody::StreamOutcome,
-) -> Result<(), Invalid> {
-    if outcome.play_applied {
-        *pending_play = None;
-    }
+) -> RecordedStreamOutcome {
+    let play = if outcome.play_applied {
+        pending_play.take()
+    } else {
+        None
+    };
     let (buffering, committed) = match outcome.progress {
         crate::candidate_custody::StreamProgress::Complete => (false, 0),
         crate::candidate_custody::StreamProgress::Buffering { committed_frames } => {
@@ -34,7 +42,12 @@ pub(super) fn record_outcome(
     if pending_play.is_none() && !action_pending {
         status.stream_applied_command_prefix.store(prefix, Release);
     }
-    outcome.fault.map_or(Ok(()), Err)
+    RecordedStreamOutcome {
+        applied_play: play,
+        applied_action: outcome.action_applied,
+        rejected_action: outcome.action_rejection,
+        fault: outcome.fault,
+    }
 }
 impl Callback {
     pub(super) fn resolve_recovery_seek(
@@ -87,6 +100,16 @@ impl Callback {
         );
     }
     fn cancel_active_stream_action_with_reason(&mut self, reason: PlaybackActionRejection) {
+        self.cancel_active_stream_action_with_outcome(
+            reason,
+            action_outcomes::Outcome::Rejected(reason),
+        );
+    }
+    fn cancel_active_stream_action_with_outcome(
+        &mut self,
+        reason: PlaybackActionRejection,
+        outcome: action_outcomes::Outcome,
+    ) {
         if let Some(mut active) = self
             .active
             .as_mut()
@@ -97,12 +120,17 @@ impl Callback {
                 self.recovery_seek_pending = None;
             }
             self.status.publish_rejected_action(ticket, reason);
+            self.stage_stream_outcome(ticket, outcome);
         }
     }
     fn stage_stream_action(&mut self, action: PlaybackAction, ticket: u64) {
         if self.status.publication_pending.load(Acquire) || self.stream_pending_play.is_some() {
             self.status
                 .publish_rejected_action(ticket, PlaybackActionRejection::StreamActionBusy);
+            self.stage_stream_outcome(
+                ticket,
+                action_outcomes::Outcome::Rejected(PlaybackActionRejection::StreamActionBusy),
+            );
             return;
         }
         let Some(mut active) = self
@@ -112,19 +140,26 @@ impl Callback {
         else {
             self.status
                 .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
+            self.stage_stream_outcome(
+                ticket,
+                action_outcomes::Outcome::Rejected(PlaybackActionRejection::SessionNotPrepared),
+            );
             return;
         };
         match active.stage_stream_action(action, ticket) {
             crate::candidate_custody::StageAction::Refused(reason) => {
-                self.status.publish_rejected_action(ticket, reason)
+                self.status.publish_rejected_action(ticket, reason);
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Rejected(reason));
             }
             crate::candidate_custody::StageAction::Scheduled => {
-                self.status.stream_scheduled_command.store(ticket, Release)
+                self.status.stream_scheduled_command.store(ticket, Release);
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
             }
             crate::candidate_custody::StageAction::Applied => {
                 if recovery_cursor_action(action) {
                     self.recovery_position_frozen = false;
                 }
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
             }
             crate::candidate_custody::StageAction::Pending => {
                 if self.recovery_position_frozen && recovery_cursor_action(action) {
@@ -169,6 +204,10 @@ impl Callback {
         if let Some(ticket) = self.stream_pending_play.take() {
             self.status
                 .publish_rejected_action(ticket, PlaybackActionRejection::OutputFailed);
+            self.stage_stream_outcome(
+                ticket,
+                action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+            );
         }
         self.invalidate_stream_readiness();
         self.refresh_stream_schedule();
@@ -188,18 +227,29 @@ impl Callback {
             .playback
             .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
         {
-            Ok(()) => self.stream_pending_play = None,
+            Ok(()) => {
+                self.stream_pending_play = None;
+                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
+            }
             Err(error) => {
                 self.status
                     .publish_rejected_action(ticket, error.telemetry_rejection());
                 self.stream_pending_play = None;
+                self.stage_stream_outcome(
+                    ticket,
+                    action_outcomes::Outcome::Rejected(error.telemetry_rejection()),
+                );
             }
         }
         self.status
             .stream_applied_command_prefix
             .store(self.stream_prefix, Release);
     }
-    fn apply_stream_zero_page_action(&mut self, action: PlaybackAction, ticket: u64) {
+    fn apply_stream_zero_page_action(
+        &mut self,
+        action: PlaybackAction,
+        ticket: u64,
+    ) -> action_outcomes::Outcome {
         if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
             self.revoke_current_sampler_keyboard();
         }
@@ -211,11 +261,14 @@ impl Callback {
             match active.playback.try_apply_action(action) {
                 Ok(()) if recovery_cursor_action(action) && !self.status.closing.load(Acquire) => {
                     self.recovery_position_frozen = false;
+                    action_outcomes::Outcome::Applied
                 }
-                Ok(()) => {}
-                Err(error) => self
-                    .status
-                    .publish_rejected_action(ticket, error.telemetry_rejection()),
+                Ok(()) => action_outcomes::Outcome::Applied,
+                Err(error) => {
+                    let reason = error.telemetry_rejection();
+                    self.status.publish_rejected_action(ticket, reason);
+                    action_outcomes::Outcome::Rejected(reason)
+                }
             }
         } else if !matches!(
             action,
@@ -225,6 +278,9 @@ impl Callback {
             // Other actions cannot claim application to a nonexistent owner.
             self.status
                 .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
+            action_outcomes::Outcome::Rejected(PlaybackActionRejection::SessionNotPrepared)
+        } else {
+            action_outcomes::Outcome::Applied
         }
     }
     fn refresh_stream_schedule(&mut self) {
@@ -268,13 +324,22 @@ impl Callback {
             if fault {
                 self.cancel_active_stream_action_with_reason(PlaybackActionRejection::OutputFailed);
             } else {
-                self.cancel_active_stream_action();
+                self.cancel_active_stream_action_with_outcome(
+                    PlaybackActionRejection::StreamActionCancelled,
+                    action_outcomes::Outcome::Superseded,
+                );
             }
-            if let Some(ticket) = self.stream_pending_play.take()
-                && fault
-            {
-                self.status
-                    .publish_rejected_action(ticket, PlaybackActionRejection::OutputFailed);
+            if let Some(ticket) = self.stream_pending_play.take() {
+                if fault {
+                    self.status
+                        .publish_rejected_action(ticket, PlaybackActionRejection::OutputFailed);
+                    self.stage_stream_outcome(
+                        ticket,
+                        action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                    );
+                } else {
+                    self.stage_stream_outcome(ticket, action_outcomes::Outcome::Superseded);
+                }
             }
             self.invalidate_stream_readiness();
             if !fault {
@@ -283,7 +348,7 @@ impl Callback {
                         .playback
                         .apply_priority_stop(&self.status.keyboard_activation);
                 } else {
-                    self.apply_stream_zero_page_action(
+                    let _ = self.apply_stream_zero_page_action(
                         PlaybackAction::Transport(PlaybackCommand::Stop),
                         stop,
                     );
@@ -314,12 +379,30 @@ impl Callback {
             }
             if fault && sampler_edit::is_stop(queued.action) {
                 self.status.recovery_position.store(0, Release);
+                self.stage_stream_outcome(queued.ticket, action_outcomes::Outcome::Applied);
             } else if fault {
                 self.status
                     .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                self.stage_stream_outcome(
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                );
             }
             self.stream_prefix = self.stream_prefix.max(queued.ticket);
+            if fault {
+                continue;
+            }
             if cut.stop_through.is_some_and(|stop| queued.ticket <= stop) {
+                self.stage_stream_outcome(queued.ticket, action_outcomes::Outcome::Superseded);
+                continue;
+            }
+            if stale_output_start(&self.status, queued) {
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                self.stage_stream_outcome(
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                );
                 continue;
             }
             if !self.status.sampler_edit.permits(queued) {
@@ -327,15 +410,25 @@ impl Callback {
                     queued.ticket,
                     PlaybackActionRejection::SamplerEditBusy,
                 );
+                self.stage_stream_outcome(
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::SamplerEditBusy),
+                );
                 continue;
             }
             match queued.action {
                 PlaybackAction::Transport(PlaybackCommand::Play)
                 | PlaybackAction::Session(SessionPlaybackCommand::Play) => {
-                    if self.stream_action_pending() {
+                    if self.stream_action_pending() || self.stream_pending_play.is_some() {
                         self.status.publish_rejected_action(
                             queued.ticket,
                             PlaybackActionRejection::StreamActionBusy,
+                        );
+                        self.stage_stream_outcome(
+                            queued.ticket,
+                            action_outcomes::Outcome::Rejected(
+                                PlaybackActionRejection::StreamActionBusy,
+                            ),
                         );
                     } else {
                         self.stream_pending_play = Some(queued.ticket);
@@ -346,12 +439,24 @@ impl Callback {
                     SessionPlaybackCommand::Pause | SessionPlaybackCommand::Stop,
                 ) => {
                     self.cancel_active_stream_action();
-                    self.stream_pending_play = None;
+                    if let Some(ticket) = self.stream_pending_play.take() {
+                        self.status.publish_rejected_action(
+                            ticket,
+                            PlaybackActionRejection::StreamActionCancelled,
+                        );
+                        self.stage_stream_outcome(
+                            ticket,
+                            action_outcomes::Outcome::Rejected(
+                                PlaybackActionRejection::StreamActionCancelled,
+                            ),
+                        );
+                    }
                     self.invalidate_stream_readiness();
                     self.invalidate_midi_recording(
                         crate::midi_recording::AbortReason::TransportChanged,
                     );
-                    self.apply_stream_zero_page_action(queued.action, queued.ticket);
+                    let outcome = self.apply_stream_zero_page_action(queued.action, queued.ticket);
+                    self.stage_stream_outcome(queued.ticket, outcome);
                     self.invalidate_gain_recording(
                         crate::gain_recording::AbortReason::TransportChanged,
                     );
@@ -374,22 +479,46 @@ impl Callback {
                                     ticket,
                                     PlaybackActionRejection::StreamActionCancelled,
                                 );
+                                self.stage_stream_outcome(
+                                    ticket,
+                                    action_outcomes::Outcome::Rejected(
+                                        PlaybackActionRejection::StreamActionCancelled,
+                                    ),
+                                );
+                                self.stage_stream_outcome(
+                                    queued.ticket,
+                                    action_outcomes::Outcome::Applied,
+                                );
                             }
-                            Err(error) => self.status.publish_rejected_action(
+                            Err(error) => {
+                                let reason = error.telemetry_rejection();
+                                self.status.publish_rejected_action(queued.ticket, reason);
+                                self.stage_stream_outcome(
+                                    queued.ticket,
+                                    action_outcomes::Outcome::Rejected(reason),
+                                );
+                            }
+                            _ => self.stage_stream_outcome(
                                 queued.ticket,
-                                error.telemetry_rejection(),
+                                action_outcomes::Outcome::Applied,
                             ),
-                            _ => {}
                         }
                     } else {
                         self.status.publish_rejected_action(
                             queued.ticket,
                             PlaybackActionRejection::SessionNotPrepared,
                         );
+                        self.stage_stream_outcome(
+                            queued.ticket,
+                            action_outcomes::Outcome::Rejected(
+                                PlaybackActionRejection::SessionNotPrepared,
+                            ),
+                        );
                     }
                 }
                 PlaybackAction::SetMetronome(_) => {
-                    self.apply_stream_zero_page_action(queued.action, queued.ticket)
+                    let outcome = self.apply_stream_zero_page_action(queued.action, queued.ticket);
+                    self.stage_stream_outcome(queued.ticket, outcome);
                 }
                 _ => self.stage_stream_action(queued.action, queued.ticket),
             }

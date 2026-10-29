@@ -28,7 +28,7 @@ pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
 pub use lifecycle::{
     AudioLifecycleFailure, RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen,
     audio_lifecycle_failure, request_initial_open, request_recovery_open, request_worker_open,
-    request_worker_open_with_profile,
+    request_worker_open_with_profile, request_worker_open_with_reliable_action_outcomes,
 };
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;

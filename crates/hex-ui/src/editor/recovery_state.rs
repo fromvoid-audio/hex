@@ -11,6 +11,7 @@ struct Attempt {
     opened: bool,
     restored: bool,
     seek_ticket: Option<u64>,
+    seek_outcome: Option<hex_audio::prepared::ActionOutcome>,
     prepared_seek: Option<u64>,
     prepared_revision: Option<u64>,
 }
@@ -31,6 +32,7 @@ impl RecoveryState {
             opened: false,
             restored: false,
             seek_ticket: None,
+            seek_outcome: None,
             prepared_seek: None,
             prepared_revision: None,
         });
@@ -85,7 +87,23 @@ impl RecoveryState {
     pub(super) fn seeking(&mut self, ticket: u64) {
         if let Some(attempt) = self.active.as_mut() {
             attempt.seek_ticket = Some(ticket);
+            attempt.seek_outcome = None;
         }
+    }
+
+    pub(super) fn observe_receipt(&mut self, receipt: hex_audio::prepared::ActionOutcomeReceipt) {
+        if let Some(attempt) = self.active.as_mut()
+            && attempt.seek_ticket == Some(receipt.ticket)
+        {
+            attempt.seek_outcome = Some(receipt.outcome);
+        }
+    }
+
+    pub(super) fn seek_failed(&self) -> bool {
+        self.active
+            .as_ref()
+            .and_then(|attempt| attempt.seek_outcome)
+            .is_some_and(|outcome| outcome != hex_audio::prepared::ActionOutcome::Applied)
     }
 
     /// Only this recovery attempt may admit a stopped prepared cursor restore. User seeks and
@@ -181,10 +199,32 @@ impl RecoveryState {
         ready
     }
 
+    pub(super) fn complete_exact(
+        &mut self,
+        graph_is_current: bool,
+        position: u64,
+        playing: bool,
+    ) -> bool {
+        let ready = self.active.as_ref().is_some_and(|attempt| {
+            attempt.opened
+                && attempt.restored
+                && graph_is_current
+                && !playing
+                && position == attempt.position
+                && attempt.seek_ticket.is_some()
+                && attempt.seek_outcome == Some(hex_audio::prepared::ActionOutcome::Applied)
+        });
+        if ready {
+            self.active = None;
+        }
+        ready
+    }
+
     pub(super) fn stop(&mut self) {
         if let Some(attempt) = self.active.as_mut() {
             attempt.position = 0;
             attempt.seek_ticket = None;
+            attempt.seek_outcome = None;
             attempt.prepared_seek = None;
             attempt.prepared_revision = None;
         }
@@ -198,6 +238,27 @@ impl RecoveryState {
 #[cfg(test)]
 mod tests {
     use super::RecoveryState;
+
+    #[test]
+    fn recovery_requires_exact_success_not_a_later_terminal() {
+        use hex_audio::prepared::{ActionOutcome, ActionOutcomeReceipt};
+        let mut state = RecoveryState::default();
+        let generation = state.begin(64).unwrap();
+        assert!(state.opened(generation));
+        assert!(state.restored(generation));
+        state.seeking(3);
+        state.observe_receipt(ActionOutcomeReceipt {
+            ticket: 4,
+            outcome: ActionOutcome::Applied,
+        });
+        assert!(!state.complete_exact(true, 64, false));
+        state.observe_receipt(ActionOutcomeReceipt {
+            ticket: 3,
+            outcome: ActionOutcome::Rejected(hex_engine::PlaybackActionRejection::OutputFailed),
+        });
+        assert!(state.seek_failed());
+        assert!(!state.complete_exact(true, 64, false));
+    }
 
     #[test]
     fn prepared_recovery_requires_exact_attempt_request_and_actual_stopped_ack() {

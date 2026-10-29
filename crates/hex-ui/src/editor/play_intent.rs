@@ -128,6 +128,24 @@ impl Tracker {
             self.latest = None;
         }
     }
+
+    /// Resolve only the exact admitted action; later tickets cannot prove that
+    /// an earlier streamed action has terminated.
+    pub(super) fn reconcile_receipt(&mut self, ticket: u64, actual_playing: bool) {
+        self.reconcile_actual(actual_playing);
+        if self
+            .latest
+            .is_some_and(|intent| intent.ticket == Some(ticket))
+        {
+            self.latest = None;
+        }
+    }
+
+    pub(super) fn reconcile_actual(&mut self, actual_playing: bool) {
+        if self.priority_stop && !actual_playing {
+            self.priority_stop = false;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -182,6 +200,18 @@ mod tests {
         tracker.attach_ticket(launch, 8);
         tracker.reconcile(8, true, None);
         assert!(!tracker.desired_playing(true));
+    }
+
+    #[test]
+    fn later_receipt_does_not_resolve_an_earlier_pending_intent() {
+        let mut tracker = Tracker::default();
+        let token = tracker.reserve_token().unwrap();
+        tracker.admit(token, true);
+        tracker.attach_ticket(token, 4);
+        tracker.reconcile_receipt(5, false);
+        assert!(tracker.desired_playing(false));
+        tracker.reconcile_receipt(4, false);
+        assert!(!tracker.desired_playing(false));
     }
 
     #[test]

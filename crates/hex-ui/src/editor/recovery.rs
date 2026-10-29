@@ -39,7 +39,10 @@ impl EditorView {
             }
         };
         self.offline_cursor = position;
-        self.retire_audio_preserving_gain_take();
+        if !self.retire_audio_preserving_gain_take() {
+            self.recovery.fail();
+            return;
+        }
         self.clear_audio_accounting();
         if self.restart_audio_for_current_document() {
             self.pending_recovery_generation = Some(generation);
@@ -57,6 +60,16 @@ impl EditorView {
     pub(super) fn finish_audio_recovery_tick(&mut self) -> bool {
         if self.recovery.generation().is_none() {
             return false;
+        }
+        let reliable = self
+            .audio
+            .as_ref()
+            .is_some_and(|audio| audio.control.has_action_outcomes());
+        if reliable && self.recovery.seek_failed() {
+            self.fail_audio_recovery(
+                "recovered cursor request was not applied · retry available".into(),
+            );
+            return true;
         }
         let graph_is_current = self
             .state
@@ -144,6 +157,9 @@ impl EditorView {
                 position,
                 playing,
             )
+        } else if reliable {
+            self.recovery
+                .complete_exact(graph_is_current, position, playing)
         } else {
             self.recovery.complete(
                 graph_is_current,

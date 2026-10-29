@@ -143,7 +143,7 @@ fn missing_actual_terminal_is_interrupted_and_failure_publication_is_once_only()
     drop(data);
     drop(errors);
     assert!(dispose(&mut retirement));
-    retirement.fail_scalar_receipts();
+    retirement.fail_retained_receipts();
     let batch = token.try_take().unwrap().unwrap();
     assert_eq!(batch.terminal(), ScalarReceiptTerminal::Interrupted);
     assert_eq!(batch.receipts().count(), 0);
@@ -288,13 +288,13 @@ fn published_receipts_survive_later_destructor_panic_and_failure_is_distinct_fro
         drop(data);
         drop(errors);
         if fail_before_collection {
-            retirement.fail_scalar_receipts();
+            retirement.fail_retained_receipts();
         }
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispose(&mut retirement)))
                 .is_err()
         );
-        retirement.fail_scalar_receipts();
+        retirement.fail_retained_receipts();
         if fail_before_collection {
             assert!(matches!(
                 token.try_take(),

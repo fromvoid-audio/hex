@@ -7,6 +7,8 @@
 //! acknowledgment are separate states; do not claim current playback from a submitted revision
 //! alone. Native keyboard/pointer delivery uses the pinned excluded GPUI dependency boundary, with
 //! no unsafe workspace bridge.
+#[cfg(all(test, feature = "ui-test-support"))]
+mod action_outcome_ui_tests;
 mod arrangement;
 mod arrangement_audio_panel;
 mod arrangement_device_drop;
@@ -725,6 +727,8 @@ pub(super) struct EditorView {
     service: Service,
     transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
+    retired_action_outcomes: Option<hex_audio::prepared::ActionOutcomeReader>,
+    retired_action_message: Option<String>,
     audio_events: std::sync::mpsc::Receiver<crate::EditorAudioEvent>,
     source_reservation: Option<hex_session::SourcePlanReservation>,
     restart_request_id: u64,
@@ -1447,6 +1451,8 @@ impl EditorView {
             transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
             audio,
+            retired_action_outcomes: None,
+            retired_action_message: None,
             audio_events: std::sync::mpsc::channel().1,
             source_reservation: None,
             restart_request_id: 0,
