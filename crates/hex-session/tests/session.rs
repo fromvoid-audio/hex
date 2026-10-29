@@ -113,6 +113,89 @@ fn prepared_import_compiles_exact_audio_and_waveform_summary() {
 }
 
 #[test]
+fn session_short_note_refusal_preserves_history_and_explains_recovery() {
+    let mut session = Session::new(48_000, 16, 0).unwrap();
+    let Created::Track(track) = session
+        .command(Command::AddMidiTrack {
+            name: "midi".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Scene(scene) = session
+        .command(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = session
+        .command(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "clip".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("session clip")
+    };
+    session
+        .command(Command::AddScene {
+            name: "redo".into(),
+        })
+        .unwrap();
+    assert!(session.undo());
+    assert!(session.can_redo());
+    let before = session.project().snapshot();
+    let result = session.command_prepared_revision(
+        Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw((1_u64 << 32).div_ceil(24_000)),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        },
+        None,
+    );
+    let Err(error) = result else {
+        panic!("short source note must be refused");
+    };
+    assert_eq!(
+        error.to_string(),
+        "playback compile failed: session midi note gate is too short to guarantee one frame at the admitted tempo; lengthen the note or reduce tempo"
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert!(session.can_redo());
+    session
+        .command_prepared_revision(
+            Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            },
+            None,
+        )
+        .expect("a longer note is admitted");
+    assert_eq!(
+        session
+            .project()
+            .session_midi_clip(clip)
+            .unwrap()
+            .source()
+            .notes()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn rejected_unlaunched_session_cell_preserves_project_history_ids_and_prepared_state() {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 32).expect("editor");
     let track = match editor

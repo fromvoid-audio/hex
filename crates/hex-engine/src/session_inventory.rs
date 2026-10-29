@@ -1757,7 +1757,13 @@ fn template_error(error: MidiTemplateError) -> crate::Invalid {
         MidiTemplateError::Allocation => {
             crate::Invalid("could not reserve Session MIDI template storage")
         }
-        _ => crate::Invalid("Session MIDI source failed template admission"),
+        MidiTemplateError::GateTooShortForAdmission => crate::Invalid(
+            "session midi note gate is too short to guarantee one frame at the admitted tempo; lengthen the note or reduce tempo",
+        ),
+        MidiTemplateError::LoopPeriodTooShortForAdmission => crate::Invalid(
+            "session midi loop is too short to guarantee one frame at the admitted tempo; lengthen the loop or reduce tempo",
+        ),
+        _ => crate::Invalid(error.diagnostic_message()),
     }
 }
 
