@@ -63,7 +63,10 @@ impl SessionPlayback {
                         && track.clips.is_empty()
                         && track.midi_source_index.is_none()
                         && !self.revision.source_routing().is_shared(index)
-                        && self.mutable_instruments[index].is_none()
+                        && self
+                            .mutable_instruments
+                            .get(index)
+                            .is_some_and(Option::is_none)
                         && track
                             .instrument
                             .as_ref()
@@ -79,7 +82,9 @@ impl SessionPlayback {
                                 Some(self.revision.session().timing()),
                             )
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                        analytic[index] = true;
+                        *analytic
+                            .get_mut(index)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                     } else if track.audio_content_enabled() {
                         track
                             .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
@@ -227,7 +232,7 @@ impl SessionPlayback {
                     let mut generator = [[0.0; 2]];
                     if self.playing {
                         let analytic_index = resident_source
-                            .filter(|batch| batch.analytic[index])
+                            .filter(|batch| batch.analytic.get(index).copied().unwrap_or(false))
                             .map(|batch| batch.index);
                         if analytic_index.is_some() {
                             // This track has no audio clips; its scratch window
