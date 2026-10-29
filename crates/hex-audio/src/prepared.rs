@@ -7504,10 +7504,12 @@ mod tests {
             callback.begin_block();
         }
         assert!(callback.retired.is_full());
+        control.command(PlaybackCommand::Play).unwrap();
+        callback.begin_block();
         let fence = control.capture_fresh_runtime_fence().unwrap();
         let revision = control
             .publish_with_policy(
-                graph().0,
+                graph_with_frame([0.91, -0.83]).0,
                 PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
             )
             .unwrap();
@@ -7517,11 +7519,20 @@ mod tests {
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
         assert_eq!(control.status.consumed_command.load(Acquire), ticket);
+        assert_eq!(control.status.position.load(Acquire), 13);
         assert!(control.status.publication_pending.load(Acquire));
+        let mut before_retry = [[0.0; 2]; 8];
+        callback.render(&mut before_retry).unwrap();
+        assert_eq!(before_retry, [[0.25; 2]; 8]);
+        assert_eq!(control.status.position.load(Acquire), 21);
         assert_eq!(control.reclaim(), RETIRED);
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
         assert_fresh_fence_rejection(&mut control, revision);
+        let mut after_retry = [[0.0; 2]; 8];
+        callback.render(&mut after_retry).unwrap();
+        assert_eq!(after_retry, [[0.25; 2]; 8]);
+        assert_eq!(control.status.position.load(Acquire), 29);
         assert_eq!(control.reclaim(), 1);
         control.request_shutdown();
         callback.begin_block();
