@@ -167,6 +167,32 @@ fn play_from_chases_a_held_mutable_note_without_replaying_the_prefix() {
 }
 
 #[test]
+fn play_from_note_onset_and_off_boundaries_match_authored_pcm() {
+    // At 120 bpm and 48 kHz this one-beat note ends at frame 24,000.
+    let prepared = start_fixture(0, 1 << 32, None);
+    let mut oracle = SessionPlayback::new(start_fixture(0, 1 << 32, None)).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let onset = render_checkpoint_partitioned(&mut oracle, &[256], 512);
+    assert!(onset.iter().flatten().any(|sample| *sample != 0.0));
+
+    for destination in [0, 24_000, 24_001] {
+        let expected = if destination == 0 {
+            onset.clone()
+        } else {
+            vec![[0.0; 2]; 512]
+        };
+        for block in [1, 17, 64, 128, 256, 512] {
+            let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            playback.play_from(destination).unwrap();
+            let actual = render_checkpoint_partitioned(&mut playback, &[block], 512);
+            assert_eq!(actual, expected, "destination={destination}, block={block}");
+            assert_eq!(playback.arrangement_frame(), destination + 512);
+            assert_eq!(playback.performance_frame(), destination + 512);
+        }
+    }
+}
+
+#[test]
 fn chased_note_gate_and_stop_match_authored_pcm_at_fixed_block_sizes() {
     let prepared = start_fixture(0, 1 << 32, None);
     let mut oracle = SessionPlayback::new(start_fixture(1 << 31, 1 << 31, None)).unwrap();
