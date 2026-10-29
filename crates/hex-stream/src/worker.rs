@@ -216,7 +216,7 @@ impl TestWorkerHooks {
     }
 }
 
-#[cfg_attr(test, allow(clippy::too_many_arguments))] // Fixed owners plus a test-only gate.
+#[cfg_attr(any(test, feature = "test-support"), allow(clippy::too_many_arguments))] // Fixed owners plus test-only gates.
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
@@ -226,6 +226,7 @@ pub(crate) fn run_worker(
     stop: Arc<AtomicBool>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
     #[cfg(test)] test_hooks: Option<TestWorkerHooks>,
+    #[cfg(feature = "test-support")] mut page_gate: Option<crate::test_support::PageGate>,
 ) -> Vec<Box<PageBuffer>> {
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
@@ -363,6 +364,15 @@ pub(crate) fn run_worker(
             }
             continue;
         };
+        #[cfg(feature = "test-support")]
+        if page_gate.as_ref().is_some_and(|gate| {
+            key.source == StreamResourceKey::Audio(gate.key.source)
+                && key.page_index == gate.key.page_index
+        }) && let Some(gate) = page_gate.take()
+            && !gate.wait(&stop)
+        {
+            break;
+        }
         if matches!(key.source, StreamResourceKey::Scalar(_)) && scalar_job.is_some() {
             if deferred_scalar.len() < deferred_scalar.capacity() {
                 deferred_scalar.push_back(key);

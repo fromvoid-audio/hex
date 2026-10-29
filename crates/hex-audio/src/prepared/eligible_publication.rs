@@ -73,6 +73,23 @@ impl PublicationControl {
         self.candidate_root
             .begin_domain_preparation(config, definitions, readiness)
     }
+    /// Test-only source-worker hold through the same reserved domain custody.
+    #[cfg(feature = "stream-test-support")]
+    pub fn begin_audio_candidate_domain_preparation_with_gate(
+        &mut self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+        gate: hex_stream::test_support::PageGate,
+    ) -> Result<crate::AudioCandidateDomainToken, crate::AudioCandidateDomainStartError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidateDomainStartError::Busy(
+                "candidate native custody unavailable",
+            ));
+        }
+        self.candidate_root
+            .begin_domain_preparation_with_gate(config, definitions, readiness, gate)
+    }
     /// Poll on the publication worker. Reserve the actual queue entry before
     /// sealing; a ready endpoint cannot escape or be dropped on queue refusal.
     pub fn poll_audio_candidate_domain_preparation(

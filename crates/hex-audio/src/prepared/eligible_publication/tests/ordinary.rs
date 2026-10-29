@@ -951,6 +951,173 @@ fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
     );
 }
 
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn prepared_audio_domain_holds_later_page_without_blocking_callback_or_custody() {
+    prepared_audio_domain_gate(false);
+}
+
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn prepared_audio_domain_retires_while_later_page_is_held() {
+    prepared_audio_domain_gate(true);
+}
+
+#[cfg(feature = "stream-test-support")]
+fn prepared_audio_domain_gate(retire_while_held: bool) {
+    let _serial = serial();
+    let frames = (hex_engine::STREAM_PAGE_FRAMES * 3) as u64;
+    let project = super::readiness::project_with_frames(frames);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(frames.try_into().unwrap());
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: metadata.key(),
+        page_index: 1,
+    });
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    let (refused_gate, refused_entered, _refused_release) =
+        hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+            source: metadata.key(),
+            page_index: 1,
+        });
+    assert!(matches!(
+        control.begin_audio_candidate_domain_preparation_with_gate(
+            hex_stream::StreamConfig::with_pool_pages(4),
+            vec![wav.definition(asset, 11)],
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3
+            },
+            refused_gate,
+        ),
+        Err(crate::AudioCandidateDomainStartError::Busy(_))
+    ));
+    assert!(matches!(
+        refused_entered.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Disconnected)
+    ));
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let domain = control
+        .begin_audio_candidate_domain_preparation_with_gate(
+            hex_stream::StreamConfig::with_pool_pages(4),
+            vec![definition],
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+            gate,
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match control
+            .poll_audio_candidate_domain_preparation(domain)
+            .unwrap()
+        {
+            crate::AudioCandidateDomainPreparationProgress::Ready => break,
+            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
+            other => panic!("unexpected preparation: {other:?}"),
+        }
+        assert!(std::time::Instant::now() < deadline, "catalog did not seal");
+        std::thread::yield_now();
+    }
+    assert!(control.audio_candidate_domain_covers_source(domain, &metadata));
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 7,
+                editor_revision: 3,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("source publication"));
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let mut heard = false;
+    loop {
+        measured_render(&mut data, &mut output);
+        heard |= output.contains(&[0.25; 2]);
+        if entered.try_recv().is_ok() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "later page not requested"
+        );
+        std::thread::yield_now();
+    }
+    while control.status.position.load(Acquire) < hex_engine::STREAM_PAGE_FRAMES as u64 {
+        measured_render(&mut data, &mut output);
+        heard |= output.contains(&[0.25; 2]);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first page did not finish"
+        );
+        std::thread::yield_now();
+    }
+    assert!(heard);
+    assert_eq!(control.status.applied_revision.load(Acquire), revision);
+    measured_render(&mut data, &mut output);
+    assert!(control.status.stream_buffering.load(Acquire));
+    assert_eq!(output, [[0.0; 2]; 256]);
+    if retire_while_held {
+        control.stop();
+        measured_render(&mut data, &mut output);
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(output, [[0.0; 2]; 256]);
+    } else {
+        release.send(()).unwrap();
+        loop {
+            measured_render(&mut data, &mut output);
+            if output.iter().all(|frame| *frame == [0.25; 2]) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "released page did not render"
+            );
+            std::thread::yield_now();
+        }
+    }
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    loop {
+        measured_render(&mut data, &mut output);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "domain did not retire"
+        );
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
+
 #[test]
 fn compensated_demand_retries_a_smaller_window_at_page_capacity() {
     let _serial = serial();

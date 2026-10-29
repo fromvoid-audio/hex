@@ -264,6 +264,24 @@ impl StreamRuntime {
             definitions,
             #[cfg(test)]
             None,
+            #[cfg(feature = "test-support")]
+            None,
+        )
+    }
+
+    /// Construct a real stream worker with one optional test-only page hold.
+    #[cfg(feature = "test-support")]
+    pub fn new_with_page_gate(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        gate: crate::test_support::PageGate,
+    ) -> Result<Self, StreamRuntimeError> {
+        Self::new_inner(
+            config,
+            definitions,
+            #[cfg(test)]
+            None,
+            Some(gate),
         )
     }
 
@@ -271,6 +289,7 @@ impl StreamRuntime {
         config: StreamConfig,
         definitions: Vec<SourceDefinition>,
         #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
     ) -> Result<Self, StreamRuntimeError> {
         Self::new_factory(
             config,
@@ -278,6 +297,8 @@ impl StreamRuntime {
             false,
             #[cfg(test)]
             test_hooks,
+            #[cfg(feature = "test-support")]
+            page_gate,
         )
         .map(|(runtime, _)| runtime)
     }
@@ -295,6 +316,8 @@ impl StreamRuntime {
             false,
             #[cfg(test)]
             None,
+            #[cfg(feature = "test-support")]
+            None,
         )
         .map(|(runtime, _)| runtime)
     }
@@ -303,6 +326,7 @@ impl StreamRuntime {
         definitions: Vec<SourceDefinition>,
         reserve_disposal: bool,
         #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
     ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
         Self::new_factory_with_scalar_sources(
             config,
@@ -311,6 +335,8 @@ impl StreamRuntime {
             reserve_disposal,
             #[cfg(test)]
             test_hooks,
+            #[cfg(feature = "test-support")]
+            page_gate,
         )
     }
     fn new_factory_with_scalar_sources(
@@ -319,6 +345,7 @@ impl StreamRuntime {
         scalar_definitions: Vec<ScalarSourceDefinition>,
         reserve_disposal: bool,
         #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+        #[cfg(feature = "test-support")] page_gate: Option<crate::test_support::PageGate>,
     ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
         let config = config.validate()?;
         if definitions
@@ -543,6 +570,8 @@ impl StreamRuntime {
                     catalog_sender,
                     #[cfg(test)]
                     test_hooks,
+                    #[cfg(feature = "test-support")]
+                    page_gate,
                 );
                 #[cfg(test)]
                 worker_finished_signal.store(true, Ordering::Release);
@@ -953,8 +982,14 @@ mod tests {
             release: release_rx,
             publications: publication_tx,
         };
-        let mut runtime =
-            StreamRuntime::new_inner(config, vec![definition], Some(hooks)).expect("runtime");
+        let mut runtime = StreamRuntime::new_inner(
+            config,
+            vec![definition],
+            Some(hooks),
+            #[cfg(feature = "test-support")]
+            None,
+        )
+        .expect("runtime");
         runtime
             .wait_until_ready(Duration::from_secs(3))
             .expect("catalog ready");
@@ -1043,6 +1078,8 @@ mod tests {
             config,
             vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
             Some(hooks),
+            #[cfg(feature = "test-support")]
+            None,
         )
         .unwrap();
         runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
